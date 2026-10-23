@@ -2397,3 +2397,35 @@ func TestExecuteWithRetry_ScriptEnvUnavailableNotRetried(t *testing.T) {
 	assert.Equal(t, 1, ex.calls, "script_env_unavailable must not retry")
 	assert.Equal(t, "script_env_unavailable", resp.ErrorCode)
 }
+
+// --- #1878: script-only fires are sessionless (no carrier churn) ---
+
+// #1878 (via #1882's trace): a trigger with a ScriptPath and NO prompt
+// is script-only — the pre-script leg runs for its side effects, which
+// IS the delivery. The #1812 early-return tests ScriptLanguage only,
+// so this shape fell through to the agent leg with an EMPTY prompt:
+// agentd minted an ephemeral carrier session per fire (the ~75
+// ghost-sessions/hour churn #1882 measured) for a fire that has no LLM
+// work. The sessionless contract: script-only fires dispatch the script
+// node and NEVER the agent node.
+func TestExecuteRoutine_ScriptPathOnlyEmptyPrompt_NeverDispatchesAgentLeg(t *testing.T) {
+	store := newMockSchedulerStore()
+	agentd := newMockAgentd()
+	agentd.outputs["routine-script"] = json.RawMessage(`{"exitCode":0,"stdout":"","stderr":""}`)
+	wsID := "ws-1"
+	trigger := &wf.TriggerRow{
+		ID: "trig-1878-sp", WorkspaceID: &wsID,
+		ScriptPath: "/tmp/opencode/probe.sh", Prompt: "",
+		CaptureMode: types.CaptureErrorsOnly, PreserveSession: types.PreserveNever,
+	}
+	fire := &wf.TriggerFireRow{ID: "fire-1878-sp", TriggerID: "trig-1878-sp", InputEnvelope: json.RawMessage(`{}`)}
+	sched := &Scheduler{Store: store, Activator: &mockActivator{}, AgentdClient: agentd, Logger: noopLogger{}}
+	sched.executeRoutine(context.Background(), noopLogger{}, trigger, fire)
+
+	assert.Equal(t, "delivered", store.statuses["fire-1878-sp"],
+		"script-only fire delivers on the script leg's side effects")
+	assert.Contains(t, agentd.callNodeIDs(), "routine-script",
+		"the pre-script leg must dispatch")
+	assert.NotContains(t, agentd.callNodeIDs(), "routine-agent",
+		"a script-only fire must NEVER reach the agent leg — that mints the ephemeral carrier session (#1878/#1882)")
+}
