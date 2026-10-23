@@ -378,9 +378,11 @@ describe("Composer", () => {
 
   // ── Feature B: user-message history navigation (desktop only) ─
   //
-  // Up/Down walk the userMessageHistory prop (newest-first), but only
-  // when the cursor is on the first/last line of the textarea. Mobile
-  // is a no-op (cursor moves normally). IME composition suppresses.
+  // Up/Down walk the userMessageHistory prop (newest-first). Up fires
+  // ONLY from a collapsed caret at position 0 of line 1 (#1846 — the
+  // draft is never swapped mid-text); Down fires from the last line
+  // while browsing. Mobile is a no-op (cursor moves normally). IME
+  // composition suppresses.
 
   it("DESKTOP: Up on first line loads previous user message from history", async () => {
     const user = userEvent.setup();
@@ -433,6 +435,8 @@ describe("Composer", () => {
     render(<Composer onSend={vi.fn()} userMessageHistory={["old"]} />);
     const textarea = screen.getByPlaceholderText("Type a message...");
     await user.type(textarea, "my draft"); // draft captured
+    // #1846 guard: recall fires from position 0 — park the caret there.
+    await user.keyboard("{Home}");
     await user.keyboard("{ArrowUp}"); // → "old" (index 0)
     expect(textarea).toHaveValue("old");
     // Move cursor to last line of "old" then Down past newest.
@@ -554,8 +558,9 @@ describe("Composer", () => {
     // Draft a value EQUAL to history[0] ("hello" — the most recent).
     await user.type(textarea, "hello");
     expect(textarea).toHaveValue("hello");
-    // Cursor is at end (5). Press Up — should load "hello" (same text)
-    // AND move cursor to 0.
+    // #1846 guard: recall fires from position 0 — park the caret there.
+    // Press Up — should load "hello" (same text) AND move cursor to 0.
+    await user.keyboard("{Home}");
     await user.keyboard("{ArrowUp}");
     expect(textarea).toHaveValue("hello");
     expect(textarea.selectionStart).toBe(0);

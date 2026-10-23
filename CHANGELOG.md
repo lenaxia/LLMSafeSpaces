@@ -8,6 +8,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed — chat UX
+
+- **Up-arrow history recall no longer destroys the in-progress draft**
+  (#1846): the Composer's Up-recall guard checked only the caret's LINE
+  (any column of line 1 qualified), so pressing Up with a non-empty
+  single-line draft swapped the entire draft for the previous message —
+  silent user-data loss. Recall now fires only from a collapsed caret at
+  the very beginning of the buffer (position 0 of line 1 — the opencode
+  TUI buffer-boundary rule the guard was always meant to mirror); any
+  other caret position moves the cursor and leaves the text untouched.
+  A selection, even one starting at position 0, collapses rather than
+  recalls. The empty-input recall gesture and the caret-at-0 recall are
+  unchanged; Down-navigation is unchanged.
+
 ### Fixed — Provisioned SSH keys: the delivery writer validates + repairs the trailing-space corruption class (#1793)
 
 - **SSH git operations no longer die on formatting-corrupt stored
