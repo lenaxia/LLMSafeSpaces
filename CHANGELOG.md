@@ -8,6 +8,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed — Session phrase IDs are persistent by construction: write-once column, phrase-bearing row births, spawn-window reap grace (#1850)
+
+- **create_session workers can no longer be re-phrased after spawn.**
+  Five reproductions showed platform-spawned workers losing the
+  3-word phrase minted at creation after their first turn —
+  `id_deprecated` on the original id, send_message to it failing
+  with 500, and the session's addressable identity collapsing onto
+  its 2-word harness slug. Root cause was lazy settlement in three
+  cooperating layers: six row-creating session_index upserts inserted
+  WITHOUT the phrase (any write landing on an absent row birthed a
+  phrase-less row, later backfilled with a FRESH mint); the #1340
+  reaper's message_count==0 guard was armed for exactly the spawn
+  window (a platform-spawned worker's prompt delivery is a pod-local
+  POST the API never sees, so the count stays 0 through the whole
+  first turn — two harness-list misses reaped the LIVE row and
+  orphaned the phrase); and the post-death resurrection re-minted a
+  different phrase. The fix is persistence-by-construction: every
+  row-creating upsert now carries a Go-minted phrase in its INSERT
+  leg (the phrase is born in the same statement/transaction as the
+  row; the ON CONFLICT legs never touch short_id, so an existing
+  phrase always wins), migration 000044 pins short_id WRITE-ONCE at
+  the DB level (a trigger refuses changing or NULL-ing a minted
+  phrase; identical rewrites and the legacy NULL-backfill stay
+  legal; helm mirror byte-identical), and the reap guard refuses
+  count-zero rows younger than 15 minutes (a fresh session is not a
+  ghost; aged rows keep the #1340 hygiene verdict — stillborn rows
+  now converge one grace period later, a deliberate, documented
+  trade). Phrase minting keeps the registration seam's ruling-3
+  collision discipline (deterministic counter suffix) on every birth
+  path. Known effect: the grace window shelters genuinely stillborn
+  rows for the window's duration. The id_deprecated marker remains
+  only for legacy rows and the degraded emission window.
+
 ### Fixed — Provisioned SSH keys: the delivery writer validates + repairs the trailing-space corruption class (#1793)
 
 - **SSH git operations no longer die on formatting-corrupt stored
