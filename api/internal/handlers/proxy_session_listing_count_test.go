@@ -139,10 +139,11 @@ func TestListingCount_OrdersOldestTouchedFirst(t *testing.T) {
 
 // TestListingCount_RotatesBudgetAcrossPasses — the rotation pin: a
 // second pass (fresh listing, tracker warm from the first) must reach
-// the rows the budget skipped. Without rotation the same oldest three
-// rows would be walked on every request forever and rows 4+ never
-// converge — the listing-side twin of the rebuild's oldest-touched
-// fairness.
+// the rows the budget skipped. The cooldown composes with rotation:
+// the first pass's converged rows back off (their walked count now
+// matches the served count), freeing the ENTIRE budget for the
+// never-walked tail. Without rotation the same three rows would be
+// walked on every request forever and rows 4+ never converge.
 func TestListingCount_RotatesBudgetAcrossPasses(t *testing.T) {
 	counts := map[string]int{}
 	ids := []string{"ses_a", "ses_b", "ses_c", "ses_d", "ses_e"}
@@ -156,40 +157,76 @@ func TestListingCount_RotatesBudgetAcrossPasses(t *testing.T) {
 	}
 	ctx := context.Background()
 	h.ServeHarnessMessageCounts(ctx, "ws-1", sessions)
-	// Second listing: rebuilt rows now carry walked counts — the
-	// tracker must send the budget to the never-walked tail next.
+	require.Equal(t, []string{"ses_a", "ses_b", "ses_c"}, *counted,
+		"pass one takes the first three (never-walked ties, stable order)")
+	// Second listing: the first three now carry walked counts — the
+	// cooldown backs them off and the budget rotates to the tail.
 	for i := range sessions {
 		sessions[i].MessageCount = 7
 	}
 	h.ServeHarnessMessageCounts(ctx, "ws-1", sessions)
 
-	require.Len(t, *counted, 6, "two budgeted passes walk six rows total")
-	assert.Contains(t, *counted, "ses_d", "the second pass reaches the rows the first budget skipped")
-	assert.Contains(t, *counted, "ses_e", "the second pass reaches the rows the first budget skipped")
+	require.Len(t, *counted, 5, "two budgeted passes walk five rows total")
+	assert.Equal(t, []string{"ses_d", "ses_e"}, (*counted)[3:],
+		"the second pass's whole budget reaches the rows the first skipped")
+
+	// Phase 3 isolates the ORDERING rule deterministically: backdate
+	// ONLY the first pass's rows (one shared instant), keep d,e hot
+	// (cooldown), and introduce two fresh never-walked rows — the sort
+	// must put NEVER-WALKED first (f, g) ahead of the stale-walked a,
+	// with the budget capping at three. Without the ordering rule,
+	// slice order walks a, b, c and the tail starves.
+	expired := time.Now().Add(-2 * countServeCooldown)
+	tr := h.countServeState()
+	tr.mu.Lock()
+	for _, id := range ids[:3] {
+		if _, ok := tr.lastAt["ws-1/"+id]; ok {
+			tr.lastAt["ws-1/"+id] = expired
+		}
+	}
+	tr.mu.Unlock()
+	sessions = append(sessions, driftRow("ses_f", time.Hour), driftRow("ses_g", time.Hour))
+	*counted = nil
+	h.ServeHarnessMessageCounts(ctx, "ws-1", sessions)
+	assert.Equal(t, []string{"ses_f", "ses_g", "ses_a"}, *counted,
+		"never-walked rows outrank stale-walked ones; the budget caps the pass")
 }
 
-// TestListingCount_CooldownBacksOffUnchangedRows — a row whose last
+// TestListingCount_CooldownBacksOffConvergedRows — a row whose last
 // walk already converged (walked count == served count) backs off
 // within the cooldown window: steady-state empty sessions (legitimately
-// 0) must not eat the walk budget of live drift rows. A CHANGED count
-// (the growing turn) stays hot.
-func TestListingCount_CooldownBacksOffUnchangedRows(t *testing.T) {
+// 0) and freshly-served drift rows alike stop consuming budget. Expiry
+// re-arms the walk (bounded staleness for the never-traversed class).
+func TestListingCount_CooldownBacksOffConvergedRows(t *testing.T) {
 	h, _, counted := listingCountTestHandler(t,
 		map[string]int{"ses_empty": 0, "ses_growing": 500}, nil)
 	ctx := context.Background()
 	sessions := []types.SessionListItem{driftRow("ses_empty", time.Hour), driftRow("ses_growing", time.Hour)}
 	h.ServeHarnessMessageCounts(ctx, "ws-1", sessions)
+	require.Equal(t, []string{"ses_empty", "ses_growing"}, *counted)
+	require.Equal(t, 500, sessions[1].MessageCount, "truth served on pass one")
 
-	// Second listing immediately: ses_empty walked the same 0 (backed
-	// off), ses_growing's harness count moved (stays hot).
-	(*counted) = nil
+	// Immediate re-listing: both rows' walks converged (0==0, 500==500)
+	// — neither re-walks inside the cooldown.
+	*counted = nil
 	h.ServeHarnessMessageCounts(ctx, "ws-1", sessions)
-	h.ServeHarnessMessageCounts(ctx, "ws-1", sessions)
+	assert.Empty(t, *counted,
+		"converged rows back off within the cooldown window — the budget is for UNconverged truth")
 
-	assert.NotContains(t, (*counted)[len(*counted)-2:], "ses_empty",
-		"an unchanged-converged row backs off within the cooldown window")
-	assert.Contains(t, *counted, "ses_growing",
-		"a row whose harness count CHANGED stays hot — live truth keeps serving")
+	// Expiry re-arms: backdate the tracker past the cooldown (one
+	// shared instant — per-key Now() noise would make the walk order
+	// nondeterministic) and the rows walk again (bounded staleness,
+	// never a permanent blind spot).
+	tr := h.countServeState()
+	expired := time.Now().Add(-2 * countServeCooldown)
+	tr.mu.Lock()
+	for k := range tr.lastAt {
+		tr.lastAt[k] = expired
+	}
+	tr.mu.Unlock()
+	h.ServeHarnessMessageCounts(ctx, "ws-1", sessions)
+	assert.ElementsMatch(t, []string{"ses_empty", "ses_growing"}, *counted,
+		"past the cooldown the rows re-walk — live truth keeps flowing")
 }
 
 // TestListingCount_SkipsFreshGraceAndConvergedRows — the scope fence:

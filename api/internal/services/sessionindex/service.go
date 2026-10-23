@@ -36,10 +36,17 @@ var sessionIndexEvents = promauto.NewCounterVec(prometheus.CounterOpts{
 // reaped_carrier (#1882: the reaped row was session_origins-marked — a
 // platform routine carrier admitted past the history exception and the
 // spawn-window grace; a carrier's absence is platform policy, not
-// harness-list lag).
+// harness-list lag); the count rebuild's count_rebuilt / count_unchanged
+// / count_walk_error plus the #1880 skip outcomes
+// (count_skip_not_present — a count-zero row the harness LIST omits,
+// the #1452 gap the rebuild cannot reach; count_skip_pass_no_list —
+// the whole pass skipped on a list failure); and the #1880 listing
+// serve-through's listing_count_served / listing_count_unchanged /
+// listing_count_walk_error / listing_count_persist_error /
+// listing_count_cooldown.
 var reconcileOutcomes = promauto.NewCounterVec(prometheus.CounterOpts{
 	Name: "session_index_reconcile_outcomes_total",
-	Help: "Session-index reconciliation dispositions (reaped, reap_vetoed_live, reap_deferred_probe, kept_for_operator, kept_spawn_window, delete_failed, reaped_carrier, count_rebuilt, count_unchanged, count_walk_error).",
+	Help: "Session-index reconciliation dispositions (reaped, reap_vetoed_live, reap_deferred_probe, kept_for_operator, kept_spawn_window, delete_failed, reaped_carrier, count_rebuilt, count_unchanged, count_walk_error, count_skip_not_present, count_skip_pass_no_list, listing_count_served, listing_count_unchanged, listing_count_walk_error, listing_count_persist_error, listing_count_cooldown).",
 }, []string{"outcome"})
 
 // ReconcileOutcome records one convergence disposition (handler-side).
@@ -374,13 +381,27 @@ const reapGraceWindow = 15 * time.Minute
 
 // CountServeEligible is the #1880 listing serve-through gate: whether
 // this row's message_count is KNOWN-untrustworthy on the platform side
-// (the never-counted / never-traversed drift class) and therefore worth
-// one bounded harness count walk on the listing read path. SKELETON —
-// the #1880 red pins commit stores the seam unimplemented; the
-// implementation commit fills the rule (drift signature + spawn-grace
-// age gate + archived exclusion).
+// and therefore worth one bounded harness count walk on the listing
+// read path. The drift signature is "never counted OR never
+// message-timestamped" — the class whose message stream never
+// traversed the API proxy (board/dispatch-spawned sessions: pod-local
+// prompt delivery, no SSE subscriber), which the incremental
+// RecordMessage path cannot see and the reconcile rebuild cannot
+// reach (its candidates are present[]-derived; these rows are exactly
+// the #1452 list-invisible live sessions). The age gate shares the
+// reap grace window: a fresh spawn's 0 is legitimate inside the window
+// (#1881's belt owns it), and archived rows never spend walk budget.
+// The signature deliberately stays hot AFTER a serve-through persist
+// (the rebuild seam writes message_count but not last_message_at), so
+// a growing never-traversed session keeps converging on the listing.
 func CountServeEligible(row types.SessionListItem) bool {
-	return false
+	if row.Archived {
+		return false
+	}
+	if row.CreatedAt != nil && time.Since(*row.CreatedAt) < reapGraceWindow {
+		return false
+	}
+	return row.MessageCount == 0 || row.LastMessageAt == nil
 }
 
 // DefaultReapGuard is the message_count == 0 safety guard, extended
