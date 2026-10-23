@@ -12765,6 +12765,14 @@ components:
         updated_at:
           type: string
           format: date-time
+        content_echo_diff:
+          type: array
+          items:
+            type: string
+            enum: [name]
+          description: |
+            #1837 P1b echo: present ONLY on create/update responses when
+            the submitted name stored differently (never silent).
     BoardEpic:
       type: object
       required: [id, project_id, short_id, title, outcome, status, tags, created_at, updated_at, progress_done, progress_total, progress_derived]
@@ -12813,6 +12821,15 @@ components:
           type: boolean
           example: false
           description: false = no-progress ("—") — a task-less or all-done epic, never 0/0
+        content_echo_diff:
+          type: array
+          items:
+            type: string
+            enum: [title, outcome]
+          description: |
+            #1837 P1b echo: present ONLY on create/update responses when
+            a submitted text field stored differently than submitted
+            (storage/canonicalization drift — never silent).
     BoardAcceptanceCriterion:
       type: object
       required: [text, met]
@@ -12938,6 +12955,15 @@ components:
         updated_at:
           type: string
           format: date-time
+        content_echo_diff:
+          type: array
+          items:
+            type: string
+            enum: [title, description]
+          description: |
+            #1837 P1b echo: present ONLY on create/update responses when
+            a submitted text field stored differently than submitted
+            (storage/canonicalization drift — never silent).
     BoardPrAnchor:
       type: string
       pattern: "^pr:[1-9][0-9]*$"

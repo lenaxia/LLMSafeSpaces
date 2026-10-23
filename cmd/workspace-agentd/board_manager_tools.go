@@ -100,6 +100,25 @@ func dispatchBoardManagerTool(ctx context.Context, client *opencode.Client, pass
 		return nil, err
 	}
 	args := boardArgs(body, "project", "epic", "task", "plan")
+
+	// #1837 P1a: resolve file-backed long fields (description_file /
+	// outcome_file) into their inline strings BEFORE the wire marshal —
+	// the platform API has no *_file keys; the content rides verbatim.
+	fileField := ""
+	switch name {
+	case "board_create_task", "board_update_task":
+		fileField = "description"
+	case "board_create_epic", "board_update_epic":
+		fileField = "outcome"
+	}
+	// #1837 review round 2: the guard runs on EVERY manager tool — on
+	// the four file-admitting tools it resolves; on the rest it still
+	// refuses any stray *_file key (previously forwarded and silently
+	// dropped by platform binding).
+	if err := resolveBoardFileArgs(args, fileField); err != nil {
+		return nil, fmt.Errorf("%s failed: %w", name, err)
+	}
+
 	wire := boardWireBody(args)
 
 	switch name {

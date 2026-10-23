@@ -211,7 +211,7 @@ func (h *BoardHandler) CreateProject(c *gin.Context) {
 		renderBoardError(c, err)
 		return
 	}
-	c.JSON(http.StatusCreated, p)
+	c.JSON(http.StatusCreated, projectEchoResponse{Project: *p, ContentEchoDiff: projectEchoDiff(req.Name, p)})
 }
 
 // boardLifecycleRequest is the pause/resume family's optional body
@@ -268,7 +268,7 @@ func (h *BoardHandler) UpdateProject(c *gin.Context) {
 		renderBoardError(c, err)
 		return
 	}
-	c.JSON(http.StatusOK, p)
+	c.JSON(http.StatusOK, projectEchoResponse{Project: *p, ContentEchoDiff: projectEchoDiff(req.Name, p)})
 }
 
 // boardOptionalRequestID binds the optional {requestId} body on actions
@@ -426,7 +426,7 @@ func (h *BoardHandler) CreateEpic(c *gin.Context) {
 		renderBoardError(c, err)
 		return
 	}
-	c.JSON(http.StatusCreated, e)
+	c.JSON(http.StatusCreated, epicEchoResponse{Epic: *e, ContentEchoDiff: epicEchoDiff(req.Title, req.Outcome, e)})
 }
 
 type boardEpicRequest struct {
@@ -457,7 +457,7 @@ func (h *BoardHandler) UpdateEpic(c *gin.Context) {
 		renderBoardError(c, err)
 		return
 	}
-	c.JSON(http.StatusOK, e)
+	c.JSON(http.StatusOK, epicEchoResponse{Epic: *e, ContentEchoDiff: epicEchoDiff(req.Title, req.Outcome, e)})
 }
 
 func (h *BoardHandler) epicLifecycle(c *gin.Context, call func(ctx context.Context, actor board.Actor, epicID, shortIDOrID, requestID string) (*board.Epic, error)) {
@@ -616,7 +616,7 @@ func (h *BoardHandler) CreateEpicTask(c *gin.Context) {
 		renderBoardError(c, err)
 		return
 	}
-	c.JSON(http.StatusCreated, t)
+	c.JSON(http.StatusCreated, taskEchoResponse{Task: *t, ContentEchoDiff: taskEchoDiff(req.Title, req.Description, t)})
 }
 
 // GetTask resolves a task with its blocked-by derivation.
@@ -680,7 +680,7 @@ func (h *BoardHandler) UpdateTask(c *gin.Context) {
 		renderBoardError(c, err)
 		return
 	}
-	c.JSON(http.StatusOK, t)
+	c.JSON(http.StatusOK, taskEchoResponse{Task: *t, ContentEchoDiff: taskEchoDiff(req.Title, req.Description, t)})
 }
 
 // PauseTask parks the task (#1747): claim candidacy off, forward writes

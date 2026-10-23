@@ -106,8 +106,21 @@ func (s *Service) ImportPlan(ctx context.Context, actor Actor, projectID, shortI
 // renders the graph + warnings + initial ready set (keys, plan order).
 func (s *Service) validatePlan(in PlanInput) *PlanValidation {
 	v := &PlanValidation{Valid: true}
+	// #1837 P1b: caps + corruption heuristics on every text field the
+	// plan materializes (dryRun reports them the same way — a plan
+	// that would store corruption never reaches the approval moment).
+	if err := ValidateEpicInput(EpicInput{Title: in.EpicTitle, Outcome: in.Outcome}); err != nil {
+		v.Valid = false
+		v.Error = err.Error()
+		return v
+	}
 	seen := map[string]bool{}
 	for _, n := range in.Tasks {
+		if err := ValidateTaskInput(TaskInput{Title: n.Title, Description: n.Description, Tags: n.Tags, AcceptanceCriteria: n.AcceptanceCriteria}); err != nil {
+			v.Valid = false
+			v.Error = fmt.Sprintf("task %q: %s", n.Key, err.Error())
+			return v
+		}
 		if n.Key == "" {
 			v.Valid = false
 			v.Error = "every plan task needs a key"

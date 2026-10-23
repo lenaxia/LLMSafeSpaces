@@ -261,6 +261,10 @@ func (s *Service) CreateProject(ctx context.Context, actor Actor, in ProjectInpu
 	if in.Name == "" {
 		return nil, &GuardError{Code: "validation", Detail: "project name is required"}
 	}
+	// #1837 P1b: text-field caps + corruption heuristics (all surfaces).
+	if err := ValidateProjectInput(in); err != nil {
+		return nil, err
+	}
 	// R7/R8: the target must be a workspace the owning user can access
 	// (v1: the workspace's owning user).
 	var wsOwner string
@@ -318,6 +322,13 @@ func (s *Service) UpdateProject(ctx context.Context, actor Actor, projectID, sho
 		return nil, err
 	}
 	if err := requireOwner(actor, p.UserID); err != nil {
+		return nil, err
+	}
+	// #1837 P1b: caps + corruption heuristics on name AND tags. Write
+	// semantics below are REPLACE-unconditional for tags (the
+	// documented engine rule: omitted tags CLEAR the set — send the
+	// full set to keep it).
+	if err := ValidateProjectInput(in); err != nil {
 		return nil, err
 	}
 	ew := &eventWriter{svc: s, projectID: p.ID, requestID: requestID, action: "update_project", itemKind: "project", itemID: p.ID, actor: actor}
@@ -440,6 +451,10 @@ func (s *Service) CreateEpic(ctx context.Context, actor Actor, projectID, shortI
 	if in.Title == "" {
 		return nil, &GuardError{Code: "validation", Detail: "epic title is required"}
 	}
+	// #1837 P1b: caps + corruption heuristics.
+	if err := ValidateEpicInput(in); err != nil {
+		return nil, err
+	}
 	epicID := uuid.NewString()
 	ew := &eventWriter{svc: s, projectID: p.ID, requestID: requestID, action: "create_epic", itemKind: "epic", itemID: epicID, actor: actor}
 	outcome, dup, err := ew.run(ctx, func(tx pgx.Tx) (map[string]any, error) {
@@ -482,6 +497,14 @@ func (s *Service) UpdateEpic(ctx context.Context, actor Actor, epicID, shortIDOr
 		return nil, err
 	}
 	if err := requireManagerAction(actor, p); err != nil {
+		return nil, err
+	}
+	// #1837 P1b: caps + corruption heuristics. NOTE: epic PATCH
+	// semantics — TITLE falls back to the stored value when omitted;
+	// outcome and tags are REPLACE-unconditional (an omitted outcome
+	// or tags CLEARS them, the documented engine rule, unchanged
+	// here). Only EMPTY values skip validation above.
+	if err := ValidateEpicInput(in); err != nil {
 		return nil, err
 	}
 	title := in.Title
@@ -691,6 +714,10 @@ func (s *Service) CreateTask(ctx context.Context, actor Actor, epicID, shortIDOr
 	if in.Title == "" {
 		return nil, &GuardError{Code: "validation", Detail: "task title is required"}
 	}
+	// #1837 P1b: caps + corruption heuristics.
+	if err := ValidateTaskInput(in); err != nil {
+		return nil, err
+	}
 	// #1747 DAG blast-radius bound: nodes per epic.
 	var nodes int
 	if err := s.q().QueryRow(ctx, `SELECT count(*) FROM tasks WHERE epic_id=$1`, e.ID).Scan(&nodes); err != nil {
@@ -760,6 +787,11 @@ func (s *Service) UpdateTask(ctx context.Context, actor Actor, taskID, shortIDOr
 		return nil, err
 	}
 	if err := requireManagerAction(actor, p); err != nil {
+		return nil, err
+	}
+	// #1837 P1b: caps + corruption heuristics (patch-safe: empty
+	// fields pass and keep existing values).
+	if err := ValidateTaskInput(in); err != nil {
 		return nil, err
 	}
 	title, desc := t.Title, t.Description

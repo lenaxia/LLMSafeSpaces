@@ -165,20 +165,22 @@ func boardManagerTools() []mcpTool {
 			Name:        "board_create_epic",
 			Description: "Create a DRAFT epic in a board project (the default state). The epic holds tasks and gates their claiming; activate it to start feeding work to fresh workers. The outcome field is the human's steering wheel — what this epic exists to achieve. Manager tool (user-collaborator sessions only).",
 			InputSchema: map[string]any{"type": "object", "properties": map[string]any{
-				"projectId": map[string]any{"type": "string", "description": "Project short id (prj-… or UUID)"},
-				"title":     map[string]any{"type": "string", "description": "Epic title"},
-				"outcome":   map[string]any{"type": "string", "description": "What this epic exists to achieve"},
-				"tags":      map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Tags"},
+				"projectId":    map[string]any{"type": "string", "description": "Project short id (prj-… or UUID)"},
+				"title":        map[string]any{"type": "string", "description": "Epic title"},
+				"outcome":      map[string]any{"type": "string", "description": "What this epic exists to achieve"},
+				"outcome_file": map[string]any{"type": "string", "description": "Workspace file whose content becomes the outcome (#1837: for long steering-wheel text — the file is read verbatim under a 128 KiB UTF-8 cap; mutually exclusive with outcome)"},
+				"tags":         map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Tags"},
 			}, "required": []string{"projectId", "title"}},
 		},
 		{
 			Name:        "board_update_epic",
 			Description: "Patch an epic (title, outcome, tags). The outcome is the steering wheel for every worker under the epic. A title rename cascades to its tasks' display. Manager tool (user-collaborator sessions only).",
 			InputSchema: map[string]any{"type": "object", "properties": map[string]any{
-				"epicId":  map[string]any{"type": "string", "description": "Epic short id (epc-… or UUID)"},
-				"title":   map[string]any{"type": "string", "description": "New title"},
-				"outcome": map[string]any{"type": "string", "description": "Steering-wheel outcome (REPLACE)"},
-				"tags":    map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Tags (REPLACE — send the full set)"},
+				"epicId":       map[string]any{"type": "string", "description": "Epic short id (epc-… or UUID)"},
+				"title":        map[string]any{"type": "string", "description": "New title"},
+				"outcome":      map[string]any{"type": "string", "description": "Steering-wheel outcome (REPLACE)"},
+				"outcome_file": map[string]any{"type": "string", "description": "Workspace file whose content becomes the outcome (#1837: for long steering-wheel text — read verbatim under a 128 KiB UTF-8 cap; mutually exclusive with outcome)"},
+				"tags":         map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Tags (REPLACE — send the full set)"},
 			}, "required": []string{"epicId"}},
 		},
 		{
@@ -222,10 +224,11 @@ func boardManagerTools() []mcpTool {
 			Name:        "board_create_task",
 			Description: "Create a backlog task in an epic. The description (markdown) seeds the worker charter; acceptance criteria define Done (ALL met + evidence). dependsOn (short ids of existing tasks) adds prerequisite edges in the same write. Ordering is dependency-only FIFO by creation — no priority field exists; if the user asks to reorder, explain that execution order is creation order and dependencies are the only blocking mechanism. Manager tool (user-collaborator sessions only).",
 			InputSchema: map[string]any{"type": "object", "properties": map[string]any{
-				"epicId":      map[string]any{"type": "string", "description": "Epic short id (epc-… or UUID)"},
-				"title":       map[string]any{"type": "string", "description": "Task title"},
-				"description": map[string]any{"type": "string", "description": "Markdown; seeds the fresh worker's charter"},
-				"tags":        map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Tags (may include one pr:N anchor, and review-of:<subject-short-id> for a delegated review task — #1832: the subject's done settles it)"},
+				"epicId":           map[string]any{"type": "string", "description": "Epic short id (epc-… or UUID)"},
+				"title":            map[string]any{"type": "string", "description": "Task title"},
+				"description":      map[string]any{"type": "string", "description": "Markdown; seeds the fresh worker's charter"},
+				"description_file": map[string]any{"type": "string", "description": "Workspace file whose content becomes the description (#1837: for long charters — read verbatim under a 128 KiB UTF-8 cap; mutually exclusive with description)"},
+				"tags":             map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Tags (may include one pr:N anchor, and review-of:<subject-short-id> for a delegated review task — #1832: the subject's done settles it)"},
 				"acceptanceCriteria": map[string]any{"type": "array", "items": map[string]any{
 					"type": "object", "properties": map[string]any{
 						"text": map[string]any{"type": "string"},
@@ -238,10 +241,11 @@ func boardManagerTools() []mcpTool {
 			Name:        "board_update_task",
 			Description: "Patch a task (title, description, tags, criteria; setCriteriaMet checks off the criterion at the 0-based index — the reviewer's Done preparation). Omitted fields keep existing values; criteria REPLACE when present. Manager tool (user-collaborator sessions only).",
 			InputSchema: map[string]any{"type": "object", "properties": map[string]any{
-				"taskId":      map[string]any{"type": "string", "description": "Task short id (phrase form tsk-crimson-finch-blooms, legacy tsk-XXXXXXXX forms still resolve, or UUID)"},
-				"title":       map[string]any{"type": "string", "description": "New title"},
-				"description": map[string]any{"type": "string", "description": "New description (REPLACE)"},
-				"tags":        map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Tags (REPLACE — send the full set)"},
+				"taskId":           map[string]any{"type": "string", "description": "Task short id (phrase form tsk-crimson-finch-blooms, legacy tsk-XXXXXXXX forms still resolve, or UUID)"},
+				"title":            map[string]any{"type": "string", "description": "New title"},
+				"description":      map[string]any{"type": "string", "description": "New description (REPLACE)"},
+				"description_file": map[string]any{"type": "string", "description": "Workspace file whose content becomes the description (#1837: for long charters — read verbatim under a 128 KiB UTF-8 cap; mutually exclusive with description)"},
+				"tags":             map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Tags (REPLACE — send the full set)"},
 				"acceptanceCriteria": map[string]any{"type": "array", "items": map[string]any{
 					"type": "object", "properties": map[string]any{
 						"text": map[string]any{"type": "string"},

@@ -14,6 +14,7 @@
   "self",
   "stage_transition",
   "task_paused",
+  "text_rejected",
   "validation",
   "workspace_binding"
 ]
