@@ -4,6 +4,7 @@
 import { useState } from "react";
 import { Badge } from "../ui/Badge";
 import { BusyIndicator } from "../ui/BusyIndicator";
+import { KebabMenu, type KebabMenuItem } from "../ui/KebabMenu";
 import { Link2, Play, AlertTriangle, Info } from "lucide-react";
 import { cn } from "../../lib/utils";
 import type { BoardTask } from "../../api/board";
@@ -52,6 +53,10 @@ interface TaskCardProps {
   onStart?: (task: BoardTask) => void;
   /** True while a task_start for this card is in flight. */
   starting?: boolean;
+  /** #1832 item 3: the card's kebab menu (delete flow). Rendered
+   * top-right; the trigger + items stopPropagation so a kebab click
+   * never opens the editor. */
+  kebabItems?: KebabMenuItem[];
   onOpen?: (task: BoardTask) => void;
   /** #1832 item 4: the details affordance — opens the task-detail
    * drawer (the card's primary click keeps its edit-dialog behavior). */
@@ -68,7 +73,7 @@ interface TaskCardProps {
  * attempt counter with its escalation preview, and the backlog Start
  * affordance (task_start).
  */
-export function TaskCard({ task, projectTasks, pending, refused, dimmed, highlighted, onStart, starting, onOpen, onDetails, onDragStart, onDragEnd }: TaskCardProps) {
+export function TaskCard({ task, projectTasks, pending, refused, dimmed, highlighted, onStart, starting, kebabItems, onOpen, onDetails, onDragStart, onDragEnd }: TaskCardProps) {
   const [showBlockedBy, setShowBlockedBy] = useState(false);
   const anchor = prAnchorOf(task.tags);
   const depStages = (task.blocked_by ?? []).map((id) => {
@@ -136,6 +141,13 @@ export function TaskCard({ task, projectTasks, pending, refused, dimmed, highlig
             >
               <Play className="h-3 w-3" />
             </button>
+          )}
+          {kebabItems && kebabItems.length > 0 && (
+            <KebabMenu
+              items={kebabItems}
+              ariaLabel={`Task actions for ${task.short_id}`}
+              testId={`task-kebab-${task.short_id}`}
+            />
           )}
           {task.paused && (
             <Badge variant="warning" className="px-1.5 py-0 text-[10px]" title="Paused — claim candidacy off, forward writes refused (#1747)">

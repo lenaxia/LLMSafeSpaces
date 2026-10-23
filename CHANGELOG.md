@@ -7,9 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 
 ## [Unreleased]
-
 ### Fixed — board heartbeat: server clock bounds client-observed stamps (issue #1847 PR1, the C1 incident class)
-
 - **A future-stamped `observedProgressAt` rejects outright**
   (`invalid_input`)**.** During the 2026-10-22 board dogfood a worker
   hallucinated a timestamp ~7.5h into the future; the server accepted
@@ -30,9 +28,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   clock skew) reads as stale, so an honest present-t observation
   extends once and overwrites it; a re-sent identical stamp does not
   extend again — the C1 lockout cannot recur against repaired rows.
-
 ### Added — Task Board: task audit timeline + drawer (issue #1832 item 4)
-
 - **`GET /api/v1/me/tasks/:id/events` renders a task's FULL audit
   timeline** — every `board_events` row scoped to the task (stage
   transitions, claims who/when, review verdicts when present,
@@ -47,9 +43,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **The task-detail drawer surfaces the timeline in the UI**: header
   completeness (ids, stage, owner perimeter), criteria, dependencies,
   and the full event feed on one panel.
-
 ### Changed — Task Board short ids flip to word phrases (issue #1831, the session-ID playbook)
-
 - **Fresh `prj-`/`epc-`/`tsk-` ids are word phrases** over the #1756
   frozen session lists (same generator via `pkg/shortid`, not a fork):
   `tsk-amber-falcon-glides`, with a deterministic counter suffix
@@ -80,7 +74,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   noted as deprecated-but-resolving; `docs/api/mcp.md` `board_get`
   row, `design/0067` §4.1 supersession note, TaskDialog dependency
   placeholder.
-
 ### Added — busy-snapshot handshake + EventID-ordered deltas + frontend busy lease (#1821 pieces 2-4)
 - **The user-stream connect path emits a `session.status.snapshot`
   flight per Active workspace** (`snapshot_begin` → one snapshot frame
@@ -201,7 +194,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   phrase-keyed at the wire; and the lost-idle lease recheck is pinned
   at e2e fidelity (open-stream authority, fake-clock lease expiry).
 ### Added — Task Board: config UI section (issue #1832 item 6, part 2)
-
 - **Settings → Task Board tab**: the user's board-wide defaults editor
   (reviewColumn `off|manual|auto`, autoAssignReviewer,
   defaultWorkerSlots ≥ 1) over `GET/PUT /api/v1/me/board/config`, with
@@ -216,7 +208,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   merged effective config, each key marked override vs inherited from
   the stored overrides.
 ### Added — Task Board: structured review verdicts (issue #1832 item 5, part 1)
-
 - **The forge-agnostic verdict core**: a validated payload
   (`{verdict: approve|fail, findings: [{severity blocker|major|minor,
   pointer, criterionIndex?}], reviewer}` — criterionIndex
@@ -236,9 +227,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   + `GET /api/v1/me/tasks/:id/verdicts`; external MCP
   `board_record_verdict` + `board_task_verdicts`; OpenAPI paths +
   schemas. Idempotent per `requestId`.
-
 ### Added — Task Board: failed-state attribute overlay (issue #1813)
-
 - **A task whose worker attempt failed is now VISIBLE**: every
   lease-lapse reclaim marks `last_attempt_failed` (+1 consecutive
   `failure_count`, `last_failure_at`). NEVER a sixth stage — the
@@ -265,7 +254,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   task card carries a `FAILED ×n` badge plus a FAILED filter toggle;
   the overlay renders on every task read (REST/SDK/MCP) and in
   reclaim audit events (escalate events carry exhausted=true).
-
 ### Fixed — builder GOTOOLCHAIN=auto carry + health probes exempt from rate limiting (#1825)
 - **The five service builders set `ENV GOTOOLCHAIN=auto`** alongside
   #1819's 1.26.10 digest re-pins (main already carries those, the
@@ -280,7 +268,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   burst. Pinned red-first (an exhaustion control leg proves the
   budget is spent — 429 observed on an ordinary route — before both
   probes are asserted: /livez exactly 200, /readyz its typed 503).
-
 ### Changed — repolint worklog uniqueness invariant (#1795, ruling c)
 - **Duplicate worklog numbers now FAIL `make repolint`** — the new
   `runWorklogUniqueness` check, matching ANY numbered-worklog filename
@@ -297,9 +284,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (1162) was pre-empted by a manual leapfrog before it could redden.
   Companion security bumps shipped separately: 43a7ba29 (Go
   toolchain), #1828/57495a4c (vite), #1819 (the five builder digests).
-
 ### Fixed — agentd send_message rejects placeholder-class payloads (#1814)
-
 - **The delivery boundary now refuses literal placeholder tokens.** The
   mid-write emission-corruption mode (observed across worker sessions
   and the orchestrator) replaces a drafted body with a placeholder
@@ -314,9 +299,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (pinned). The tool description teaches the same contract: send the
   complete intended content; re-compose if emission corruption ate the
   draft.
-
 ### Changed — platform MCP surfaces flip to phrase session IDs (#1816, the #1756 §5 remainder)
-
 - **The external MCP server (pkg/mcp / cmd/mcp) accepts phrase
   addressing for real.** `session_message` with a 3-word phrase target
   previously worked only by accident: the client's contract-stream
@@ -366,7 +349,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   phrase replica — with the harness id asserted absent from results;
   the full-id window still accepts with the notice.
 ### Added — Task Board: swimlane creation buttons + collapsible epic bands (#1832 items 1-2)
-
 - **Contextual creation per project swimlane.** Every swimlane header
   now carries its own New epic / New task buttons; the New-epic dialog
   is retargeted to the swimlane it was opened from (no dropdown
@@ -399,7 +381,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   sibling worktrees cannot latch a foreign server; this lane runs
   18519 (nightly PORTFWD_PORT registry 18083–18093 untouched).
 ### Added — task-detail drawer with the full audit timeline (#1832 item 4)
-
 - **The board's task cards open a detail drawer that renders the task's
   full history.** Header (title, short id, stage, attempts, claim/lease
   with assignee and lease-until, blocked-by with live dependency stage
@@ -420,7 +401,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (`?limit=`, default 200, max 500 — lease heartbeats write a row per
   call, so long-lived claims stay bounded). OpenAPI schemas and the
   frontend client ship with it.
-
+### Added — Task Board: kebab menus + delete flows (#1832 item 3)
+- **Kebab menus at all three board levels.** Each project swimlane
+  header, epic band header, and task card carries a kebab menu
+  (distinct a11y labels; triggers stopPropagation — a kebab click
+  never toggles band selection nor opens the task editor).
+- **Task delete modal with the 'reconnect dependents to upstream'
+  checkbox** (#1747's optional flag): dependents are surfaced
+  pre-flight from the read model; unchecked (default) they are simply
+  unblocked (each gets an `unblocked_by_delete` audit event), checked
+  they inherit the deleted task's direct upstream edges (deduplicated,
+  cycle-guarded server-side). Both semantics are pinned at the wire in
+  e2e (`?reconnect=true` presence/absence exact-matched) and in
+  component tests (API-client args asserted). The delete result
+  surfaces as a page notice (orphans listed / `orphan→upstream` pairs).
+- **Epic delete surfaces in-flight workers with refuse/force-confirm
+  matching the API**: the modal lists the epic's in-flight claims
+  (in_progress + assignee, live read model) and its honest cascade
+  count; the first attempt never sends force — the engine's 409
+  `epic_state` renders inside the modal, and only that real refusal
+  reveals the acknowledge-gated "Force delete" (force deletes, then
+  aborts each in-flight worker post-commit).
+- **Project kebab is archive/unarchive ONLY** (#1747: project delete
+  is eliminated) — the menu structurally offers exactly one lifecycle
+  item; the absence of any delete item is pinned in both test layers.
+- This lane's e2e runs at **E2E_PORT=18521** (registry discipline:
+  18517/18519 claimed by sibling lanes; nightly PORTFWD 18083–18093
+  untouched).
 ## [0.40.1] - 2026-10-21
 
 ### Fixed — v0.40.0 regression: user-stream session events carry the phrase id (#1817, #1821 piece 1)
