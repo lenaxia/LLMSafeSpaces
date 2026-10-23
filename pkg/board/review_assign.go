@@ -122,8 +122,5 @@ func (s *Service) verdictChainFor(ctx context.Context, q Queryer, projectID, tas
 // claimVerdictChain is the Claim-building wrapper (query via the
 // service pool).
 func (s *Service) claimVerdictChain(ctx context.Context, projectID, taskID string) []Verdict {
-	if s.q() == nil {
-		return nil
-	}
 	return s.verdictChainFor(ctx, s.q(), projectID, taskID)
 }

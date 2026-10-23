@@ -93,10 +93,10 @@ func (s *BoardSuite) TestReview_1832_AutoAssignGatingMatrix() {
 
 			if tc.wantAssign {
 				s.Equal(1, assigner.count(), "auto+true dispatches exactly one reviewer, directly (never queued)")
-				s.Equal(1, s.countEvents("review_assign"), "the intent event records")
+				s.Equal(1, s.countProjectEvents(p.ID, "review_assign"), "the intent event records (project-scoped)")
 			} else {
 				s.Equal(0, assigner.count(), "manual/off/auto-without-assign keep today's behavior: no dispatch")
-				s.Equal(0, s.countEvents("review_assign"), "and no intent event")
+				s.Equal(0, s.countProjectEvents(p.ID, "review_assign"), "and no intent event (project-scoped)")
 			}
 		})
 	}
@@ -154,4 +154,15 @@ func boolStr(b bool) string {
 		return "on"
 	}
 	return "off"
+}
+
+// countProjectEvents scopes the action count to ONE project — the
+// gating matrix runs all five combos under a single SetupTest (one
+// truncate), so a global count would leak the firing combo's event
+// into every later combo's zero-assertion.
+func (s *BoardSuite) countProjectEvents(projectID, action string) int {
+	var n int
+	s.Require().NoError(s.pool.QueryRow(context.Background(),
+		`SELECT count(*) FROM board_events WHERE project_id=$1 AND action=$2`, projectID, action).Scan(&n))
+	return n
 }
