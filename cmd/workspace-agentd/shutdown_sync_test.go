@@ -61,11 +61,13 @@ func TestFlushWorkspaceWrites_Completes(t *testing.T) {
 
 // PIN (the bound): a flush that never returns is ABANDONED after
 // shutdownFlushWait — the shutdown path must never hang past the bound.
-// The kernel completes the triggered writeback asynchronously; the
-// process exiting early does not cancel it.
+// The kernel completes a triggered writeback asynchronously; the
+// process exiting early does not cancel it. The spy's parked goroutine
+// is released post-assertion (no goroutine leak out of the test).
 func TestFlushWorkspaceWrites_BoundedWait(t *testing.T) {
 	spy := newFlushSpy()
 	spy.block = true
+	defer close(spy.release)
 	withFlushSeam(t, spy, 50*time.Millisecond)
 
 	start := time.Now()

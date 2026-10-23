@@ -37,10 +37,16 @@ var shutdownFlushWait = 10 * time.Second
 // Returns true when the flush returned within the bound. The 40s pod
 // termination grace (and the supervisor's own shutdown budget) owns
 // the outer bound; this wait is the inner one.
+//
+// The seam is snapshotted on the CALLER's goroutine before spawning:
+// the flush goroutine may outlive a test that overrides the seam (the
+// bounded wait abandons it), and a late read of the package var would
+// race the test-cleanup restore (found by CI's race detector).
 func flushWorkspaceWrites() bool {
+	fn := flushSync
 	done := make(chan struct{})
 	go func() {
-		flushSync()
+		fn()
 		close(done)
 	}()
 	select {
