@@ -5199,6 +5199,44 @@ paths:
           $ref: "#/components/responses/Forbidden"
         "404":
           $ref: "#/components/responses/BoardNotFound"
+  /me/tasks/{id}/rearm:
+    post:
+      tags: [board]
+      summary: Re-pool an attempts-exhausted task (re-arm)
+      description: |
+        The attempts-exhaustion re-pool (#1832 WS3): a task parked at
+        `pending_input` with origin `escalated` (attempts at the cap —
+        the engine withheld the grant) returns to `backlog` with
+        attempts reset to 0 — a fresh-judgment ledger (the pre-reset
+        count rides the `rearm` audit event). The failure overlay and
+        cooldown are cleared (a re-arm is not a failure) and the row is
+        claimable immediately. Only pending_input/escalated rows;
+        other stages and origins keep their enumerated transitions.
+      operationId: rearmBoardTask
+      parameters:
+        - $ref: "#/components/parameters/BoardTaskId"
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/BoardRequestIdOnly"
+      responses:
+        "200":
+          description: The re-armed task row
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BoardTask"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/BoardNotFound"
+        "409":
+          $ref: "#/components/responses/BoardConflict"
   /me/tasks/{id}/start:
     post:
       tags: [board]

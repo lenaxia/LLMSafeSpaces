@@ -66,6 +66,7 @@ type boardManager interface {
 	RecordVerdict(ctx context.Context, actor board.Actor, taskID, shortIDOrID string, in board.VerdictInput, requestID string) (*board.Task, *board.Verdict, error)
 	TaskVerdicts(ctx context.Context, actor board.Actor, taskID, shortIDOrID string) ([]board.Verdict, error)
 	TaskStart(ctx context.Context, actor board.Actor, taskID, shortIDOrID, requestID string) (*board.Claim, error)
+	RearmTask(ctx context.Context, actor board.Actor, taskID, shortIDOrID, requestID string) (*board.Task, error)
 	DeleteTask(ctx context.Context, actor board.Actor, taskID, shortIDOrID string, reconnect bool, requestID string) (*board.DeleteResult, error)
 	PauseTask(ctx context.Context, actor board.Actor, taskID, shortIDOrID, requestID string) (*board.Task, error)
 	ResumeTask(ctx context.Context, actor board.Actor, taskID, shortIDOrID, requestID string) (*board.Task, error)
@@ -759,6 +760,26 @@ func (h *BoardHandler) StartTask(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, claim)
+}
+
+// RearmTask is the attempts-exhaustion re-pool (#1832 WS3): an
+// escalated pending_input row returns to backlog with attempts reset
+// (a fresh-judgment ledger; the pre-reset count rides the rearm audit
+// event). Escalated rows only.
+func (h *BoardHandler) RearmTask(c *gin.Context) {
+	var req boardStartRequest
+	if c.Request.Body != nil {
+		if err := c.ShouldBindJSON(&req); err != nil && !errors.Is(err, io.EOF) {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request body: " + err.Error()})
+			return
+		}
+	}
+	t, err := h.board.RearmTask(c.Request.Context(), h.boardActor(c), c.Param("id"), "", req.RequestID)
+	if err != nil {
+		renderBoardError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, t)
 }
 
 // DeleteTask is the destructive replacement for the eliminated cancel

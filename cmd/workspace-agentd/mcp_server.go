@@ -289,6 +289,14 @@ func boardManagerTools() []mcpTool {
 			}, "required": []string{"taskId"}},
 		},
 		{
+			Name:        "board_rearm_task",
+			Description: "Re-pool an attempts-exhausted task (#1832 WS3): an escalated pending_input row (attempts at the cap — the engine withheld the grant) returns to backlog with attempts reset to 0 (a fresh-judgment ledger; the pre-reset count rides the rearm audit event) and is claimable immediately. Only pending_input/escalated rows; other stages and origins keep their enumerated transitions. Manager tool (user-collaborator sessions only).",
+			InputSchema: map[string]any{"type": "object", "properties": map[string]any{
+				"taskId":    map[string]any{"type": "string", "description": "Task short id (phrase form tsk-crimson-finch-blooms, legacy tsk-XXXXXXXX forms still resolve, or UUID)"},
+				"requestId": map[string]any{"type": "string", "description": "Optional idempotency key: reuse ONE id per logical operation across retries"},
+			}, "required": []string{"taskId"}},
+		},
+		{
 			Name:        "board_import_plan",
 			Description: "Materialize an ENTIRE plan atomically (#1747): one epic + its tasks + dependency edges from a single payload, all-or-nothing. ALWAYS dry-run first (dryRun=true): the response renders the graph, warnings, and the initial ready set — show it to the user as the plan-approval moment; write only after approval. Tasks address each other by payload key. Nodes-per-epic and edges-per-node caps apply. Manager tool (user-collaborator sessions only).",
 			InputSchema: map[string]any{"type": "object", "properties": map[string]any{
@@ -908,7 +916,7 @@ func callMCPTool(ctx context.Context, password, name string, args map[string]any
 		"board_delete_epic",
 		"board_create_task", "board_update_task",
 		"board_add_dependency", "board_remove_dependency",
-		"board_delete_task", "board_pause_task", "board_resume_task",
+		"board_delete_task", "board_pause_task", "board_resume_task", "board_rearm_task",
 		"board_import_plan":
 		// #1701: the board worker tools ride the same automation seam
 		// (pod SA token, verbatim passthrough, platform-validated).

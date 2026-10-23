@@ -1385,6 +1385,7 @@ func registerInternalAutomationRoutes(router *gin.Engine, cfg RouterConfig) {
 
 		b.PATCH("/tasks/:id", h.BoardUpdateTask)
 		b.POST("/tasks/:id/move-stage", h.BoardManagerMoveStage) // #1832 WS2: the manager-grade move (pending_input exits serviceable by orchestrator-class sessions)
+		b.POST("/tasks/:id/rearm", h.BoardRearmTask)             // #1832 WS3: the attempts-exhaustion re-pool
 		b.POST("/tasks/:id/pause", h.BoardPauseTask)
 		b.POST("/tasks/:id/resume", h.BoardResumeTask)
 		b.DELETE("/tasks/:id", h.BoardDeleteTask)
@@ -2370,6 +2371,7 @@ func registerWorkflowRoutes(router *gin.Engine, services interfaces.Services, cf
 		k.POST("/:id/verdict", b.RecordTaskVerdict)
 		k.GET("/:id/verdicts", b.ListTaskVerdicts)
 		k.POST("/:id/start", b.StartTask)
+		k.POST("/:id/rearm", b.RearmTask)
 		k.POST("/:id/pause", b.PauseTask)
 		k.POST("/:id/resume", b.ResumeTask)
 		k.DELETE("/:id", b.DeleteTask)

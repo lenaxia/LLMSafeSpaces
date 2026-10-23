@@ -392,6 +392,18 @@ func (f *fakeBoardManager) MoveStage(_ context.Context, actor board.Actor, _, id
 	return &board.Task{ID: "t1", ShortID: "tsk-cccc3333", ProjectID: "p1", EpicID: "e1", Stage: toStage, Tags: []string{}}, nil
 }
 
+// RearmTask is the #1832 WS3 capture (re-pool an escalated row).
+func (f *fakeBoardManager) RearmTask(_ context.Context, actor board.Actor, taskID, shortIDOrID, requestID string) (*board.Task, error) {
+	f.call("rearm_task")
+	f.lastActor, f.lastRequestID = actor, requestID
+	_ = taskID
+	_ = shortIDOrID
+	if err := f.errFor["rearm_task"]; err != nil {
+		return nil, err
+	}
+	return &board.Task{ID: "t1", ShortID: "tsk-cccc3333", ProjectID: "p1", EpicID: "e1", Stage: board.StageBacklog, Attempts: 0, Tags: []string{}}, nil
+}
+
 func (f *fakeBoardManager) RecordVerdict(_ context.Context, actor board.Actor, _, idOrShort string, in board.VerdictInput, requestID string) (*board.Task, *board.Verdict, error) {
 	f.call("record_verdict")
 	f.lastActor, f.lastRequestID = actor, requestID
@@ -495,6 +507,7 @@ func newBoardRESTRouter(t *testing.T, svc *fakeBoardManager) *gin.Engine {
 	k.POST("/:id/verdict", h.RecordTaskVerdict)
 	k.GET("/:id/verdicts", h.ListTaskVerdicts)
 	k.POST("/:id/start", h.StartTask)
+	k.POST("/:id/rearm", h.RearmTask)
 	k.POST("/:id/pause", h.PauseTask)
 	k.POST("/:id/resume", h.ResumeTask)
 	k.DELETE("/:id", h.DeleteTask)

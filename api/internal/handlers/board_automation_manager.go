@@ -463,6 +463,27 @@ func (h *PodAutomationHandler) BoardResumeTask(c *gin.Context) {
 	h.BoardTaskLifecycle(c, h.boardMgr.ResumeTask)
 }
 
+// BoardRearmTask is the attempts-exhaustion re-pool (#1832 WS3) on the
+// pod seam: manager-grade actor, canonical RearmTask.
+func (h *PodAutomationHandler) BoardRearmTask(c *gin.Context) {
+	raw, ws, owner, session, ok := h.resolveManager(c)
+	if !ok {
+		return
+	}
+	var req struct {
+		RequestID string `json:"requestId"`
+	}
+	if raw != nil {
+		_ = bindBoardBody(c, raw, &req)
+	}
+	t, err := h.boardMgr.RearmTask(c.Request.Context(), h.managerActor(owner, ws, session), "", c.Param("id"), req.RequestID)
+	if err != nil {
+		renderBoardError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, t)
+}
+
 // BoardDeleteTask destructively removes a task (clean abort first when
 // in-flight; orphans surfaced + audited; optional reconnect).
 func (h *PodAutomationHandler) BoardDeleteTask(c *gin.Context) {

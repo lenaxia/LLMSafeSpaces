@@ -1696,6 +1696,7 @@ func mcpAutomation(ctx context.Context, password, name string, body map[string]a
 		"board_create_task", "board_update_task",
 		"board_add_dependency", "board_remove_dependency",
 		"board_delete_task", "board_pause_task", "board_resume_task",
+		"board_rearm_task",
 		"board_import_plan":
 		res, err = dispatchBoardManagerTool(ctx, client, password, name, body, saToken, workspaceID)
 	default:

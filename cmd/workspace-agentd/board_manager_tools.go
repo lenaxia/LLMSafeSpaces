@@ -149,6 +149,9 @@ func dispatchBoardManagerTool(ctx context.Context, client *opencode.Client, pass
 			ref = boardRefArg(args, "shortId")
 		}
 		return client.BoardManagerMoveStage(ctx, saToken, workspaceID, sessionID, ref, wire)
+	case "board_rearm_task":
+		// #1832 WS3: the attempts-exhaustion re-pool.
+		return client.BoardRearmTask(ctx, saToken, workspaceID, sessionID, boardRefArg(args, "taskId"), wire)
 	case "board_pause_task":
 		return client.BoardManagerTaskAction(ctx, saToken, workspaceID, sessionID, boardRefArg(args, "taskId"), "pause")
 	case "board_resume_task":

@@ -253,6 +253,15 @@ var boardStartTaskTool = mcp.NewTool("board_start_task",
 	mcp.WithString("request_id", mcp.Description("Idempotency key (one per logical operation)")),
 )
 
+var boardRearmTaskTool = mcp.NewTool("board_rearm_task",
+	mcp.WithDescription("Re-pool an attempts-exhausted task (#1832 WS3): an escalated pending_input row (attempts at the cap) "+
+		"returns to backlog with attempts reset to 0 — a fresh-judgment ledger (the pre-reset count rides the rearm audit event). "+
+		"The re-pooled row is claimable immediately. Only pending_input/escalated rows; other stages and origins keep their "+
+		"enumerated transitions."),
+	mcp.WithString("task_id", mcp.Required(), mcp.Description("Task short id (tsk-…, phrase or legacy form)")),
+	mcp.WithString("request_id", mcp.Description("Idempotency key (one per logical operation)")),
+)
+
 var boardEpicActivateTool = mcp.NewTool("board_epic_activate",
 	mcp.WithDescription("Activate an epic: start feeding ready work to fresh workers. Re-opens a completed "+
 		"epic; unarchive always restores active. #1747: refuses cross-epic dependencies into inactive epics "+
@@ -735,6 +744,19 @@ func (h *handlers) boardStartTask(ctx context.Context, req mcp.CallToolRequest) 
 	return mcp.NewToolResultText(string(resp)), nil
 }
 
+func (h *handlers) boardRearmTask(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	args := req.GetArguments()
+	taskID := strArg(args, "task_id")
+	if taskID == "" {
+		return mcp.NewToolResultError("task_id is required"), nil
+	}
+	resp, err := h.client.BoardRearmTask(ctx, taskID, strArg(args, "request_id"))
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("failed to re-arm task: %v", err)), nil
+	}
+	return mcp.NewToolResultText(string(resp)), nil
+}
+
 func (h *handlers) boardEpicLifecycle(ctx context.Context, req mcp.CallToolRequest,
 	call func(ctx context.Context, epicID, requestID string) (json.RawMessage, error), verb string) (*mcp.CallToolResult, error) {
 	args := req.GetArguments()
@@ -1070,6 +1092,7 @@ func AddBoardTools(srv *server.MCPServer, h *handlers) {
 		server.ServerTool{Tool: boardRecordVerdictTool, Handler: h.boardRecordVerdict},
 		server.ServerTool{Tool: boardTaskVerdictsTool, Handler: h.boardTaskVerdicts},
 		server.ServerTool{Tool: boardStartTaskTool, Handler: h.boardStartTask},
+		server.ServerTool{Tool: boardRearmTaskTool, Handler: h.boardRearmTask},
 		server.ServerTool{Tool: boardEpicActivateTool, Handler: h.boardEpicActivate},
 		server.ServerTool{Tool: boardEpicPauseTool, Handler: h.boardEpicPause},
 		server.ServerTool{Tool: boardEpicArchiveTool, Handler: h.boardEpicArchive},
