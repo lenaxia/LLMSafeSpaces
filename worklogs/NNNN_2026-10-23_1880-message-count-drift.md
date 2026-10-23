@@ -1,5 +1,17 @@
 # Worklog: #1880 — session_index.message_count drifts to 0 on live sessions (listing serve-through + loud rebuild skips)
 
+> **MERGE-READY (2026-10-23 21:35Z):** PR #1898 APPROVED by the review
+> bot on EXACT head `1e836a7b9f190c24d066741308429587429a1d89`
+> (formal review, not just a green check). Issue #1880 judged FULLY
+> ADDRESSED: all r1 findings verifiably fixed, red-commit and
+> mutations M8/M9/M10 independently re-executed by the reviewer, all
+> 34 CI checks green. Direction-2 deferral filed as #1906. One
+> trivial non-blocking artifact left for merge-time discretion: the
+> redundant self-naming comment above
+> TestSessionIndexReconcile_RebuildWritesInternalIDNotPhrase
+> (proxy_session_reconcile_count_test.go) — deliberately NOT struck
+> here; any code touch would move the approved head.
+
 ## Charter
 
 Issue #1880: 10 of 15 unarchived session_index rows sat at
