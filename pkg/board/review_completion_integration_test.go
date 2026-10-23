@@ -157,3 +157,101 @@ func (s *BoardSuite) TestReviewAuto_MalformedAnchorsInert() {
 		"malformed anchors never match anything — inert tags, never guessed")
 	require.Equal(s.T(), 0, s.countEvents("review_complete"))
 }
+
+func (s *BoardSuite) TestReviewAuto_PauseExcludesReviewTasks() {
+	ctx := context.Background()
+	ws := s.seedWorkspace()
+	p := s.seedProject(ws, 2)
+	e := s.seedEpic(p, board.EpicActive)
+
+	// FIFO: review first (parked in_review), subject second.
+	review := s.seedTask(e, "review-paused", nil, true)
+	subject := s.seedTask(e, "subject-paused", nil, true)
+	_, err := s.svc.UpdateTask(ctx, s.owner(), "", review.ShortID,
+		board.TaskInput{Tags: []string{"review-of:" + subject.ShortID}}, "")
+	s.Require().NoError(err)
+	s.parkInReview(ws, review)
+
+	// Pause the IN_REVIEW review row: #1747 — the engine never forces
+	// forward writes through the pause lever.
+	_, execErr := s.pool.Exec(ctx, `UPDATE tasks SET paused=true WHERE id=$1`, review.ID)
+	s.Require().NoError(execErr)
+
+	c := s.claimOrFail(ws)
+	s.Require().Equal(subject.ID, c.TaskID)
+	_, err = s.svc.MoveStage(ctx, s.agent(c.Assignee, c.ClaimToken), "", c.ShortID, board.StageInReview, "", "")
+	s.Require().NoError(err)
+	_, err = s.svc.MoveStage(ctx, s.owner(), "", subject.ShortID, board.StageDone, "https://example/pa", "")
+	s.Require().NoError(err)
+	require.Equal(s.T(), board.StageInReview, s.reloadTask(review.ID).Stage,
+		"a paused review task never settles (a candidacy-stage row AND the guarded UPDATEs both exclude it)")
+	require.Equal(s.T(), 0, s.countEvents("review_complete"))
+	require.Equal(s.T(), 0, s.countEvents("review_park"))
+}
+
+func (s *BoardSuite) TestReviewAuto_ParkBranchViaDriftPath() {
+	ctx := context.Background()
+	ws := s.seedWorkspace()
+	p := s.seedProject(ws, 2)
+	e := s.seedEpic(p, board.EpicActive)
+
+	// FIFO: review first (parked in_review), subject second.
+	review := s.seedTask(e, "review-parkdrift", nil, false) // UNMET criteria
+	subject := s.seedTask(e, "subject-parkdrift", []string{"pr:43"}, true)
+	_, err := s.svc.UpdateTask(ctx, s.owner(), "", review.ShortID,
+		board.TaskInput{Tags: []string{"review-of:" + subject.ShortID}}, "")
+	s.Require().NoError(err)
+	s.parkInReview(ws, review)
+
+	c := s.claimOrFail(ws)
+	s.Require().Equal(subject.ID, c.TaskID)
+	_, err = s.svc.MoveStage(ctx, s.agent(c.Assignee, c.ClaimToken), "", c.ShortID, board.StageInReview, "", "")
+	s.Require().NoError(err)
+	s.drift.set(43, board.PRState{Merged: true, URL: "https://example/pr/43"})
+	res := s.sweep()
+	require.Equal(s.T(), 1, res.DriftDone)
+
+	parked := s.reloadTask(review.ID)
+	require.Equal(s.T(), board.StagePendingInput, parked.Stage,
+		"the drift path parks unmet review tasks too (not just the manual move)")
+	require.NotNil(s.T(), parked.PendingOrigin)
+	require.Equal(s.T(), "drift_review", *parked.PendingOrigin)
+	require.GreaterOrEqual(s.T(), s.countEvents("review_park"), 1)
+}
+
+func (s *BoardSuite) TestReviewAuto_ReplayIsInert() {
+	ctx := context.Background()
+	ws := s.seedWorkspace()
+	p := s.seedProject(ws, 2)
+	e := s.seedEpic(p, board.EpicActive)
+
+	review := s.seedTask(e, "review-replay", nil, true)
+	subject := s.seedTask(e, "subject-replay", nil, true)
+	_, err := s.svc.UpdateTask(ctx, s.owner(), "", review.ShortID,
+		board.TaskInput{Tags: []string{"review-of:" + subject.ShortID}}, "")
+	s.Require().NoError(err)
+	s.parkInReview(ws, review)
+	c := s.claimOrFail(ws)
+	s.Require().Equal(subject.ID, c.TaskID)
+	_, err = s.svc.MoveStage(ctx, s.agent(c.Assignee, c.ClaimToken), "", c.ShortID, board.StageInReview, "", "")
+	s.Require().NoError(err)
+	_, err = s.svc.MoveStage(ctx, s.owner(), "", subject.ShortID, board.StageDone, "https://example/r", "")
+	s.Require().NoError(err)
+	require.Equal(s.T(), board.StageDone, s.reloadTask(review.ID).Stage)
+	require.Equal(s.T(), 1, s.countTransitions(review.ID, board.StageDone))
+
+	// Replay vectors — all must be inert (done rows never re-enter
+	// candidacy; the deterministic event id is ON-conflict-inert):
+	// (a) the same done MoveStage replayed by requestId;
+	// (b) a reconciler sweep over the settle's events.
+	_, err = s.svc.MoveStage(ctx, s.owner(), "", subject.ShortID, board.StageDone, "https://example/r", "req-replay-once")
+	s.Require().NoError(err, "the replay renders the original outcome, never an error")
+	s.sweep()
+
+	require.Equal(s.T(), 1, s.countTransitions(review.ID, board.StageDone),
+		"exactly one done transition across the replay + sweep")
+	var n int
+	s.Require().NoError(s.pool.QueryRow(ctx,
+		`SELECT count(*) FROM board_events WHERE action='review_complete' AND item_id=$1`, review.ID).Scan(&n))
+	require.Equal(s.T(), 1, n, "exactly one review_complete event")
+}

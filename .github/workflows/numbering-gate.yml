@@ -1,0 +1,222 @@
+name: Numbering Gate
+
+# #1838's hard layer: the merge event re-verifies the tree it creates.
+#
+# WHY THIS EXISTS: the repo's merge gate is process (green checks +
+# reviewer APPROVE — no required-status-checks rule; see ci.yml's
+# verification note), and ci.yml's Lint evaluates a PR's merge-checkout
+# only at PR-push time. When main advances AFTER that check ran —
+# exactly what happened with migration 41x2 (#1823 merged, then #1840
+# merged 15 minutes later on a stale green) — the merge button creates
+# a tree with duplicate numbered artifacts and every subsequent
+# merge-checkout reddens until a manual heal lands.
+#
+# WHAT THIS DOES: on every push to main touching the numbered artifact
+# classes (worklogs/**, api/migrations/**), re-evaluate EVERY open PR's
+# merge tree (refs/pull/N/merge — the tree the merge button would
+# create against the CURRENT tip):
+#
+#   collides  → post a FAILING "numbering-gate" check run on the PR's
+#               head SHA, naming the colliding files and the healing
+#               lever. The check is namespaced on purpose (see the
+#               output body): it is NOT the PR's own diff failing lint
+#               — it is the merge this PR WOULD make.
+#   clean, but the head still carries a red numbering-gate run from an
+#   earlier tip → post a SUCCESS run (clear-on-heal). A gate that only
+#   reddens would pin healed PRs forever — the freeze class #1838
+#   exists to end, recreated by the fix itself.
+#   clean, no prior red → nothing (absence of the check = fine; the
+#   PR's own Lint run already covered at-push evaluation).
+#
+# The per-PR decision matrix (redden / clear-on-heal / noop) is pinned
+# by pkg/repolint's NumberingGateDecision (gate_test.go); the bash below
+# re-implements the same three-line matrix from the gathered inputs —
+# kept in lockstep deliberately so the decision is testable in Go while
+# the workflow stays self-contained.
+#
+# NOT a pull_request workflow: at PR-push time ci.yml's Lint (full
+# repolint on merge-checkout) is already the evaluation; duplicating it
+# here adds a second context to every PR for no new signal. The gap
+# this workflow closes is exactly the between-pushes window on main.
+# Residual: a PR that pushes a new head goes un-swept until the next
+# main push — but a new head re-runs ci.yml's Lint against a FRESH
+# merge ref, which covers it.
+#
+# The renumber bot's own commits carry [skip ci] and therefore do NOT
+# trigger this sweep via the push path — loop prevention is why the
+# marker exists. The bot CANNOT rely on that exemption for safety: in
+# its documented degraded mode (gh discovery unavailable on the runner)
+# the bot assigns from main-only knowledge and CAN mint a number an
+# open sibling PR holds (the 1173x2 shape — r1 review finding). The
+# bot therefore explicitly dispatches this workflow after every
+# successful numbering push (see worklog-renumber.yml); if that
+# dispatch fails, detection defers to the 6h cron sweep below.
+#
+# Merge-conflicted PRs have no refs/pull/N/merge (fetch 404s); they are
+# skipped — their merge would fail anyway and the next main push
+# re-evaluates them once GitHub can build the ref.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'worklogs/**'
+      - 'api/migrations/**'
+  schedule:
+    # Every 6 hours at minute 43. Offset from both the :00 cron-storm
+    # and the renumber bot's :17. Catch-up sweep for PRs opened (or
+    # left colliding) while no main push triggered the fast path.
+    - cron: '43 */6 * * *'
+  workflow_dispatch:
+
+# Newest-wins: a newer main push supersedes the previous recheck sweep.
+concurrency:
+  group: numbering-gate
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  checks: write
+  # gh pr list (PR enumeration) reads via GraphQL; sibling workflows
+  # pair gh pr usage with an explicit grant. Failure is loud (the
+  # enumeration guard exits 1), but the grant removes the dependency
+  # on the repo being public (delegated-review follow-up).
+  pull-requests: read
+
+jobs:
+  recheck:
+    name: Re-evaluate open PR merge trees
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          # Full history: git fetch of refs/pull/N/merge below needs the
+          # local object store; the merge refs are fetched per PR.
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version: "1.26.10"
+          cache: true
+
+      - name: Build repolint
+        run: make repolint-build
+
+      - name: Gate every open PR's merge tree
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -uo pipefail
+          REPO="${GITHUB_REPOSITORY}"
+          mkdir -p /tmp/gate
+
+          # gate_one <pr> <head_sha> — evaluate one PR's merge tree and
+          # post the decision. Failure-tolerant by design: one broken PR
+          # (missing merge ref, API hiccup) must never blind the sweep
+          # for the others — the same degradation principle as repolint's
+          # claims discovery.
+          gate_one() {
+            local PR="$1" HEAD_SHA="$2"
+            local TREE="/tmp/gate/pr-$PR"
+            rm -rf "$TREE"
+
+            if ! git fetch -q origin "refs/pull/$PR/merge" 2>/dev/null; then
+              echo "::notice::PR $PR has no merge ref (merge conflict or head race) — skipping"
+              return 0
+            fi
+            if ! git worktree add -q --detach "$TREE" FETCH_HEAD; then
+              echo "::warning::PR $PR: could not materialize merge tree — skipping"
+              # Partially-created worktrees must not wedge the sweep
+              # (r1 review): clean the path and prune registrations.
+              rm -rf "$TREE"
+              git worktree prune
+              return 0
+            fi
+
+            local GATE_OUTPUT TREE_CLEAN
+            if GATE_OUTPUT=$(./bin/repolint -repo "$TREE" -numbering-only 2>&1); then
+              TREE_CLEAN=true
+            else
+              TREE_CLEAN=false
+            fi
+
+            # Prior numbering-gate state on THIS head SHA (the
+            # clear-on-heal input). check_name + filter=latest + a
+            # generous per_page (r1 review: the default 30-per-page
+            # page can exclude the newest numbering-gate run on busy
+            # heads — a healed PR would stay pinned red, the exact
+            # freeze class this workflow exists to end). The jq still
+            # sorts by id defensively.
+            local PRIOR
+            PRIOR=$(gh api "repos/$REPO/commits/$HEAD_SHA/check-runs?check_name=numbering-gate&filter=latest&per_page=100" \
+              --jq '[.check_runs[]] | sort_by(.id) | reverse | .[0].conclusion // ""' 2>/dev/null || echo "")
+
+            # Decision matrix (redden / clear-on-heal / noop) is pinned
+            # in pkg/repolint gate_test.go — NumberingGateDecision.
+            local ACTION
+            if [ "$TREE_CLEAN" = false ]; then
+              ACTION=redden
+            elif [ "$PRIOR" = "failure" ]; then
+              ACTION=clear
+            else
+              ACTION=noop
+            fi
+            echo "PR #$PR: tree_clean=$TREE_CLEAN prior_numbering_gate=$PRIOR → $ACTION"
+
+            if [ "$ACTION" != "noop" ]; then
+              local BODY=/tmp/gate/body-$PR.json
+              if [ "$ACTION" = "redden" ]; then
+                jq -n --arg head "$HEAD_SHA" --arg out "$GATE_OUTPUT" '{
+                  name: "numbering-gate",
+                  head_sha: $head,
+                  status: "completed",
+                  conclusion: "failure",
+                  output: {
+                    title: "merge-tree numbering collision (numbering-gate, #1838) — not this PR own-lint",
+                    summary: ("Merging this PR at the current main tip would create duplicate numbered artifacts — a sibling merge took the number after this PR checks last ran.\n\nPosted by .github/workflows/numbering-gate.yml, NOT by this PR own CI.\n\nHeal: `git fetch origin && git rebase origin/main` then `make pre-commit-fix` (renumbers local worklogs past main + open-PR claims), or `./bin/repolint -next-numbers` and renumber by hand (migrations). Push to refresh; the gate clears itself once the merge tree is duplicate-free (clear-on-heal).\n\n--- gate output ---\n" + $out)
+                  }
+                }' > "$BODY"
+                echo "PR #$PR: REDDENED (merge tree collides)"
+              else
+                jq -n --arg head "$HEAD_SHA" '{
+                  name: "numbering-gate",
+                  head_sha: $head,
+                  status: "completed",
+                  conclusion: "success",
+                  output: {
+                    title: "cleared: merge tree is duplicate-free against current main (numbering-gate)",
+                    summary: "A previous main tip made this PR merge tree collide; the tree is clean now (main advanced or a sibling renumbered). This success run replaces that red — clear-on-heal (#1838)."
+                  }
+                }' > "$BODY"
+                echo "PR #$PR: CLEARED (healed)"
+              fi
+              gh api --method POST "repos/$REPO/check-runs" --input "$BODY" > /dev/null
+            fi
+
+            git worktree remove --force "$TREE" 2>/dev/null || true
+          }
+
+          if ! PRS=$(gh pr list --state open --limit 200 --json number,headRefOid --jq '.[] | "\(.number) \(.headRefOid)"'); then
+            echo "::error::could not enumerate open PRs — gate sweep failed"
+            exit 1
+          fi
+          if [ -z "$PRS" ]; then
+            echo "No open PRs — nothing to gate."
+            exit 0
+          fi
+
+          FAILED=0
+          while read -r PR HEAD_SHA; do
+            [ -n "$PR" ] || continue
+            if ! gate_one "$PR" "$HEAD_SHA"; then
+              echo "::warning::PR $PR: gate step failed — continuing sweep"
+              FAILED=$((FAILED+1))
+            fi
+          done <<< "$PRS"
+
+          echo "Numbering-gate sweep complete ($FAILED per-PR failure(s) skipped)."
+          # Per-PR failures are warnings (the next main push re-sweeps);
+          # only a total inability to enumerate PRs fails the job (the
+          # gh pr list above, under set -o pipefail without -e).
+          exit 0

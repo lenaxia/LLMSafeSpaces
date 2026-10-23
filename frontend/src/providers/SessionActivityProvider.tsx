@@ -194,8 +194,20 @@ function tombstoneRequest(tombs: Map<string, true>, requestId: string): void {
 // registerFirstSeen records a request's first observation without calling
 // Date.now() from a render-analyzed body (react-hooks/purity). Runs from
 // event callbacks via module scope, like wipeBusyForEventLoss.
+// Monotonic first-seen sequence (#1845): two asks seeded from the SAME
+// fold snapshot (page reload / reconnect with several pending) can land
+// in one tick — identical Date.now() collapsed the newest-first sort's
+// comparator to a stable no-op, leaking fold insertion order through as
+// the stack order. Stamps are strictly increasing per registration while
+// staying ms-ordered versus real time, so the sort is total and the
+// stack's "newest-activity-first" contract holds within batches too.
+let firstSeenSeq = 0;
+
 function registerFirstSeen(firstSeen: Map<string, number>, requestId: string): void {
-  if (!firstSeen.has(requestId)) firstSeen.set(requestId, Date.now());
+  if (!firstSeen.has(requestId)) {
+    firstSeenSeq = Math.max(firstSeenSeq + 1, Date.now());
+    firstSeen.set(requestId, firstSeenSeq);
+  }
 }
 
 // stampBusyNow is the lease-stamp seam: Date.now() for BusyEntry writes
@@ -1886,9 +1898,10 @@ export function SessionActivityProvider({ children }: { children: ReactNode }) {
       const set = new Set(existing ?? []);
       set.add(requestId);
       next.set(sessionId, set);
-      if (!requestFirstSeenRef.current.has(requestId)) {
-        requestFirstSeenRef.current.set(requestId, Date.now());
-      }
+      // Monotonic seam (#1845): identical Date.now() within one fold
+      // batch broke the newest-first sort — share registerFirstSeen so
+      // batch-mates can never tie.
+      registerFirstSeen(requestFirstSeenRef.current, requestId);
       return next;
     });
   }, []);
