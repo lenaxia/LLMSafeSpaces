@@ -164,22 +164,27 @@ func (s *BoardSuite) TestReviewAuto_PauseExcludesReviewTasks() {
 	p := s.seedProject(ws, 2)
 	e := s.seedEpic(p, board.EpicActive)
 
-	subject := s.seedTask(e, "subject-paused", nil, true)
+	// FIFO: review first (parked in_review), subject second.
 	review := s.seedTask(e, "review-paused", nil, true)
+	subject := s.seedTask(e, "subject-paused", nil, true)
 	_, err := s.svc.UpdateTask(ctx, s.owner(), "", review.ShortID,
 		board.TaskInput{Tags: []string{"review-of:" + subject.ShortID}}, "")
 	s.Require().NoError(err)
-	s.parkInReview(ws, subject)
+	s.parkInReview(ws, review)
 
-	// Pause the review row: #1747 — the engine never forces forward
-	// writes through the pause lever.
+	// Pause the IN_REVIEW review row: #1747 — the engine never forces
+	// forward writes through the pause lever.
 	_, execErr := s.pool.Exec(ctx, `UPDATE tasks SET paused=true WHERE id=$1`, review.ID)
 	s.Require().NoError(execErr)
 
+	c := s.claimOrFail(ws)
+	s.Require().Equal(subject.ID, c.TaskID)
+	_, err = s.svc.MoveStage(ctx, s.agent(c.Assignee, c.ClaimToken), "", c.ShortID, board.StageInReview, "", "")
+	s.Require().NoError(err)
 	_, err = s.svc.MoveStage(ctx, s.owner(), "", subject.ShortID, board.StageDone, "https://example/pa", "")
 	s.Require().NoError(err)
 	require.Equal(s.T(), board.StageInReview, s.reloadTask(review.ID).Stage,
-		"a paused review task never settles")
+		"a paused review task never settles (a candidacy-stage row AND the guarded UPDATEs both exclude it)")
 	require.Equal(s.T(), 0, s.countEvents("review_complete"))
 	require.Equal(s.T(), 0, s.countEvents("review_park"))
 }
@@ -190,13 +195,18 @@ func (s *BoardSuite) TestReviewAuto_ParkBranchViaDriftPath() {
 	p := s.seedProject(ws, 2)
 	e := s.seedEpic(p, board.EpicActive)
 
-	subject := s.seedTask(e, "subject-parkdrift", []string{"pr:43"}, true)
+	// FIFO: review first (parked in_review), subject second.
 	review := s.seedTask(e, "review-parkdrift", nil, false) // UNMET criteria
+	subject := s.seedTask(e, "subject-parkdrift", []string{"pr:43"}, true)
 	_, err := s.svc.UpdateTask(ctx, s.owner(), "", review.ShortID,
 		board.TaskInput{Tags: []string{"review-of:" + subject.ShortID}}, "")
 	s.Require().NoError(err)
+	s.parkInReview(ws, review)
 
-	s.parkInReview(ws, subject)
+	c := s.claimOrFail(ws)
+	s.Require().Equal(subject.ID, c.TaskID)
+	_, err = s.svc.MoveStage(ctx, s.agent(c.Assignee, c.ClaimToken), "", c.ShortID, board.StageInReview, "", "")
+	s.Require().NoError(err)
 	s.drift.set(43, board.PRState{Merged: true, URL: "https://example/pr/43"})
 	res := s.sweep()
 	require.Equal(s.T(), 1, res.DriftDone)
@@ -215,8 +225,8 @@ func (s *BoardSuite) TestReviewAuto_ReplayIsInert() {
 	p := s.seedProject(ws, 2)
 	e := s.seedEpic(p, board.EpicActive)
 
-	subject := s.seedTask(e, "subject-replay", nil, true)
 	review := s.seedTask(e, "review-replay", nil, true)
+	subject := s.seedTask(e, "subject-replay", nil, true)
 	_, err := s.svc.UpdateTask(ctx, s.owner(), "", review.ShortID,
 		board.TaskInput{Tags: []string{"review-of:" + subject.ShortID}}, "")
 	s.Require().NoError(err)
@@ -230,11 +240,18 @@ func (s *BoardSuite) TestReviewAuto_ReplayIsInert() {
 	require.Equal(s.T(), board.StageDone, s.reloadTask(review.ID).Stage)
 	require.Equal(s.T(), 1, s.countTransitions(review.ID, board.StageDone))
 
-	// Re-arming the subject's done cascade (a replay of the settle's
-	// deterministic event id) must be inert: done rows never re-enter
-	// candidacy — no second transition, no second event.
+	// Replay vectors — all must be inert (done rows never re-enter
+	// candidacy; the deterministic event id is ON-conflict-inert):
+	// (a) the same done MoveStage replayed by requestId;
+	// (b) a reconciler sweep over the settle's events.
+	_, err = s.svc.MoveStage(ctx, s.owner(), "", subject.ShortID, board.StageDone, "https://example/r", "req-replay-once")
+	s.Require().NoError(err, "the replay renders the original outcome, never an error")
+	s.sweep()
+
+	require.Equal(s.T(), 1, s.countTransitions(review.ID, board.StageDone),
+		"exactly one done transition across the replay + sweep")
 	var n int
 	s.Require().NoError(s.pool.QueryRow(ctx,
 		`SELECT count(*) FROM board_events WHERE action='review_complete' AND item_id=$1`, review.ID).Scan(&n))
-	require.Equal(s.T(), 1, n)
+	require.Equal(s.T(), 1, n, "exactly one review_complete event")
 }
