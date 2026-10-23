@@ -31,6 +31,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   normalizes ssh-key values on create/update (paste/transport reflow
   cannot reintroduce the class), defense in depth with the belt.
 
+### Added — Task Board: kebab menus + delete flows (#1832 item 3)
+
+- **Kebab menus at all three board levels.** Each project swimlane
+  header, epic band header, and task card carries a kebab menu
+  (distinct a11y labels; triggers stopPropagation — a kebab click
+  never toggles band selection nor opens the task editor).
+- **Task delete modal with the 'reconnect dependents to upstream'
+  checkbox** (#1747's optional flag): dependents are surfaced
+  pre-flight from the read model; unchecked (default) they are simply
+  unblocked (each gets an `unblocked_by_delete` audit event), checked
+  they inherit the deleted task's direct upstream edges (deduplicated,
+  cycle-guarded server-side). Both semantics are pinned at the wire in
+  e2e (`?reconnect=true` presence/absence exact-matched) and in
+  component tests (API-client args asserted). The delete result
+  surfaces as a page notice (orphans listed / `orphan→upstream` pairs).
+- **Epic delete surfaces in-flight workers with refuse/force-confirm
+  matching the API**: the modal lists the epic's in-flight claims
+  (in_progress + assignee, live read model) and its honest cascade
+  count; the first attempt never sends force — the engine's 409
+  `epic_state` renders inside the modal, and only that real refusal
+  reveals the acknowledge-gated "Force delete" (force deletes, then
+  aborts each in-flight worker post-commit).
+- **Project kebab is archive/unarchive ONLY** (#1747: project delete
+  is eliminated) — the menu structurally offers exactly one lifecycle
+  item; the absence of any delete item is pinned in both test layers.
+- This lane's e2e runs at **E2E_PORT=18521** (registry discipline:
+  18517/18519 claimed by sibling lanes; nightly PORTFWD 18083–18093
+  untouched).
+
 ### Added — Task Board: task audit timeline + drawer (issue #1832 item 4)
 
 - **`GET /api/v1/me/tasks/:id/events` renders a task's FULL audit
