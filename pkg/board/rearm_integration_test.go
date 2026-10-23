@@ -68,6 +68,7 @@ func (s *BoardSuite) TestRearm_ReplayReturnsOriginalOutcome() {
 
 	out1, err := s.svc.RearmTask(ctx, s.agentManager(ws, "orchestrator-rearm"), "", t.ShortID, "req-rearm-replay")
 	s.Require().NoError(err)
+	require.Equal(s.T(), board.StageBacklog, out1.Stage, "the first call re-pools")
 	// Claim the row away from backlog so a NON-idempotent second call
 	// would have nothing to re-arm (the guard would refuse).
 	c, err := s.svc.ClaimNext(ctx, "worker-"+ws, ws)
@@ -76,8 +77,18 @@ func (s *BoardSuite) TestRearm_ReplayReturnsOriginalOutcome() {
 
 	out2, err := s.svc.RearmTask(ctx, s.agentManager(ws, "orchestrator-rearm"), "", t.ShortID, "req-rearm-replay")
 	s.Require().NoError(err, "a replayed requestId returns the original outcome, never an error")
-	require.Equal(s.T(), out1.Stage, out2.Stage)
-	require.Equal(s.T(), 1, s.countEvents("rearm"), "exactly one rearm event")
+	require.NotNil(s.T(), out2, "the duplicate renders the reloaded row (the MoveStage house pattern)")
+	// The replay's idempotency is the NO-NEW-WRITE contract, not a
+	// snapshot equality: the live row legitimately shows the claim's
+	// state (in_progress) — the replay must not have touched it.
+	require.Equal(s.T(), board.StageInProgress, out2.Stage,
+		"the replay returns the LIVE row (the claim moved it); it must not re-write anything")
+	require.Equal(s.T(), 1, s.countEvents("rearm"), "exactly one rearm event — the replay added none")
+	require.Equal(s.T(), 1, s.countTransitions(t.ID, board.StageBacklog),
+		"exactly one pending_input->backlog transition — the replay added none")
+	claimed := s.rawTask(t.ID)
+	require.NotEmpty(s.T(), claimed.ClaimToken, "the claim survived the replay untouched")
+	require.Equal(s.T(), 1, claimed.Attempts, "the fresh round's attempt ledger survived the replay")
 }
 
 func (s *BoardSuite) TestRearm_OnlyEscalatedPendingRows() {
