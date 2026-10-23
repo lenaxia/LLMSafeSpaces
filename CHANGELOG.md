@@ -6,7 +6,69 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [0.41.0] - 2026-10-23
+
+### Added — board dispatch durability + stage-machine hardening (the #1832 lane)
+
+- **Board re-arm + stillborn guard** (#1869, #1870, feat/board-rearm /
+  feat/board-stillborn-evidence): the reconciler re-arms reclaimed claims
+  immediately and records stillborn evidence for zero-message spawn
+  failures, so a dead spawn no longer burns a full lease window invisibly.
+- **Platform-derived liveness** (#1862, the #1847 ruling): LLM heartbeats
+  retired as the primary lease-liveness mechanism; liveness reads
+  platform-observed session activity.
+- **Board reads criteria** (#1864) and **board tool hardening** (#1863):
+  criteria surface on board reads; manager-tool guardrails tightened.
+
+### Fixed
+
+- **#1878** — trigger inline scripts + workflow script nodes execute in the
+  session environment (sidecar lacked /tmp, interpreters, gh) (#1885).
+- **#1886** — sidebar row cap must not evict live unarchived sessions
+  (#1902); deterministic ordering keeps NULL-recency dispatch rows visible.
+- **#1882** — delete propagation (#1887).
+- **#1842** — upload stream flake: product-race vs test-flake stop-rule
+  resolved, race suite de-flaked (#1888).
+- **#1844** — run watchdog + secrets dispatch re-register (#1874, #1876,
+  #1894).
+- **#1846** — chat textbox up-arrow recall no longer fires mid-text (#1875).
+- **#1850** — create_session workers keep their minted phrase ids —
+  mint-in-create-transaction, DB-column persistence (#1881).
+- **#1884** — usage stream resync (#1899).
+- **#1832** — cascade integration (#1893).
+- **#1860** — e2e harness hygiene: lifecycle error coverage + dead route
+  purge (#1903).
+- **#1756** — retro completion r4: 7th surface + record corrections (#1900).
+- **#1856** — ai-workflows v0.2.24 reapply (#1896).
+
 ## [Unreleased]
+### Fixed — Longhorn RecurringJob snapshot cron invalid day-of-week; deploy-tree cron validity guard (#1905, cross-repo)
+
+- **The `default-snapshot` RecurringJob's cron `0 1 * * 8` is corrected
+  to `0 1 * * *` (daily 01:00)** in lenaxia/talos-ops-prod
+  (`kubernetes/apps/storage/longhorn/app/recurring-jobs.yaml`,
+  PR talos-ops-prod#2795). Day-of-week 8 is outside the valid 0-7
+  range — `8` being the missed-Shift form of `*` (Shift+8) — so
+  Longhorn's robfig parser rejected the job and scheduled snapshots
+  never ran as declared. The daily cadence matches the job's own
+  `dailySnapshot` label (sibling convention: `0 0 * * 1` ↔
+  `weeklyBackup`); intent verification posted to the issue. Owner
+  ruling: the Longhorn recurring-jobs/backup posture is intentionally
+  dormant (prod backups run on Kopia via the kyverno
+  snapshot-cronjob-controller path) — this is latent correctness of
+  the declared manifest, no re-enable.
+- **A red-first deploy-tree cron validity guard** now parses every
+  literal cron expression under the ops repo's `kubernetes/` tree
+  (`cron:`/`schedule:` string fields) against a 5-field validator with
+  standard ranges (minute 0-59, hour 0-23, dom 1-31, month 1-12, dow
+  0-7) — the same class as the platform trigger validator. Six-field
+  CloudNative-PG schedules validate seconds 0-59 plus the standard
+  five; `@`-shorthands form-checked; sops ciphertext and `${...}`
+  templates excluded; unparseable files frozen behind an explicit
+  allowlist; walker-regression pins (harvest floor + longhorn
+  coverage) prevent vacuous passes. Red pin `733bce3d` (guard alone:
+  1 failed, 55 passed — failing exactly on the dow 8), green
+  `6d9a5aa3` (56 passed).
 ### Fixed — carrier-reap follow-ons: kind discriminator, drain tombstone visibility, restart posture (#1901)
 
 - **The #1882 carrier reap bypass now admits ONLY platform-deleted
@@ -1004,6 +1066,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - This lane's e2e runs at **E2E_PORT=18521** (registry discipline:
   18517/18519 claimed by sibling lanes; nightly PORTFWD 18083–18093
   untouched).
+
+### Fixed — CI flake: TestRequestSessionStatusSnapshot_Coalesces coalescing precondition now established, not hoped for (issue #1907)
+
+- **The `-short`+coverage-suite flake (run 39914818351, "got 2")** was a
+  test-design flaw, not a product race: the on-demand snapshot
+  trigger's coalescing guard (`busyFlightsInFlight`, an atomic CAS)
+  coalesces a second request only **while a flight is running** for
+  that workspace — after a flight completes, a new trigger legitimately
+  starts a new flight. The old test fired two POSTs "nearly
+  simultaneously" and hoped both guards landed inside the first
+  flight's sub-millisecond window (the statusz stub answers instantly);
+  under CI load the second POST's dial+handler latency exceeded that
+  window, the second trigger legitimately spawned its own flight, and
+  the monotonic fetch counter read 2 with `assert.Eventually(==1)`
+  unable to ever recover (the 2.01 s signature).
+- **The rewrite parks the first authority fetch in the stub and fires
+  the second trigger only once that fetch is provably mid-flight** —
+  the map entry cannot be gone yet (Delete runs only after the fetch
+  returns), so the second guard MUST coalesce. Four independent nets
+  assert it: the parked-phase fetch count, a stub-side flag on any
+  second fetch whenever it lands, a pre-release `snapshot_complete`
+  drain (impossible while the only flight is parked), and a
+  post-settle cleanup verdict. Mutation-verified red-first at 613238f3
+  under BOTH causal classes — a neutered guard and an early Delete
+  (the steady-state analogue of what CI load did transiently) — each
+  deterministic 3/3 under `-race`. No production code changed; no
+  sleeps/retries/skips added.
+- Companion verification (no diff): the #1842 upload-stream fix
+  (2a300c9d) re-verified on current main — `-race -count=50` green and
+  its mutation recipe (threshold → `cap1MiB`) re-confirmed to redden
+  both streaming tests deterministically.
 ## [0.40.1] - 2026-10-21
 
 ### Fixed — v0.40.0 regression: user-stream session events carry the phrase id (#1817, #1821 piece 1)
