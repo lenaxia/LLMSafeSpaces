@@ -133,13 +133,19 @@ func (s *BoardSuite) TestReview_1832_VerdictChainRidesNextClaim() {
 	s.Require().True(v.Applied)
 	s.Equal(board.StageInProgress, out.Stage)
 
-	// Round 2: the bounced row's lease lapses; a FRESH claimant spawns —
-	// its charter carries the verdict chain (iteration history). The
-	// lapse arms #1813's failure backoff (a lapsed lease IS a failure
-	// event); clear it so the row re-enters the claimable set NOW —
-	// the sweep's auto-return is not what this row pins.
+	// Round 2: the bounced row's lease lapses; the sweep's #1813 path
+	// returns it to backlog with a failure backoff (a lapsed lease IS a
+	// failure event); the cooldown is cleared so the row re-enters the
+	// claimable set NOW (the sweep's auto-return clock is not what this
+	// row pins) — then a FRESH claimant spawns, and its charter carries
+	// the verdict chain (iteration history).
 	s.expireLease(task.ID)
-	s.clearTaskBackoff(task.ID)
+	s.sweep()
+	// Insurance: the lapse round's failure accounting must not tip the
+	// row into escalation (this row pins CHAIN propagation, not the
+	// attempts cap) — clear the backoff AND the counter.
+	_, err = s.pool.Exec(ctx, `UPDATE tasks SET cooldown_until=NULL, attempts=0, last_attempt_failed=false WHERE id=$1`, task.ID)
+	s.Require().NoError(err)
 	c2, err := svc.ClaimNext(ctx, "w2-"+ws, ws)
 	s.Require().NoError(err)
 	s.Require().Equal(task.ID, c2.TaskID)
