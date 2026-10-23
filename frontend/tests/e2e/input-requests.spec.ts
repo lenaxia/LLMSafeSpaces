@@ -326,6 +326,117 @@ test.describe("Epic 16: Agent input requests (mocked backend)", () => {
   });
 });
 
+// ── #1845: mobile queued-questions navigation ──────────────────────────────
+//
+// The provider stack is newest-activity-first; on mobile ONE ask of each
+// kind is presented at a time — the OLDEST (first-seen). Resolution
+// (answer or dismiss) advances to the next; the "1 of N" line signals
+// queue depth. These are the only tests exercising the REAL matchMedia +
+// real provider composition for this flow (the jsdom suite mocks both).
+test.describe("#1845: mobile queued-question navigation (sequential, oldest first)", () => {
+  test.use({ viewport: { width: 400, height: 800 } }); // < 768px → useIsMobile
+
+  test.beforeEach(async ({ page }) => {
+    await setupAPIMocks(page);
+  });
+
+  test("presents the OLDEST question only with a 1-of-2 line; answering advances to the next", async ({ page }) => {
+    let resolveReply!: () => void;
+    const replyGate = new Promise<void>((resolve) => { resolveReply = resolve; });
+
+    // Fold lists q1 then q2 → the provider's first-seen sort puts q2 at
+    // the head; the mobile presenter must still surface q1 (the oldest).
+    await mockContractStream(
+      page,
+      snapshotFrame(3, [sessionState([
+        questionInput("que_m1", "First ask (oldest)?", "Q1", [["Yes", "go"], ["No", "stop"]]),
+        questionInput("que_m2", "Second ask?", "Q2", [["Go", ""]]),
+      ])]),
+      { gate: replyGate, afterBody: snapshotFrame(4, [sessionState([questionInput("que_m2", "Second ask?", "Q2", [["Go", ""]])])]) },
+    );
+
+    let repliedId = "";
+    await page.route(`${API_PREFIX}/workspaces/${WORKSPACE_ID}/question/*/reply`, async (route) => {
+      repliedId = route.request().url().split("/question/")[1]?.split("/")[0] ?? "";
+      resolveReply();
+      await route.fulfill({ status: 200, contentType: "application/json", body: "true" });
+    });
+
+    await page.goto(`/chat/${WORKSPACE_ID}/${SESSION_ID}`);
+    await expect(page.getByText("First ask (oldest)?")).toBeVisible({ timeout: 10_000 });
+    // The newer ask is not presented on mobile, and the queue depth shows.
+    await expect(page.getByText("Second ask?")).toHaveCount(0);
+    await expect(page.getByText(/Question 1 of 2/)).toBeVisible();
+
+    // Answer the presented oldest ask through the real UI.
+    await page.getByRole("button", { name: "Yes" }).click();
+    await page.getByText("Submit answers").click();
+    await expect(page.getByText("First ask (oldest)?")).toHaveCount(0);
+    expect(repliedId).toBe("que_m1");
+    // The next-oldest presents.
+    await expect(page.getByText("Second ask?")).toBeVisible({ timeout: 10_000 });
+  });
+
+  test("dismissing the presented question advances to the next (unhappy exit)", async ({ page }) => {
+    let resolveReject!: () => void;
+    const rejectGate = new Promise<void>((resolve) => { resolveReject = resolve; });
+
+    await mockContractStream(
+      page,
+      snapshotFrame(3, [sessionState([
+        questionInput("que_m1", "First ask (oldest)?", "Q1", [["Yes", ""]]),
+        questionInput("que_m2", "Second ask?", "Q2", [["Go", ""]]),
+      ])]),
+      { gate: rejectGate, afterBody: snapshotFrame(4, [sessionState([questionInput("que_m2", "Second ask?", "Q2", [["Go", ""]])])]) },
+    );
+
+    await page.route(`${API_PREFIX}/workspaces/${WORKSPACE_ID}/question/que_m1/reject`, async (route) => {
+      resolveReject();
+      await route.fulfill({ status: 200, contentType: "application/json", body: "true" });
+    });
+
+    await page.goto(`/chat/${WORKSPACE_ID}/${SESSION_ID}`);
+    await expect(page.getByText("First ask (oldest)?")).toBeVisible({ timeout: 10_000 });
+    await expect(page.getByText(/Question 1 of 2/)).toBeVisible();
+
+    // Dismiss via the footer button (the card also has an aria-label ✕).
+    await page.locator("button", { hasText: /^Dismiss$/ }).click();
+    await expect(page.getByText("First ask (oldest)?")).toHaveCount(0);
+    await expect(page.getByText("Second ask?")).toBeVisible({ timeout: 10_000 });
+  });
+
+  test("a new ask arriving mid-queue deepens the count line (1 of 2 → 1 of 3) without changing the presented ask", async ({ page }) => {
+    let releaseNext!: () => void;
+    const nextDelivery = new Promise<void>((resolve) => { releaseNext = resolve; });
+
+    await mockContractStream(
+      page,
+      snapshotFrame(3, [sessionState([
+        questionInput("que_m1", "First ask (oldest)?", "Q1", [["Yes", ""]]),
+        questionInput("que_m2", "Second ask?", "Q2", [["Go", ""]]),
+      ])]),
+      // The later fold still carries q1+q2 (unanswered) plus a NEW ask —
+      // the count line deepens; the presented (oldest) ask must not move.
+      { gate: nextDelivery, afterBody: snapshotFrame(4, [sessionState([
+        questionInput("que_m1", "First ask (oldest)?", "Q1", [["Yes", ""]]),
+        questionInput("que_m2", "Second ask?", "Q2", [["Go", ""]]),
+        questionInput("que_m3", "Third ask?", "Q3", [["Rust", ""]]),
+      ])]) },
+    );
+
+    await page.goto(`/chat/${WORKSPACE_ID}/${SESSION_ID}`);
+    await expect(page.getByText("First ask (oldest)?")).toBeVisible({ timeout: 10_000 });
+    await expect(page.getByText(/Question 1 of 2/)).toBeVisible();
+
+    releaseNext();
+    await expect(page.getByText(/Question 1 of 3/)).toBeVisible({ timeout: 15_000 });
+    await expect(page.getByText("First ask (oldest)?")).toBeVisible();
+    await expect(page.getByText("Second ask?")).toHaveCount(0);
+    await expect(page.getByText("Third ask?")).toHaveCount(0);
+  });
+});
+
+
 test.describe("#1365: pill clears on reply 2xx without a resolved event", () => {
   test.beforeEach(async ({ page }) => {
     await setupAPIMocks(page);

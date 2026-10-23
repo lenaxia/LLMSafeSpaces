@@ -74,6 +74,15 @@ func (s *Service) MoveStage(ctx context.Context, actor Actor, taskID, shortIDOrI
 	if toStage == StageDone {
 		s.pokeDrive(p.ID)
 	}
+	// #1832 item 5 (2/2): →in_review consults the effective config —
+	// reviewColumn=auto AND autoAssignReviewer dispatches a reviewer
+	// directly (never queued behind the worker FIFO). manual/off keep
+	// today's behavior exactly. A REPLAYED move (duplicate requestID,
+	// 200-with-original) does NOT re-dispatch — the original invocation's
+	// reviewer is already in flight.
+	if toStage == StageInReview && dup == nil {
+		s.maybeAutoAssignReview(ctx, p, t)
+	}
 	_ = dup // 200-with-original: the reloaded row IS the original outcome
 	out, err := s.store.resolveTask(ctx, s.q(), p.ID, t.ID)
 	if err != nil {
