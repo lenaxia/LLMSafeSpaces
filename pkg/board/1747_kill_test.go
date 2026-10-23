@@ -322,8 +322,8 @@ func (s *BoardSuite) TestKill_1747_ImportPlan() {
 	dry, err := s.svc.ImportPlan(context.Background(), s.owner(), p.ID, "", board.PlanInput{
 		EpicTitle: "Plan",
 		Tasks: []board.PlanTaskInput{
-			{Key: "a", Title: "A"},
-			{Key: "b", Title: "B", DependsOn: []string{"a"}},
+			{Key: "a", Title: "A", Description: "seeded charter", AcceptanceCriteria: []board.AcceptanceCriterion{{Text: "c1"}}},
+			{Key: "b", Title: "B", Description: "seeded charter", AcceptanceCriteria: []board.AcceptanceCriterion{{Text: "c1"}}, DependsOn: []string{"a"}},
 		},
 	}, true, "")
 	s.Require().NoError(err)
@@ -339,8 +339,8 @@ func (s *BoardSuite) TestKill_1747_ImportPlan() {
 	out, err := s.svc.ImportPlan(context.Background(), s.owner(), p.ID, "", board.PlanInput{
 		EpicTitle: "Plan",
 		Tasks: []board.PlanTaskInput{
-			{Key: "a", Title: "A"},
-			{Key: "b", Title: "B", DependsOn: []string{"a"}},
+			{Key: "a", Title: "A", Description: "seeded charter", AcceptanceCriteria: []board.AcceptanceCriterion{{Text: "c1"}}},
+			{Key: "b", Title: "B", Description: "seeded charter", AcceptanceCriteria: []board.AcceptanceCriterion{{Text: "c1"}}, DependsOn: []string{"a"}},
 		},
 	}, false, "")
 	s.Require().NoError(err)
@@ -353,8 +353,8 @@ func (s *BoardSuite) TestKill_1747_ImportPlan() {
 	_, err = s.svc.ImportPlan(context.Background(), s.owner(), p.ID, "", board.PlanInput{
 		EpicTitle: "Cycle",
 		Tasks: []board.PlanTaskInput{
-			{Key: "x", Title: "X", DependsOn: []string{"y"}},
-			{Key: "y", Title: "Y", DependsOn: []string{"x"}},
+			{Key: "x", Title: "X", Description: "seeded charter", AcceptanceCriteria: []board.AcceptanceCriterion{{Text: "c1"}}, DependsOn: []string{"y"}},
+			{Key: "y", Title: "Y", Description: "seeded charter", AcceptanceCriteria: []board.AcceptanceCriterion{{Text: "c1"}}, DependsOn: []string{"x"}},
 		},
 	}, false, "")
 	s.Require().Error(err, "a cyclic plan never lands")
