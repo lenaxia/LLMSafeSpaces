@@ -40,7 +40,8 @@ storage-layer root cause; it closes every platform-controllable gap:
 ## Red-first record (honest)
 
 New-package red = build failure against not-yet-existing seams
-(quoted in full in the red commit `c2aa09b6` message):
+(quoted in the red commit `c2aa09b6` message — abridged there; the
+failure classes and identifiers below are verbatim from the run):
 
 ```
 pkg/fsaudit: undefined: NewEngine, Request, Report, ErrBusy,
@@ -92,8 +93,17 @@ reddens it.
 
 ## Test evidence
 
-- `go test ./pkg/fsaudit/` — 18 pins green (incl. 1001-file list-cap
-  fixture in non-short). [round 2: -race, 19 pins green — +1 mid-read-EIO]
+- Pin census at this head (recounted per r3/r4 F1 — earlier 18/19
+  figures were estimates and countably wrong under every scope):
+  pkg/fsaudit = 26 func Tests package-wide (17 engine_test.go + 9
+  prepush_parity_test.go, of which 24 carry a `// PIN` marker:
+  15 + 9; the sha256 pair added in the r3 remediation); the sha256
+  behavioral test carries 2 t.Run subtests. Adjacent lanes:
+  cmd/workspace-agentd fs-audit route = 10 func Tests + shutdown
+  belt = 3; api facade = 7; app wiring pin = 1.
+- `go test ./pkg/fsaudit/` — green (the +1 mid-read-EIO pin landed
+  with the r1 remediation commit 264c3a49; the +2 SHA-256 arm pins
+  with the r3 remediation commit).
 - `go test ./cmd/workspace-agentd/` — FULL suite green. [round 1:
   361s WITHOUT -race; round 2: 418s WITH -race — CI-matching flags]
 - `go test ./api/internal/handlers/ ./api/internal/server/
@@ -156,6 +166,41 @@ reddens it.
   corrected (runs in both agentd modes; the supervisor belt is
   separate); removed the unreachable dead assertion in
   TestAudit_ConcurrentDistinctRequests (style nit).
+
+## Review round 3 (CHANGES_REQUESTED vs 264c3a49) — remediation
+
+Two blockers, both accepted:
+
+1. **Worklog evidence figures countably false** (18/19 pins; no scope
+   yields them; "+1 mid-read-EIO" misattributed to round 2; "quoted
+   in full" overstated). FIXED above: exact census recounted at head
+   (26/24/2 in pkg/fsaudit), attribution corrected, abridgment
+   acknowledged. The red-commit hash typo (dc0d9b0d → c2aa09b6) was
+   fixed in ba3916be (the r4-only delta under review).
+2. **SHA-256 zero-sha arm shipped with zero coverage** (reviewer
+   mutation-proved the revert stays green; my gate's hook trio ran
+   SHA-1 only). FIXED: two pins, discrimination re-verified in BOTH
+   directions at this head —
+   - `TestPrePushHook_Sha256NewBranchRangeScans`: stdin fixture with
+     the 64-zero remote sha (new-branch shape), dead blob at HEAD,
+     refusal asserted by OUTPUT CONTENT ("REFUSED") — the first
+     version of this pin was vacuously green (relative hook path +
+     cmd.Dir = exec failure satisfies a bare err!=nil; found while
+   re-verifying: absolutized + content-checked now).
+   - `TestPrePushHook_Sha256ObjectFormatRepoPush`: behavioral pair
+     in `git init --object-format=sha256` repos — the DEAD push is
+     the FIRST push (new-branch/Z64 shape) precisely so the arm is
+     load-bearing; clean first push passes. (Fixture shape for the
+     orchestrator: fresh work+bare remote under t.TempDir per
+     subtest, hook installed via init.templateDir=<dir>/templates —
+     the template DIR, not its hooks child, the mistake my first
+     restructure made — push via file://<tmp>/X-remote.git.)
+   - Mutation check executed at this head: removing the sha256 arm
+     from is_zero_sha → BOTH pins RED (dead-first push SUCCEEDS =
+     guard-inert reproduced); restored → full pkg/fsaudit -race
+     green, hook byte-identical (diff-verified).
+   Hook LOGIC unchanged (test-only addition — no re-gate needed per
+   the orchestrator's standing note).
 
 **Verification-flag correction (r1 integrity note accepted)**: the
 original "FULL suite green (361s)" was gathered WITHOUT -race and CI

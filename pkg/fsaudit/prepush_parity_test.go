@@ -224,3 +224,174 @@ func TestPrePushHook_FailsOpenWhenGitUnavailable(t *testing.T) {
 		t.Fatalf("hook must fail OPEN when git is unavailable, got %v (%s)", err, out)
 	}
 }
+
+// sha256ZeroSha is git's null object id in SHA-256 repos (64 zeros).
+const sha256ZeroSha = "0000000000000000000000000000000000000000000000000000000000000000"
+
+// PIN (the SHA-256 zero-sha arm, r3 F2 — revert of this arm was
+// mutation-proven suite-invisible): a NEW-BRANCH push line whose
+// remote sha is the SHA-256 null id must be recognized as
+// new-branch (scan everything reachable from local sha). With a dead
+// blob committed at HEAD, the hook must REFUSE — verified by OUTPUT
+// CONTENT ("REFUSED"), never by a bare non-zero exit (a relative-path
+// exec failure would satisfy that vacuously; the hook path is
+// absolutized for the cmd.Dir execution).
+func TestPrePushHook_Sha256NewBranchRangeScans(t *testing.T) {
+	gitPath, err := exec.LookPath("git")
+	if err != nil {
+		t.Skip("git not on PATH (SHA-256 arm pin)")
+	}
+	hookAbs, err := filepath.Abs(prepushHookPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	work := filepath.Join(dir, "work")
+	gitEnv := append(os.Environ(),
+		"GIT_CONFIG_GLOBAL="+filepath.Join(dir, "no-global.cfg"),
+		"GIT_CONFIG_SYSTEM=/dev/null",
+		"HOME="+dir,
+	)
+	gitIn := func(args ...string) ([]byte, error) {
+		cmd := exec.Command(gitPath, args...)
+		cmd.Dir = work
+		cmd.Env = gitEnv
+		return cmd.CombinedOutput()
+	}
+	if out, err := exec.Command(gitPath, "init", work).CombinedOutput(); err != nil {
+		t.Fatalf("git init: %v\n%s", err, out)
+	}
+	if out, err := gitIn("config", "user.email", "t@example.invalid"); err != nil {
+		t.Fatalf("%v\n%s", err, out)
+	}
+	if out, err := gitIn("config", "user.name", "t"); err != nil {
+		t.Fatalf("%v\n%s", err, out)
+	}
+	// A dead blob AT HEAD: the new-branch range must reach it.
+	if err := os.WriteFile(filepath.Join(work, "dead.yaml"), make([]byte, 2048), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if out, err := gitIn("add", "-A"); err != nil {
+		t.Fatalf("%v\n%s", err, out)
+	}
+	if out, err := gitIn("commit", "-m", "dead"); err != nil {
+		t.Fatalf("%v\n%s", err, out)
+	}
+	shaOut, err := gitIn("rev-parse", "HEAD")
+	if err != nil {
+		t.Fatalf("%v\n%s", err, shaOut)
+	}
+	head := strings.TrimSpace(string(shaOut))
+
+	cmd := exec.Command(hookAbs)
+	cmd.Dir = work
+	cmd.Env = gitEnv
+	// local=HEAD, remote=SHA-256 null id → new-branch shape.
+	cmd.Stdin = strings.NewReader("refs/heads/main " + head + " refs/heads/main " + sha256ZeroSha + "\n")
+	out, err := cmd.CombinedOutput()
+	if err == nil {
+		t.Fatalf("SHA-256 new-branch range with a dead blob at HEAD must REFUSE (guard silently inert otherwise — r3 F2); got exit 0 (%s)", out)
+	}
+	if !strings.Contains(string(out), "REFUSED") {
+		t.Fatalf("refusal must be the hook's verdict output, not an incidental exec failure: err=%v out=%s", err, out)
+	}
+}
+
+// PIN (behavioral, SHA-256 object-format repo end-to-end — r3 F2's
+// ideal): the whole guard works in a `git init --object-format=sha256`
+// world. The DEAD-BLOB push is the FIRST push (new-branch shape:
+// remote sha = the 64-zero SHA-256 null id) precisely so the zero-sha
+// arm is LOAD-BEARING — with the arm removed, the invalid range makes
+// the guard fail-open and the dead push SUCCEEDS (pin RED). The clean
+// repo then proves first-push of clean content passes. Skipped
+// gracefully where the local git predates --object-format.
+func TestPrePushHook_Sha256ObjectFormatRepoPush(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not on PATH (SHA-256 repo pin)")
+	}
+	dir := t.TempDir()
+	templates := filepath.Join(dir, "templates") // the template DIR (git copies its contents: hooks/, ...)
+	if err := os.MkdirAll(filepath.Join(templates, "hooks"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	hookRaw, err := os.ReadFile(prepushHookPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(templates, "hooks", "pre-push"), hookRaw, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	gitEnv := append(os.Environ(),
+		"GIT_CONFIG_GLOBAL="+filepath.Join(dir, "no-global.cfg"),
+		"GIT_CONFIG_SYSTEM=/dev/null",
+		"HOME="+dir,
+	)
+	gitIn := func(cwd string, args ...string) ([]byte, error) {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = cwd
+		cmd.Env = gitEnv
+		return cmd.CombinedOutput()
+	}
+	// sha256Repo builds a fresh clone-style work repo + EMPTY bare
+	// remote (every push is the new-branch/Z64 shape). Skips (once)
+	// when the local git lacks --object-format.
+	supportsSha256 := false
+	sha256Repo := func(t *testing.T) (work string, push func(content []byte) error) {
+		t.Helper()
+		name := t.Name()
+		work = filepath.Join(dir, name+"-work")
+		remote := filepath.Join(dir, name+"-remote.git")
+		if !supportsSha256 {
+			if out, err := gitIn(dir, "init", "--object-format=sha256", "--bare", remote); err != nil {
+				t.Skipf("git lacks --object-format=sha256 (SHA-256 behavioral pin): %v\n%s", err, out)
+			}
+			supportsSha256 = true
+		} else if out, err := gitIn(dir, "init", "--object-format=sha256", "--bare", remote); err != nil {
+			t.Fatalf("%v\n%s", err, out)
+		}
+		if out, err := gitIn(dir, "-c", "init.templateDir="+templates, "init", "--object-format=sha256", work); err != nil {
+			t.Fatalf("%v\n%s", err, out)
+		}
+		if _, err := os.Stat(filepath.Join(work, ".git", "hooks", "pre-push")); err != nil {
+			t.Fatalf("init.templateDir did not activate the hook in the SHA-256 repo: %v", err)
+		}
+		if out, err := gitIn(work, "config", "user.email", "t@example.invalid"); err != nil {
+			t.Fatalf("%v\n%s", err, out)
+		}
+		if out, err := gitIn(work, "config", "user.name", "t"); err != nil {
+			t.Fatalf("%v\n%s", err, out)
+		}
+		return work, func(content []byte) error {
+			if err := os.WriteFile(filepath.Join(work, "managed.yaml"), content, 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if out, err := gitIn(work, "add", "-A"); err != nil {
+				t.Fatalf("%v\n%s", err, out)
+			}
+			if out, err := gitIn(work, "commit", "-m", "c"); err != nil {
+				t.Fatalf("%v\n%s", err, out)
+			}
+			out, err := gitIn(work, "push", "file://"+remote, "HEAD:refs/heads/main")
+			if err != nil {
+				t.Logf("push output:\n%s", out)
+			}
+			return err
+		}
+	}
+
+	// The dead blob goes FIRST — the new-branch (Z64 remote) path is
+	// the arm under pin.
+	t.Run("dead first push refused", func(t *testing.T) {
+		_, push := sha256Repo(t)
+		if err := push(make([]byte, 4096)); err == nil {
+			t.Fatal("dead-blob FIRST push in a SHA-256 repo must be REFUSED (the 64-zero arm is load-bearing here — without it the range is invalid and the guard fails open)")
+		}
+	})
+	t.Run("clean first push passes", func(t *testing.T) {
+		_, push := sha256Repo(t)
+		if err := push([]byte("# pin v1.2.3\n")); err != nil {
+			t.Fatalf("clean FIRST push in a SHA-256 repo must pass: %v", err)
+		}
+	})
+}
