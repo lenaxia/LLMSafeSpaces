@@ -49,7 +49,7 @@ Orchestrator gate recipe (b), as registered: delete the `LoadOrStore` guard in `
 
 - New pin green: `-race -count=20` (20/20); stability arms on the pin: `-short -covermode=atomic -coverpkg=./... -count=100` green; `-race -count=100` green; `GOMAXPROCS=1 -count=50` green; `GOMAXPROCS=2 -race -count=50` green — 300+ consecutive iterations, zero flake.
 - #1842 verification: `-race -count=50` green; recipe (a) re-confirmed (threshold flip → deterministic red both streaming tests → restored).
-- Full `api/internal/handlers` package: `-race -count=1` + CI-shape `-short -covermode=atomic` — see PR checks/worklog update (runs in flight at authoring; results appended below).
+- Full `api/internal/handlers` package: `-race -count=1` ok (256.8 s) and CI-shape `-short -covermode=atomic -count=1` ok (53.4 s, 75.4 % coverage) — both green at 91d6bb3b.
 
 ## Assumptions / residuals
 
