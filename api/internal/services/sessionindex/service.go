@@ -25,14 +25,18 @@ var sessionIndexEvents = promauto.NewCounterVec(prometheus.CounterOpts{
 }, []string{"outcome"})
 
 // reconcileOutcomes counts the convergence pass's dispositions (#1340):
-// reaped (guard-admitted deletion), reap_vetoed_live (#1850: the by-ID
-// probe found the session alive — the list gap alone never reaps),
-// reap_deferred_probe (#1850: the probe was indeterminate — deferred,
-// retried next pass), kept_for_operator (history-bearing absent — the
-// triage guard held it), delete_failed.
+// reconcileOutcomes counts the convergence pass's dispositions (#1340):
+// reaped (guard-admitted deletion), reap_vetoed_live (#1850 via #1865:
+// the by-ID probe found the session alive — the list gap alone never
+// reaps), reap_deferred_probe (#1850 via #1865: the probe was
+// indeterminate — deferred, retried next pass), kept_for_operator
+// (history-bearing absent — the triage guard held it), kept_spawn_window
+// (#1850 via #1881: fresh count-zero rows sheltered by the reap grace —
+// not history-bearing, a distinct population from kept_for_operator,
+// split so the metric never conflates them), delete_failed.
 var reconcileOutcomes = promauto.NewCounterVec(prometheus.CounterOpts{
 	Name: "session_index_reconcile_outcomes_total",
-	Help: "Session-index reconciliation dispositions (reaped, reap_vetoed_live, reap_deferred_probe, kept_for_operator, delete_failed, count_rebuilt, count_unchanged, count_walk_error).",
+	Help: "Session-index reconciliation dispositions (reaped, reap_vetoed_live, reap_deferred_probe, kept_for_operator, kept_spawn_window, delete_failed, count_rebuilt, count_unchanged, count_walk_error).",
 }, []string{"outcome"})
 
 // ReconcileOutcome records one convergence disposition (handler-side).
@@ -343,9 +347,30 @@ func PlanReconciliation(indexRows []types.SessionListItem, harnessList func() (m
 // (#1340 triage): only rows with no message history (message_count == 0).
 type ReapGuard func(types.SessionListItem) bool
 
-// DefaultReapGuard is the message_count == 0 safety guard.
+// reapGraceWindow is the #1850 spawn-window protection: a row younger
+// than this is never reaped, even at message_count == 0. A freshly
+// created create_session worker keeps count 0 through its whole first
+// turn (the prompt delivery is a pod-local POST the API never sees),
+// so without the grace two harness-list misses inside that window
+// reaped the LIVE row and orphaned the phrase minted at creation —
+// the re-phrase defect's five reproductions. Aged count-zero rows
+// keep the #1340 ghost-hygiene verdict (they converge one grace
+// period later; stillborn rows are the accepted, documented cost).
+const reapGraceWindow = 15 * time.Minute
+
+// DefaultReapGuard is the message_count == 0 safety guard, extended
+// by the #1850 spawn-window grace: a count-zero row inside
+// reapGraceWindow of its creation is NOT admitted (a fresh session is
+// not a ghost — harness-list lag must never orphan a minted phrase).
+// Rows without creation-time information keep the pre-#1850 verdict.
 func DefaultReapGuard(row types.SessionListItem) bool {
-	return row.MessageCount == 0
+	if row.MessageCount == 0 {
+		if row.CreatedAt != nil && time.Since(*row.CreatedAt) < reapGraceWindow {
+			return false
+		}
+		return true
+	}
+	return false
 }
 
 func (s *Service) drain() {

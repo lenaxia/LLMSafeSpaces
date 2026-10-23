@@ -119,12 +119,13 @@ function ComposerChip({ chip, onRemove, onRetry }: {
  * Ctrl/Cmd+Enter are allowed to finalize the candidate rather than
  * send the message.
  *
- * History navigation (desktop only): Up on the first line walks back
- * through `userMessageHistory` (newest-first); Down on the last line
- * walks forward. The pre-browse draft is restored when navigating
- * Down past the newest entry. Mirrors the opencode TUI semantics
- * (packages/tui/src/prompt/history.tsx + component/prompt/index.tsx),
- * adapted to a DOM textarea via getCursorLineInfo.
+ * History navigation (desktop only): Up from a collapsed caret at the
+ * very beginning of the buffer (position 0 of line 1 — #1846's guard)
+ * walks back through `userMessageHistory` (newest-first); Down on the
+ * last line walks forward. The pre-browse draft is restored when
+ * navigating Down past the newest entry. Mirrors the opencode TUI
+ * semantics (packages/tui/src/prompt/history.tsx + component/prompt/
+ * index.tsx), adapted to a DOM textarea via getCursorLineInfo.
  *
  * Attachments (Epic 68): the "+" button is always visible in the input
  * row; chips render between the options drawer and the textarea; send
@@ -346,7 +347,14 @@ export function Composer({
     const info = getCursorLineInfo(el.value, el.selectionStart);
 
     if (direction === "up") {
-      if (!info.onFirstLine) return false;
+      // #1846: recall only from a collapsed caret at the very beginning
+      // of the buffer — position 0 of line 1. The old guard checked the
+      // line only, so Up at the end of a single-line draft swapped the
+      // whole draft for a history entry (silent data loss). A caret
+      // anywhere else (or a selection, even one starting at 0) must move
+      // the caret, never replace text. Position 0 implies the first
+      // line, so the onFirstLine check is subsumed.
+      if (el.selectionStart !== 0 || el.selectionEnd !== 0) return false;
       // Entering browse mode: snapshot the draft if non-empty.
       if (historyCursor === -1 && text !== "") {
         setSavedDraft(text);

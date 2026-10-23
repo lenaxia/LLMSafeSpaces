@@ -248,7 +248,25 @@ func (h *ProxyHandler) runSessionIndexReconciliation(workspaceID string) {
 		h.logger.Info("session reconcile: reaped ghost index row",
 			"workspaceID", workspaceID, "sessionID", id)
 	}
+	// #1850 truthfulness split (review r1's robustness nit): the kept
+	// population is TWO populations with different meanings —
+	// history-bearing rows the guard held for operator review, and
+	// fresh count-zero rows sheltered by the spawn-window grace (NOT
+	// history-bearing; count 0). One "history-bearing" metric+log for
+	// both conflated them. The row lookup re-derives which is which;
+	// a kept id missing from the lookup keeps the operator-review
+	// classification (never worse than the old single bucket).
+	byInternal := make(map[string]types.SessionListItem, len(rows))
+	for _, row := range rows {
+		byInternal[row.InternalID] = row
+	}
 	for _, id := range keptForOperator {
+		if row, ok := byInternal[id]; ok && row.MessageCount == 0 {
+			sessionindex.ReconcileOutcome("kept_spawn_window")
+			h.logger.Warn("session reconcile: spawn-window grace kept fresh row (not a ghost until the grace lapses)",
+				"workspaceID", workspaceID, "sessionID", id)
+			continue
+		}
 		// #1340 triage guard: history-bearing rows the harness reports
 		// gone are NOT auto-deleted — metric + Warn for operator review
 		// (a vanished session with history may indicate a harness store

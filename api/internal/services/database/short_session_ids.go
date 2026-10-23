@@ -19,6 +19,39 @@ import (
 // 5 attempts make a lost race astronomically unlikely to surface.
 const registerRetries = 5
 
+// execWithMintedPhrase is the #1850 persistence-by-construction seam
+// for every row-creating session_index upsert: the caller's INSERT
+// leg carries the phrase, so the row is born WITH its short_id in the
+// same statement that births it — never phrase-less, never settled
+// lazily by a later backfill mint that would re-issue identity (the
+// re-phrase defect's mechanism). The mint follows the registration
+// seam's ruling-3 discipline: base drawn once, retries carry the
+// deterministic counter suffix; a 23505 from the (workspace_id,
+// short_id) partial unique index re-mints, anything else propagates.
+// The ON CONFLICT DO UPDATE legs never bind short_id, so when the
+// row already exists the mint evaporates and the EXISTING phrase
+// wins — idempotent-to-the-original by construction.
+func (s *Service) execWithMintedPhrase(ctx context.Context, fn func(phrase string) error) error {
+	base, err := shortid.MintPhrase()
+	if err != nil {
+		return err
+	}
+	for attempt := 0; attempt < registerRetries; attempt++ {
+		minted := base
+		if attempt > 0 {
+			minted = shortid.WithCounterSuffix(base, attempt+1)
+		}
+		if err := fn(minted); err != nil {
+			if isUniqueViolation(err) {
+				continue
+			}
+			return err
+		}
+		return nil
+	}
+	return fmt.Errorf("session upsert did not converge (phrase mint) after %d attempts", registerRetries)
+}
+
 // EnsureSessionRegistered is design 0066's single registration seam
 // (§4.2): the one DB write path that can create a short id. Mint in Go
 // (crypto/rand over the 36-symbol alphabet — never SQL random, never a
