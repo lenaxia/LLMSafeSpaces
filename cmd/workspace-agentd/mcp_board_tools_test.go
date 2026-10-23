@@ -61,7 +61,7 @@ func TestMCPBoard_RegistryShape(t *testing.T) {
 		// Manager set (#1747): tasks + dependencies + plan.
 		"board_create_task", "board_update_task", "board_add_dependency",
 		"board_remove_dependency", "board_delete_task", "board_pause_task",
-		"board_resume_task", "board_import_plan",
+		"board_resume_task", "board_rearm_task", "board_import_plan",
 	}
 	require.Len(t, board, len(want), "exactly the worker + #1747 manager board tools; got %v", board)
 	for _, name := range want {
@@ -82,14 +82,18 @@ func TestMCPBoard_RegistryShape(t *testing.T) {
 
 // TestMCPBoard_ClaimTokenSchema: the claim-token semantics are visible
 // in the tool schemas themselves — every in-flight write marks
-// claimToken required (the fresh worker's in-flight guard; a worker
-// that loses its token is told by the schema, not by a runtime 409
-// alone). board_read (no token — a read is not an in-flight write)
-// must NOT require one.
+// claimToken required on the TOKEN-GUARDED in-flight writes (heartbeat,
+// throttle — the fresh worker's lease tools; a worker that loses its
+// token is told by the schema, not by a runtime 409 alone).
+// board_move_stage is the #1832 WS2 DUAL-ROUTE tool: the token is
+// documented but NOT schema-required — a token present routes the
+// worker projection, a token absent routes the manager-grade path
+// (identity-gated at both tiers). board_read (no token — a read is not
+// an in-flight write) must NOT require one.
 func TestMCPBoard_ClaimTokenSchema(t *testing.T) {
 
 	tools := mcpToolsList(t)
-	for _, name := range []string{"board_heartbeat", "board_report_throttle", "board_move_stage"} {
+	for _, name := range []string{"board_heartbeat", "board_report_throttle"} {
 		tool, ok := tools[name]
 		require.True(t, ok, "%s in tools/list", name)
 		schema := tool["inputSchema"].(map[string]any)
@@ -97,6 +101,14 @@ func TestMCPBoard_ClaimTokenSchema(t *testing.T) {
 		assert.Contains(t, props, "claimToken", "%s documents claimToken", name)
 		assert.Contains(t, schema["required"], "claimToken", "%s REQUIRES claimToken (in-flight write)", name)
 	}
+
+	move := tools["board_move_stage"]
+	require.NotNil(t, move, "board_move_stage in tools/list")
+	moveSchema := move["inputSchema"].(map[string]any)
+	moveProps := moveSchema["properties"].(map[string]any)
+	assert.Contains(t, moveProps, "claimToken", "board_move_stage documents the worker token")
+	assert.Equal(t, []any{"toStage"}, moveSchema["required"],
+		"#1832 WS2: claimToken is conditionally required (worker vs manager-grade route), not schema-required")
 
 	read := tools["board_read"]
 	require.NotNil(t, read, "board_read in tools/list")
@@ -271,16 +283,26 @@ func TestMCPBoard_DispatcherWiring(t *testing.T) {
 	assert.Contains(t, out, `"extended":true`)
 	assert.Equal(t, "/internal/v1/automation/board/tasks/heartbeat", rec.path)
 
-	// Shape refusal at the dispatcher: an in-flight write without a
-	// claim token NEVER reaches the wire (the schema is documentation;
-	// the dispatcher is the enforcement — the hand-rolled layer has no
-	// schema validator, the session_archive boolean discipline).
+	// Shape + identity routing at the dispatcher (#1832 WS2 dual-route):
+	// a token-less move_stage with NO session identity never reaches
+	// the wire (the manager gate refuses fail-closed — a spawned
+	// worker that omits its token gains nothing).
 	rec.method = ""
 	_, err = callMCPTool(context.Background(), mcpTestPassword, "board_move_stage", map[string]any{
 		"shortId": "tsk-aaaa1111", "toStage": "in_review"})
-	require.Error(t, err, "token-less move_stage must be refused")
-	assert.Contains(t, err.Error(), "claimToken")
-	assert.Empty(t, rec.method, "no wire call for a token-less in-flight write")
+	require.Error(t, err, "token-less, identity-less move_stage must be refused")
+	assert.Contains(t, err.Error(), "manager board tools require the calling session's identity")
+	assert.Empty(t, rec.method, "no wire call for a token-less, identity-less move")
+
+	// A token-less move_stage WITH an (injected) orchestrator-class
+	// session identity routes the MANAGER-GRADE wire path.
+	rec.path, rec.method = "", ""
+	_, err = callMCPTool(context.Background(), mcpTestPassword, "board_move_stage", map[string]any{
+		"shortId": "tsk-aaaa1111", "toStage": "backlog",
+		"lsp_injected_session": "ses_collab1"})
+	require.NoError(t, err)
+	assert.Equal(t, "/internal/v1/automation/board/tasks/tsk-aaaa1111/move-stage", rec.path,
+		"the manager-grade move rides the :id-addressed manager route")
 }
 
 // mcpToolsList fetches tools/list as a name→tool map.

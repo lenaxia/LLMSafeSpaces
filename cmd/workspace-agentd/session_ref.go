@@ -46,7 +46,10 @@ var (
 )
 
 // pullSessionShortIDs fetches the workspace's registry from the
-// platform and replaces the replica. Best-effort: errors return false
+// platform and MERGES it into the replica (upsert — a pull never
+// removes entries; #1850: a pull's snapshot can predate a
+// create_session's register round-trip, and a replace-style apply
+// wiped the fresh mapping). Best-effort: errors return false
 // (resolution degrades; nothing fails).
 func pullSessionShortIDs(ctx context.Context) bool {
 	client, saToken, workspaceID, err := podPlatformClient()

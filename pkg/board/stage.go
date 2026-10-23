@@ -5,6 +5,8 @@ package board
 
 import (
 	"context"
+	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -109,12 +111,15 @@ func (s *Service) moveStageTx(ctx context.Context, tx pgx.Tx, actor Actor, taskI
 	from := cur.Stage
 	res := moveStageResult{TaskID: taskID, FromStage: from, RequestedTo: toStage}
 
-	// The pending_input exits are manager-surface-only (a delegated worker
-	// is not the human the exit exists for; its token does not unlock
-	// self-exit). This is the ONE remaining agent-surface manager denial
-	// (#1747 keeps it: the human exit stays human).
+	// The pending_input exits are manager-surface-only for WORKERS (a
+	// delegated worker is not the human the exit exists for; its token
+	// does not unlock self-exit). #1832 WS2: the pod seam's
+	// manager-grade agent surface (SurfaceAgentManager — the
+	// orchestrator-class session behind the resolveManager belt:
+	// harness-attested identity + the live-assignee worker refusal)
+	// is a manager surface; the ordinary-worker rule is unchanged.
 	if from == StagePendingInput && actor.Surface == SurfaceAgent {
-		return res, nudge{}, &GuardError{Code: GuardManagerSurface, Detail: "pending_input exits are human decisions (manager surfaces only)"}
+		return res, nudge{}, &GuardError{Code: GuardManagerSurface, Detail: "pending_input exits are human or manager decisions (the worker surface is denied; the orchestrator-class manager path is the agent-manager surface)"}
 	}
 
 	// #1747 pause-must-pause: FORWARD stage-writes refuse on a
@@ -169,7 +174,7 @@ func (s *Service) moveStageTx(ctx context.Context, tx pgx.Tx, actor Actor, taskI
 		resulting, err = s.updateStageTx(ctx, tx, taskID, from, toStage,
 			`claim_token=NULL, lease_expires_at=NULL, claim_incremented_attempts=false`+reset_overlay, evidenceURL, actor)
 		if err == nil {
-			err = s.doneCascade(ctx, tx, cur)
+			err = s.doneCascade(ctx, tx, cur, evidenceURL, &postNudge)
 		}
 
 	case from == StageInProgress && toStage == StagePendingInput:
@@ -199,7 +204,7 @@ func (s *Service) moveStageTx(ctx context.Context, tx pgx.Tx, actor Actor, taskI
 		resulting, err = s.updateStageTx(ctx, tx, taskID, from, toStage,
 			`claim_token=NULL, lease_expires_at=NULL, claim_incremented_attempts=false`+reset_overlay, evidenceURL, actor)
 		if err == nil {
-			err = s.doneCascade(ctx, tx, cur)
+			err = s.doneCascade(ctx, tx, cur, evidenceURL, &postNudge)
 		}
 
 	case from == StageInReview && toStage == StagePendingInput:
@@ -237,18 +242,32 @@ func (s *Service) moveStageTx(ctx context.Context, tx pgx.Tx, actor Actor, taskI
 	return res, postNudge, nil
 }
 
-// nudge is a deferred post-commit delivery (r1-C5: a rollback must never
-// emit it). Under the merged design's re-spawn semantics the delivery is
-// a SPAWN of the fresh worker that receives the token in its charter
-// (optionally aborting a superseded live session first — the interrupt
-// seam); there are no nudges to dead sessions anywhere.
+// nudge is the deferred post-commit side-effect carrier (r1-C5: a
+// rollback must never emit one). Under the merged design's re-spawn
+// semantics the delivery is a SPAWN of the fresh worker that receives
+// the token in its charter (optionally aborting a superseded live
+// session first — the interrupt seam); there are no nudges to dead
+// sessions anywhere. events carries nested settle events (the #1832
+// review-complete/park coupling) for post-commit SSE publication;
+// pokeProjects carries settle-touched projects for the dispatch drive
+// (a settled review may live in a SIBLING project of the subject —
+// review r1, finding 5: unblocked dependents there get the event-driven
+// drive, not just the sweep's latency).
 type nudge struct {
 	taskID, token string
 	spawn         bool
 	abortAssignee string
+	events        []Event
+	pokeProjects  []string
 }
 
 func (n nudge) fire(ctx context.Context, s *Service) {
+	for _, evt := range n.events {
+		s.publishCommitted(evt)
+	}
+	for _, pid := range n.pokeProjects {
+		s.pokeDrive(pid)
+	}
 	if !n.spawn {
 		return
 	}
@@ -269,15 +288,23 @@ func (s *Service) doneGuard(t *Task, evidenceURL string) error {
 	return nil
 }
 
-// doneCascade: the reverse-edge unblock + the RC4 completion check, both
-// in the →done transaction.
-func (s *Service) doneCascade(ctx context.Context, tx pgx.Tx, t *Task) error {
+// doneCascade: the reverse-edge unblock + the RC4 completion check +
+// the #1832 review settle (the subject's anchored review tasks complete
+// or park with the transition), all in the →done transaction. The
+// settle's nested events ride the post-commit nudge for publication.
+func (s *Service) doneCascade(ctx context.Context, tx pgx.Tx, t *Task, evidenceURL string, n *nudge) error {
 	if _, err := unblockDependents(ctx, txQ{tx}, t.ID, true); err != nil {
 		return err
 	}
 	if _, err := epicCompletionCheck(ctx, tx, t.EpicID); err != nil {
 		return err
 	}
+	evts, pokes, err := s.completeReviewTasks(ctx, tx, t, evidenceURL, nil)
+	if err != nil {
+		return err
+	}
+	n.events = append(n.events, evts...)
+	n.pokeProjects = append(n.pokeProjects, pokes...)
 	return nil
 }
 
@@ -355,9 +382,29 @@ func (s *Service) exitPendingReclaim(ctx context.Context, tx pgx.Tx, actor Actor
 
 // --- Heartbeat + throttle -----------------------------------------------------------
 
+// heartbeatFutureTolerance bounds honest client-clock drift: an
+// observedProgressAt up to this far ahead of the SERVER clock is clamped
+// to the server clock (a FUTURE stamp is never stored — the C1 poison
+// direction); a stamp beyond it is a hallucinated estimate, not
+// evidence, and rejects outright (#1847 PR1: the C1 incident class — a
+// future watermark is unrenewable by construction, so one accepted
+// future stamp locked the worker out of its own lease). PAST-skewed
+// client stamps remain client-trusted (only the future direction can
+// poison the evidence gate); the #1847 rework retires worker-declared
+// stamps as the liveness input entirely.
+const heartbeatFutureTolerance = 2 * time.Minute
+
 // Heartbeat refreshes the lease ONLY when it carries new progress evidence
 // (the worker's message-level watermark moved — #1685: elapsed time is not
-// liveness). Requires the matching claim token.
+// liveness). Requires the matching claim token. #1847: the server clock is
+// the authority over the FUTURE direction — a client-observed timestamp
+// beyond heartbeatFutureTolerance ahead of the server clock rejects
+// (invalid evidence), one within it clamps to now (a future stamp is
+// never stored), and a stored watermark already reading future (pre-fix
+// C1 damage, or DB-ahead/app-behind clock skew) reads as stale so an
+// honest present-t observation heals it — ONE evidence-free extend,
+// bounded: the heal overwrites the watermark, so a re-sent identical
+// stamp does not extend again (pinned TestKill_HeartbeatHealIsOneShot).
 func (s *Service) Heartbeat(ctx context.Context, actor Actor, taskID, shortIDOrID string, observedProgressAt time.Time) (HeartbeatResult, error) {
 	t, err := s.resolveTaskForActor(ctx, actor, pick(taskID, shortIDOrID))
 	if err != nil {
@@ -366,9 +413,43 @@ func (s *Service) Heartbeat(ctx context.Context, actor Actor, taskID, shortIDOrI
 	if t.Stage != StageInProgress || actor.ClaimToken == "" || actor.ClaimToken != t.ClaimToken {
 		return HeartbeatResult{}, &GuardError{Code: GuardClaimToken, Detail: "heartbeat requires a live claim (stage + token)"}
 	}
+	serverNow := time.Now().UTC()
+	switch {
+	case observedProgressAt.After(serverNow.Add(heartbeatFutureTolerance)):
+		return HeartbeatResult{}, &GuardError{Code: GuardInput, Detail: fmt.Sprintf(
+			"observedProgressAt %s is stamped in the future (server clock %s) — future stamps are not progress evidence; send the timestamp of your LAST observed progress, never an estimate",
+			observedProgressAt.Format(time.RFC3339), serverNow.Format(time.RFC3339))}
+	case observedProgressAt.After(serverNow):
+		observedProgressAt = serverNow // clamp: THIS stamp stores server-clock — the future direction never stores a client stamp (past-skewed stamps store verbatim)
+	}
 	// Evidence gate: extend only when the watermark moved past the stored
-	// progress watermark.
-	extends := t.LastProgressAt == nil || observedProgressAt.After(*t.LastProgressAt)
+	// Evidence gate: extend only when the watermark moved past the stored
+	// progress watermark. A stored watermark ahead of the server clock is
+	// pre-fix poison (the C1 lockout) and reads as stale — never as
+	// unbeatable evidence.
+	extends := t.LastProgressAt == nil || t.LastProgressAt.After(serverNow) || observedProgressAt.After(*t.LastProgressAt)
+	// #1832 WS4 stillborn guard (the narrow evidence fix — the
+	// platform-derived liveness rework is #1847's, another lane): a
+	// POSITIVE zero-message report for the assignee session refuses the
+	// extension — a spawn that never turned is not alive, whatever
+	// timestamps say (the lease-keeper-renews-the-corpse class). A
+	// source ERROR fails OPEN (a transient blip must not kill a live
+	// worker's renewal; the rework owns the stronger posture). Nil seam
+	// or no recorded assignee: today's semantics, unchanged.
+	if extends && s.turnEvidence != nil && t.AssigneeSession != "" {
+		turns, terr := s.turnEvidence.SessionTurnEvidence(ctx, t.AssigneeSession)
+		if terr != nil {
+			slog.WarnContext(ctx, "board: turn-evidence source unavailable — heartbeat falls back to the timestamp rule (#1832 WS4 fail-open)",
+				"task", t.ShortID, "assignee", t.AssigneeSession, "err", terr.Error())
+		} else if turns <= 0 {
+			return HeartbeatResult{
+				Extended:       false,
+				LeaseExpiresAt: derefTime(t.LeaseExpiresAt),
+				LastProgressAt: derefTime(t.LastProgressAt),
+				Reason:         "stillborn: zero turn evidence for the assignee session — updated_at alone is not liveness (#1832 WS4)",
+			}, nil
+		}
+	}
 	var lease time.Time
 	if extends {
 		if err := s.q().QueryRow(ctx, `
@@ -446,14 +527,22 @@ func (s *Service) ReportThrottle(ctx context.Context, actor Actor, taskID, short
 }
 
 // resolveTaskForActor resolves a task through the actor's scope: the
-// agent surface reads workspace-scoped (r1-S1 — an unscoped read leaked
-// cross-tenant rows and claim tokens); manager surfaces resolve by id
-// (ownership follows via requireOwner).
+// agent surfaces read workspace-scoped (r1-S1 — an unscoped read leaked
+// cross-tenant rows and claim tokens; #1832 WS2 extends the scoping to
+// the manager-grade agent surface — same pod, same binding); manager
+// surfaces resolve by id (ownership follows via requireOwner).
 func (s *Service) resolveTaskForActor(ctx context.Context, actor Actor, ref string) (*Task, error) {
-	if actor.Surface == SurfaceAgent && actor.WorkspaceID != "" {
+	if isAgentSurface(actor.Surface) && actor.WorkspaceID != "" {
 		return s.store.resolveTaskInWorkspace(ctx, s.q(), actor.WorkspaceID, ref)
 	}
 	return s.store.resolveTask(ctx, s.q(), "", ref)
+}
+
+// isAgentSurface reports whether the surface is one of the in-pod
+// agent projections (worker or manager-grade) — the two surfaces the
+// caller-workspace binding governs.
+func isAgentSurface(surface string) bool {
+	return surface == SurfaceAgent || surface == SurfaceAgentManager
 }
 
 // effectivePausedTx reports the #1744 pause state as ONE predicate: a
