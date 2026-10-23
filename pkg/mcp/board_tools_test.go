@@ -814,3 +814,43 @@ func TestBoardTools_DeleteProjectRefused(t *testing.T) {
 	text := boardResultText(res)
 	assert.Contains(t, text, "archive", "the refusal points at the archive path")
 }
+
+// TestCriteriaCheckArg_Branches: the map-walking decoder's full matrix
+// (#1864 review round 1 — only the legacy-integer arm was pinned).
+func TestCriteriaCheckArg_Branches(t *testing.T) {
+	t.Run("object form met false", func(t *testing.T) {
+		c, err := criteriaCheckArg(map[string]any{"k": map[string]any{"index": float64(2), "met": false}}, "k")
+		require.NoError(t, err)
+		require.Equal(t, &board.CriteriaCheck{Index: 2, Met: false}, c)
+	})
+	t.Run("object form met default true", func(t *testing.T) {
+		c, err := criteriaCheckArg(map[string]any{"k": map[string]any{"index": float64(0)}}, "k")
+		require.NoError(t, err)
+		require.True(t, c.Met)
+	})
+	t.Run("missing index", func(t *testing.T) {
+		_, err := criteriaCheckArg(map[string]any{"k": map[string]any{"met": true}}, "k")
+		require.ErrorContains(t, err, "requires index")
+	})
+	t.Run("met non-bool", func(t *testing.T) {
+		_, err := criteriaCheckArg(map[string]any{"k": map[string]any{"index": float64(0), "met": "yes"}}, "k")
+		require.ErrorContains(t, err, "met must be a boolean")
+	})
+	t.Run("non-integer float index", func(t *testing.T) {
+		_, err := criteriaCheckArg(map[string]any{"k": map[string]any{"index": 1.5}}, "k")
+		require.ErrorContains(t, err, "integer")
+	})
+	t.Run("non-integer legacy float", func(t *testing.T) {
+		_, err := criteriaCheckArg(map[string]any{"k": 1.5}, "k")
+		require.ErrorContains(t, err, "integer")
+	})
+	t.Run("garbage", func(t *testing.T) {
+		_, err := criteriaCheckArg(map[string]any{"k": "x"}, "k")
+		require.ErrorContains(t, err, "expected {index, met}")
+	})
+	t.Run("absent nil", func(t *testing.T) {
+		c, err := criteriaCheckArg(map[string]any{}, "k")
+		require.NoError(t, err)
+		require.Nil(t, c)
+	})
+}

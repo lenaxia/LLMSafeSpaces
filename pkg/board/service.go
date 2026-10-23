@@ -321,8 +321,10 @@ func (s *Service) UpdateProject(ctx context.Context, actor Actor, projectID, sho
 	if err := requireOwner(actor, p.UserID); err != nil {
 		return nil, err
 	}
-	// #1837 P1b: caps + corruption heuristics (name only — the patch's
-	// other fields are numeric).
+	// #1837 P1b: caps + corruption heuristics on name AND tags. Write
+	// semantics below are REPLACE-unconditional for tags (the
+	// documented engine rule: omitted tags CLEAR the set — send the
+	// full set to keep it).
 	if err := ValidateProjectInput(in); err != nil {
 		return nil, err
 	}
@@ -495,10 +497,10 @@ func (s *Service) UpdateEpic(ctx context.Context, actor Actor, epicID, shortIDOr
 		return nil, err
 	}
 	// #1837 P1b: caps + corruption heuristics. NOTE: epic PATCH
-	// semantics are REPLACE-unconditional (title/outcome/tags are
-	// written as submitted — an omitted outcome CLEARS it, the
-	// documented engine rule, unchanged here); only EMPTY values skip
-	// validation above.
+	// semantics — TITLE falls back to the stored value when omitted;
+	// outcome and tags are REPLACE-unconditional (an omitted outcome
+	// or tags CLEARS them, the documented engine rule, unchanged
+	// here). Only EMPTY values skip validation above.
 	if err := ValidateEpicInput(in); err != nil {
 		return nil, err
 	}

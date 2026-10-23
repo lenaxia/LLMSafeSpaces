@@ -38,11 +38,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   repetition rejection (a fragment tiling the value, or one line
   repeated, ≥50 times), and raw JSON structural splice rejection
   (`","key":"` adjacency inside string values — the #1832 dogfood's
-  silent-corruption artifact). New guard code `text_rejected`
-  (400 class; `content_echo_diff` on create/update responses flags
-  stored != submitted, never silent). Fenced code blocks, balanced
-  inline JSON containers, and JSON-opening lines are exempt —
-  legitimate markdown/JSON/code is pinned un-rejected by tests.
+  silent-corruption artifact; junk-wrapped repeats, line-start
+  artifacts, artifacts after unterminated fences, and the tag channel
+  included). New guard code `text_rejected` (400 class;
+  `content_echo_diff` on task/epic/project create/update responses
+  flags stored != submitted, never silent). TERMINATED fenced code
+  blocks and balanced inline JSON containers are exempt — legitimate
+  markdown/JSON/code is pinned un-rejected by tests; the repetition
+  heuristic covers fragments up to 512 bytes (documented bound).
 - **File-backed long fields on the agent manager surface**:
   `description_file` (board_create_task / board_update_task) and
   `outcome_file` (board_create_epic / board_update_epic) read a

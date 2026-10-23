@@ -228,7 +228,12 @@ var boardUpdateItemTool = mcp.NewTool("board_update_item",
 			"required": []string{"text"},
 		}),
 		mcp.Description("Task criteria [{text, met}] (tsk- only; REPLACE when present)")),
-	mcp.WithNumber("set_criteria_met",
+	mcp.WithObject("set_criteria_met",
+		mcp.Properties(map[string]any{
+			"index": map[string]any{"type": "integer", "minimum": 0},
+			"met":   map[string]any{"type": "boolean", "default": true},
+		}),
+		mcp.Required(),
 		mcp.Description("{index, met} — check off OR uncheck the criterion at the 0-based index (tsk- only; #1837 P2b). The legacy bare-integer form N still decodes as {index:N, met:true}. Refused alongside acceptance_criteria (send one or the other); out-of-bounds indices are loud errors")),
 	mcp.WithString("request_id", mcp.Description("Idempotency key (one per logical operation)")),
 )

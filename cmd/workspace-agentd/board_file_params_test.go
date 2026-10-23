@@ -151,3 +151,43 @@ func TestBoardFileParams_NullWrongFieldRefused(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "not admitted")
 }
+
+func TestBoardFileParams_NoFileToolRefusesAnyFileKey(t *testing.T) {
+	// #1837 review round 2: a *_file key on a manager tool that admits
+	// NO file param (project create) is refused loudly pre-wire.
+	api, _ := newAutomationAPI(t, 200, `{}`)
+	setupRenameWorkspaceEnv(t, api)
+	_, err := mcpAutomation(context.Background(), mcpTestPassword, "board_create_project", map[string]any{
+		"name": "P", "name_file": "/tmp/x.md",
+		"lsp_injected_session": "ses-1",
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "not admitted")
+}
+
+func TestBoardFileParams_NullAdmittedNeverReachesWire(t *testing.T) {
+	api, rec := newAutomationAPI(t, 200, `{"short_id":"tsk-n0000001"}`)
+	setupRenameWorkspaceEnv(t, api)
+	_, err := mcpAutomation(context.Background(), mcpTestPassword, "board_create_task", map[string]any{
+		"epicId": "epc-bbbb2222", "title": "T", "description_file": nil,
+		"lsp_injected_session": "ses-1",
+	})
+	require.NoError(t, err)
+	var wire map[string]json.RawMessage
+	require.NoError(t, json.Unmarshal([]byte(rec.body), &wire))
+	assert.NotContains(t, wire, "description_file", "a null mention is consumed — no *_file spelling reaches the wire")
+}
+
+func TestBoardFileParams_EchoDiffPassesThroughVerbatim(t *testing.T) {
+	// #1837 review round 2: content_echo_diff rides the platform body
+	// to the calling agent untouched (agentd re-models nothing).
+	api, rec := newAutomationAPI(t, 200, `{"short_id":"tsk-e0000001","title":"stored","content_echo_diff":["title"]}`)
+	setupRenameWorkspaceEnv(t, api)
+	out, err := mcpAutomation(context.Background(), mcpTestPassword, "board_update_task", map[string]any{
+		"taskId": "tsk-e0000001", "title": "submitted",
+		"lsp_injected_session": "ses-1",
+	})
+	require.NoError(t, err)
+	assert.Contains(t, out, `"content_echo_diff":["title"]`)
+	_ = rec
+}

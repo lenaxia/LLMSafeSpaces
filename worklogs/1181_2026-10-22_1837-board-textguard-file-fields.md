@@ -20,10 +20,14 @@ description literally containing `","title":"PLACEHOLDER"}`).
   line (≥8 bytes, alnum) repeated ≥50 times. Threshold 50 = the
   acceptance bar and the observed class; 40 repeats passes.
 - JSON structural splice: `","key":"` adjacency inside string values
-  rejected. False-positive gates (all test-pinned): fenced code
+  rejected (whitespace-tolerant; line-start and
+  post-unterminated-fence artifacts included — review round 2).
+  False-positive gates (all test-pinned): TERMINATED fenced code
   blocks, balanced {...}/[...] containers (stack scanner with string
-  state), lines opening with {/[/". Legit compact JSON examples pass;
-  a fenced block QUOTING the artifact passes.
+  state). Legit compact JSON examples pass (as balanced containers);
+  a fenced block QUOTING the artifact passes. Review round 2 added:
+  junk-wrapped repetition (runRepetition, units 1..512 bytes),
+  tag-channel corruption scan, no-file-tool *_file refusal.
 - Echo diff-flag: create/update task+epic responses carry
   `content_echo_diff: [title|description|outcome]` only when a
   submitted field stored differently (handlers tier; REST + agent

@@ -532,11 +532,14 @@ func (h *PodAutomationHandler) BoardImportPlan(c *gin.Context) {
 
 // --- Workspace-scoped manager reads (#1837 P2a) ---------------------------------
 
-// readySetFromTasks derives the project's READY set from an UNFILTERED
-// task list (backlog + unblocked + unpaused + not cooling down — the
-// claim predicates' read-side mirror). Derived, not a second engine
-// read: the list already carries every predicate column. Rendered only
-// for unfiltered lists (a stage filter would hide ready rows).
+// readySetFromTasks derives the project's ready HINT from a fully
+// UNFILTERED task list: backlog + unblocked + unpaused + not cooling —
+// the TASK-LEVEL claim predicates. Necessary-not-sufficient: the
+// engine's claim choke point additionally gates epic status/DRR quota
+// and project-level pause/saturation at claim time. Derived, not a
+// second engine read (the list already carries every task-level
+// predicate column); rendered only for fully unfiltered lists (a
+// stage OR failed filter would hide ready rows).
 func readySetFromTasks(tasks []board.Task) []string {
 	var ready []string
 	for _, t := range tasks {
@@ -553,11 +556,10 @@ func readySetFromTasks(tasks []board.Task) []string {
 // the derived ready set. Manager-gated, workspace-scoped (a foreign
 // workspace's project is a plain 404).
 func (h *PodAutomationHandler) BoardManagerListTasks(c *gin.Context) {
-	raw, ws, _, session, ok := h.resolveManager(c)
+	_, ws, _, _, ok := h.resolveManager(c)
 	if !ok {
 		return
 	}
-	_ = raw
 	stage := c.Query("stage")
 	if stage != "" && !map[string]bool{"backlog": true, "in_progress": true, "in_review": true, "done": true, "pending_input": true}[stage] {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "stage filter must be one of the five stages", "code": board.GuardInput})
@@ -574,7 +576,7 @@ func (h *PodAutomationHandler) BoardManagerListTasks(c *gin.Context) {
 		return
 	}
 	ready := []string{}
-	if stage == "" {
+	if stage == "" && failed == "" {
 		ready = readySetFromTasks(tasks)
 	}
 	c.JSON(http.StatusOK, gin.H{
@@ -584,7 +586,6 @@ func (h *PodAutomationHandler) BoardManagerListTasks(c *gin.Context) {
 		"ready_set":  ready,
 		"count":      len(tasks),
 	})
-	_ = session
 }
 
 // BoardManagerHealth is board_health: the workspace's board health

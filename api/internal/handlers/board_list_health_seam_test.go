@@ -116,3 +116,24 @@ func TestBoardSeam_SetCriteriaMetCombinedRefused(t *testing.T) {
 	require.Equal(t, http.StatusBadRequest, w.Code)
 	assert.Contains(t, w.Body.String(), "one or the other")
 }
+
+func TestBoardSeam_ListReadySetGatedOnFailedFilter(t *testing.T) {
+	// #1864 review round 1: a failed=true list is a FILTERED list — the
+	// ready set derived from the failed-only subset would silently
+	// under-report the project's ready rows. Rendered as empty.
+	mgr := newFakeBoardManager()
+	mgr.wsTasks = []board.Task{
+		{ID: "t1", ShortID: "tsk-rdy000001", Title: "ready", Stage: board.StageBacklog, Tags: []string{}},
+		{ID: "t2", ShortID: "tsk-fail0001", Title: "failed", Stage: board.StageBacklog, LastAttemptFailed: true, Tags: []string{}},
+	}
+	r := newBoardAutomationRouterWithManager(t, newFakeBoardService(), mgr)
+
+	w := doBoard(t, r, http.MethodGet, "/internal/v1/automation/board/projects/prj-aaaa1111/tasks?workspaceID=ws-1&sessionId=ses-1&failed=true", "")
+	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
+	var resp struct {
+		Tasks    []board.Task `json:"tasks"`
+		ReadySet []string     `json:"ready_set"`
+	}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+	require.Empty(t, resp.ReadySet, "failed-filtered lists render NO ready set (the subset would under-report)")
+}

@@ -605,6 +605,12 @@ func (h *BoardHandler) CreateEpicTask(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "task title is required"})
 		return
 	}
+	// #1837 P2b: create never had criteria check-off — a create payload
+	// carrying setCriteriaMet is refused loudly, never silently dropped.
+	if req.SetCriteriaMet != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "setCriteriaMet applies to task UPDATES only — create accepts criteria with explicit met flags", "code": board.GuardInput})
+		return
+	}
 	t, err := h.board.CreateTask(c.Request.Context(), h.boardActor(c), c.Param("id"), "",
 		board.TaskInput{
 			Title: req.Title, Description: req.Description,

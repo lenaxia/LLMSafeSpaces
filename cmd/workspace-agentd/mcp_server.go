@@ -108,7 +108,7 @@ func boardManagerTools() []mcpTool {
 			// stays per-task (the worker view); board_list/board_health
 			// are the manager's project/fleet projections.
 			Name:        "board_list",
-			Description: "List EVERY task of one board project in a single call (#1837 P2a) — the orchestrator's overview the per-task board_read cannot give. Each row carries the stage, claim (assignee session), lease expiry, paused, blocked, attempts, and cooldown columns; the response also derives the project's READY set (backlog + unblocked + unpaused + not cooling — the rows the engine can claim next; rendered only on unfiltered lists). Manager tool (user-collaborator sessions only); workspace-scoped (a foreign workspace's project is a plain 404).",
+			Description: "List EVERY task of one board project in a single call (#1837 P2a) — the orchestrator's overview the per-task board_read cannot give. Each row carries the stage, claim (assignee session), lease expiry, paused, blocked, attempts, and cooldown columns; the response also derives the project's ready HINT (backlog + unblocked + unpaused + not cooling — the task-level claim predicates; epic-quota and project gates resolve at claim time; rendered only on fully unfiltered lists). Manager tool (user-collaborator sessions only); workspace-scoped (a foreign workspace's project is a plain 404).",
 			InputSchema: map[string]any{"type": "object", "properties": map[string]any{
 				"projectId": map[string]any{"type": "string", "description": "Project short id (prj-… or UUID)"},
 				"stage":     map[string]any{"type": "string", "enum": []string{"backlog", "in_progress", "in_review", "done", "pending_input"}, "description": "Optional stage filter (one of the five stages)"},
