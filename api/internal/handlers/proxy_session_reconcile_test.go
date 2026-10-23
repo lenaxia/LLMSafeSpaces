@@ -252,3 +252,23 @@ func TestSessionIndexReconcile_ProbeIndeterminateDefersReap(t *testing.T) {
 		h.state().GetReconcileMisses(context.Background(), "ws-1"),
 		"the counter pins at threshold — the next pass retries the probe")
 }
+
+// TestSessionIndexReconcile_Sessionless2xxProbeDefersReap pins the
+// round-1 review finding-2 leg: ParseSessionWire answers a NON-NIL
+// parse with an empty session (nil error) for empty 2xx bodies — a
+// sessionless probe verdict that is neither alive nor a gone-verdict.
+// Uncertainty never deletes: the row survives, the counter pins.
+func TestSessionIndexReconcile_Sessionless2xxProbeDefersReap(t *testing.T) {
+	h, idx := reconcileTestHandler(t, map[string]bool{}, nil)
+	h.adapter.(*mockAdapter).getSessionFn = func(_ context.Context, _, _, _ string) (*session.Session, error) {
+		return nil, nil // sessionless 2xx: (false, nil) — the old code fell through to delete
+	}
+	idx.seedRow("ws-1", "ses_empty2xx")
+	h.state().SetReconcileMisses(context.Background(), "ws-1", map[string]int{"ses_empty2xx": 1})
+
+	runReconcile(t, h, "ws-1")
+	assert.Empty(t, idx.deletedTree, "a sessionless probe verdict must defer the reap (uncertainty never deletes)")
+	assert.Equal(t, map[string]int{"ses_empty2xx": reconcileMissThreshold},
+		h.state().GetReconcileMisses(context.Background(), "ws-1"),
+		"the counter pins at threshold — the next pass retries the probe")
+}

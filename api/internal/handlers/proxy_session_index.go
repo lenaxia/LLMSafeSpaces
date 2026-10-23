@@ -201,8 +201,13 @@ func (h *ProxyHandler) runSessionIndexReconciliation(workspaceID string) {
 		// registration seam minted a NEW phrase (the old phrase dead:
 		// sends to it failed, the session re-emitted flagged). Confirm
 		// gone by ID before deleting — the SessionExists precedent: the
-		// by-ID probe is immune to the list-visibility gap.
-		switch alive, perr := h.probeSessionAliveByID(ctx, workspaceID, id); {
+		// by-ID probe is immune to the list-visibility gap. ONLY the
+		// probe's definitive not-found verdict reaps; every other
+		// outcome (alive, transport/5xx error, or a sessionless 2xx
+		// answer) keeps the row — uncertainty never deletes.
+		alive, perr := h.probeSessionAliveByID(ctx, workspaceID, id)
+		gone := perr != nil && errors.Is(perr, agent.ErrSessionNotFound)
+		switch {
 		case perr == nil && alive:
 			// Live, list-invisible: presence. Keep the row (its phrase
 			// is the session's addressable identity — #1756 §1), reset
@@ -213,14 +218,18 @@ func (h *ProxyHandler) runSessionIndexReconciliation(workspaceID string) {
 			delete(next, id)
 			h.state().SetReconcileMisses(ctx, workspaceID, next)
 			continue
-		case perr != nil && !errors.Is(perr, agent.ErrSessionNotFound):
-			// Indeterminate probe (transport/5xx): uncertainty never
-			// deletes — pin the counter at threshold so the next pass
-			// retries the probe (the harness-error-never-reaps rule,
-			// applied to the confirmation itself).
+		case gone:
+			// Definitive not-found verdict — fall through to the delete.
+		default:
+			// Indeterminate probe (transport/5xx error, or a sessionless
+			// 2xx answer — reachable: ParseSessionWire answers (session,
+			// nil) with an empty ID for empty 2xx bodies): defer to the
+			// next pass, counter pinned at threshold so the probe
+			// retries (the harness-error-never-reaps rule, applied to
+			// the confirmation itself).
 			sessionindex.ReconcileOutcome("reap_deferred_probe")
 			h.logger.Warn("session reconcile: reap deferred — by-ID probe indeterminate",
-				"workspaceID", workspaceID, "sessionID", id, "error", perr.Error())
+				"workspaceID", workspaceID, "sessionID", id, "error", perr)
 			next[id] = reconcileMissThreshold
 			h.state().SetReconcileMisses(ctx, workspaceID, next)
 			continue
@@ -257,9 +266,11 @@ func (h *ProxyHandler) runSessionIndexReconciliation(workspaceID string) {
 // existence probe (the send_message SessionExists precedent — immune
 // to the #1452 harness list-visibility gap). A found session reports
 // alive; an adapter not-found verdict reports !alive with the typed
-// error the caller matches; a nil session without error is NO verdict
-// (the caller treats it as indeterminate — it is neither evidence of
-// life nor a gone-verdict).
+// error the caller matches as the ONE definitive gone-verdict; every
+// other outcome — transport/5xx errors, or a sessionless 2xx answer
+// (nil session / empty ID with nil error, which ParseSessionWire
+// produces for empty 2xx bodies) — is indeterminate and the caller
+// DEFERS (uncertainty never deletes).
 func (h *ProxyHandler) probeSessionAliveByID(ctx context.Context, workspaceID, sessionID string) (bool, error) {
 	s, err := h.adapter.GetSession(ctx, "", workspaceID, sessionID)
 	if err != nil {

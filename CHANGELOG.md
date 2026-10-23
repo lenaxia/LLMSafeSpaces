@@ -258,10 +258,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   session re-emits flagged `id_deprecated`). Every reap is now
   confirmed by the by-ID probe first (the send_message `SessionExists`
   precedent — immune to the list-visibility gap): alive-by-ID vetoes
-  the reap and resets the miss counter (`reap_vetoed_live`); an
-  indeterminate probe (transport/5xx) defers it to the next pass
-  (`reap_deferred_probe`); only a definitive by-ID not-found reaps, as
-  before.
+  the reap and resets the miss counter (`reap_vetoed_live`); any
+  indeterminate outcome (transport/5xx error, or a sessionless 2xx
+  answer) defers it to the next pass (`reap_deferred_probe`); only a
+  definitive by-ID not-found reaps, as before.
 - **The agentd short-id replica applies registry pulls as a MERGE,
   not a replace.** `putAll` rebuilt the whole map from each pull's
   snapshot: a pull in flight at spawn (the emission-warm worker's 1s

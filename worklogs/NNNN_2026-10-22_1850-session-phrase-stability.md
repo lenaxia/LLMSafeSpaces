@@ -85,12 +85,18 @@ minted — rows are only born).
    (`adapter.GetSession` — the `SessionExists` precedent):
    - alive-by-ID → veto (`reap_vetoed_live` metric + Info log), miss
      counter reset (presence semantics);
-   - not-found verdict → reap, exactly as before
+   - definitive not-found verdict (the typed
+     `agent.ErrSessionNotFound`) → reap, exactly as before
      (`GhostReapedWhenByIDProbeConfirmsGone` keeps the leg honest);
-   - indeterminate (transport/5xx, nil session) → defer, counter
-     pinned at threshold so the next pass retries
-     (`reap_deferred_probe`; the harness-error-never-reaps rule
-     applied to the confirmation itself).
+   - every other outcome — indeterminate error (transport/5xx) OR a
+     sessionless 2xx answer (`(false, nil)`, which ParseSessionWire
+     produces for empty 2xx bodies) → defer, counter pinned at
+     threshold so the next pass retries (`reap_deferred_probe`; the
+     harness-error-never-reaps rule applied to the confirmation
+     itself). ONLY the typed not-found verdict deletes — uncertainty
+     never deletes. (Round-1 review finding 2: the original switch
+     let `(false, nil)` fall through to delete; restructured + pinned
+     by `TestSessionIndexReconcile_Sessionless2xxProbeDefersReap`.)
 2. **Replica pull-apply merge** (`session_shortids.go`): `putAll`
    upserts; a pull never removes entries. A deleted session's retained
    mapping resolves to a dead harness id and fails the
@@ -145,13 +151,17 @@ pins the true-deletion leg (never neutered).
 
 ## Verification (all at branch head)
 
-- `go test ./api/internal/handlers/ -count=1` — ok (82.9s), including
+- `go test ./api/internal/server/ -count=1` — ok (the round-1
+  review's missing tier: the router reconcile wiring spy gained a
+  `GetSession` override — the nil-embedded adapter call was the
+  deterministic CI crash, finding 1).
+- `go test ./api/internal/handlers/ -count=1` — ok, including
   the pre-existing reconcile matrix re-based onto the probe default
-  (not-found) and the three new #1850 pins.
-- `go test ./cmd/workspace-agentd/ -count=1` — ok (360.3s full
-  package; an earlier full run's single FAIL was the pre-existing
-  TTL-isolation flake documented above — green once isolated, and
-  green on the full re-run).
+  (not-found) and the #1850 pins incl. the sessionless-2xx defer.
+- `go test ./cmd/workspace-agentd/ -count=1` — ok (full package; an
+  earlier full run's single FAIL was the pre-existing TTL-isolation
+  flake documented above — green once isolated, and green on the full
+  re-run).
 - `-count=3` stress over every replica/resolution/list/send/create
   family — ok after the TTL reset fix.
 - `go vet ./cmd/workspace-agentd/ ./api/internal/handlers/
