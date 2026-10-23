@@ -1485,7 +1485,7 @@ func TestUpsertSessionContextUsed(t *testing.T) {
 		defer cleanup()
 
 		mock.ExpectExec(`INSERT INTO session_index`).
-			WithArgs("ws-1", "ses_abc", int64(12500)).
+			WithArgs("ws-1", "ses_abc", sqlmock.AnyArg(), int64(12500)).
 			WillReturnResult(sqlmock.NewResult(0, 1))
 
 		err := service.UpsertSessionContextUsed(context.Background(), "ws-1", "ses_abc", 12500)
@@ -1498,7 +1498,7 @@ func TestUpsertSessionContextUsed(t *testing.T) {
 		defer cleanup()
 
 		mock.ExpectExec(`INSERT INTO session_index`).
-			WithArgs("ws-1", "ses_abc", int64(0)).
+			WithArgs("ws-1", "ses_abc", sqlmock.AnyArg(), int64(0)).
 			WillReturnResult(sqlmock.NewResult(0, 1))
 
 		err := service.UpsertSessionContextUsed(context.Background(), "ws-1", "ses_abc", 0)
@@ -1511,7 +1511,7 @@ func TestUpsertSessionContextUsed(t *testing.T) {
 		defer cleanup()
 
 		mock.ExpectExec(`INSERT INTO session_index`).
-			WithArgs("ws-1", "ses_abc", int64(5000)).
+			WithArgs("ws-1", "ses_abc", sqlmock.AnyArg(), int64(5000)).
 			WillReturnError(fmt.Errorf("connection refused"))
 
 		err := service.UpsertSessionContextUsed(context.Background(), "ws-1", "ses_abc", 5000)
@@ -1528,8 +1528,8 @@ func TestListSessionIndex_IncludesContextUsed(t *testing.T) {
 		contextUsed := int64(42000)
 		rows := sqlmock.NewRows([]string{
 			"session_id", "title", "parent_session_id", "last_message_at",
-			"message_count", "last_seen_at", "has_unread", "context_used", "archived", "short_id", "parent_short_id",
-		}).AddRow("ses_1", "My Session", nil, nil, 3, nil, false, contextUsed, false, "amber-falcon-glides", nil)
+			"message_count", "last_seen_at", "has_unread", "context_used", "archived", "short_id", "created_at", "parent_short_id",
+		}).AddRow("ses_1", "My Session", nil, nil, 3, nil, false, contextUsed, false, "amber-falcon-glides", time.Unix(1770000000, 0).UTC(), nil)
 
 		mock.ExpectQuery(regexp.QuoteMeta(`SELECT si.session_id, si.title`)).
 			WithArgs("ws-1").
@@ -1548,8 +1548,8 @@ func TestListSessionIndex_IncludesContextUsed(t *testing.T) {
 
 		rows := sqlmock.NewRows([]string{
 			"session_id", "title", "parent_session_id", "last_message_at",
-			"message_count", "last_seen_at", "has_unread", "context_used", "archived", "short_id", "parent_short_id",
-		}).AddRow("ses_2", "New Session", nil, nil, 0, nil, false, nil, false, nil, nil)
+			"message_count", "last_seen_at", "has_unread", "context_used", "archived", "short_id", "created_at", "parent_short_id",
+		}).AddRow("ses_2", "New Session", nil, nil, 0, nil, false, nil, false, nil, nil, nil)
 
 		mock.ExpectQuery(regexp.QuoteMeta(`SELECT si.session_id, si.title`)).
 			WithArgs("ws-1").
@@ -1567,8 +1567,8 @@ func TestListSessionIndex_IncludesContextUsed(t *testing.T) {
 
 		rows := sqlmock.NewRows([]string{
 			"session_id", "title", "parent_session_id", "last_message_at",
-			"message_count", "last_seen_at", "has_unread", "context_used", "archived", "short_id", "parent_short_id",
-		}).AddRow("ses_3", "Empty Session", nil, nil, 1, nil, false, int64(0), false, nil, nil)
+			"message_count", "last_seen_at", "has_unread", "context_used", "archived", "short_id", "created_at", "parent_short_id",
+		}).AddRow("ses_3", "Empty Session", nil, nil, 1, nil, false, int64(0), false, nil, nil, nil)
 
 		mock.ExpectQuery(regexp.QuoteMeta(`SELECT si.session_id, si.title`)).
 			WithArgs("ws-1").

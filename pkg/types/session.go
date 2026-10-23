@@ -99,6 +99,11 @@ type SessionListItem struct {
 	// ShortID is the minted phrase — internal mirror of ID kept for
 	// the mint/backfill machinery; not serialized (ID carries it).
 	ShortID string `json:"-"`
+	// CreatedAt is the row's creation time — internal, feeds the
+	// #1850 spawn-window reap grace (a fresh row is never a ghost).
+	// Nil-tolerant: hand-built rows (tests, older builders) read as
+	// "no grace information" and take the pre-#1850 guard verdict.
+	CreatedAt *time.Time `json:"-"`
 	// Archived is the platform-level read-only marker (#1627). ABSENT
 	// means NOT archived — the flag is omitempty for backward
 	// compatibility with every existing client.
