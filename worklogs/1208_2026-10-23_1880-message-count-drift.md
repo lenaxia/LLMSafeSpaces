@@ -118,7 +118,7 @@ mutation carrier). Implementation commit turns them green.
 
 ## Notes
 
-- Orchestrator's pointer worklogs/1163_2026-10-22_1837-stillborn-spawn-
+- Orchestrator's pointer worklogs/1211_2026-10-22_1837-stillborn-spawn-
   durability.md exists on NO reachable ref (main history, all branches,
   feat/1832-d-task-drawer included — verified by cat-file walk). The
   definitive recent context is worklogs/1196 (#1850/#1881, read in
