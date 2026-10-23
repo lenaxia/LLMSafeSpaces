@@ -2998,6 +2998,7 @@
 <li><strong>Script-only triggers</strong> (a <code>script</code>, no <code>prompt</code>) never call the LLM at all — the gate runs for its side effects and the fire delivers.</li>
 </ul>
 <p><code>script</code> is routine-only: setting it alongside <code>workflow_id</code> is rejected with a self-teaching 400 (a workflow's DAG carries its own script/condition nodes).</p>
+<p><strong>Execution environment (#1878)</strong> — gate scripts and workflow script nodes execute in the <strong>workspace container</strong>, the same environment the sessions run in: the workspace filesystem (<code>/workspace</code>, <code>/tmp</code>), the interpreter toolchains (mise-installed <code>python3</code>/<code>node</code>), <code>gh</code> and the credential belt on <code>PATH</code>, and the materialized secrets env (<code>GH_TOKEN</code> et al. — exactly what a session bash child sees). Scripts are <strong>sessionless</strong>: no opencode session is created to run one. In single-container mode the handler executes in-process inside the workspace container; in sidecar mode (<code>controller.agentdSidecar.enabled</code>) the dispatch forwards over the pod's control socket to the workspace-container supervisor, which runs it with the opencode spawn environment. A failing script surfaces its error loudly — the trigger fire audit carries <code>actionResult.gate.error</code>, a workflow node run carries the <code>script_failed</code>/<code>script_env_unavailable</code>/<code>script_timeout</code> error code with stderr detail — never a silent <code>delivered</code>.</p>
 <p><strong>Worked example</strong> — a nightly digest that only spends an LLM call when work accumulated:</p>
 <div class="language-text highlight"><pre><span></span><code><span id="__span-5-1"><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a>// trigger_create
 </span><span id="__span-5-2"><a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a>{
@@ -3253,7 +3254,7 @@ ready set and creation order serves it.</p>
     <span class="md-icon" title="Last update">
       <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M21 13.1c-.1 0-.3.1-.4.2l-1 1 2.1 2.1 1-1c.2-.2.2-.6 0-.8l-1.3-1.3c-.1-.1-.2-.2-.4-.2m-1.9 1.8-6.1 6V23h2.1l6.1-6.1zM12.5 7v5.2l4 2.4-1 1L11 13V7zM11 21.9c-5.1-.5-9-4.8-9-9.9C2 6.5 6.5 2 12 2c5.3 0 9.6 4.1 10 9.3-.3-.1-.6-.2-1-.2s-.7.1-1 .2C19.6 7.2 16.2 4 12 4c-4.4 0-8 3.6-8 8 0 4.1 3.1 7.5 7.1 7.9l-.1.2z"/></svg>
     </span>
-    <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-timeago" title="October 23, 2026 02:49:48 UTC"><span class="timeago" datetime="2026-10-23T02:49:48+00:00" locale="en"></span></span><span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-iso_date" title="October 23, 2026 02:49:48 UTC">2026-10-23</span>
+    <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-timeago" title="October 23, 2026 05:48:01 UTC"><span class="timeago" datetime="2026-10-23T05:48:01+00:00" locale="en"></span></span><span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-iso_date" title="October 23, 2026 05:48:01 UTC">2026-10-23</span>
   </span>
 
     
