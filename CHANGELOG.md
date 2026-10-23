@@ -8,6 +8,58 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed — Provisioned SSH keys: the delivery writer validates + repairs the trailing-space corruption class (#1793)
+
+- **SSH git operations no longer die on formatting-corrupt stored
+  keys.** A live provisioned key delivered with ONE trailing space on
+  every line (PEM markers included) made stock OpenSSH fail with the
+  misleading `error in libcrypto` — killing every SSH git operation in
+  fresh workspaces while the key material itself was intact. The
+  agentd delivery writer now runs a belt at the staging seam
+  (`pkg/agentd/secrets`): a structurally clean, parse-valid key (or an
+  OpenSSH-format passphrase-protected one — x/crypto reports those as
+  `PassphraseMissingError`, which is validity, not corruption) is
+  staged byte-identical; anything else gets one strict repair
+  (per-line whitespace trim + CRLF normalize) staged only if it parses
+  or is OpenSSH-format passphrase-protected — reproducing the clean
+  PEM byte-for-byte for the padding-only corruption class (encrypted
+  OpenSSH keys included). Other encrypted PEM envelopes (PKCS#8
+  `ENCRYPTED PRIVATE KEY`) parse as unsupported in x/crypto and stage
+  verbatim under never-worse; garbage likewise. Detection is
+  STRUCTURAL, because Go's parser tolerates exactly the
+  trailing-space class OpenSSH rejects. The frontend save path
+  normalizes ssh-key values on create/update (paste/transport reflow
+  cannot reintroduce the class), defense in depth with the belt.
+
+### Added — Task Board: kebab menus + delete flows (#1832 item 3)
+
+- **Kebab menus at all three board levels.** Each project swimlane
+  header, epic band header, and task card carries a kebab menu
+  (distinct a11y labels; triggers stopPropagation — a kebab click
+  never toggles band selection nor opens the task editor).
+- **Task delete modal with the 'reconnect dependents to upstream'
+  checkbox** (#1747's optional flag): dependents are surfaced
+  pre-flight from the read model; unchecked (default) they are simply
+  unblocked (each gets an `unblocked_by_delete` audit event), checked
+  they inherit the deleted task's direct upstream edges (deduplicated,
+  cycle-guarded server-side). Both semantics are pinned at the wire in
+  e2e (`?reconnect=true` presence/absence exact-matched) and in
+  component tests (API-client args asserted). The delete result
+  surfaces as a page notice (orphans listed / `orphan→upstream` pairs).
+- **Epic delete surfaces in-flight workers with refuse/force-confirm
+  matching the API**: the modal lists the epic's in-flight claims
+  (in_progress + assignee, live read model) and its honest cascade
+  count; the first attempt never sends force — the engine's 409
+  `epic_state` renders inside the modal, and only that real refusal
+  reveals the acknowledge-gated "Force delete" (force deletes, then
+  aborts each in-flight worker post-commit).
+- **Project kebab is archive/unarchive ONLY** (#1747: project delete
+  is eliminated) — the menu structurally offers exactly one lifecycle
+  item; the absence of any delete item is pinned in both test layers.
+- This lane's e2e runs at **E2E_PORT=18521** (registry discipline:
+  18517/18519 claimed by sibling lanes; nightly PORTFWD 18083–18093
+  untouched).
+
 ### Added — Task Board: task audit timeline + drawer (issue #1832 item 4)
 
 - **`GET /api/v1/me/tasks/:id/events` renders a task's FULL audit

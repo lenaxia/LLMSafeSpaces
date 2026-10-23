@@ -742,7 +742,12 @@ func (m *Materializer) applySSHKey(s Secret, staging *stageBuilder) error {
 	// consumer-side process is the writer.
 	keyName := "id_" + keyType + "_" + s.Name
 	keyPath := filepath.Join(m.Paths.SSHDir, keyName)
-	if err := staging.add("ssh/"+keyName, keyPath, ModeSSHPrivateKey, []byte(s.Plaintext)); err != nil {
+	// #1793 belt: stage only bytes that parse as an OpenSSH private
+	// key; a formatting-corrupt plaintext (the live incident: one
+	// trailing space per line) is repaired by strict per-line trim —
+	// garbage stays verbatim (never worse). See sshkey.go.
+	stagedKey, _ := normalizeOpenSSHPrivateKey(s.Plaintext)
+	if err := staging.add("ssh/"+keyName, keyPath, ModeSSHPrivateKey, []byte(stagedKey)); err != nil {
 		return err
 	}
 
