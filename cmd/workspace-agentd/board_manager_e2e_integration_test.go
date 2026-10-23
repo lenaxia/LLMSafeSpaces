@@ -247,10 +247,10 @@ func boardE2EFieldsJSON(fields map[string]json.RawMessage) []byte {
 	return b
 }
 
-func boardE2EEventCount(t *testing.T, pool *pgxpool.Pool) int {
+func boardE2EEventCount(t *testing.T, ctx context.Context, pool *pgxpool.Pool) int {
 	t.Helper()
 	var n int
-	require.NoError(t, pool.QueryRow(context.Background(), `SELECT count(*) FROM board_events`).Scan(&n))
+	require.NoError(t, pool.QueryRow(ctx, `SELECT count(*) FROM board_events`).Scan(&n))
 	return n
 }
 
@@ -393,14 +393,14 @@ func TestIntegrationBoardManagerE2E(t *testing.T) {
 	assert.Equal(t, 1, n)
 
 	// --- B: identity-less dispatch fails closed pre-wire ------------------------
-	before := boardE2EEventCount(t, pool)
+	before := boardE2EEventCount(t, ctx, pool)
 	_, err = dispatchBoardManagerTool(ctx, client, e2eMCPPassword, "board_create_epic", map[string]any{
 		"projectId": proj.ShortID,
 		"title":     "x",
 	}, "sa-token", wsPod)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "identity")
-	assert.Equal(t, before, boardE2EEventCount(t, pool))
+	assert.Equal(t, before, boardE2EEventCount(t, ctx, pool))
 
 	// --- C: the engine belt refuses a claimed worker session --------------------
 	resp, err = dispatchBoardManagerTool(ctx, client, e2eMCPPassword, "board_epic_activate", map[string]any{
@@ -484,7 +484,7 @@ func e2eFileBackedCharterSections(t *testing.T, ctx context.Context, client *ope
 	require.Equal(t, content, storedDesc, "file bytes → wire → PG row, byte-identical")
 
 	// --- F: composed corruption refusal — nothing stored ------------------------
-	before := boardE2EEventCount(t, pool)
+	before := boardE2EEventCount(t, ctx, pool)
 	_, err = dispatchBoardManagerTool(ctx, client, e2eMCPPassword, "board_create_task", map[string]any{
 		"lsp_injected_session": mgrSession,
 		"epicId":               epic.ShortID,
@@ -494,5 +494,5 @@ func e2eFileBackedCharterSections(t *testing.T, ctx context.Context, client *ope
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "400")
 	assert.Contains(t, err.Error(), board.GuardTextRejected)
-	assert.Equal(t, before, boardE2EEventCount(t, pool), "a refused write stores nothing")
+	assert.Equal(t, before, boardE2EEventCount(t, ctx, pool), "a refused write stores nothing")
 }
