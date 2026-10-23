@@ -17,9 +17,25 @@
 # on every release.
 name: PR Review
 
+# workflow_dispatch is the #1844 outage lever, NOT a review round: the
+# reusable workflow at v0.2.23 keys every step on
+# github.event.pull_request.{number,head.sha,user.login} — on a dispatch
+# event that context is EMPTY, so the reusable job is pinned to
+# pull_request events below and dispatches land in the dispatch-recovery
+# job instead (one command = fault comment + CI re-dispatch). Forcing an
+# actual AI review round from inside this repo is not possible at
+# v0.2.23 (an ai-workflows dispatch bridge is the follow-up); the
+# documented review levers stay: an admitted `/review` comment, or an
+# empty tree-identical `ci: retrigger` push when events are flowing.
 on:
   pull_request:
     types: [opened, synchronize]
+  workflow_dispatch:
+    inputs:
+      pr:
+        description: "PR number to recover (default: the open PR whose head branch is the dispatched ref)"
+        required: false
+        type: string
 
 permissions:
   id-token: write
@@ -29,6 +45,11 @@ permissions:
 
 jobs:
   review:
+    # pull_request-only (see workflow_dispatch note above): a dispatched
+    # event must never reach the reusable workflow — empty PR context
+    # burns an LLM round and reddens on a SHA-pinned verdict check
+    # against an empty SHA.
+    if: github.event_name == 'pull_request'
     # Automation-bot PRs (renovate, dependabot, release-please, mergify,
     # github-merge-queue) are skipped at the job level inside the reusable
     # workflow — no local `if:` needed.
@@ -41,3 +62,128 @@ jobs:
       # collaborators, so the CLI assert refuses their PRs pre-LLM without
       # this. Must match canonicalTrustedAppBots (gha_callers_test.go).
       trusted_app_bots: '["agentic-actor-coder[bot]","ai-workflows-propagation[bot]"]'
+
+  dispatch-recovery:
+    # The #1844 outage lever (manual arm; the automated sweep lives in
+    # run-watchdog.yml): `gh workflow run pr-review.yml --ref <branch>`
+    # [-f pr=N] resolves the PR, checks whether its head already carries
+    # a bot verdict, and if not posts the namespaced #1844 fault comment
+    # (marker format shared with run-watchdog.yml — pinned by
+    # pkg/runwatchdog tests) and re-dispatches ci.yml on the branch (the
+    # recovery verified live during the 2026-10-23 branch-scoped
+    # suppression). Idempotent: an existing marker comment for the head
+    # SHA suppresses the re-comment, and a dispatched CI run creates
+    # check-runs on the same SHA so repeated invocations self-limit.
+    name: Dispatch recovery (#1844)
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    permissions:
+      # Comment on the PR only — no contents write, no id-token.
+      contents: read
+      pull-requests: write
+      # gh workflow run (ci.yml re-dispatch) needs actions: write. A
+      # workflow_dispatch event created with GITHUB_TOKEN DOES trigger a
+      # run (the documented recursion exemption).
+      actions: write
+    steps:
+      - name: Resolve target PR
+        id: pr
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPOSITORY: ${{ github.repository }}
+          INPUT_PR: ${{ inputs.pr }}
+          REF_BRANCH: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          if [ -n "$INPUT_PR" ]; then
+            PR="$INPUT_PR"
+          else
+            # Auto-detect: the open PR whose head branch is the dispatched ref.
+            PR=$(gh pr list --repo "$REPOSITORY" --state open --head "$REF_BRANCH" --json number --jq 'if length == 1 then .[0].number else 0 end')
+            if [ "$PR" = "0" ]; then
+              echo "::error::no unique open PR for head branch '$REF_BRANCH' — pass the 'pr' input explicitly"
+              exit 1
+            fi
+          fi
+          if ! gh pr view "$PR" --repo "$REPOSITORY" --json number,headRefOid,headRefName >/tmp/pr.json; then
+            echo "::error::PR $PR not found"
+            exit 1
+          fi
+          jq -r '"number=\(.number) sha=\(.headRefOid) branch=\(.headRefName)"' /tmp/pr.json | tee /tmp/pr.env
+          {
+            echo "number=$(jq -r .number /tmp/pr.json)"
+            echo "sha=$(jq -r .headRefOid /tmp/pr.json)"
+            echo "branch=$(jq -r .headRefName /tmp/pr.json)"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Check verdict already delivered on head
+        id: verdict
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPOSITORY: ${{ github.repository }}
+          PR: ${{ steps.pr.outputs.number }}
+          SHA: ${{ steps.pr.outputs.sha }}
+        run: |
+          set -euo pipefail
+          # Same delivery shape as ai-workflows check-verdict.sh (the
+          # sliver this shim needs): an official github-actions[bot]
+          # review pinned to the head SHA, OR a sha-pinned verdict-marker
+          # comment. Any hit → the review round already happened; the
+          # lever has nothing to do.
+          REVIEWS=$(gh api "repos/$REPOSITORY/pulls/$PR/reviews?per_page=100" \
+            --jq '[.[] | select(.user.login == "github-actions[bot]" and .commit_id == env.SHA and (.state == "APPROVED" or .state == "CHANGES_REQUESTED"))] | length' 2>/dev/null || echo 0)
+          MARKERS=$(gh api "repos/$REPOSITORY/issues/$PR/comments?per_page=100" \
+            --jq '[.[] | select(.body | contains("ai-workflows-verdict:") and contains("sha=" + env.SHA))] | length' 2>/dev/null || echo 0)
+          if [ "$((REVIEWS + MARKERS))" -gt 0 ]; then
+            echo "delivered=true" >> "$GITHUB_OUTPUT"
+            echo "PR $PR head $SHA already carries a bot verdict — no recovery needed."
+          else
+            echo "delivered=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Post fault comment (#1844 evidence trail)
+        if: steps.verdict.outputs.delivered == 'false'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPOSITORY: ${{ github.repository }}
+          PR: ${{ steps.pr.outputs.number }}
+          SHA: ${{ steps.pr.outputs.sha }}
+          BRANCH: ${{ steps.pr.outputs.branch }}
+        run: |
+          set -euo pipefail
+          # Dedup on the shared marker (run-watchdog.yml posts the same
+          # shape automatically): one fault comment per head SHA.
+          EXISTING=$(gh api "repos/$REPOSITORY/issues/$PR/comments?per_page=100" \
+            --jq --arg m "run-watchdog: fault sha=$SHA" '[.[] | select(.body | contains($m))] | length' 2>/dev/null || echo 0)
+          if [ "$EXISTING" -gt 0 ]; then
+            echo "Fault marker already present for $SHA — skipping comment."
+            exit 0
+          fi
+          gh pr comment "$PR" --repo "$REPOSITORY" --body \
+            "### run-watchdog: delivery fault suspected (#1844)
+
+          Manually invoked recovery (workflow_dispatch on \`pr-review.yml\`): the head \`${SHA:0:8}\` has no bot review verdict. If this head also shows zero CI check-runs, GitHub dropped the synchronize event for this PR — add this instance to the evidence on #1844.
+
+          Recovery levers:
+          - CI: \`gh workflow run ci.yml --ref $BRANCH\` (attempted in the next step; verified working during the 2026-10-23 branch-scoped suppression)
+          - review round: post \`/review\` as an admitted author, or push an empty \`ci: retrigger\` commit when events are flowing
+          - escalate: reference this PR + SHA in a comment on #1844
+
+          <!-- run-watchdog: fault sha=$SHA -->"
+
+      - name: Re-dispatch CI on the branch
+        if: steps.verdict.outputs.delivered == 'false'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPOSITORY: ${{ github.repository }}
+          BRANCH: ${{ steps.pr.outputs.branch }}
+        run: |
+          set -euo pipefail
+          # The verified lever (issue #1844, 02:23Z): a workflow_dispatch
+          # run of ci.yml queues normally even when push events to the
+          # branch are being dropped. Failure is loud but non-fatal to
+          # the comment above (already posted) — the run summary shows
+          # the manual fallback command.
+          if ! gh workflow run ci.yml --repo "$REPOSITORY" --ref "$BRANCH"; then
+            echo "::warning::ci.yml dispatch failed — manual lever: gh workflow run ci.yml --ref $BRANCH"
+          fi

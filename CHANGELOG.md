@@ -8,6 +8,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — workflow_dispatch outage levers for PR-triggered workflows (#1844, PR 1 of 2)
+
+- **`pr-review.yml` is now dispatchable — with a guard, not a bare
+  trigger.** The reusable ai-workflows review workflow at v0.2.23 keys
+  every step on `github.event.pull_request.*`; a naive dispatch would
+  run it with EMPTY PR context (burned LLM round, verdict check against
+  an empty SHA). The reusable job is therefore pinned
+  `if: github.event_name == 'pull_request'` and dispatches land in a
+  new `dispatch-recovery` job: resolve the PR (input or auto-detect
+  from the dispatched ref), noop if the head already carries a bot
+  verdict, else post the #1844-namespaced fault comment (deduped per
+  head SHA on the `<!-- run-watchdog: fault sha=... -->` marker shared
+  with the automated sweep) and re-dispatch `ci.yml` on the branch —
+  the recovery verified live during the 2026-10-23 branch-scoped
+  suppression. Forcing an actual AI review round from inside this repo
+  remains impossible at v0.2.23 (documented in the workflow header);
+  the levers stay an admitted `/review` comment or an empty
+  `ci: retrigger` push.
+- **`secrets-integration.yml` gains a bare `workflow_dispatch`** — its
+  changes-gate keys on `event_name != 'pull_request'`, so a dispatch
+  always runs the full suite, exactly what an operator forcing
+  recovery wants. `ci.yml` and `posture-gate.yml` already had dispatch
+  (ci.yml's is the verified lever); e2e-pr.yml is noted for its owner
+  lane.
+
 ### Fixed — Provisioned SSH keys: the delivery writer validates + repairs the trailing-space corruption class (#1793)
 
 - **SSH git operations no longer die on formatting-corrupt stored
