@@ -101,9 +101,12 @@ type FileReport struct {
 // Report is the full audit result: response-only by design.
 type Report struct {
 	Root string `json:"root"`
-	// FilesScanned counts regular files examined (incl. zero-size).
+	// FilesScanned counts regular files examined past the zero-size
+	// gate (zero-size files are counted under FilesSkipped, mirroring
+	// the verdict they receive).
 	FilesScanned int `json:"filesScanned"`
-	// FilesSkipped counts zero-size + non-regular files passed over.
+	// FilesSkipped counts zero-size + non-regular files passed over,
+	// plus any file in flight when the total budget exhausted.
 	FilesSkipped int `json:"filesSkipped"`
 	// BytesRead is the bytes actually READ — the early-exit proof (a
 	// clean 1GiB tree reads kilobytes, not gigabytes).

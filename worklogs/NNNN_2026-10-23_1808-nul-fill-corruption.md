@@ -77,7 +77,8 @@ reddens it.
   runShutdown (single-container) and the supervisor shutdown path.
 - `api/internal/handlers/fs_audit.go` — owner-authz facade, Active
   phase gate, typed relay, nil-list hardening, plain-text error
-  mapping (the disk-recover r1 F1 lesson). Router + app wiring.
+  mapping (the disk-recover r1 F1 lesson). Router + app wiring
+  (construction + password getter — see the r1 F1 correction below).
 - `sdks/openapi.yaml` — `/workspaces/{id}/fs-audit` + FsAuditRequest/
   FsAuditReport/FsAuditFileReport schemas (router contract test
   green).
@@ -92,12 +93,13 @@ reddens it.
 ## Test evidence
 
 - `go test ./pkg/fsaudit/` — 18 pins green (incl. 1001-file list-cap
-  fixture in non-short).
-- `go test ./cmd/workspace-agentd/` — FULL suite green (361s), incl.
-  the fs-audit/control-leg/shutdown pins.
+  fixture in non-short). [round 2: -race, 19 pins green — +1 mid-read-EIO]
+- `go test ./cmd/workspace-agentd/` — FULL suite green. [round 1:
+  361s WITHOUT -race; round 2: 418s WITH -race — CI-matching flags]
 - `go test ./api/internal/handlers/ ./api/internal/server/
   ./api/internal/app/` — green (contract test updated with the
-  FsAuditHandler fixture).
+  FsAuditHandler fixture). [round 2: -race, handlers 140s + server
+  3.4s + app 1.6s green]
 - Hook pins run real `git push` against a **hermetic local bare-repo
   fixture** (`pushFixture` in `pkg/fsaudit/prepush_parity_test.go`):
   work tree + bare remote both under `t.TempDir()`, pushes via
@@ -123,6 +125,42 @@ reddens it.
   orchestrator.
 - All other gates green on e54da67a (lint, kind posture, gitleaks,
   govulncheck, trivy, buf/ABI, builds, docs-only detect).
+
+## Review round 1 (CHANGES_REQUESTED vs e54da67a) — remediation
+
+- **F1 CRITICAL (facade dead in production)**: `SetPasswordGetter` was
+  never called on `fsAuditHandler` in app.go — every production call
+  would 500 at the nil-getter guard; the handler tests wired the
+  getter themselves and were blind to it. FIXED: wired in the pwGetter
+  block next to the disk-recover twin + a source-presence app-level
+  pin (`api/internal/app/fsaudit_wiring_pin_test.go`) that reddens on
+  construction-without-wiring — the exact regression class.
+- **F2 (race)**: already fixed in bfb72750 (review predated the push).
+- **F3 HIGH (mid-read I/O error made a file VANISH)**: the read loop
+  treated EIO like EOF → the default branch produced a false
+  "budget exhausted" reason, no list entry, no error count. FIXED:
+  non-EOF read errors record VerdictError with the I/O detail; new
+  `openFile` seam + pin `TestAudit_MidReadErrorReportedNotVanished`
+  (one NUL chunk then EIO → error entry, never certified either way).
+- **F4 (doc contradiction)**: FilesSkipped/FilesScanned comments
+  corrected to match the code (zero-size counts under skipped).
+- **E2E parity gap**: shipped `local/1808-fs-audit-e2e.sh` mirroring
+  the #1601 twin — R1 three-way live discrimination (dead flagged /
+  sparse reported-not-flagged / clean invisible; sub-root confinement;
+  ../../etc grounding; response-only tree check), R2 (401 anonymous,
+  404 foreign, non-POST). Harness-manual, same as the twin.
+- **Closure honesty (Ask #1)**: `Fixes #1808` → `Refs #1808`; the
+  storage-layer evidence plan split to follow-up issue #1892.
+- Minor: hook now handles SHA-256 object-format zero shas (was
+  SHA-1-only — silent no-op coverage gap); runShutdown comment
+  corrected (runs in both agentd modes; the supervisor belt is
+  separate); removed the unreachable dead assertion in
+  TestAudit_ConcurrentDistinctRequests (style nit).
+
+**Verification-flag correction (r1 integrity note accepted)**: the
+original "FULL suite green (361s)" was gathered WITHOUT -race and CI
+contradicted it. Round-2 evidence below is gathered with CI-matching
+flags (-race).
 
 ## Mutation-verify recipes (for the orchestrator's gate)
 

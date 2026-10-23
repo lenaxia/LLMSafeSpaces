@@ -31,8 +31,14 @@ set -u
 
 command -v git >/dev/null 2>&1 || exit 0 # fail open: no git, no guard
 
-# zero_sha: git's null object id (ref deletion / new-branch marker).
+# zero sha: git's null object id (ref deletion / new-branch marker) in
+# both object formats — SHA-1 (40 zeros) and SHA-256 (64 zeros).
 zero_sha="0000000000000000000000000000000000000000"
+zero_sha256="0000000000000000000000000000000000000000000000000000000000000000"
+
+is_zero_sha() {
+    [ "$1" = "$zero_sha" ] || [ "$1" = "$zero_sha256" ]
+}
 
 dead=""
 status=0
@@ -47,9 +53,9 @@ lookup_path() {
 
 while read -r local_ref local_sha remote_ref remote_sha; do
     # Ref deletion: nothing pushed to scan.
-    [ "$local_sha" = "$zero_sha" ] && continue
+    is_zero_sha "$local_sha" && continue
 
-    if [ "$remote_sha" = "$zero_sha" ]; then
+    if is_zero_sha "$remote_sha"; then
         range="$local_sha"        # new branch: everything reachable
     else
         range="$remote_sha..$local_sha"

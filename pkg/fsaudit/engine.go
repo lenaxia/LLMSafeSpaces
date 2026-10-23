@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -143,9 +144,26 @@ type scanner struct {
 	chunk      []byte
 }
 
+// fileReader is the read surface classify needs (production: *os.File).
+type fileReader interface {
+	io.Closer
+	Read(p []byte) (int, error)
+}
+
+// openFile is the seam classify reads through (production: os.Open;
+// tests override to inject mid-read I/O errors — the EIO class the
+// #1808 target storage is most likely to produce, which must surface
+// as VerdictError, never as a vanishing file — review r1 F3).
+var openFile = func(name string) (fileReader, error) {
+	return os.Open(name) //nolint:gosec // path came from the walk under the engine base
+}
+
 // classify reads one regular file under the caps and records its
 // verdict. Bytes accounting: only bytes actually read count against the
-// budgets (the early exit is the whole point).
+// budgets (the early exit is the whole point). A read error that is
+// not EOF records VerdictError — the read did not complete, so the
+// file is never certified nul_filled NOR clean (r1 F3: an EIO mid-read
+// used to make the file vanish from the report entirely).
 func (s *scanner) classify(rel, path string, info os.FileInfo) {
 	size := info.Size()
 	if size == 0 {
@@ -154,7 +172,7 @@ func (s *scanner) classify(rel, path string, info os.FileInfo) {
 		return
 	}
 
-	f, err := os.Open(path) //nolint:gosec // path came from the walk under the engine base
+	f, err := openFile(path)
 	if err != nil {
 		s.addList(&s.report.Errors, FileReport{Path: rel, Size: size, AllocatedBytes: allocatedBytes(info), Verdict: VerdictError, Reason: err.Error()})
 		s.report.ErrorCount++
@@ -173,6 +191,7 @@ func (s *scanner) classify(rel, path string, info os.FileInfo) {
 
 	var read int64
 	allNul := true
+	var readErr error
 	for read < limit {
 		want := int64(ChunkSize)
 		if limit-read < want {
@@ -187,7 +206,10 @@ func (s *scanner) classify(rel, path string, info os.FileInfo) {
 			}
 		}
 		if rerr != nil {
-			break // EOF or read error — either way, no more content
+			if !errors.Is(rerr, io.EOF) {
+				readErr = rerr // real I/O failure — never certify either way
+			}
+			break
 		}
 	}
 	s.budgetLeft -= read
@@ -195,6 +217,14 @@ func (s *scanner) classify(rel, path string, info os.FileInfo) {
 
 	fr := FileReport{Path: rel, Size: size, AllocatedBytes: allocatedBytes(info)}
 	switch {
+	case readErr != nil:
+		// The read did not complete: verdict error with the I/O detail —
+		// most likely on exactly the corrupted volume this scanner
+		// exists to inspect (r1 F3).
+		fr.Verdict = VerdictError
+		fr.Reason = "read error mid-file: " + readErr.Error()
+		s.report.ErrorCount++
+		s.addList(&s.report.Errors, fr)
 	case !allNul:
 		// clean — not listed (a clean list would be the whole tree)
 	case read == size:

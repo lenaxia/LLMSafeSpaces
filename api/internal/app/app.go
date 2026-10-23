@@ -1284,6 +1284,12 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 		if diskRecoverHandler != nil {
 			diskRecoverHandler.SetPasswordGetter(pwGetter)
 		}
+		// #1808 r1 F1: the fs-audit facade MUST be wired to the same
+		// password provider — an unwired getter is a 500 on every
+		// production call (pinned in fsaudit_wiring_pin_test.go).
+		if fsAuditHandler != nil {
+			fsAuditHandler.SetPasswordGetter(pwGetter)
+		}
 		// US-65.6: wire the status checker factory so agent_reload.go
 		// doesn't import pkg/agent/opencode.
 		agentReloadHandler.SetStatusCheckerFactory(func(podIP, password string) handlers.SessionStatusChecker {

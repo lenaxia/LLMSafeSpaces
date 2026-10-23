@@ -10,9 +10,9 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"sync"
 	"testing"
-	"time"
 )
 
 // --- fixtures -----------------------------------------------------------
@@ -441,6 +441,52 @@ func TestAudit_MixedTree(t *testing.T) {
 	}
 }
 
+// PIN (read-error honesty, r1 F3): a file whose read FAILS mid-file
+// (EIO — the error class most likely on exactly the corrupted volume
+// this scanner exists to inspect) is verdict error with the I/O
+// detail — never certified nul_filled, never clean, and NEVER silently
+// dropped from the report.
+type errMidReadFile struct{ served bool }
+
+func (f *errMidReadFile) Read(p []byte) (int, error) {
+	if !f.served {
+		f.served = true
+		return copy(p, make([]byte, len(p))), nil // one all-NUL chunk
+	}
+	return 0, errors.New("input/output error")
+}
+
+func (f *errMidReadFile) Close() error { return nil }
+
+func TestAudit_MidReadErrorReportedNotVanished(t *testing.T) {
+	base := t.TempDir()
+	// A real allocated all-NUL file on disk so stat/walk see the truth;
+	// the openFile seam swaps only the reader.
+	nulFile(t, filepath.Join(base, "dying-volume.yaml"), 16*1024)
+	prev := openFile
+	openFile = func(string) (fileReader, error) { return &errMidReadFile{}, nil }
+	t.Cleanup(func() { openFile = prev })
+
+	eng := NewEngine(base)
+	report, err := eng.Audit(context.Background(), Request{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.ErrorCount != 1 {
+		t.Fatalf("ErrorCount: want 1, got %d — the file VANISHED from the report (r1 F3 regression)", report.ErrorCount)
+	}
+	fr := findReport(report.Errors, "dying-volume.yaml")
+	if fr == nil || fr.Verdict != VerdictError || !strings.Contains(fr.Reason, "read error mid-file") {
+		t.Fatalf("mid-read error must record a VerdictError entry with the I/O detail: %+v", report.Errors)
+	}
+	if report.NulFilledCount != 0 {
+		t.Fatalf("an errored read must never certify nul_filled: %+v", report.NulFilled)
+	}
+	if report.Truncated {
+		t.Fatal("a read error is not a budget truncation")
+	}
+}
+
 // guard: helpers stay honest under -race (the engine itself has no
 // shared state beyond mu, but the busy pins race the lock in CI).
 func TestAudit_ConcurrentDistinctRequests(t *testing.T) {
@@ -458,7 +504,4 @@ func TestAudit_ConcurrentDistinctRequests(t *testing.T) {
 		}()
 	}
 	wg.Wait()
-	if elapsed := time.Since(time.Now()); elapsed > time.Hour {
-		t.Fatal("unreachable")
-	}
 }

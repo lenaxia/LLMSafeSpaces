@@ -668,8 +668,11 @@ func runShutdown(adminSrv, userSrv *http.Server, bgCancel context.CancelFunc, bg
 	}
 
 	// #1808 H1 belt: flush dirty pages (user tooling's buffered writes
-	// included) as the last act of the single-container shutdown —
-	// while the volume is still mounted and this process still controls
-	// the window. Bounded; see shutdown_sync.go.
+	// included) as the last act of agentd's shutdown — while the volume
+	// is still mounted and this process still controls the window. This
+	// runs in BOTH agentd modes (single-container and sidecar; sync() is
+	// system-wide); the sidecar-mode supervisor runs the same belt at
+	// its own exit (supervise_opencode.go). Bounded; see
+	// shutdown_sync.go.
 	flushWorkspaceWritesLogged()
 }
