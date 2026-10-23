@@ -466,13 +466,17 @@ func TestIntegrationBoardManagerE2E(t *testing.T) {
 	// The tsk-3do6n458 freeze class: an escalated row (attempts at cap,
 	// no assignee) that neither the worker NOR the orchestrator-class
 	// session could exit. The manager move lands it backlog, attempts
-	// reset, audit carrying the session identity.
-	_, err = pool.Exec(ctx, `UPDATE tasks SET attempts=$2 WHERE id=$1`, task.ID, 3)
+	// reset, audit carrying the session identity. The escalation's own
+	// engine path (attempts>=cap -> pending_input/escalated) is pinned
+	// by pkg/board's suite; here we pin the EXIT through the real seam,
+	// so the row is staged in the escalation's aftermath shape
+	// directly (section C's claim left it in_progress — a backlog-only
+	// candidate predicate is not this section's subject).
+	_, err = pool.Exec(ctx, `
+		UPDATE tasks SET stage='pending_input', stage_entered_at=now(),
+			pending_origin='escalated', attempts=3, claim_token=NULL, lease_expires_at=NULL
+		WHERE id=$1`, task.ID)
 	require.NoError(t, err)
-	esc, err := svc.ClaimNext(ctx, "e2e-escalate", wsPod)
-	require.NoError(t, err)
-	require.NotNil(t, esc)
-	require.True(t, esc.Escalated)
 
 	resp, err = dispatchBoardManagerTool(ctx, client, e2eMCPPassword, "board_move_stage", map[string]any{
 		"lsp_injected_session": mgrSession,

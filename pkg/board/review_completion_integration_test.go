@@ -235,17 +235,19 @@ func (s *BoardSuite) TestReviewAuto_ReplayIsInert() {
 	s.Require().Equal(subject.ID, c.TaskID)
 	_, err = s.svc.MoveStage(ctx, s.agent(c.Assignee, c.ClaimToken), "", c.ShortID, board.StageInReview, "", "")
 	s.Require().NoError(err)
-	_, err = s.svc.MoveStage(ctx, s.owner(), "", subject.ShortID, board.StageDone, "https://example/r", "")
+	_, err = s.svc.MoveStage(ctx, s.owner(), "", subject.ShortID, board.StageDone, "https://example/r", "req-replay-once")
 	s.Require().NoError(err)
 	require.Equal(s.T(), board.StageDone, s.reloadTask(review.ID).Stage)
 	require.Equal(s.T(), 1, s.countTransitions(review.ID, board.StageDone))
 
 	// Replay vectors — all must be inert (done rows never re-enter
 	// candidacy; the deterministic event id is ON-conflict-inert):
-	// (a) the same done MoveStage replayed by requestId;
+	// (a) the done MoveStage REPLAYED by its requestId (both calls
+	// share "req-replay-once" — a replay is the SAME logical
+	// operation, 200-with-original, never a fresh done→done move);
 	// (b) a reconciler sweep over the settle's events.
 	_, err = s.svc.MoveStage(ctx, s.owner(), "", subject.ShortID, board.StageDone, "https://example/r", "req-replay-once")
-	s.Require().NoError(err, "the replay renders the original outcome, never an error")
+	s.Require().NoError(err)
 	s.sweep()
 
 	require.Equal(s.T(), 1, s.countTransitions(review.ID, board.StageDone),

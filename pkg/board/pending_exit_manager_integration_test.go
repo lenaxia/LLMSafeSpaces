@@ -97,15 +97,21 @@ func (s *BoardSuite) TestPendingExit_AgentManagerWorkspaceBindingHolds() {
 		`UPDATE tasks SET stage='pending_input', stage_entered_at=now(), pending_origin='escalated' WHERE id=$1`, t.ID)
 	s.Require().NoError(execErr)
 
-	// An agent-manager actor bound to a DIFFERENT workspace must not
-	// reach the row (403 workspace_binding — the structural scope).
+	// An agent-manager actor bound to a DIFFERENT workspace cannot
+	// reach the row: resolution is workspace-scoped for BOTH agent
+	// surfaces (#1832 WS2 extended r1-S1), so the foreign row is a
+	// PLAIN MISS — a NotFoundError with no did-you-mean suggestions
+	// (the perimeter never discloses another tenant's rows; the
+	// workspace_binding guard itself is structural here, reached only
+	// when resolution already matched the caller's workspace).
 	foreign := board.Actor{Kind: board.ActorUser, UserID: testUser,
 		Surface: board.SurfaceAgentManager, WorkspaceID: "00000000-0000-0000-0000-000000000000", SessionID: "rogue"}
 	_, err := s.svc.MoveStage(context.Background(), foreign, "", t.ShortID, board.StageBacklog, "", "")
 	require.Error(s.T(), err)
-	var guard *board.GuardError
-	require.ErrorAs(s.T(), err, &guard)
-	require.Equal(s.T(), board.GuardWorkspaceBinding, guard.Code)
+	var nf *board.NotFoundError
+	require.ErrorAs(s.T(), err, &nf, "the foreign row resolves as a plain miss — never disclosed, never moved")
+	require.Empty(s.T(), nf.Suggestions, "no cross-tenant suggestions (r1-S1 scoping)")
+	require.Equal(s.T(), board.StagePendingInput, s.reloadTask(t.ID).Stage, "the row was never touched")
 }
 
 // The surface vocabulary pin: the manager-grade agent surface is a

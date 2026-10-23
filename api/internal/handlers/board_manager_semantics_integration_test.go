@@ -159,10 +159,13 @@ func TestIntegrationBoardManagerSemantics(t *testing.T) {
 		WHERE project_id = $1 AND actor->>'session_id' = $2`,
 		proj.ID, sess).Scan(&n))
 	assert.Equal(t, 3, n, "create_project + create_epic + create_task all attribute to the creating session")
-	// The surface marker rides the same actor object.
+	// The surface marker rides the same actor object. #1832 WS2: the
+	// pod seam's manager projection stamps the MANAGER-GRADE agent
+	// surface ('agent_manager') — a distinct audit vocabulary from the
+	// worker projection's 'agent'.
 	require.NoError(t, pool.QueryRow(ctx, `
 		SELECT count(*) FROM board_events
-		WHERE project_id = $1 AND actor->>'surface' = 'agent'`,
+		WHERE project_id = $1 AND actor->>'surface' = 'agent_manager'`,
 		proj.ID).Scan(&n))
 	assert.Equal(t, 3, n)
 
