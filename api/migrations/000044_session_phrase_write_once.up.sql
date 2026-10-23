@@ -25,7 +25,8 @@
 CREATE OR REPLACE FUNCTION public.session_index_short_id_write_once() RETURNS trigger AS $$
 BEGIN
     IF OLD.short_id IS NOT NULL AND NEW.short_id IS DISTINCT FROM OLD.short_id THEN
-        RAISE EXCEPTION 'session_index.short_id is write-once (workspace %, session %): phrase % cannot become %'
+        RAISE EXCEPTION 'session_index.short_id is write-once (workspace %, session %): phrase % cannot become %',
+            OLD.workspace_id, OLD.session_id, OLD.short_id, NEW.short_id
             USING ERRCODE = 'P0001',
                   TABLE = 'session_index',
                   COLUMN = 'short_id';
