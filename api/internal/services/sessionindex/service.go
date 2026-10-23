@@ -372,6 +372,17 @@ type ReapGuard func(types.SessionListItem) bool
 // period later; stillborn rows are the accepted, documented cost).
 const reapGraceWindow = 15 * time.Minute
 
+// CountServeEligible is the #1880 listing serve-through gate: whether
+// this row's message_count is KNOWN-untrustworthy on the platform side
+// (the never-counted / never-traversed drift class) and therefore worth
+// one bounded harness count walk on the listing read path. SKELETON —
+// the #1880 red pins commit stores the seam unimplemented; the
+// implementation commit fills the rule (drift signature + spawn-grace
+// age gate + archived exclusion).
+func CountServeEligible(row types.SessionListItem) bool {
+	return false
+}
+
 // DefaultReapGuard is the message_count == 0 safety guard, extended
 // by the #1850 spawn-window grace: a count-zero row inside
 // reapGraceWindow of its creation is NOT admitted (a fresh session is

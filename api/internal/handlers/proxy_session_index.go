@@ -454,6 +454,32 @@ func (h *ProxyHandler) rebuildMessageCounts(ctx context.Context, workspaceID str
 	}
 }
 
+// listingCountBudget bounds the #1880 listing serve-through walks per
+// request — the drift class converges across listing polls (the sidebar
+// refreshes ~30s), so K=3 mirrors reconcileCountBudget's measured cost
+// bound (≤3 single-GET walks, ~1.5s worst case, ONLY while drift rows
+// exist; a converged workspace walks nothing).
+const listingCountBudget = 3
+
+// ServeHarnessMessageCounts is the #1880 direction-3 serve-through: the
+// listing read path makes the HARNESS count authoritative for the
+// drift class — rows whose message stream never traversed the API
+// proxy (board/dispatch-spawned sessions: pod-local prompt delivery,
+// no SSE subscriber) sit at message_count 0 forever because neither
+// the incremental RecordMessage path nor the reconcile rebuild (which
+// only walks rows the harness LIST reports present — the #1452
+// list-visibility gap) can see them. For eligible rows
+// (sessionindex.CountServeEligible) this walks the harness count by
+// ID, serves it on the caller's slice IN PLACE, and persists it through
+// the rebuild seam (self-healing, the backfillContextUsed precedent).
+// SKELETON — the #1880 red pins commit stores the seam unimplemented.
+func (h *ProxyHandler) ServeHarnessMessageCounts(ctx context.Context, workspaceID string, sessions []types.SessionListItem) {
+	_ = ctx
+	_ = workspaceID
+	_ = sessions
+	_ = listingCountBudget
+}
+
 func (h *ProxyHandler) SetSessionIndex(si interfaces.SessionIndexService) {
 	h.sessionIndex = si
 }

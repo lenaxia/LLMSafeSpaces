@@ -217,6 +217,7 @@ func TestSessionIndexReconcile_TruncatedWalkNeverPersistsUndercount(t *testing.T
 // the phrase while the real row never converged. The row here is
 // minted (ID=phrase, InternalID=harness) so a phrase-keyed write lands
 // in rebuiltCounts under the phrase and the assertion fails.
+// TestSessionIndexReconcile_RebuildWritesInternalIDNotPhrase — see above.
 func TestSessionIndexReconcile_RebuildWritesInternalIDNotPhrase(t *testing.T) {
 	now := time.Now().UTC()
 	h, idx, _ := countTestHandler(t,
@@ -235,4 +236,71 @@ func TestSessionIndexReconcile_RebuildWritesInternalIDNotPhrase(t *testing.T) {
 		"the rebuild write must be keyed by the harness id, never the phrase")
 	require.NotContains(t, idx.rebuiltCounts, "ws-1/amber-falcon-glides",
 		"a phrase-keyed rebuild would mint a ghost row")
+}
+
+// TestSessionIndexReconcile_PresentMissIsLoud — the #1880 convergence
+// hole made visible: an aged count-zero row the harness LIST omits
+// (the #1452 list-visibility gap — live spawn-created sessions) is
+// excluded from the rebuild candidates FOREVER. That exclusion was
+// silent; now it carries a metric + Warn so a drifting workspace is
+// diagnosable from the outside. History-bearing absent rows stay with
+// the operator/ghost machinery (kept_for_operator / miss counters —
+// NOT this metric).
+func TestSessionIndexReconcile_PresentMissIsLoud(t *testing.T) {
+	now := time.Now().UTC()
+	h, idx, counted := countTestHandler(t,
+		[]string{"ses_alive"},
+		map[string]int{"ses_alive": 2}, nil)
+	seedRowCountedAt(t, idx, "ws-1", "ses_alive", 2, now)
+	// The drift row: aged count-zero, list-invisible (spawn class).
+	aged := now.Add(-2 * time.Hour)
+	idx.mu.Lock()
+	idx.rows["ws-1"] = append(idx.rows["ws-1"], types.SessionListItem{
+		ID: "ses_spawn", InternalID: "ses_spawn",
+		MessageCount: 0, LastMessageAt: nil, CreatedAt: &aged,
+	})
+	// A history-bearing absent row: NOT drift-suspect — the ghost
+	// machinery owns it, the present-miss metric must not fire.
+	idx.rows["ws-1"] = append(idx.rows["ws-1"], types.SessionListItem{
+		ID: "ses_ghost_hist", InternalID: "ses_ghost_hist",
+		MessageCount: 30, LastMessageAt: &now,
+	})
+	idx.mu.Unlock()
+
+	before := promtestutil.ToFloat64(sessionindex.ReconcileOutcomeForTest("count_skip_not_present"))
+	runReconcile(t, h, "ws-1")
+
+	assert.Equal(t, []string{"ses_alive"}, *counted,
+		"the absent drift row is still never walked by the rebuild (present-only by contract)")
+	assert.Equal(t, before+1, promtestutil.ToFloat64(sessionindex.ReconcileOutcomeForTest("count_skip_not_present")),
+		"the list-invisible count-zero row's exclusion is counted — the silence was the diagnosis gap")
+}
+
+// TestSessionIndexReconcile_NoHarnessListCountsSkipLoud — when the
+// harness list fails, the whole count rebuild silently returns
+// (presentSet nil). One loud outcome per pass so "rebuild not
+// converging" is attributable to list failures from metrics alone.
+func TestSessionIndexReconcile_NoHarnessListCountsSkipLoud(t *testing.T) {
+	now := time.Now().UTC()
+	idx := newMockSessionIndex()
+	var counted []string
+	h := newProxyHandlerForAdapterTest(t)
+	h.sessionIndex = idx
+	h.adapter = &mockAdapter{
+		listSessionsFn: func(_ context.Context, _, _ string) ([]session.Session, error) {
+			return nil, errCountTestHarness
+		},
+		countMessagesFn: func(_ context.Context, _, _, sessionID string) (int, error) {
+			counted = append(counted, sessionID)
+			return 0, nil
+		},
+	}
+	seedRowCountedAt(t, idx, "ws-1", "ses_a", 5, now)
+
+	before := promtestutil.ToFloat64(sessionindex.ReconcileOutcomeForTest("count_skip_pass_no_list"))
+	runReconcile(t, h, "ws-1")
+
+	assert.Empty(t, counted, "no harness list, no count walks")
+	assert.Equal(t, before+1, promtestutil.ToFloat64(sessionindex.ReconcileOutcomeForTest("count_skip_pass_no_list")),
+		"the pass-level skip is visible in metrics")
 }
