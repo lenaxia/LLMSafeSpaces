@@ -245,6 +245,9 @@ type HeartbeatResult struct {
 	Extended       bool      `json:"extended"`
 	LeaseExpiresAt time.Time `json:"lease_expires_at"`
 	LastProgressAt time.Time `json:"last_progress_at"`
+	// Reason names a refusal class (#1832 WS4): "stillborn: zero turn
+	// evidence for the assignee session". Empty on every extension.
+	Reason string `json:"reason,omitempty"`
 }
 
 // SweepResult summarizes one reconciler pass (health panel feed).
