@@ -21,6 +21,7 @@ import (
 	"github.com/lenaxia/llmsafespaces/api/internal/services/sessionindex"
 	"github.com/lenaxia/llmsafespaces/pkg/agent"
 	"github.com/lenaxia/llmsafespaces/pkg/session"
+	"github.com/lenaxia/llmsafespaces/pkg/types"
 )
 
 func reconcileTestHandler(t *testing.T, harnessSessions map[string]bool, harnessErr error) (*ProxyHandler, *mockSessionIndex) {
@@ -271,4 +272,67 @@ func TestSessionIndexReconcile_Sessionless2xxProbeDefersReap(t *testing.T) {
 	assert.Equal(t, map[string]int{"ses_empty2xx": reconcileMissThreshold},
 		h.state().GetReconcileMisses(context.Background(), "ws-1"),
 		"the counter pins at threshold — the next pass retries the probe")
+}
+
+// --- #1882 r1: the reconcile re-birth race ----------------------------------
+//
+// The propagation teardown's design premise is that late row-creating
+// writers find the tombstone (#1881 made every row-creating upsert
+// mint a phrase on INSERT — a re-birth is a re-MINT, a fresh ghost).
+// The reconcile is the one carrier-relevant writer that never looked:
+// its count-rebuild walks the harness (240–490ms/page network calls)
+// BETWEEN the harness-list snapshot and its Register +
+// RebuildMessageCount writes — a carrier whose confirmed delete lands
+// in that window would be re-born with message_count=1 and refused by
+// DefaultReapGuard forever (kept_for_operator — the exact harm #1882
+// reports, at lower rate). Same exposure for the backfill sweep's
+// Register.
+
+// TestSessionIndexReconcile_CountRebuildSkipsTombstonedRow: the
+// carrier is present at the list snapshot; its delete propagates
+// DURING the count walk (tombstone + row removal mid-walk — the
+// validated window); the rebuild's row-creating writes must not
+// re-mint the deleted row.
+func TestSessionIndexReconcile_CountRebuildSkipsTombstonedRow(t *testing.T) {
+	h, idx := reconcileTestHandler(t, map[string]bool{"ses_carrier": true}, nil)
+	// Phrase-bearing row (ShortID set — the backfill sweep must skip
+	// it too) with a stale count so the rebuild write would fire.
+	idx.mu.Lock()
+	idx.rows["ws-1"] = append(idx.rows["ws-1"], types.SessionListItem{
+		ID: "ses_carrier", Title: "900-word lighthouse keeper story",
+		ShortID: "oc-00000001", MessageCount: 1,
+	})
+	idx.mu.Unlock()
+	// The count walk IS the race window: the carrier's confirmed delete
+	// (tombstone + row removal — the propagation tail) lands mid-walk.
+	h.adapter.(*mockAdapter).countMessagesFn = func(ctx context.Context, _, _, sid string) (int, error) {
+		h.MarkSessionDeletedForTest("ws-1", sid)
+		_ = idx.DeleteSession(ctx, "ws-1", sid)
+		return 2, nil // != seeded 1 — the rebuild write would fire
+	}
+
+	runReconcile(t, h, "ws-1")
+
+	assert.True(t, idx.deletedTree["ws-1/ses_carrier"],
+		"sanity: the propagation's row removal landed")
+	assert.Equal(t, 0, idx.registerCalls["ws-1/ses_carrier"],
+		"a tombstoned session must not be re-registered (re-birth = re-mint, #1882 r1)")
+	assert.NotContains(t, idx.rebuiltCounts, "ws-1/ses_carrier",
+		"a tombstoned session's count rebuild must not re-create its row")
+}
+
+// TestSessionIndexReconcile_BackfillSkipsTombstonedRow: the backfill
+// sweep's Register is a row-creating mint for phrase-less rows — a
+// deleted carrier in the pre-pass snapshot must not be re-registered.
+func TestSessionIndexReconcile_BackfillSkipsTombstonedRow(t *testing.T) {
+	h, idx := reconcileTestHandler(t, map[string]bool{"ses_deadnull": true}, nil)
+	idx.seedRow("ws-1", "ses_deadnull") // count 0, no ShortID — backfill target
+	// Deleted before the pass (tombstone only — the row still rides the
+	// stale snapshot the reconcile already listed).
+	h.MarkSessionDeletedForTest("ws-1", "ses_deadnull")
+
+	runReconcile(t, h, "ws-1")
+
+	assert.Equal(t, 0, idx.registerCalls["ws-1/ses_deadnull"],
+		"a tombstoned session must not be backfilled (Register re-creates the row, #1882 r1)")
 }
