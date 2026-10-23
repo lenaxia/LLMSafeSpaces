@@ -134,8 +134,12 @@ func (s *BoardSuite) TestReview_1832_VerdictChainRidesNextClaim() {
 	s.Equal(board.StageInProgress, out.Stage)
 
 	// Round 2: the bounced row's lease lapses; a FRESH claimant spawns —
-	// its charter carries the verdict chain (iteration history).
+	// its charter carries the verdict chain (iteration history). The
+	// lapse arms #1813's failure backoff (a lapsed lease IS a failure
+	// event); clear it so the row re-enters the claimable set NOW —
+	// the sweep's auto-return is not what this row pins.
 	s.expireLease(task.ID)
+	s.clearTaskBackoff(task.ID)
 	c2, err := svc.ClaimNext(ctx, "w2-"+ws, ws)
 	s.Require().NoError(err)
 	s.Require().Equal(task.ID, c2.TaskID)
