@@ -1,9 +1,0 @@
-diff a/pkg/mcp/client.go b/pkg/mcp/client.go	(rejected hunks)
-@@ -125,6 +125,7 @@ type APIClient interface {
- 	BoardDeleteEpic(ctx context.Context, epicID string, force bool) (json.RawMessage, error)
- 	BoardCreateTask(ctx context.Context, epicID string, body BoardTaskBody) (json.RawMessage, error)
- 	BoardGetTask(ctx context.Context, taskID string) (json.RawMessage, error)
-+	BoardTaskEvents(ctx context.Context, taskID string, limit int) (json.RawMessage, error)
- 	BoardUpdateTask(ctx context.Context, taskID string, body BoardTaskBody) (json.RawMessage, error)
- 	BoardMoveStage(ctx context.Context, taskID, toStage, evidenceURL, requestID string) (json.RawMessage, error)
- 	BoardStartTask(ctx context.Context, taskID, requestID string) (json.RawMessage, error)

@@ -453,5 +453,175 @@ describe("ChatPage pending prompts (I12 fold-driven, US-69.10)", () => {
       expect(promptStore.clearSessionPrompts).not.toHaveBeenCalled();
     });
   });
+
+  // ── #1845: mobile queued-questions navigation ────────────────────
+  //
+  // The pending-question stack is NEWEST-FIRST (SessionActivityProvider
+  // sorts newest-activity-first). On mobile only ONE ask is presented at
+  // a time — the OLDEST (the ask the agent made first; presenting the
+  // stack's first element would put the NEWEST ask in front and risk
+  // orphaning earlier answers). Resolving it advances to the next; a
+  // "1 of N" line signals the queue depth. Desktop keeps the full stack.
+  // jsdom's default matchMedia stub reports matches:false for every
+  // query → useIsMobile() is TRUE unless a test overrides it.
+
+  describe("mobile queued-questions presentation (#1845)", () => {
+    function seedTwoQuestions() {
+      // Array order mirrors the real provider read hook: NEWEST first.
+      promptStore.questions = [
+        {
+          id: "que_2",
+          sessionId: "ses_1",
+          rootSessionId: "ses_1",
+          kind: "question",
+          question: "Second (newer) question?",
+          header: "Q2",
+          options: [{ label: "Rust", description: "" }],
+          multiple: false,
+        },
+        {
+          id: "que_1",
+          sessionId: "ses_1",
+          rootSessionId: "ses_1",
+          kind: "question",
+          question: "First (oldest) question?",
+          header: "Q1",
+          options: [{ label: "Go", description: "" }],
+          multiple: false,
+        },
+      ];
+    }
+
+    it("MOBILE: presents the OLDEST question only, with a 1-of-N queue line", async () => {
+      const qc = makeQueryClient();
+      await renderReady(qc);
+      seedTwoQuestions();
+      applySnapshot(5n, [
+        makeSessionSnapshot("ses_1", { status: SessionStatus.BUSY, pendingInputs: [] }),
+      ]);
+      // Oldest ask is visible...
+      expect(screen.getByText("First (oldest) question?")).toBeInTheDocument();
+      // ...the newer ask is NOT rendered on mobile...
+      expect(screen.queryByText("Second (newer) question?")).not.toBeInTheDocument();
+      // ...and the queue depth is signalled.
+      expect(screen.getByText(/1 of 2/)).toBeInTheDocument();
+    });
+
+    it("MOBILE: resolving the oldest question advances to the next (sequential)", async () => {
+      const qc = makeQueryClient();
+      await renderReady(qc);
+      seedTwoQuestions();
+      applySnapshot(5n, [
+        makeSessionSnapshot("ses_1", { status: SessionStatus.BUSY, pendingInputs: [] }),
+      ]);
+      // Answer the presented (oldest) question through the real UI.
+      act(() => { screen.getByRole("button", { name: "Go" }).click(); });
+      act(() => { screen.getByText("Submit answers").click(); });
+      await waitFor(() =>
+        expect(inputApi.questionReply).toHaveBeenCalledWith("ws-1", "que_1", [["Go"]]),
+      );
+      // Resolution drops que_1 from the store; the next-oldest presents.
+      promptStore.questions = promptStore.questions.filter((q) => q.id !== "que_1");
+      applySnapshot(6n, [
+        makeSessionSnapshot("ses_1", { status: SessionStatus.BUSY, pendingInputs: [] }),
+      ]);
+      expect(screen.getByText("Second (newer) question?")).toBeInTheDocument();
+      expect(screen.queryByText("First (oldest) question?")).not.toBeInTheDocument();
+      // Last remaining ask — no queue-depth line needed.
+      expect(screen.queryByText(/Question 1 of/)).not.toBeInTheDocument();
+    });
+
+    it("MOBILE: DISMISSING the oldest question advances to the next (the issue's other exit)", async () => {
+      const qc = makeQueryClient();
+      await renderReady(qc);
+      seedTwoQuestions();
+      applySnapshot(5n, [
+        makeSessionSnapshot("ses_1", { status: SessionStatus.BUSY, pendingInputs: [] }),
+      ]);
+      // Dismiss the presented (oldest) question through the real UI
+      // (the footer Dismiss button — the card also has an aria-label ✕).
+      act(() => { (screen.getByText("Dismiss") as HTMLElement).click(); });
+      await waitFor(() => expect(inputApi.questionReject).toHaveBeenCalledWith("ws-1", "que_1"));
+      await waitFor(() => expect(promptStore.removeAction).toHaveBeenCalledWith("que_1"));
+      // Dismissal drops que_1 from the store; the next-oldest presents.
+      promptStore.questions = promptStore.questions.filter((q) => q.id !== "que_1");
+      applySnapshot(6n, [
+        makeSessionSnapshot("ses_1", { status: SessionStatus.BUSY, pendingInputs: [] }),
+      ]);
+      expect(screen.getByText("Second (newer) question?")).toBeInTheDocument();
+      expect(screen.queryByText("First (oldest) question?")).not.toBeInTheDocument();
+    });
+
+    it("MOBILE: permission presenter — oldest only, 'Permission 1 of N' line, advances on resolve", async () => {
+      const qc = makeQueryClient();
+      await renderReady(qc);
+      // Array order mirrors the provider read hook: NEWEST first.
+      promptStore.permissions = [
+        {
+          id: "per_2",
+          sessionId: "ses_1",
+          rootSessionId: "ses_1",
+          kind: "permission",
+          permission: "shell",
+          patterns: ["ls /newer"],
+          always: [],
+        },
+        {
+          id: "per_1",
+          sessionId: "ses_1",
+          rootSessionId: "ses_1",
+          kind: "permission",
+          permission: "write",
+          patterns: ["/older/file.txt"],
+          always: [],
+        },
+      ];
+      applySnapshot(5n, [
+        makeSessionSnapshot("ses_1", { status: SessionStatus.BUSY, pendingInputs: [] }),
+      ]);
+      // Oldest permission is the presented one...
+      expect(screen.getByText("/older/file.txt")).toBeInTheDocument();
+      expect(screen.queryByText("ls /newer")).not.toBeInTheDocument();
+      // ...with its queue-depth line.
+      expect(screen.getByText(/Permission 1 of 2/)).toBeInTheDocument();
+      // Resolve it (Allow always) through the real UI.
+      act(() => { screen.getByText("Allow always").click(); });
+      await waitFor(() => expect(inputApi.permissionReply).toHaveBeenCalled());
+      // Resolution drops per_1 from the store; the next-oldest presents.
+      promptStore.permissions = promptStore.permissions.filter((p) => p.id !== "per_1");
+      applySnapshot(6n, [
+        makeSessionSnapshot("ses_1", { status: SessionStatus.BUSY, pendingInputs: [] }),
+      ]);
+      expect(screen.getByText("ls /newer")).toBeInTheDocument();
+      expect(screen.queryByText("/older/file.txt")).not.toBeInTheDocument();
+      expect(screen.queryByText(/Permission 1 of/)).not.toBeInTheDocument();
+    });
+
+    it("DESKTOP: the full stack renders (no single-card gating, no queue line)", async () => {
+      const matchMediaSpy = vi.spyOn(window, "matchMedia").mockImplementation((query: string) => ({
+        matches: query.includes("min-width"), // desktop: min-width matches
+        media: query,
+        onchange: null,
+        addEventListener: () => {},
+        removeEventListener: () => {},
+        addListener: () => {},
+        removeListener: () => {},
+        dispatchEvent: () => false,
+      }));
+      try {
+        const qc = makeQueryClient();
+        await renderReady(qc);
+        seedTwoQuestions();
+        applySnapshot(5n, [
+          makeSessionSnapshot("ses_1", { status: SessionStatus.BUSY, pendingInputs: [] }),
+        ]);
+        expect(screen.getByText("First (oldest) question?")).toBeInTheDocument();
+        expect(screen.getByText("Second (newer) question?")).toBeInTheDocument();
+        expect(screen.queryByText(/1 of \d/)).not.toBeInTheDocument();
+      } finally {
+        matchMediaSpy.mockRestore();
+      }
+    });
+  });
 });
 

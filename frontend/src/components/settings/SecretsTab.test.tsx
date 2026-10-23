@@ -16,6 +16,7 @@
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { screen, waitFor } from "@testing-library/react";
+import { fireEvent } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { render } from "../../test/utils";
 import { SecretsTab } from "./SecretsTab";
@@ -34,6 +35,7 @@ vi.mock("../../api/secrets", () => ({
       updatedAt: new Date().toISOString(),
     }),
     delete: vi.fn().mockResolvedValue(undefined),
+    update: vi.fn().mockResolvedValue(undefined),
     getSecretBindings: vi.fn().mockResolvedValue({ workspaces: [] }),
   },
 }));
@@ -42,6 +44,23 @@ vi.mock("../../api/secrets", () => ({
 vi.mock("../../providers/ToastProvider", () => ({
   useToast: () => ({ toast: vi.fn() }),
 }));
+
+async function openCreateForm() {
+  const user = userEvent.setup();
+  render(<SecretsTab />);
+  // Wait for the loading state to resolve
+  await waitFor(() => expect(screen.queryByText("Loading secrets...")).not.toBeInTheDocument());
+  // Open the creation form
+  await user.click(screen.getByRole("button", { name: "+ New Secret" }));
+  return user;
+}
+
+async function selectSecretType(user: ReturnType<typeof userEvent.setup>, typeName: string) {
+  // The create form may have multiple <select> elements (type selector + metaField
+  // selectors like provider/key_type). The type selector is always the first combobox.
+  const [typeSelect] = screen.getAllByRole("combobox");
+  await user.selectOptions(typeSelect!, typeName);
+}
 
 describe("CreateSecretForm – mount_path handling", () => {
   const createMock = secretsApiModule.secretsApi.create as ReturnType<typeof vi.fn>;
@@ -60,23 +79,6 @@ describe("CreateSecretForm – mount_path handling", () => {
       updatedAt: new Date().toISOString(),
     });
   });
-
-  async function openCreateForm() {
-    const user = userEvent.setup();
-    render(<SecretsTab />);
-    // Wait for the loading state to resolve
-    await waitFor(() => expect(screen.queryByText("Loading secrets...")).not.toBeInTheDocument());
-    // Open the creation form
-    await user.click(screen.getByRole("button", { name: "+ New Secret" }));
-    return user;
-  }
-
-  async function selectSecretType(user: ReturnType<typeof userEvent.setup>, typeName: string) {
-    // The create form may have multiple <select> elements (type selector + metaField
-    // selectors like provider/key_type). The type selector is always the first combobox.
-    const [typeSelect] = screen.getAllByRole("combobox");
-    await user.selectOptions(typeSelect!, typeName);
-  }
 
   it("sends mount_path as a plain relative path (no /home/sandbox/.secrets/ prefix)", { timeout: 15000 }, async () => {
     const user = await openCreateForm();
@@ -306,5 +308,74 @@ describe("SecretsTab – ConfirmDialog delete (#814)", () => {
     await user.click(cancelBtn);
 
     expect(deleteMock).not.toHaveBeenCalled();
+  });
+});
+
+// #1793 (review r2): ssh-key values are whitespace-normalized on the
+// create path — the trailing-space-per-line class that made stock
+// OpenSSH fail provisioned keys with "error in libcrypto" must not
+// reach storage. Bodies are low-entropy (gitleaks private-key rule).
+describe("CreateSecretForm – ssh-key value normalization (#1793)", () => {
+  const createMock = secretsApiModule.secretsApi.create as ReturnType<typeof vi.fn>;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    (secretsApiModule.secretsApi.list as ReturnType<typeof vi.fn>).mockResolvedValue({ secrets: [] });
+    (secretsApiModule.secretsApi.getSecretBindings as ReturnType<typeof vi.fn>).mockResolvedValue({ workspaces: [] });
+    createMock.mockResolvedValue({
+      id: "sec-1", name: "github", type: "ssh-key",
+      metadata: { key_type: "ed25519" },
+      createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
+    });
+  });
+
+  it("submits a trailing-space-corrupt ssh-key value NORMALIZED", { timeout: 15000 }, async () => {
+    const user = await openCreateForm();
+    await selectSecretType(user, "ssh-key");
+    await user.type(screen.getByPlaceholderText("my-api-key"), "github");
+
+    const corrupt = "-----BEGIN OPENSSH PRIVATE KEY----- \nAAAA\nBBBB \n-----END OPENSSH PRIVATE KEY----- ";
+    // The ssh-key value textarea's placeholder is the PEM header itself
+    // (component line ~642: type-conditional placeholder), not /sk-/.
+    fireEvent.change(screen.getByPlaceholderText("-----BEGIN OPENSSH PRIVATE KEY-----"), {
+      target: { value: corrupt },
+    });
+
+    await user.click(screen.getByRole("button", { name: "Create Secret" }));
+    await waitFor(() => expect(createMock).toHaveBeenCalled(), { timeout: 10000 });
+
+    const callArg = createMock.mock.calls[0]![0] as { type: string; value: string };
+    expect(callArg.type).toBe("ssh-key");
+    expect(callArg.value).toBe("-----BEGIN OPENSSH PRIVATE KEY-----\nAAAA\nBBBB\n-----END OPENSSH PRIVATE KEY-----");
+  });
+
+  it("normalizes on the UPDATE path too (review r3)", { timeout: 15000 }, async () => {
+    const listMock = secretsApiModule.secretsApi.list as ReturnType<typeof vi.fn>;
+    const updateMock = secretsApiModule.secretsApi.update as ReturnType<typeof vi.fn>;
+    listMock.mockResolvedValue({
+      secrets: [
+        {
+          id: "sec-1793",
+          name: "deploy-github",
+          type: "ssh-key",
+          metadata: { key_type: "ed25519" },
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+        },
+      ],
+    });
+
+    const user = userEvent.setup();
+    render(<SecretsTab />);
+    await waitFor(() => expect(screen.getByText("deploy-github")).toBeInTheDocument());
+    await user.click(screen.getByRole("button", { name: "Update" }));
+
+    const corrupt = "-----BEGIN OPENSSH PRIVATE KEY----- \nCCCC\nDDDD \n-----END OPENSSH PRIVATE KEY----- ";
+    fireEvent.change(screen.getByPlaceholderText("Enter new secret value"), { target: { value: corrupt } });
+    await user.click(screen.getByRole("button", { name: "Save" }));
+
+    await waitFor(() => expect(updateMock).toHaveBeenCalled(), { timeout: 10000 });
+    const arg = updateMock.mock.calls[0]![1] as { value: string };
+    expect(arg.value).toBe("-----BEGIN OPENSSH PRIVATE KEY-----\nCCCC\nDDDD\n-----END OPENSSH PRIVATE KEY-----");
   });
 });
