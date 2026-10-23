@@ -79,6 +79,10 @@ type Service struct {
 	aborter        WorkerAborter
 	drift          PRDriftSource
 	pending        PendingInputSource
+	// turnEvidence is the #1832 WS4 stillborn guard's source: a
+	// session's actual message/output count. Nil = the guard is inert
+	// (today's timestamp-rule semantics).
+	turnEvidence TurnEvidenceSource
 	// messenger delivers halt/resume directives to in-flight workers
 	// (#1747 pause-must-pause). Nil = no delivery (the flags stay
 	// authoritative; tests pin the nil-seam behavior).

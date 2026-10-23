@@ -145,6 +145,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   degraded mode the invariant nets).
 
 
+### Changed — Task Board: stillborn turn-evidence guard on heartbeats (issue #1832, lane board-stage-hygiene WS4)
+
+- **A heartbeat extension now requires ACTUAL turn evidence when the
+  evidence source is installed**: a POSITIVE zero-message report for
+  the task's assignee session refuses the extension (the
+  lease-keeper-renews-a-stillborn-spawn class — spawn-moment
+  `updated_at` alone is not liveness); the refusal carries a `reason`.
+  The wall clock reclaims the stillborn's lease through the ordinary
+  RC1 path. Source errors fail open (logged) — the narrow fix only;
+  the platform-derived liveness rework is #1847's lane.
+
 ### Added — Task Board: re-arm, the attempts-exhaustion re-pool (issue #1832, lane board-stage-hygiene WS3)
 
 - **`POST /api/v1/me/tasks/:id/rearm`** (and `board_rearm_task` on
