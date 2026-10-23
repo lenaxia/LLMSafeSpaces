@@ -28,6 +28,9 @@ export const mockRemoveDependency = vi.fn();
 export const mockStartTask = vi.fn();
 export const mockActivateEpic = vi.fn();
 export const mockPauseEpic = vi.fn();
+export const mockDeleteEpic = vi.fn();
+export const mockArchiveProject = vi.fn();
+export const mockUnarchiveProject = vi.fn();
 export const mockWorkspacesList = vi.fn();
 
 vi.mock("../api/board", () => ({
@@ -48,6 +51,9 @@ vi.mock("../api/board", () => ({
     removeDependency: (id: string, dep: string) => mockRemoveDependency(id, dep),
     activateEpic: (id: string) => mockActivateEpic(id),
     pauseEpic: (id: string) => mockPauseEpic(id),
+    deleteEpic: (id: string, force?: boolean) => mockDeleteEpic(id, force),
+    archiveProject: (id: string) => mockArchiveProject(id),
+    unarchiveProject: (id: string) => mockUnarchiveProject(id),
   },
   newBoardRequestId: () => "req-test",
 }));
@@ -80,6 +86,15 @@ export const PROJECT_B: BoardProject = {
   status: "active",
   created_at: "2026-10-02T00:00:00Z",
   updated_at: "2026-10-02T00:00:00Z",
+};
+
+/** #1832 item 3: the archived-project state (kebab shows Unarchive). */
+export const PROJECT_ARCHIVED: BoardProject = {
+  ...PROJECT_B,
+  id: "proj-uuid-arc",
+  short_id: "prj-arch3333",
+  name: "Archived Lane",
+  status: "archived",
 };
 
 const base = {

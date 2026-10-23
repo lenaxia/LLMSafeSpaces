@@ -8,6 +8,120 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed — chat UX
+
+- **Mobile is no longer stuck on the first of several queued agent
+  questions** (#1845): every pending ask used to render as a stacked
+  card in the message stream, which on a phone viewport surfaced only
+  the topmost card with no indication more were queued — and the stack
+  orders newest-first, so the surfaced card was the NEWEST ask. Mobile
+  now presents ONE ask of each kind at a time, the OLDEST pending
+  (first-seen order — the provider's standing semantics; asks seeded
+  from one fold snapshot now carry strictly-monotonic first-seen stamps
+  so same-batch asks can never tie and leak insertion order through the
+  newest-first sort), with a "Question 1 of N — answer to see the next"
+  queue-depth line; answering or dismissing advances to the next ask
+  automatically. Desktop rendering is unchanged.
+
+### Fixed — Provisioned SSH keys: the delivery writer validates + repairs the trailing-space corruption class (#1793)
+
+- **SSH git operations no longer die on formatting-corrupt stored
+  keys.** A live provisioned key delivered with ONE trailing space on
+  every line (PEM markers included) made stock OpenSSH fail with the
+  misleading `error in libcrypto` — killing every SSH git operation in
+  fresh workspaces while the key material itself was intact. The
+  agentd delivery writer now runs a belt at the staging seam
+  (`pkg/agentd/secrets`): a structurally clean, parse-valid key (or an
+  OpenSSH-format passphrase-protected one — x/crypto reports those as
+  `PassphraseMissingError`, which is validity, not corruption) is
+  staged byte-identical; anything else gets one strict repair
+  (per-line whitespace trim + CRLF normalize) staged only if it parses
+  or is OpenSSH-format passphrase-protected — reproducing the clean
+  PEM byte-for-byte for the padding-only corruption class (encrypted
+  OpenSSH keys included). Other encrypted PEM envelopes (PKCS#8
+  `ENCRYPTED PRIVATE KEY`) parse as unsupported in x/crypto and stage
+  verbatim under never-worse; garbage likewise. Detection is
+  STRUCTURAL, because Go's parser tolerates exactly the
+  trailing-space class OpenSSH rejects. The frontend save path
+  normalizes ssh-key values on create/update (paste/transport reflow
+  cannot reintroduce the class), defense in depth with the belt.
+
+### Added — Task Board: kebab menus + delete flows (#1832 item 3)
+
+- **Kebab menus at all three board levels.** Each project swimlane
+  header, epic band header, and task card carries a kebab menu
+  (distinct a11y labels; triggers stopPropagation — a kebab click
+  never toggles band selection nor opens the task editor).
+- **Task delete modal with the 'reconnect dependents to upstream'
+  checkbox** (#1747's optional flag): dependents are surfaced
+  pre-flight from the read model; unchecked (default) they are simply
+  unblocked (each gets an `unblocked_by_delete` audit event), checked
+  they inherit the deleted task's direct upstream edges (deduplicated,
+  cycle-guarded server-side). Both semantics are pinned at the wire in
+  e2e (`?reconnect=true` presence/absence exact-matched) and in
+  component tests (API-client args asserted). The delete result
+  surfaces as a page notice (orphans listed / `orphan→upstream` pairs).
+- **Epic delete surfaces in-flight workers with refuse/force-confirm
+  matching the API**: the modal lists the epic's in-flight claims
+  (in_progress + assignee, live read model) and its honest cascade
+  count; the first attempt never sends force — the engine's 409
+  `epic_state` renders inside the modal, and only that real refusal
+  reveals the acknowledge-gated "Force delete" (force deletes, then
+  aborts each in-flight worker post-commit).
+- **Project kebab is archive/unarchive ONLY** (#1747: project delete
+  is eliminated) — the menu structurally offers exactly one lifecycle
+  item; the absence of any delete item is pinned in both test layers.
+- This lane's e2e runs at **E2E_PORT=18521** (registry discipline:
+  18517/18519 claimed by sibling lanes; nightly PORTFWD 18083–18093
+  untouched).
+### Fixed — worklog/migration renumber bot: root fix for the next-free assignment race (#1838)
+
+- **Assignment consults the open-branch taken-set** (the soft layer):
+  `repolint`'s worklog numbering pass (`-fix-worklogs`, the post-merge
+  bot, `.githooks/post-rewrite`, `make pre-commit-fix`) now skips
+  numbers claimed by OTHER open PRs' heads — discovered via
+  `gh pr list` + the git-trees API — in addition to the local tree and
+  origin/main. Two branches assigning inside one bot-lag window can no
+  longer both mint the same number and land it via file-wise auto-merge
+  (the 1161x2 / 1164x2 / 1173x2 / 1175x2 class). Discovery degrades to
+  the previous main-only behavior offline; the #1807 uniqueness
+  invariant stays as the net.
+- **New `numbering-gate` workflow** (the hard layer, both artifact
+  classes): on every push to main touching `worklogs/**` or
+  `api/migrations/**`, re-evaluates every open PR's MERGE tree
+  (`refs/pull/N/merge`) with `repolint -numbering-only` (migrations
+  sequence + worklog uniqueness — the same gates ci.yml's Lint runs,
+  but against the CURRENT tip, closing the stale-green window that
+  landed migration 41x2). A PR whose merge tree collides gets a red
+  namespaced `numbering-gate` check run on its head (title + summary
+  name the collision and the healing lever — never the PR's own lint);
+  once healed, a success run replaces the red (clear-on-heal, pinned in
+  `gate_test.go`). The decision matrix is pinned in `pkg/repolint`
+  (`NumberingGateDecision`), not in bash.
+- **The renumber bot is serialized and tip-based** (the CAS layer):
+  `worklog-renumber.yml` gains a `worklog-renumber` concurrency group
+  (queued, never cancelled), checks out `ref: main` (a queued run
+  numbers the CURRENT tip, including the previous run's numbering
+  commit — the stale-SHA checkout is how two runs minted 1164 twice),
+  and its push is a compare-and-swap: on rejection it rebases onto the
+  new tip, re-runs the fix pass (interleaved merges may have added new
+  sentinels), amends, and retries (≤3). Git's fast-forward check on
+  main IS the lock — no manifest file to conflict or drift. After a
+  successful push the bot explicitly dispatches the numbering-gate
+  sweep (its own `[skip ci]` marker suppresses the push trigger): in
+  the degraded mode where gh discovery was unavailable, the bot may
+  have minted a sibling-held number, and the dispatched sweep catches
+  it in minutes instead of at the 6h cron.
+- **New `repolint -next-numbers`**: prints the next free worklog and
+  migration number given local state, origin/main, and open-PR claims —
+  the soft layer for hand-numbered migrations (the 41x2 class had no
+  bot in the loop; authors get knowledge instead of automation).
+- Red-first suite: `pkg/repolint/numbering_race_test.go` simulates two
+  (and three) sibling branch trees assigning inside one window and
+  asserts the merged tree passes the uniqueness gate; the control test
+  pins that claims-blind assignment still collides (the documented
+  degraded mode the invariant nets).
+
 ### Added — Task Board: delegated-review completion coupling (issue #1832, lane board-stage-hygiene WS1)
 
 - **A task whose job is to review another task's artifact anchors to
@@ -210,6 +324,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Effective view with provenance**: each project row shows the
   merged effective config, each key marked override vs inherited from
   the stored overrides.
+### Added — Task Board: review auto-assign + verdict chain in the next charter (issue #1832 item 5, part 2)
+
+- **Config-gated reviewer dispatch**: when a task enters in_review and
+  the project's EFFECTIVE config is `reviewColumn=auto` AND
+  `autoAssignReviewer=true`, a reviewer is dispatched DIRECTLY (a
+  dedicated reviewer session — never queued behind the global worker
+  FIFO; the single-reviewer latency multiplier was the design driver).
+  `manual`/`off`/`auto`-without-assign keep today's behavior exactly —
+  no event, no dispatch (5-combo gating matrix pinned in the PG
+  harness). The intent records a `review_assign` event; dispatch
+  failure logs and leaves the manual path intact.
+- **The verdict chain rides the next claimant's charter**: after a
+  fail-bounce, a fresh claim's spawn carries every prior verdict +
+  findings (`Claim.VerdictChain` → the charter prompt renders "PRIOR
+  REVIEW VERDICTS" with severity/pointer/criterion-index) — iteration
+  history, never a failure count.
+- **The reviewer's charter** carries the adversarial-review contract:
+  verify each criterion, record ONE structured verdict through the
+  forge-agnostic core (`board_record_verdict`), never merge or hold a
+  claim.
+
 ### Added — Task Board: structured review verdicts (issue #1832 item 5, part 1)
 
 - **The forge-agnostic verdict core**: a validated payload
@@ -260,6 +395,48 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   task card carries a `FAILED ×n` badge plus a FAILED filter toggle;
   the overlay renders on every task read (REST/SDK/MCP) and in
   reclaim audit events (escalate events carry exhausted=true).
+
+### Fixed — create_session workers get re-phrased after spawn; 3-word ids must be persistent (#1850)
+
+- **The reconcile reap no longer deletes LIVE sessions off a harness
+  list gap.** The #1340 convergence pass treated two consecutive
+  harness-list absences as deletion evidence, but the list is not a
+  liveness authority for harness/Act-path sessions (#1452: live and
+  readable by ID while never listed — exactly the create_session
+  spawn class). A fresh spawn's `session_index` row sits at
+  `message_count == 0` for its whole first turn, so the row was reaped
+  mid-turn; the first turn-boundary event then re-registered the
+  session and the single-mint seam minted a NEW phrase — the reported
+  re-phrase (old phrase dead: `send_message` to it 500s mid-lane; the
+  session re-emits flagged `id_deprecated`). Every reap is now
+  confirmed by the by-ID probe first (the send_message `SessionExists`
+  precedent — immune to the list-visibility gap): alive-by-ID vetoes
+  the reap and resets the miss counter (`reap_vetoed_live`); any
+  indeterminate outcome (transport/5xx error, or a sessionless 2xx
+  answer) defers it to the next pass (`reap_deferred_probe`); only a
+  definitive by-ID not-found reaps, as before.
+- **The agentd short-id replica applies registry pulls as a MERGE,
+  not a replace.** `putAll` rebuilt the whole map from each pull's
+  snapshot: a pull in flight at spawn (the emission-warm worker's 1s
+  cadence) returned without the just-registered row and WIPED the
+  fresh phrase→harness mapping — the spawned session degraded to
+  harness-id emission + `id_deprecated` (worker panes stopped
+  rendering it) and phrase-addressed sends lost resolution until a
+  later pull. Pulls now upsert (a pull never removes entries): absent
+  entries are stale snapshots or deleted sessions — the latter resolve
+  to a dead id and fail the `SessionExists` probe cleanly with the
+  did-you-mean clause, never a hard error. This is also the honest
+  reading of the replica's own contract ("only ever RECEIVES entries"
+  — phrases are immutable once minted).
+- **Phrase-as-identity contract pinned red-first** on both tiers: the
+  spawned session keeps its original 3-word phrase across its first
+  turn boundary AND across a stale registry pull (e2e over the real
+  create_session + delivery path); a `send_message` addressed to the
+  ORIGINAL phrase still resolves and delivers after rename and
+  compaction paths; the by-ID reap veto/defer/confirm matrix is pinned
+  at the reconcile orchestration. Test-isolation fix (fail on
+  unmodified main at `-count>1`): the on-miss pull TTL timestamp now
+  resets per test.
 
 ### Fixed — builder GOTOOLCHAIN=auto carry + health probes exempt from rate limiting (#1825)
 - **The five service builders set `ENV GOTOOLCHAIN=auto`** alongside

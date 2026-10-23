@@ -2628,6 +2628,53 @@ describe("resolved pill lifecycle (#1365)", () => {
     const items = screen.getAllByTestId(/^q-/).map((el) => el.getAttribute("data-testid"));
     expect(items).toEqual(["q-q3", "q-q2", "q-q1"]); // the live ask (newest) leads the stack
   });
+
+  // #1845: asks seeded from ONE fold snapshot (reload/reconnect with
+  // several pending) register in the same tick — identical Date.now()
+  // used to collapse the sort into insertion order, so the mobile
+  // presenter's [length-1] "oldest" picked the NEWEST. Stamps are
+  // strictly monotonic per registration; batch-mates can never tie.
+  it("same-tick batch still orders newest-registration-first (monotonic first-seen)", () => {
+    function QuestionListView() {
+      const pending = usePendingQuestionsForSession("ses-1");
+      return (
+        <ul>
+          {pending.map((q) => (
+            <li key={q.id} data-testid={`q-${q.id}`}>{q.id}</li>
+          ))}
+        </ul>
+      );
+    }
+    function AddButtons() {
+      const addQ = useAddPendingQuestion();
+      return (
+        <>
+          <button data-testid="add-1" onClick={() => addQ("ws-1", makeQuestion("q1", "ses-1"))}>1</button>
+          <button data-testid="add-2" onClick={() => addQ("ws-1", makeQuestion("q2", "ses-1"))}>2</button>
+          <button data-testid="add-3" onClick={() => addQ("ws-1", makeQuestion("q3", "ses-1"))}>3</button>
+        </>
+      );
+    }
+    renderProvider(
+      <>
+        <AddButtons />
+        <QuestionListView />
+      </>,
+    );
+
+    vi.useFakeTimers({ now: 1_000_000 });
+    try {
+      // ONE frozen clock — the fold-batch case.
+      act(() => { screen.getByTestId("add-1").click(); });
+      act(() => { screen.getByTestId("add-2").click(); });
+      act(() => { screen.getByTestId("add-3").click(); });
+    } finally {
+      vi.useRealTimers();
+    }
+
+    const items = screen.getAllByTestId(/^q-/).map((el) => el.getAttribute("data-testid"));
+    expect(items).toEqual(["q-q3", "q-q2", "q-q1"]); // last registration leads; ties cannot occur
+  });
 });
 
 // #1365: the whileAway staleness backstop keys off a client receivedAt
