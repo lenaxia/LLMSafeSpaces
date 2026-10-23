@@ -694,6 +694,9 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 			// scheduler's authorized-delete wiring (password + default
 			// mux port; the honest 204/502 route).
 			PasswordProvider: proxyHandler,
+			// #1882: a confirmed node-retry delete propagates the
+			// platform-side teardown (tombstone + index row + SSE).
+			SessionDelete: proxyHandler,
 		}
 		wfScheduler = &apiwf.Scheduler{
 			Store: wfStore,
@@ -708,6 +711,10 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 			// session_index at fire completion — the routine path never
 			// rides the adapter routes that otherwise populate it.
 			SessionIndex: sessionIndexSvc,
+			// #1882: every session delete the engine authorizes or
+			// observes (agentd-reported ephemeral teardowns) converges
+			// on the user route's teardown — no more ghost rows.
+			SessionDelete: proxyHandler,
 		}
 		// Wire pod-IP resolver so resync notifies can reach in-pod agentd.
 		// Without this the SecretsHandler returns 503 for every reload

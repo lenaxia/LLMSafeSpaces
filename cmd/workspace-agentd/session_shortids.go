@@ -191,6 +191,21 @@ func (s *sessionShortIDStore) persistLocked() error {
 // row removals (reconcile reaps) leave the replica warm — advisory
 // posture unchanged, boot pull rebuilds.
 func (s *sessionShortIDStore) forget(sessionID string) {
-	// #1882 red-pin stub: unimplemented.
-	_ = sessionID
+	if s == nil || sessionID == "" {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	shortID, ok := s.bySession[sessionID]
+	if !ok {
+		return
+	}
+	delete(s.bySession, sessionID)
+	// Phrases are write-once per session, so byShort[shortID] is this
+	// session's; the equality guard is one line of insurance against
+	// ever re-pointing a live entry.
+	if s.byShort[shortID] == sessionID {
+		delete(s.byShort, shortID)
+	}
+	_ = s.persistLocked()
 }

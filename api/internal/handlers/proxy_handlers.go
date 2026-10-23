@@ -793,23 +793,15 @@ func (h *ProxyHandler) HardDeleteSession(ctx context.Context, workspaceID, sessi
 	}
 	h.recordActivityIfTracked(workspaceID)
 
-	// Post-delete side effects run after a successful adapter delete.
-	//nolint:contextcheck // tombstone must survive client disconnect
-	h.state().MarkSessionDeleted(context.Background(), workspaceID, sessionID)
-
-	if h.sessionIndex != nil {
-		//nolint:contextcheck // index cleanup must survive client disconnect
-		if err := h.sessionIndex.DeleteSession(context.Background(), workspaceID, sessionID); err != nil {
-			h.logger.Error("failed to delete session from index", err, "workspaceID", workspaceID, "sessionID", sessionID)
-		}
-	}
-
-	h.removeActiveSessionEvents(ctx, workspaceID, sessionID)
+	// #1882: the user route converges on the shared teardown — the
+	// same three effects every engine-authorized and agentd-reported
+	// delete now runs.
+	h.PropagateSessionDeleted(ctx, workspaceID, sessionID)
 	return nil
 }
 
 // PropagateSessionDeleted is the #1882 convergence seam: EVERY
-// confirmed session delete — this route's own, the engine's
+// confirmed session delete — this handler's own, the engine's
 // authorized deletes, agentd-reported ephemeral teardowns — runs this
 // same platform-side teardown. Three effects, in a fixed order:
 // (1) the wsstate tombstone FIRST (a late pod event racing the row
@@ -821,8 +813,17 @@ func (h *ProxyHandler) HardDeleteSession(ctx context.Context, workspaceID, sessi
 // streams). The pod-side short-id replica invalidation is agentd's
 // own on its delete legs — the fourth part of the convergence.
 func (h *ProxyHandler) PropagateSessionDeleted(ctx context.Context, workspaceID, sessionID string) {
-	// #1882 red-pin stub: unimplemented.
-	_, _, _ = ctx, workspaceID, sessionID
+	//nolint:contextcheck // tombstone must survive client disconnect
+	h.state().MarkSessionDeleted(context.Background(), workspaceID, sessionID)
+
+	if h.sessionIndex != nil {
+		//nolint:contextcheck // index cleanup must survive client disconnect
+		if err := h.sessionIndex.DeleteSession(context.Background(), workspaceID, sessionID); err != nil {
+			h.logger.Error("failed to delete session from index", err, "workspaceID", workspaceID, "sessionID", sessionID)
+		}
+	}
+
+	h.removeActiveSessionEvents(ctx, workspaceID, sessionID)
 }
 
 // removeActiveSessionEvents is the post-delete UI bookkeeping tail —

@@ -166,6 +166,13 @@ type SessionDeletePropagator interface {
 // inspection (#1470) — and best-effort by contract: a failed cleanup
 // logs (inside the delete path) and the retry proceeds.
 //
+// onDeleted, when non-nil, receives the deletedSessionId of EVERY
+// response carrying one — final responses AND discarded intermediates
+// (#1882): agentd tears each ephemeral attempt down itself, and the
+// retry loop is the only place an intermediate's teardown is
+// observable. The callback owns the platform-side propagation
+// (tombstone + session_index row removal + deleted broadcast).
+//
 // If the context dies during the post-cleanup backoff, the loop returns
 // the cleaned attempt's response as final — with its sessionId SCRUBBED
 // when the cleanup confirmed the delete: the #1471 existence contract
@@ -177,13 +184,16 @@ type SessionDeletePropagator interface {
 // exist and deserves recording (a lost delete response may leave it
 // gone; presuming existence is the fail-safe direction — the narrow
 // accepted mirror of confirmed-gone semantics).
-func executeWithRetry(ctx context.Context, ex AgentdExecutor, workspaceID, podIP string, req *NodeExecRequest, cleanupIntermediate func(ctx context.Context, sessionID string) (gone bool)) (*NodeExecResponse, error) {
+func executeWithRetry(ctx context.Context, ex AgentdExecutor, workspaceID, podIP string, req *NodeExecRequest, cleanupIntermediate func(ctx context.Context, sessionID string) (gone bool), onDeleted func(ctx context.Context, sessionID string)) (*NodeExecResponse, error) {
 	const attempts = 3
 	var resp *NodeExecResponse
 	var err error
 	cleanedSession := ""
 	for a := 1; a <= attempts; a++ {
 		resp, err = ex.Execute(ctx, workspaceID, podIP, req)
+		if resp != nil && resp.DeletedSessionID != "" && onDeleted != nil {
+			onDeleted(ctx, resp.DeletedSessionID)
+		}
 		if !retryableAgentdFailure(err, resp) {
 			return resp, err
 		}
@@ -513,6 +523,13 @@ func (r *Reconciler) executeNode(ctx context.Context, logger Logger, run *wf.Wor
 		}
 
 		resp, err := r.AgentdClient.Execute(ctx, run.WorkspaceID, podIP, req)
+		// #1882: an agentd-reported ephemeral teardown propagates
+		// platform-side the moment it is observed — success and failure
+		// legs alike (the failure legs fall through to the retry/classify
+		// code below unchanged).
+		if resp != nil && resp.DeletedSessionID != "" && r.SessionDelete != nil {
+			r.SessionDelete.PropagateSessionDeleted(ctx, run.WorkspaceID, resp.DeletedSessionID)
+		}
 		if err != nil {
 			errMsg, _ := json.Marshal(map[string]string{"error": err.Error()})
 			ec := types.RunErrorCodeNodeFailed
@@ -540,7 +557,7 @@ func (r *Reconciler) executeNode(ctx context.Context, logger Logger, run *wf.Wor
 			// failed) is an orphan. Best-effort; failures log inside
 			// the delete path and the retry proceeds.
 			if resp != nil && resp.SessionID != "" && !pinnedSession && r.PasswordProvider != nil {
-				deleteSessionAuthorized(ctx, logger, r.PasswordProvider, r.agentdPort(), run.WorkspaceID, podIP, resp.SessionID, deletePurposeNodeRetry)
+				deleteSessionAuthorized(ctx, logger, r.PasswordProvider, r.SessionDelete, r.agentdPort(), run.WorkspaceID, podIP, resp.SessionID, deletePurposeNodeRetry)
 			}
 			select {
 			case <-time.After(time.Duration(attempt) * time.Second):
@@ -946,7 +963,7 @@ func (s *Scheduler) executeRoutine(ctx context.Context, logger Logger, trigger *
 		// #1458: the pre-script leg rides the same bounded transient
 		// retry as the agent leg — a provider-blip-shaped 500/502/503 on
 		// this leg must not fail the fire either.
-		scriptResp, err := executeWithRetry(ctx, s.AgentdClient, workspaceID, podIP, scriptReq, nil)
+		scriptResp, err := executeWithRetry(ctx, s.AgentdClient, workspaceID, podIP, scriptReq, nil, nil)
 		if err != nil {
 			errMsg, _ := json.Marshal(map[string]string{"error": fmt.Sprintf("script failed: %v", err)})
 			resultData = errMsg
@@ -1007,7 +1024,7 @@ func (s *Scheduler) executeRoutine(ctx context.Context, logger Logger, trigger *
 		}
 		return gone
 	}
-	agentResp, err := executeWithRetry(ctx, s.AgentdClient, workspaceID, podIP, agentReq, cleanupIntermediate)
+	agentResp, err := executeWithRetry(ctx, s.AgentdClient, workspaceID, podIP, agentReq, cleanupIntermediate, s.propagateDeletedSession(workspaceID))
 	if err != nil {
 		errMsg, _ := json.Marshal(map[string]string{"error": fmt.Sprintf("agent call failed: %v", err)})
 		resultData = errMsg
@@ -1288,15 +1305,20 @@ func deleteRoutineSession(ctx context.Context, logger Logger, password, podIP st
 // deleteRoutineSessionAuthorized resolves the workspace password and calls
 // deleteRoutineSession for the Scheduler's session-delete paths
 // (PreserveOnFailure success cleanup, superseded retry-attempt cleanup).
+// A confirmed delete propagates platform-side (#1882) via the wired
+// SessionDeletePropagator — the same teardown the user-route delete runs.
 func (s *Scheduler) deleteRoutineSessionAuthorized(ctx context.Context, logger Logger, workspaceID, podIP, sessionID, purpose string) bool {
-	return deleteSessionAuthorized(ctx, logger, s.PasswordProvider, s.agentdPort(), workspaceID, podIP, sessionID, purpose)
+	return deleteSessionAuthorized(ctx, logger, s.PasswordProvider, s.SessionDelete, s.agentdPort(), workspaceID, podIP, sessionID, purpose)
 }
 
 // deleteSessionAuthorized is the caller-neutral authorized-delete core
 // shared by the routine scheduler and the DAG reconciler's retry
 // cleanup (#1476 DAG adoption): nil provider → skipped; every log line
-// carries the purpose label.
-func deleteSessionAuthorized(ctx context.Context, logger Logger, pp apiinterfaces.WorkspacePasswordProvider, port int, workspaceID, podIP, sessionID, purpose string) bool {
+// carries the purpose label. #1882: a CONFIRMED pod-side delete runs
+// the platform-side teardown (prop may be nil — unwired engines keep
+// the pre-#1882 pod-side-only behavior) — the carrier's session_index
+// row was minted during its life and no other route removes it.
+func deleteSessionAuthorized(ctx context.Context, logger Logger, pp apiinterfaces.WorkspacePasswordProvider, prop SessionDeletePropagator, port int, workspaceID, podIP, sessionID, purpose string) bool {
 	if pp == nil {
 		logger.Error(fmt.Errorf("no PasswordProvider configured"), "session delete: no password provider configured", "sessionId", sessionID, "purpose", purpose)
 		return false
@@ -1306,7 +1328,27 @@ func deleteSessionAuthorized(ctx context.Context, logger Logger, pp apiinterface
 		logger.Error(err, "session delete: resolve workspace password failed", "sessionId", sessionID, "workspaceID", workspaceID, "purpose", purpose)
 		return false
 	}
-	return deleteRoutineSession(ctx, logger, password, podIP, port, sessionID, purpose)
+	if !deleteRoutineSession(ctx, logger, password, podIP, port, sessionID, purpose) {
+		return false
+	}
+	if prop != nil {
+		//nolint:contextcheck // teardown must survive a dying fire context
+		prop.PropagateSessionDeleted(context.Background(), workspaceID, sessionID)
+	}
+	return true
+}
+
+// propagateDeletedSession adapts the Scheduler's SessionDelete
+// propagator into executeWithRetry's onDeleted callback (#1882); nil
+// when unwired (no-op callback, never a nil-func call).
+func (s *Scheduler) propagateDeletedSession(workspaceID string) func(ctx context.Context, sessionID string) {
+	if s.SessionDelete == nil {
+		return nil
+	}
+	return func(ctx context.Context, sessionID string) {
+		//nolint:contextcheck // teardown must survive a dying fire context
+		s.SessionDelete.PropagateSessionDeleted(context.Background(), workspaceID, sessionID)
+	}
 }
 
 // agentdPort returns the configured override or the production default.

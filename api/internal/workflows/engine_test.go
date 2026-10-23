@@ -2011,7 +2011,7 @@ func TestExecuteWithRetry_Transient5xxRecovers(t *testing.T) {
 		{resp: &NodeExecResponse{ErrorCode: "script_failed", Detail: "opencode returned 500"}},
 		{resp: &NodeExecResponse{Output: json.RawMessage(`{"response":"ACK"}`)}},
 	}}
-	resp, err := executeWithRetry(context.Background(), ex, "ws", "ip", &NodeExecRequest{}, nil)
+	resp, err := executeWithRetry(context.Background(), ex, "ws", "ip", &NodeExecRequest{}, nil, nil)
 	require.NoError(t, err)
 	require.NotNil(t, resp.Output)
 	assert.Equal(t, 2, ex.calls, "exactly one retry")
@@ -2025,7 +2025,7 @@ func TestExecuteWithRetry_Exhausted(t *testing.T) {
 	}{
 		{resp: &NodeExecResponse{ErrorCode: "script_failed", Detail: "opencode returned 503"}},
 	}}
-	resp, err := executeWithRetry(context.Background(), ex, "ws", "ip", &NodeExecRequest{}, nil)
+	resp, err := executeWithRetry(context.Background(), ex, "ws", "ip", &NodeExecRequest{}, nil, nil)
 	require.NoError(t, err)
 	assert.Equal(t, "script_failed", resp.ErrorCode)
 	assert.Equal(t, 3, ex.calls, "bounded: three attempts")
@@ -2040,7 +2040,7 @@ func TestExecuteWithRetry_DeterministicNoRetry(t *testing.T) {
 		{resp: &NodeExecResponse{ErrorCode: "invalid_node_data", Detail: "unsupported language"}},
 		{resp: &NodeExecResponse{Output: json.RawMessage(`{}`)}},
 	}}
-	resp, err := executeWithRetry(context.Background(), ex, "ws", "ip", &NodeExecRequest{}, nil)
+	resp, err := executeWithRetry(context.Background(), ex, "ws", "ip", &NodeExecRequest{}, nil, nil)
 	require.NoError(t, err)
 	assert.Equal(t, "invalid_node_data", resp.ErrorCode)
 	assert.Equal(t, 1, ex.calls, "no retry on deterministic failure")
@@ -2055,7 +2055,7 @@ func TestExecuteWithRetry_TransportShapes(t *testing.T) {
 		{err: fmt.Errorf("agentd node execute returned 502: bad gateway")},
 		{resp: &NodeExecResponse{Output: json.RawMessage(`{}`)}},
 	}}
-	_, err := executeWithRetry(context.Background(), ex, "ws", "ip", &NodeExecRequest{}, nil)
+	_, err := executeWithRetry(context.Background(), ex, "ws", "ip", &NodeExecRequest{}, nil, nil)
 	require.NoError(t, err)
 	assert.Equal(t, 2, ex.calls)
 
@@ -2065,7 +2065,7 @@ func TestExecuteWithRetry_TransportShapes(t *testing.T) {
 	}{
 		{err: fmt.Errorf("agentd node execute returned 404: no route")},
 	}}
-	_, _ = executeWithRetry(context.Background(), ex2, "ws", "ip", &NodeExecRequest{}, nil)
+	_, _ = executeWithRetry(context.Background(), ex2, "ws", "ip", &NodeExecRequest{}, nil, nil)
 	assert.Equal(t, 1, ex2.calls, "404 transport not retried")
 }
 
@@ -2079,7 +2079,7 @@ func TestExecuteWithRetry_TimeoutNotRetried(t *testing.T) {
 	}{
 		{err: fmt.Errorf("agentd node execute returned 504: gateway timeout")},
 	}}
-	_, _ = executeWithRetry(context.Background(), ex, "ws", "ip", &NodeExecRequest{}, nil)
+	_, _ = executeWithRetry(context.Background(), ex, "ws", "ip", &NodeExecRequest{}, nil, nil)
 	assert.Equal(t, 1, ex.calls, "504 transport not retried")
 
 	ex2 := &scriptedExecutor{results: []struct {
@@ -2088,7 +2088,7 @@ func TestExecuteWithRetry_TimeoutNotRetried(t *testing.T) {
 	}{
 		{resp: &NodeExecResponse{ErrorCode: "script_timeout", Detail: "agent call timed out"}},
 	}}
-	_, _ = executeWithRetry(context.Background(), ex2, "ws", "ip", &NodeExecRequest{}, nil)
+	_, _ = executeWithRetry(context.Background(), ex2, "ws", "ip", &NodeExecRequest{}, nil, nil)
 	assert.Equal(t, 1, ex2.calls, "agentd script_timeout not retried")
 
 	ex3 := &scriptedExecutor{results: []struct {
@@ -2097,7 +2097,7 @@ func TestExecuteWithRetry_TimeoutNotRetried(t *testing.T) {
 	}{
 		{resp: &NodeExecResponse{ErrorCode: "script_failed", Detail: "opencode returned 504"}},
 	}}
-	_, _ = executeWithRetry(context.Background(), ex3, "ws", "ip", &NodeExecRequest{}, nil)
+	_, _ = executeWithRetry(context.Background(), ex3, "ws", "ip", &NodeExecRequest{}, nil, nil)
 	assert.Equal(t, 1, ex3.calls, "opencode 504 wrap not retried")
 }
 
@@ -2220,7 +2220,7 @@ func TestExecuteWithRetry_SessionCreateFailedTransient5xxRecovers(t *testing.T) 
 			{resp: &NodeExecResponse{ErrorCode: "session_create_failed", Detail: "opencode returned " + status}},
 			{resp: &NodeExecResponse{Output: json.RawMessage(`{}`)}},
 		}}
-		_, err := executeWithRetry(context.Background(), ex, "ws", "ip", &NodeExecRequest{}, nil)
+		_, err := executeWithRetry(context.Background(), ex, "ws", "ip", &NodeExecRequest{}, nil, nil)
 		require.NoError(t, err)
 		assert.Equal(t, 2, ex.calls, "opencode %s on session create must retry once", status)
 	}
@@ -2241,7 +2241,7 @@ func TestExecuteWithRetry_SessionCreateFailedNonTransientNotRetried(t *testing.T
 			resp *NodeExecResponse
 			err  error
 		}{{resp: resp}}}
-		_, _ = executeWithRetry(context.Background(), ex, "ws", "ip", &NodeExecRequest{}, nil)
+		_, _ = executeWithRetry(context.Background(), ex, "ws", "ip", &NodeExecRequest{}, nil, nil)
 		assert.Equal(t, 1, ex.calls, "%s must not retry", name)
 	}
 }
@@ -2401,7 +2401,7 @@ func TestExecuteWithRetry_ScriptEnvUnavailableNotRetried(t *testing.T) {
 	}{
 		{resp: &NodeExecResponse{ErrorCode: "script_env_unavailable", Detail: "script node execution environment unavailable in this container: no writable temp dir"}},
 	}}
-	resp, _ := executeWithRetry(context.Background(), ex, "ws", "ip", &NodeExecRequest{}, nil)
+	resp, _ := executeWithRetry(context.Background(), ex, "ws", "ip", &NodeExecRequest{}, nil, nil)
 	assert.Equal(t, 1, ex.calls, "script_env_unavailable must not retry")
 	assert.Equal(t, "script_env_unavailable", resp.ErrorCode)
 }

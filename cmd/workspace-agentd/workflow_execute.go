@@ -487,16 +487,25 @@ func execAgentNode(ctx context.Context, password string, w http.ResponseWriter, 
 	// down and omit it, a failed teardown reports the leaked session
 	// (reality over intent). WithoutCancel + a bound so the timeout
 	// leg's dead context can neither skip nor wedge the cleanup DELETE.
+	// #1882: a CONFIRMED teardown additionally reports the deleted id
+	// (deletedSessionId) so the engine can propagate the delete
+	// platform-side — the carrier's index row outlives the carrier
+	// otherwise.
 	failAgentNode := func(status int, code, detail string) {
 		surviving := sessionID
+		deleted := ""
 		if createdEphemeral && sessionMode == "ephemeral" {
 			dctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
 			defer cancel() //nolint:gocritic // defer-in-closure: fires when the handler returns
 			if deleteOpencodeSession(dctx, password, sessionID) {
 				surviving = ""
+				deleted = sessionID
 			}
 		}
-		writeWorkflowErrorSession(w, status, code, detail, surviving)
+		writeWorkflowErrorEnvelope(w, status, workflowExecuteError{
+			ErrorCode: code, Detail: detail,
+			SessionID: surviving, DeletedSessionID: deleted,
+		})
 	}
 
 	// #1327: the agent POST carries the execution-derived dedupe key.
@@ -582,8 +591,10 @@ func execAgentNode(ctx context.Context, password string, w http.ResponseWriter, 
 		result["response"] = parsed
 	}
 
+	deletedSessionID := ""
 	if createdEphemeral && sessionMode == "ephemeral" {
 		if deleteOpencodeSession(ctx, password, sessionID) {
+			deletedSessionID = sessionID
 			sessionID = ""
 			result["session_deleted"] = true
 		}
@@ -593,7 +604,9 @@ func execAgentNode(ctx context.Context, password string, w http.ResponseWriter, 
 	}
 	result["session_id"] = sessionID
 
-	writeWorkflowSuccessSession(w, result, sessionID)
+	writeWorkflowSuccessResponse(w, result, workflowExecuteResponse{
+		SessionID: sessionID, DeletedSessionID: deletedSessionID,
+	})
 }
 
 // Key-shape constants for workflowAgentMessageKey (#1327). The prefix
@@ -689,9 +702,16 @@ func writeWorkflowError(w http.ResponseWriter, status int, code, detail string) 
 // that survived a failed agent turn (#1470); an empty sessionID renders
 // identically to the session-less writers (omitempty).
 func writeWorkflowErrorSession(w http.ResponseWriter, status int, code, detail, sessionID string) {
+	writeWorkflowErrorEnvelope(w, status, workflowExecuteError{ErrorCode: code, Detail: detail, SessionID: sessionID})
+}
+
+// writeWorkflowErrorEnvelope writes the raw error envelope (#1882: the
+// failure leg reports the ephemeral it tore down alongside the
+// survivor — disjoint fields, the existence contract holds).
+func writeWorkflowErrorEnvelope(w http.ResponseWriter, status int, e workflowExecuteError) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(workflowExecuteError{ErrorCode: code, Detail: detail, SessionID: sessionID})
+	_ = json.NewEncoder(w).Encode(e)
 }
 
 func loadSecretsEnv() (map[string]string, error) {
@@ -810,6 +830,9 @@ func parseCreatedSessionID(r io.Reader) (string, error) {
 // outcome (transport error, opencode 5xx) means the session must be
 // treated as still alive. Callers that must report the REALITY of a
 // surviving session use the return; fire-and-forget callers may ignore it.
+// #1882: a confirmed delete also invalidates the pod-side short-id
+// replica — a dead session's phrase must stop resolving (the
+// delete-invalidates-the-replica seam; see forget).
 func deleteOpencodeSession(ctx context.Context, password, sessionID string) bool {
 	req, err := http.NewRequestWithContext(ctx, "DELETE", //nolint:gosec // G704: local-only, sessionID from opencode
 		fmt.Sprintf("%s/session/%s", getAgentAddr(), sessionID), nil)
@@ -824,5 +847,9 @@ func deleteOpencodeSession(ctx context.Context, password, sessionID string) bool
 		return false
 	}
 	defer func() { _ = resp.Body.Close() }()
-	return (resp.StatusCode >= 200 && resp.StatusCode < 300) || resp.StatusCode == http.StatusNotFound
+	gone := (resp.StatusCode >= 200 && resp.StatusCode < 300) || resp.StatusCode == http.StatusNotFound
+	if gone {
+		currentSessionShortIDs().forget(sessionID)
+	}
+	return gone
 }
