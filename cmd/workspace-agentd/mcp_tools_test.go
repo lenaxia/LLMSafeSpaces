@@ -1898,7 +1898,6 @@ func TestMCPSendMessage_SchemaInjectedOnly_MessageLast(t *testing.T) {
 		"destination first, message LAST — long-string-last ordering (and alphabetically safe: destination < message)")
 }
 
-
 // --- catalog-wide emission-shape invariant (#1849) ------------------------
 //
 // glm-class models latch into duplicate-key runaway when a long

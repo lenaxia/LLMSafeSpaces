@@ -223,8 +223,8 @@ func TestRealMCP_PhraseTargetedSendMessageAndAbort(t *testing.T) {
 
 	// send_message by phrase through the real envelope.
 	result := callMCPEnvelope(t, mcpTestPassword, "send_message", map[string]any{
-		"session_id":          "Amber-Falcon-Glides", // case-insensitive phrase form
-		"message":             "phrase hello",
+		"session_id":           "Amber-Falcon-Glides", // case-insensitive phrase form
+		"message":              "phrase hello",
 		"lsp_injected_session": "amber-falcon-glides", // self-send: resolves, warns, still delivers
 	})
 	blocks := envelopeTextBlocks(t, result)
