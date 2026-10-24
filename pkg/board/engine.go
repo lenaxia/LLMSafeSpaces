@@ -222,7 +222,11 @@ func (s *Service) TaskStart(ctx context.Context, actor Actor, taskID, shortIDOrI
 		if err := s.commitPublishing(ctx, tx, evt); err != nil {
 			return nil, err
 		}
-		return &Claim{TaskID: t.ID, Escalated: true, Task: s.mustTask(ctx, t.ID)}, nil
+		// #1922: the escalated echo's task copy rides the same read-edge
+		// translation (assignee is NULL on this path today; uniform guard).
+		et := s.mustTask(ctx, t.ID)
+		s.translateTaskReads(ctx, et)
+		return &Claim{TaskID: t.ID, Escalated: true, Task: et}, nil
 	}
 
 	var c Claim
@@ -267,6 +271,13 @@ func (s *Service) TaskStart(ctx context.Context, actor Actor, taskID, shortIDOrI
 	}
 	s.spawnAfter(ctx, &c)
 	c.Task = s.mustTask(ctx, t.ID)
+	// #1922 (review round 2, finding 4): the task copy resolves AFTER
+	// the spawn launch, so a sync/fast spawner's stamp is already on the
+	// row — translate the echo's copy at this public edge. c.Assignee
+	// is deliberately NOT read here: spawnSync writes it on its own
+	// goroutine (unsynchronized vs the handler's marshal — a pre-
+	// existing race); see the PR body's precise window disclosure.
+	s.translateTaskReads(ctx, c.Task)
 	return &c, nil
 }
 

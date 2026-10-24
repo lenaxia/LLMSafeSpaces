@@ -68,6 +68,10 @@ export interface BoardTask {
   is_blocked: boolean;
   blocked_by?: string[];
   assignee_session?: string;
+  /** #1922: set when assignee_session could not be resolved to the
+   * session phrase — the value is the raw harness id (design-0066 cold
+   * window), flagged per the #1817/#1821 SSE precedent. */
+  assignee_session_deprecated?: boolean;
   claim_token?: string;
   lease_expires_at?: string | null;
   last_progress_at?: string | null;
@@ -126,7 +130,7 @@ export interface BoardAuditEvent {
   item_kind?: string;
   item_id?: string;
   action: string;
-  actor?: { kind?: string; user_id?: string; surface?: string; workspace_id?: string; session_id?: string } | null;
+  actor?: { kind?: string; user_id?: string; surface?: string; workspace_id?: string; session_id?: string; session_id_deprecated?: string } | null;
   payload?: Record<string, unknown> | null;
   created_at: string;
 }

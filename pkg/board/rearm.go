@@ -78,5 +78,11 @@ func (s *Service) RearmTask(ctx context.Context, actor Actor, taskID, shortIDOrI
 	if err != nil {
 		return nil, err
 	}
+	// #1922 (review round 2, finding 2): the tail reload renders the
+	// row's CURRENT state — a replay after a re-claim+stamp (or a fast
+	// dispatch drive winning the pokeDrive race) carries a live
+	// assignee, so the echo translates at the read edge like every
+	// other task-bearing response.
+	s.translateTaskReads(ctx, out)
 	return out, nil
 }
