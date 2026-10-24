@@ -446,19 +446,12 @@ func (s *Service) rc1PersonaClaims(ctx context.Context) (personaReclaim, error) 
 	}
 
 	// --- (b) re-arm pass --------------------------------------------------
-	// Cheap SQL prefilter: only rows whose project (or its owner) holds
-	// ANY board-config row — Go's effective-config resolution is the
-	// authority (a prefiltered row with no persona resolves nil and is
-	// skipped without a write).
-	rows, err = s.q().Query(ctx, `
-		SELECT t.id, t.project_id, t.failure_count
-		FROM tasks t
-		WHERE t.stage='in_review' AND t.claim_token IS NULL AND t.lease_expires_at IS NULL
-		  AND (t.cooldown_until IS NULL OR t.cooldown_until < now())
-		  AND (
-		    EXISTS (SELECT 1 FROM board_project_config_overrides o WHERE o.project_id = t.project_id)
-		    OR EXISTS (SELECT 1 FROM projects p3 JOIN board_config_defaults d ON d.user_id = p3.user_id
-		               WHERE p3.id = t.project_id))`)
+	// Cheap SQL prefilter (persona.go — the ownership-reading seam):
+	// only rows whose project (or its owner) holds ANY board-config
+	// row. Go's effective-config resolution is the authority (a
+	// prefiltered row with no persona resolves nil and is skipped
+	// without a write).
+	rows, err = s.q().Query(ctx, personaRearmCandidatesSQL)
 	if err != nil {
 		return out, err
 	}
