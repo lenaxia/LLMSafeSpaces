@@ -813,3 +813,24 @@ func TestBoardTools_DeleteProjectRefused(t *testing.T) {
 	text := boardResultText(res)
 	assert.Contains(t, text, "archive", "the refusal points at the archive path")
 }
+
+// TestBoardImportPlan_RefusesSeedlessNode pins the #1849 node-guard's
+// refusal path (#1904 round 7): a seedless plan node is a LOUD tool
+// error BEFORE any client call (no expectations on the mock — any call
+// is a failure).
+func TestBoardImportPlan_RefusesSeedlessNode(t *testing.T) {
+	m := &MockAPIClient{}
+	h := &handlers{client: m, timeout: 30 * time.Second}
+	res, err := callBoardTool(t, h, "board_import_plan", map[string]any{
+		"project_id": "prj-aaaa1111", "epic_title": "E", "dry_run": true,
+		"tasks": []any{
+			map[string]any{"key": "a", "title": "A"}, // no charter, no criteria
+		},
+	})
+	require.NoError(t, err)
+	require.NotNil(t, res)
+	require.True(t, res.IsError)
+	assert.Contains(t, boardResultText(res), "worker's charter")
+	m.AssertNotCalled(t, "BoardImportPlan", mock.Anything, mock.Anything, mock.Anything,
+		"a refused plan never reaches the client — the dry-run never blesses a seedless node")
+}

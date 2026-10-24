@@ -189,9 +189,11 @@ export interface BoardDeleteResult {
 export interface BoardPlanTask {
   key: string;
   title: string;
-  description?: string;
+  /** REQUIRED per node (#1849): the worker's charter — seedless nodes refuse at dry-run. */
+  description: string;
   tags?: string[];
-  acceptanceCriteria?: BoardAcceptanceCriterion[];
+  /** REQUIRED per node (#1849): Done is undefined without at least one. */
+  acceptanceCriteria: BoardAcceptanceCriterion[];
   dependsOn?: string[];
 }
 

@@ -54,12 +54,22 @@ Merge per orchestrator adjudication; #1849 items 3+4 stay dropped,
 item 2 already subsumed by #1864.
 
 ## Files Modified
-pkg/board/seed_validation{,_test,_integration_test}.go;
-pkg/board/{service,plan}.go; cmd/workspace-agentd/{mcp_server,
-mcp_tools,board_manager_e2e_integration_test}.go; pkg/mcp/board_tools.
-go; api/internal/handlers/{board_worker_semantics_integration_test.go,
-board_manager_semantics_integration_test.go,
-board_sse_live_integration_test.go}; frontend TaskDialog
-+ board validation/swimlane tests + tests/e2e/board.spec.ts;
-sdks/{openapi.yaml,go,python,typescript,canary/go,canary/python,
-canary/typescript,tests/contract}; docs/api/mcp.md; CHANGELOG.md.
+(pkg/board) seed_validation{,_test,_integration_test}.go; service.go;
+plan.go; and the fallout test files: 1747_kill, engine_kill,
+event_publisher, harness, ids_phrase_integration, reconciler_kill,
+remediation, service_kill, textguard_integration (_test.go each).
+(cmd/workspace-agentd) mcp_server.go; mcp_tools.go;
+board_manager_e2e_integration_test.go.
+(pkg/mcp) board_tools.go; board_tools_test.go.
+(api/internal/handlers) board.go; board_worker_semantics_integration_
+test.go; board_manager_semantics_integration_test.go;
+board_sse_live_integration_test.go; board_parity_test.go;
+board_rest_test.go.
+(frontend) TaskDialog.tsx; BoardPage.{validation,swimlane}.test.tsx;
+api/board.ts; tests/e2e/board.spec.ts.
+(sdks) openapi.yaml; go/{board,board_test}.go; python/{client,tests/
+test_client}.py; typescript/src/{types,client}.ts + tests/client.test.
+ts; java BoardServiceTest.java; canary/go s-board-crud; canary/python
+s_board_crud.py; canary/typescript s-board-crud.ts; tests/contract/
+board.hurl.
+(docs) api/mcp.md; CHANGELOG.md.
