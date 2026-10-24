@@ -345,3 +345,37 @@ func TestListingCount_PersistErrorServesTruthAndRetries(t *testing.T) {
 	assert.Equal(t, map[string]int{"ws-1/ses_drift": 42}, idx.rebuiltCounts,
 		"the healed persist converges the index")
 }
+
+// TestListingCount_ServeThroughSkipsTombstonedRow — review r4 F1: the
+// serve-through is a third row-creating minting writer (Register +
+// RebuildMessageCount, count>0 — the only such writer post-r1). The
+// CountMessages walk is the race window: a carrier's confirmed delete
+// (tombstone + row removal — the #1882 propagation tail) landing
+// mid-walk must NOT be followed by a re-mint. Without the consult the
+// row returns as a count>0 ghost the reap guard refuses (carriers are
+// the exact drift population this writer serves) — a permanent
+// kept_for_operator sidebar ghost, the harm this PR closes.
+func TestListingCount_ServeThroughSkipsTombstonedRow(t *testing.T) {
+	h, idx, _ := listingCountTestHandler(t, nil, nil)
+	// The carrier row: index count 0, harness count 1 — the canonical
+	// drift shape that makes the serve-through write fire.
+	sessions := []types.SessionListItem{driftRow("ses_carrier", 2*time.Hour)}
+	// The count walk IS the race window: the propagation tail lands
+	// mid-walk (tombstone + row removal), then the walk returns a
+	// count != persisted.
+	h.adapter.(*mockAdapter).countMessagesFn = func(ctx context.Context, _, _, sid string) (int, error) {
+		//nolint:contextcheck // the mid-walk propagation tail is store-local by design
+		h.MarkSessionDeletedForTest("ws-1", sid)
+		_ = idx.DeleteSession(ctx, "ws-1", sid)
+		return 1, nil // != 0 persisted — the re-mint would fire
+	}
+
+	h.ServeHarnessMessageCounts(context.Background(), "ws-1", sessions)
+
+	assert.True(t, idx.deletedTree["ws-1/ses_carrier"],
+		"sanity: the propagation's row removal landed")
+	assert.Equal(t, 0, idx.registerCalls["ws-1/ses_carrier"],
+		"a tombstoned session must not be re-registered by the serve-through (re-birth = re-mint, #1882 r4 F1)")
+	assert.NotContains(t, idx.rebuiltCounts, "ws-1/ses_carrier",
+		"a tombstoned session's count persist must not re-create its row")
+}

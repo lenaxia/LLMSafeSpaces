@@ -61,6 +61,15 @@ func TestIssue1452E2EScript_RowsAndAssertions(t *testing.T) {
 		`R2b: PreserveNever fire delivered`,                      // delivery asserted before the negative
 		`R2c: ephemeral routine session`,                         // no-row assertion present
 		`session list grew ${r2_before} -> ${r2_after}`,          // growth itself is the failure text
+		// R3 — #1882 ghost-persistence row.
+		`no ghost row survived two reconcile passes`,      // the stays-gone assertion
+		`startswith("Reply with exactly")`,                // the prompt-derived-title ghost signature
+		`prompt-titled rows ${r3_prompt_rows}`,            // the ghost count is in the failure text
+		`R3a: no ghost row survived two reconcile passes`, // the row's verdict line
+		// R4 — #1882 script-only no-mint row.
+		`scriptPath:"/bin/echo"`,                          // the scriptPath-only trigger shape (no prompt)
+		`R4c: scriptPath-only fire delivered`,             // delivery via script side effects
+		`R4d: scriptPath-only fire minted no session row`, // the no-carrier assertion
 		// Cleanup so the nightly owner's trigger list stays clean.
 		`trap cleanup EXIT`,
 	} {
