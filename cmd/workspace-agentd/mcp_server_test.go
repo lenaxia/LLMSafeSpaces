@@ -906,7 +906,7 @@ func TestMCPHandler_ToolDescriptionGuidance(t *testing.T) {
 		for _, want := range []string{
 			"breaking change",                          // the default flip is named as such
 			"YOUR CURRENT SESSION ONLY",                // the new default
-			"allSessions:true",                        // the old behavior's explicit path
+			"allSessions:true",                         // the old behavior's explicit path
 			"archived:true are read-only for the user", // archive-status semantics in listings
 		} {
 			assert.Contains(t, d, want)
