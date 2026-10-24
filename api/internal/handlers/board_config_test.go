@@ -33,7 +33,7 @@ func (f *fakeBoardManager) GetUserBoardConfig(_ context.Context, actor board.Act
 	if err := f.errFor["get_user_board_config"]; err != nil {
 		return nil, err
 	}
-	cfg := board.BoardConfig{ReviewColumn: "manual", AutoAssignReviewer: false, DefaultWorkerSlots: 2}
+	cfg := board.DefaultBoardConfig()
 	return &cfg, nil
 }
 
@@ -44,7 +44,8 @@ func (f *fakeBoardManager) SetUserBoardConfig(_ context.Context, actor board.Act
 	if err := f.errFor["set_user_board_config"]; err != nil {
 		return nil, err
 	}
-	cfg := board.BoardConfig{ReviewColumn: "auto", AutoAssignReviewer: false, DefaultWorkerSlots: 2}
+	cfg := board.DefaultBoardConfig()
+	cfg.ReviewColumn = "auto"
 	return &cfg, nil
 }
 
@@ -68,10 +69,12 @@ func (f *fakeBoardManager) GetProjectBoardConfig(_ context.Context, actor board.
 	if err := f.errFor["get_project_board_config"]; err != nil {
 		return nil, err
 	}
+	eff := board.DefaultBoardConfig()
+	eff.ReviewColumn = "off"
 	return &board.ProjectBoardConfig{
 		ProjectID: owned.ID,
 		Overrides: board.BoardConfigOverride{ReviewColumn: strPtr("off")},
-		Effective: board.BoardConfig{ReviewColumn: "off", AutoAssignReviewer: false, DefaultWorkerSlots: 2},
+		Effective: eff,
 	}, nil
 }
 
@@ -92,10 +95,12 @@ func (f *fakeBoardManager) SetProjectBoardConfig(_ context.Context, actor board.
 	if in != nil {
 		echo = *in
 	}
+	eff := board.DefaultBoardConfig()
+	eff.ReviewColumn, eff.AutoAssignReviewer = "auto", true
 	return &board.ProjectBoardConfig{
 		ProjectID: "p1",
 		Overrides: echo,
-		Effective: board.BoardConfig{ReviewColumn: "auto", AutoAssignReviewer: true, DefaultWorkerSlots: 2},
+		Effective: eff,
 	}, nil
 }
 
@@ -132,11 +137,11 @@ func TestBoardConfigREST_UserRoundTrip(t *testing.T) {
 
 	w := doBoardREST(t, r, http.MethodGet, "/api/v1/me/board/config", "")
 	require.Equal(t, http.StatusOK, w.Code)
-	assert.JSONEq(t, `{"reviewColumn":"manual","autoAssignReviewer":false,"defaultWorkerSlots":2}`, w.Body.String())
+	assert.JSONEq(t, `{"reviewColumn":"manual","autoAssignReviewer":false,"defaultWorkerSlots":2,"stagePersonas":{}}`, w.Body.String())
 
 	w = doBoardREST(t, r, http.MethodPut, "/api/v1/me/board/config", `{"reviewColumn":"auto"}`)
 	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
-	assert.JSONEq(t, `{"reviewColumn":"auto","autoAssignReviewer":false,"defaultWorkerSlots":2}`, w.Body.String())
+	assert.JSONEq(t, `{"reviewColumn":"auto","autoAssignReviewer":false,"defaultWorkerSlots":2,"stagePersonas":{}}`, w.Body.String())
 	require.NotNil(t, svc.lastGlobalConfigSet)
 	require.NotNil(t, svc.lastGlobalConfigSet.ReviewColumn)
 	assert.Equal(t, "auto", *svc.lastGlobalConfigSet.ReviewColumn)
@@ -152,6 +157,55 @@ func TestBoardConfigREST_UserRoundTrip(t *testing.T) {
 	assert.Nil(t, svc.lastGlobalConfigSet.ReviewColumn, "empty map clears every override (all inherit)")
 	assert.Nil(t, svc.lastGlobalConfigSet.AutoAssignReviewer)
 	assert.Nil(t, svc.lastGlobalConfigSet.DefaultWorkerSlots)
+}
+
+// TestBoardConfigREST_StagePersonasRoundTrip: the stagePersonas key
+// decodes through the adapter's key-gate on BOTH tiers (the typed map
+// reaches the service; an explicitly empty object is the opt-out
+// override), and the ineligible-stage / bad-shape rejections render
+// 400 before the service.
+func TestBoardConfigREST_StagePersonasRoundTrip(t *testing.T) {
+	svc := newFakeBoardManager()
+	svc.projects = []board.Project{{ID: "p1", ShortID: "prj-aaaa1111", UserID: "user-1", WorkerSlots: 2, Status: board.ProjectActive}}
+	r := newBoardConfigRouter(t, svc)
+
+	t.Run("user tier decodes the typed map", func(t *testing.T) {
+		w := doBoardREST(t, r, http.MethodPut, "/api/v1/me/board/config",
+			`{"stagePersonas":{"in_review":{"name":"auditor","instructions":"Verify."},"in_progress":{"name":"implementer"}}}`)
+		require.Equal(t, http.StatusOK, w.Code, w.Body.String())
+		require.NotNil(t, svc.lastGlobalConfigSet.StagePersonas)
+		m := *svc.lastGlobalConfigSet.StagePersonas
+		require.Len(t, m, 2)
+		assert.Equal(t, board.PersonaConfig{Name: "auditor", Instructions: "Verify."}, m["in_review"])
+		assert.Equal(t, board.PersonaConfig{Name: "implementer"}, m["in_progress"])
+	})
+
+	t.Run("project tier accepts the key (the composition lever)", func(t *testing.T) {
+		w := doBoardREST(t, r, http.MethodPut, "/api/v1/me/projects/p1/config",
+			`{"stagePersonas":{}}`)
+		require.Equal(t, http.StatusOK, w.Code, w.Body.String())
+		require.NotNil(t, svc.lastProjectConfigSet.StagePersonas)
+		assert.Empty(t, *svc.lastProjectConfigSet.StagePersonas, "{} is the explicit opt-out override")
+	})
+
+	for _, tc := range []struct{ name, body string }{
+		{"ineligible stage rejects", `{"stagePersonas":{"backlog":{"name":"p"}}}`},
+		{"empty persona name rejects", `{"stagePersonas":{"in_review":{"name":""}}}`},
+		{"null stage value rejects", `{"stagePersonas":{"in_review":null}}`},
+		{"unknown persona field rejects", `{"stagePersonas":{"in_review":{"name":"r","promt":"x"}}}`},
+		{"non-object rejects", `{"stagePersonas":["in_review"]}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			// Fresh fake per arm: the accepted arms above already
+			// reached the service; a rejection must land 0 calls on a
+			// clean counter.
+			svc2 := newFakeBoardManager()
+			r2 := newBoardConfigRouter(t, svc2)
+			w := doBoardREST(t, r2, http.MethodPut, "/api/v1/me/board/config", tc.body)
+			assert.Equal(t, http.StatusBadRequest, w.Code, w.Body.String())
+			assert.Equal(t, 0, svc2.calls["set_user_board_config"], "rejections never reach the service")
+		})
+	}
 }
 
 // TestBoardConfigREST_UserRejectsUnknownMalformedNull: unknown keys,
@@ -206,7 +260,7 @@ func TestBoardConfigREST_ProjectRoundTrip(t *testing.T) {
 	assert.JSONEq(t, `{
 		"project_id":"p1",
 		"overrides":{"reviewColumn":"off"},
-		"effective":{"reviewColumn":"off","autoAssignReviewer":false,"defaultWorkerSlots":2}
+		"effective":{"reviewColumn":"off","autoAssignReviewer":false,"defaultWorkerSlots":2,"stagePersonas":{}}
 	}`, w.Body.String())
 
 	w = doBoardREST(t, r, http.MethodPut, "/api/v1/me/projects/p1/config", `{"reviewColumn":"auto","autoAssignReviewer":true}`)

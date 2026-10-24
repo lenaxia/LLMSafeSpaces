@@ -71,7 +71,7 @@ describe("BoardConfigTab — #1832 item 6 (2/2)", () => {
     await user.click(screen.getByTestId("cfg-save-global"));
     await waitFor(() => expect(boardApi.setUserBoardConfig).toHaveBeenCalled());
     const body = vi.mocked(boardApi.setUserBoardConfig).mock.calls[0]![0];
-    expect(body).toEqual({ reviewColumn: "manual", autoAssignReviewer: false, defaultWorkerSlots: 3 });
+    expect(body).toEqual({ reviewColumn: "manual", autoAssignReviewer: false, defaultWorkerSlots: 3, stagePersonas: {} });
   });
 
   it("client validation mirrors the server: slots < 1 blocks the send (no PUT fires)", async () => {

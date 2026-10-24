@@ -43,20 +43,45 @@ func TestCharterPrompt_NoChainNoSection(t *testing.T) {
 	}
 }
 
-func TestReviewerCharterPrompt_Contract(t *testing.T) {
-	got := reviewerCharterPrompt(
-		&board.Task{ShortID: "tsk-aaaa0001", Description: "desc",
+// Stage-persona claim-then-spawn (owner directive 2026-10-24): the
+// charter renders the configured persona — the legacy reviewer
+// composition's default persona AND an arbitrary named persona with
+// custom instructions — while a persona-less claim stays
+// byte-identical to today's worker charter.
+func TestCharterPrompt_PersonaRendering(t *testing.T) {
+	// The legacy composition's default reviewer persona (a reviewer
+	// claim for in_review) renders the verdict contract.
+	rev := &board.PersonaConfig{Name: board.DefaultReviewerPersona.Name, Instructions: board.DefaultReviewerPersona.Instructions}
+	got := boardCharterPrompt(&board.Claim{
+		ShortID: "tsk-aaaa0001", ClaimToken: "tok", Stage: board.StageInReview, Persona: rev,
+		Task: &board.Task{Description: "desc",
 			AcceptanceCriteria: []board.AcceptanceCriterion{{Text: "c1"}, {Text: "c2"}}},
-		&board.Project{ShortID: "prj-aaaa1111"})
+	})
 	for _, want := range []string{
-		"assigned reviewer for task tsk-aaaa0001",
-		"[0] c1", "[1] c2",
+		"You are the 'reviewer' persona for task tsk-aaaa0001 at stage in_review (claim token: tok)",
 		"board_record_verdict",
 		"blocker|major|minor",
 		"Never merge",
+		"[ ] c1", "[ ] c2",
 	} {
 		if !strings.Contains(got, want) {
-			t.Fatalf("reviewer charter missing %q:\n%s", want, got)
+			t.Fatalf("reviewer persona charter missing %q:\n%s", want, got)
 		}
+	}
+
+	// An ARBITRARY persona (no instructions) renders the generic
+	// scaffold; nothing is hardwired to reviewer/in_review.
+	got = boardCharterPrompt(&board.Claim{
+		ShortID: "tsk-bbbb0002", ClaimToken: "tk2", Stage: board.StageInProgress,
+		Persona: &board.PersonaConfig{Name: "implementer"},
+	})
+	if !strings.Contains(got, "You are the 'implementer' persona for task tsk-bbbb0002 at stage in_progress (claim token: tk2)") {
+		t.Fatalf("arbitrary persona scaffold missing:\n%s", got)
+	}
+
+	// Persona-less: today's first line, byte-identical.
+	got = boardCharterPrompt(&board.Claim{ShortID: "tsk-cccc0003", ClaimToken: "tk3"})
+	if !strings.HasPrefix(got, "You are the worker for task tsk-cccc0003 (claim token: tk3).\n") {
+		t.Fatalf("persona-less charter must render today's opening verbatim:\n%s", got)
 	}
 }
