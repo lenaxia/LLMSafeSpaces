@@ -234,7 +234,7 @@ describe("SessionActivityProvider — snapshot-commit idle cache mirror (#1883)"
     expect(rowStatus(qc)).toBe("active");
   });
 
-  it("M3 a degraded harness-keyed idle row flips no phrase-keyed cache row", async () => {
+  it("M3 documents the degraded-row no-flip invariant (non-discriminating by construction: a harness-keyed idle row can never match a phrase-keyed cache row)", async () => {
     vi.useFakeTimers();
 
     const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -247,12 +247,48 @@ describe("SessionActivityProvider — snapshot-commit idle cache mirror (#1883)"
     expect(rowStatus(qc)).toBe("active");
 
     // The flight's only idle answer is DEGRADED (harness-keyed, no
-    // learnable pair): it may not flip phrase-keyed rows — its id join
-    // is partial (never worse: leave the projection alone).
+    // learnable pair): it must not flip phrase-keyed rows. NOTE (r1):
+    // the staging-side degraded guard this exercises is
+    // defense-in-depth — id matching alone keeps a harness key from
+    // ever selecting a phrase-keyed row, so no mutation of the guard
+    // can redden this test; it pins the invariant, not the guard.
     pushFlight(stream, { begin: 20, snap: 21, complete: 22 }, [{ session_id: "harness-unknown", derived_busy: false, session_id_deprecated: true }], 21, "f-deg");
     await advanceHealthy(stream, 3_000);
     await settle(100);
 
+    expect(rowStatus(qc)).toBe("active");
+  });
+
+  it("M4 an older overlapping idle flight completing after a newer busy flight must not flip the row (out-of-order flights, same batch)", async () => {
+    vi.useFakeTimers();
+
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    mount(qc);
+    await settle(1_000);
+
+    stream.push(`id: 5\ndata: {"event_id":5,"type":"session.status","workspace_id":"ws-1","session_id":"phrase-one","status":"busy"}\n\n`);
+    await settle(1_000);
+    expect(screen.getByTestId("busy").textContent).toBe("yes");
+    expect(rowStatus(qc)).toBe("active");
+
+    await advanceHealthy(stream, 105_000);
+    expect(mockRequestStatusSnapshot.mock.calls.length).toBe(1);
+
+    // Two overlapping flights answer the same session (the broker
+    // delivers after releasing the shard lock — #1848 r0 finding 3):
+    // the NEWER flight (cursor 50) answers busy, the OLDER (cursor 21)
+    // answers idle, and the older's complete is delivered right after
+    // the newer's in the same batch — before the newer commit's
+    // deferred updater has stamped its watermarks. The idle mirror
+    // must consult the dispatch-synchronous stamps, not the deferred
+    // ones: the row keeps the newer authority's "active" (the busy map
+    // already holds it — the row may not contradict the newest answer).
+    pushFlight(stream, { begin: 40, snap: 49, complete: 50 }, [{ session_id: "phrase-one", derived_busy: true }], 50, "f-new");
+    pushFlight(stream, { begin: 20, snap: 21, complete: 22 }, [{ session_id: "phrase-one", derived_busy: false }], 21, "f-old");
+    await advanceHealthy(stream, 3_000);
+    await settle(100);
+
+    expect(screen.getByTestId("busy").textContent).toBe("yes");
     expect(rowStatus(qc)).toBe("active");
   });
 });

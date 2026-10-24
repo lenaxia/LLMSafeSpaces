@@ -1269,6 +1269,20 @@ export function SessionActivityProvider({ children }: { children: ReactNode }) {
         const degradedBusyIds = staged.degradedBusyIds;
         const rowInternalIds = staged.rowInternalIds;
         const now = stampBusyNow();
+        // #1883 r1: hoist the answered sessions' watermark stamps to
+        // complete-DISPATCH, before the mirrors below. The deferred
+        // updater's own stamps (the answered loop inside it) run at
+        // render time — an older overlapping flight completing right
+        // after a newer one in the same batch would otherwise read
+        // pre-stamp watermarks at its mirror guard and flip the cached
+        // row against the newer authority's answer (the reviewer's
+        // out-of-order flight pair). Idempotent max-stamps outside the
+        // updater: StrictMode-safe (nothing here consumes them
+        // non-idempotently), and the updater's Math.max absorbs them.
+        for (const sid of staged.answeredIds) {
+          const last = sessionLastDeltaIDRef.current.get(sid) ?? 0;
+          if (cursor > last) sessionLastDeltaIDRef.current.set(sid, cursor);
+        }
         // #1848 r3 finding 1: the reconcile runs INSIDE the updater
         // against its fresh `prev` — SSE frames dispatch synchronously
         // per chunk, so a render-closure read of busySessions is stale
@@ -1372,13 +1386,14 @@ export function SessionActivityProvider({ children }: { children: ReactNode }) {
         // mount-time pass (add-only) re-latches the cleared badge from
         // it on any provider remount — the frozen indicator returning
         // after the authority already healed it. The per-session
-        // watermark guard is the same discipline the busy-row latch
-        // applies: a row superseded by a NEWER same-session delta
-        // (delta id > cursor, stamped at dispatch, before this read)
-        // keeps the fresher answer. No hasUnread is invented here —
-        // the flight is truth reconciliation, not turn-completion UX
-        // (the unread flip belongs to the idle delta the user's stream
-        // actually delivers).
+        // watermark guard (stamped at complete-dispatch above, so an
+        // older overlapping flight's mirror sees the newer flight's
+        // cursor) holds the same ordering discipline as the busy-row
+        // latch: a row superseded by a NEWER same-session answer keeps
+        // the fresher truth. No hasUnread is invented here — the flight
+        // is truth reconciliation, not turn-completion UX (the unread
+        // flip belongs to the idle delta the user's stream actually
+        // delivers).
         const idleRowIds = staged.idleRowIds;
         if (existingCache && idleRowIds.size > 0) {
           queryClient.setQueryData(sessionsKey, (old: unknown) => {

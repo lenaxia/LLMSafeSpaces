@@ -44,9 +44,10 @@ Documented choice: **provider-side fix, no backend change** — the backend alre
 
 - **M1 (RED on HEAD, fails at `expected 'active' to be 'idle'`)**: latch busy → row `"active"`; lose the idle frame; lease expiry fires the one recheck; the flight answers idle; badge clears; PIN the cached row flips `"idle"`; then REMOUNT the provider on the same QueryClient and PIN the badge stays clear (on HEAD the stale row re-latches it).
 - **M2 (watermark guard)**: a newer same-session busy delta (id > cursor) racing mid-flight keeps both the badge and the row `"active"` — the idle mirror must not invert fresher evidence.
-- **M3 (degraded guard)**: a harness-keyed `session_id_deprecated` idle row flips no phrase-keyed row.
+- **M3 (degraded no-flip invariant)**: a harness-keyed `session_id_deprecated` idle row flips no phrase-keyed row. Non-discriminating by construction — it pins the invariant, not the staging guard.
+- **M4 (r1, out-of-order flights)**: a newer busy flight (cursor 50) then an older overlapping idle flight (cursor 21) completing in the same batch — badge stays yes, row stays `"active"` (pinned the reviewer's demonstrated race; RED until the dispatch-synchronous watermark pre-stamp).
 
-RED proof: `git stash` of the provider fix → M1 fails at the row assertion (the remount assertion sits behind it); fix restored → 3/3 green.
+RED proof: `git stash` of the provider fix → M1 fails at the row assertion (the remount assertion sits behind it); fix restored → green (4/4 with M4 after r1).
 
 ## Test commands
 
@@ -56,12 +57,29 @@ RED proof: `git stash` of the provider fix → M1 fails at the row assertion (th
 - `npm run typecheck` — clean; `npx eslint` on both touched files — clean
 - Go side untouched (`git diff --stat` is frontend-only); no backend test surface affected
 
+## Review r1 (CHANGES_REQUESTED → remediated)
+
+Three findings, all accepted and fixed on this branch:
+
+1. **Flight-vs-flight mirror race (validated by the reviewer's probe, reproduced as M4)**: the mirror's watermark guard ran at complete-dispatch while the commit's watermark stamps lived in the deferred `setBusySessions` updater — an older overlapping idle flight (cursor 21) completing right after a newer busy flight (cursor 50) in the same batch flipped the cached row against the newer authority's answer. **Fix**: the answered sessions' watermark stamps are hoisted to complete-DISPATCH (idempotent max-stamps outside the updater; the updater's `Math.max` absorbs them) so the mirror — and everything after — sees the newest committed cursor per session.
+2. **Missing pin**: M4 added (newer-busy flight then older-idle flight, same batch → badge yes, row stays `"active"`). RED under mutation 1, GREEN with the pre-stamp.
+3. **Worklog mutation claims were false** (reviewer ran them; re-run and corrected here — every claim below was executed on this branch's final code):
+   - pre-stamp block deleted → **M4 red (only)** — the hoist is load-bearing for the flight-race guard.
+   - mirror watermark guard deleted (unconditional flip) → **M2 + M4 red** — the guard is load-bearing in both race directions.
+   - idle mirror block deleted entirely → **M1 red (only)**.
+   - `<=` flipped to `<` → **M1 red on THIS head** (the pre-stamp makes the answered session's watermark equal the cursor, so the equality arm is now exercised; on the r0 head the reviewer's non-discriminating verdict held — M2's margin 25-vs-21 skipped either way).
+   - degraded staging guard deleted → **4/4 green**: confirmed non-discriminating by construction (a harness-keyed idle row can never match a phrase-keyed cache row by id). M3 is reframed as the documented no-flip invariant / defense-in-depth pin, not a guard discriminator.
+
 ## Residuals
 
 - Sessions **absent** from a flight's rows (pod no longer knows them) still keep a stale `"active"` cache row until a refetch — the commit's removal loop is prev-dependent (inside the updater) and absent rows are outside the answered-idle mirror. Out of the incident shape (statusz lists idle sessions too); corrected by any reconnect/invalidation refetch; noted for a future pass if field evidence shows it.
 - `wipeBusyForEventLoss` (reconnect/resync) intentionally does not mirror rows: the post-wipe REST re-seed refreshes them.
 - #1899's deferred usage-leg staleness watchdog (half-open TCP death) remains open as designed — the lease bounds the damage.
 
-## Mutation-verify suggestion
+## Mutation-verify suggestions (each EXECUTED on the final branch code — see "Review r1" for outcomes)
 
-Flip the mirror's watermark comparison to `<` (or delete the `idleRowIds` staging guard for degraded rows): M2 (resp. M3) must go red deterministically — the guards are load-bearing, not decorative.
+- Delete the dispatch-synchronous pre-stamp block → M4 must go red (flight-race guard).
+- Delete the mirror's watermark guard (flip unconditionally) → M2 + M4 must go red (both race directions).
+- Delete the idle mirror block → M1 must go red (the feature itself).
+- Flip the mirror's `<=` to `<` → M1 must go red (the equality arm the pre-stamp creates).
+- The degraded staging guard has NO discriminating mutation by construction (id matching alone prevents the flip) — do not claim one.
