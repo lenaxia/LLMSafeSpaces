@@ -169,6 +169,15 @@ materialize {}, never delete a stored map (frontend pins inverted +
 a set-ness arm). Minor: projectFor warns on resolve failure; dup
 comment and a `_ =` discard cleaned.
 
+**Round 3 (CHANGES_REQUESTED, head 606e6f0a):** all three round-2
+blockers verified fixed (mutation-validated by the reviewer); two
+residuals — the stagePersonasSet wire field was genuinely missing
+from sdks/openapi.yaml (the r8 scripted spec edit silently no-op'd
+against #1939-merged description text; the commit message's claim
+was false) and persona.go kept the deleted prefilter's placement
+comment. Both fixed; openapi-validate green against the real spec
+this time.
+
 ## Verification
 
 go build/vet clean (incl. -tags=integration); `go test ./...` green

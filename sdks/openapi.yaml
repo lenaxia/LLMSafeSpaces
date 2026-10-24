@@ -12725,7 +12725,7 @@ components:
         present. Rendered for the acting user's board-wide defaults
         and as the per-project effective row (user defaults overlaid
         with the project's overrides, merged at read time).
-      required: [reviewColumn, autoAssignReviewer, defaultWorkerSlots, stagePersonas]
+      required: [reviewColumn, autoAssignReviewer, defaultWorkerSlots, stagePersonas, stagePersonasSet]
       properties:
         reviewColumn:
           type: string
@@ -12740,6 +12740,17 @@ components:
           type: integer
           minimum: 1
           description: Default worker slots for new projects (the platform default is 2)
+        stagePersonasSet:
+          type: boolean
+          description: |
+            Whether stagePersonas was EXPLICITLY set at any merged tier
+            (even an empty {} — the opt-out). The REPLACE-tier
+            carry-through rule: a client saving other keys carries the
+            stored map back only when this is true — sending {} when
+            nothing was stored would materialize an opt-out row and
+            suppress the default reviewer persona; omitting the key
+            when something WAS stored would delete it. Render-only (a
+            PUT carrying this key rejects as unknown).
         stagePersonas:
           type: object
           additionalProperties: false

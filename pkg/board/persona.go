@@ -160,10 +160,10 @@ func personaClaimEventTx(ctx context.Context, tx pgx.Tx, projectID, taskID, stag
 // stored config rows, so any EXISTS-gate would exclude the shipped
 // default posture — Go's stagePersona resolution is the sole authority
 // (a candidate with no resolved persona is skipped without a write).
-// It names user_id (the owner's defaults tier) so it lives HERE —
-// engine.go/reconciler.go stay ownership-agnostic by construction
-// (§4.7, pinned by TestKill_SourceLevelOwnershipPins; the
-// inFlightCountsForProject precedent).
+// It lives HERE (not engine.go/reconciler.go) to keep the persona
+// seam's query vocabulary beside its resolution logic — the
+// ownership-agnostic pin (§4.7) holds either way: the SQL touches
+// rows and pause flags only.
 const personaRearmCandidatesSQL = `
 	SELECT t.id, t.project_id, t.failure_count
 	FROM tasks t
