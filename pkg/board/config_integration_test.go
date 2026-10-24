@@ -15,6 +15,7 @@ package board_test
 
 import (
 	"context"
+	"encoding/json"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -88,10 +89,18 @@ func (s *BoardSuite) TestBoardConfig_UserIsolation() {
 	s.Require().NoError(err)
 
 	// The owner's effective defaults are untouched by the other user's
-	// map (no instance-global leak).
+	// map (no instance-global leak). Wire-shape comparison: the harness
+	// seeds the owner's user-level stagePersonas opt-out (the legacy-
+	// suite isolation under the #1939 flipped floor), which sets the
+	// merge's StagePersonasSet bookkeeping flag — json:"-" — while the
+	// rendered config is the pure default.
 	cfg, err := s.svc.GetUserBoardConfig(ctx, s.owner())
 	s.Require().NoError(err)
-	s.Equal(board.DefaultBoardConfig(), *cfg, "a foreign user's defaults never leak into the owner's effective config")
+	wantDefault, wantErr := json.Marshal(board.DefaultBoardConfig())
+	s.Require().NoError(wantErr)
+	gotOwner, gotErr := json.Marshal(cfg)
+	s.Require().NoError(gotErr)
+	s.JSONEq(string(wantDefault), string(gotOwner), "a foreign user's defaults never leak into the owner's effective config")
 
 	// Each user reads back their own map.
 	cfg, err = s.svc.GetUserBoardConfig(ctx, other)
