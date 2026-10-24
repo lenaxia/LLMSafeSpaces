@@ -41,16 +41,16 @@ func TestBoardFileParams_ByteIdenticalRoundTrip(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "charter.md")
 	require.NoError(t, os.WriteFile(path, []byte(charter), 0o600))
 
-	args := map[string]any{"description_file": path}
+	args := map[string]any{"descriptionFile": path}
 	require.NoError(t, resolveBoardFileArgs(args, "description"))
 	require.Equal(t, charter, args["description"], "the resolved description must be byte-identical to the file")
-	assert.NotContains(t, args, "description_file", "the file param is consumed, never forwarded")
+	assert.NotContains(t, args, "descriptionFile", "the file param is consumed, never forwarded")
 }
 
 func TestBoardFileParams_OutcomeFile(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "outcome.md")
 	require.NoError(t, os.WriteFile(path, []byte("steer"), 0o600))
-	args := map[string]any{"outcome_file": path}
+	args := map[string]any{"outcomeFile": path}
 	require.NoError(t, resolveBoardFileArgs(args, "outcome"))
 	require.Equal(t, "steer", args["outcome"])
 }
@@ -58,7 +58,7 @@ func TestBoardFileParams_OutcomeFile(t *testing.T) {
 func TestBoardFileParams_AmbiguousInlineAndFile(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "d.md")
 	require.NoError(t, os.WriteFile(path, []byte("from file"), 0o600))
-	args := map[string]any{"description_file": path, "description": "inline"}
+	args := map[string]any{"descriptionFile": path, "description": "inline"}
 	err := resolveBoardFileArgs(args, "description")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "one or the other")
@@ -67,16 +67,16 @@ func TestBoardFileParams_AmbiguousInlineAndFile(t *testing.T) {
 func TestBoardFileParams_FileForWrongField(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "d.md")
 	require.NoError(t, os.WriteFile(path, []byte("x"), 0o600))
-	args := map[string]any{"description_file": path}
+	args := map[string]any{"descriptionFile": path}
 	err := resolveBoardFileArgs(args, "outcome")
-	require.Error(t, err, "a description_file on an outcome-field tool is a caller mistake, refused loudly")
+	require.Error(t, err, "a descriptionFile on an outcome-field tool is a caller mistake, refused loudly")
 }
 
 func TestBoardFileParams_CapAndShapeGuards(t *testing.T) {
 	t.Run("over cap", func(t *testing.T) {
 		path := filepath.Join(t.TempDir(), "big.md")
 		require.NoError(t, os.WriteFile(path, make([]byte, boardFileFieldMaxBytes+1), 0o600))
-		args := map[string]any{"description_file": path}
+		args := map[string]any{"descriptionFile": path}
 		err := resolveBoardFileArgs(args, "description")
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "cap")
@@ -86,14 +86,14 @@ func TestBoardFileParams_CapAndShapeGuards(t *testing.T) {
 		dir := t.TempDir()
 		fifo := filepath.Join(dir, "fifo")
 		require.NoError(t, syscall.Mkfifo(fifo, 0o600))
-		args := map[string]any{"description_file": fifo}
+		args := map[string]any{"descriptionFile": fifo}
 		err := resolveBoardFileArgs(args, "description")
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "regular file")
 	})
 
 	t.Run("missing file", func(t *testing.T) {
-		args := map[string]any{"description_file": filepath.Join(t.TempDir(), "absent.md")}
+		args := map[string]any{"descriptionFile": filepath.Join(t.TempDir(), "absent.md")}
 		err := resolveBoardFileArgs(args, "description")
 		require.Error(t, err)
 	})
@@ -101,7 +101,7 @@ func TestBoardFileParams_CapAndShapeGuards(t *testing.T) {
 	t.Run("non-UTF-8 refused", func(t *testing.T) {
 		path := filepath.Join(t.TempDir(), "bin.md")
 		require.NoError(t, os.WriteFile(path, []byte("ok\x80\xff\xfe"), 0o600))
-		args := map[string]any{"description_file": path}
+		args := map[string]any{"descriptionFile": path}
 		err := resolveBoardFileArgs(args, "description")
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "UTF-8")
@@ -120,7 +120,7 @@ func TestBoardFileParams_WireContract(t *testing.T) {
 	require.NoError(t, os.WriteFile(path, []byte(content), 0o600))
 
 	out, err := mcpAutomation(context.Background(), mcpTestPassword, "board_create_task", map[string]any{
-		"epicId": "epc-bbbb2222", "title": "T-file", "description_file": path,
+		"epicId": "epc-bbbb2222", "title": "T-file", "descriptionFile": path,
 		"lsp_injected_session": "ses-1",
 	})
 	require.NoError(t, err)
@@ -130,7 +130,7 @@ func TestBoardFileParams_WireContract(t *testing.T) {
 	require.NoError(t, json.Unmarshal([]byte(rec.body), &wire))
 	assert.JSONEq(t, jsonMustString(t, content), string(wire["description"]),
 		"the file's content reaches the wire verbatim as description")
-	assert.NotContains(t, wire, "description_file")
+	assert.NotContains(t, wire, "descriptionFile")
 	assert.Equal(t, http.MethodPost, rec.method)
 	assert.Equal(t, "/internal/v1/automation/board/epics/epc-bbbb2222/tasks", rec.path)
 }
@@ -146,7 +146,7 @@ func TestBoardFileParams_NullWrongFieldRefused(t *testing.T) {
 	// #1837 review round 1: a null *_file key on a tool that does not
 	// admit it is still a mention — refused loudly, never silently
 	// dropped onto the wire.
-	args := map[string]any{"description_file": nil}
+	args := map[string]any{"descriptionFile": nil}
 	err := resolveBoardFileArgs(args, "outcome")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "not admitted")
@@ -169,13 +169,13 @@ func TestBoardFileParams_NullAdmittedNeverReachesWire(t *testing.T) {
 	api, rec := newAutomationAPI(t, 200, `{"short_id":"tsk-n0000001"}`)
 	setupRenameWorkspaceEnv(t, api)
 	_, err := mcpAutomation(context.Background(), mcpTestPassword, "board_create_task", map[string]any{
-		"epicId": "epc-bbbb2222", "title": "T", "description_file": nil,
+		"epicId": "epc-bbbb2222", "title": "T", "descriptionFile": nil,
 		"lsp_injected_session": "ses-1",
 	})
 	require.NoError(t, err)
 	var wire map[string]json.RawMessage
 	require.NoError(t, json.Unmarshal([]byte(rec.body), &wire))
-	assert.NotContains(t, wire, "description_file", "a null mention is consumed — no *_file spelling reaches the wire")
+	assert.NotContains(t, wire, "description_file", "a null mention is consumed — no file spelling reaches the wire")
 }
 
 func TestBoardFileParams_EchoDiffPassesThroughVerbatim(t *testing.T) {

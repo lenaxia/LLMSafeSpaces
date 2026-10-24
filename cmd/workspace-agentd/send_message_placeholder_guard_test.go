@@ -47,7 +47,7 @@ func TestMCPSendMessage_PlaceholderClassRejected(t *testing.T) {
 		t.Run(payload, func(t *testing.T) {
 			target, origin, delivered := placeholderGuardFixture(t)
 
-			out, err := mcpSendMessage(context.Background(), mcpTestPassword, target, payload, origin, "")
+			out, err := mcpSendMessage(context.Background(), mcpTestPassword, target, payload, origin)
 			require.Error(t, err, "payload %q must be rejected", payload)
 			assert.Empty(t, out)
 			assert.Contains(t, err.Error(), "placeholder",
@@ -81,7 +81,7 @@ func TestMCPSendMessage_ShortAndProbePayloadsPass(t *testing.T) {
 		t.Run(payload, func(t *testing.T) {
 			target, origin, delivered := placeholderGuardFixture(t)
 
-			out, err := mcpSendMessage(context.Background(), mcpTestPassword, target, payload, origin, "")
+			out, err := mcpSendMessage(context.Background(), mcpTestPassword, target, payload, origin)
 			require.NoError(t, err, "payload %q must pass", payload)
 			assert.Contains(t, out, `"status"`)
 			require.Eventually(t, func() bool { return delivered() == 1 },
@@ -97,7 +97,7 @@ func TestMCPSendMessage_PlaceholderWhitespaceVariantsRejected(t *testing.T) {
 		t.Run(payload, func(t *testing.T) {
 			target, origin, delivered := placeholderGuardFixture(t)
 
-			_, err := mcpSendMessage(context.Background(), mcpTestPassword, target, payload, origin, "")
+			_, err := mcpSendMessage(context.Background(), mcpTestPassword, target, payload, origin)
 			require.Error(t, err)
 			assert.Equal(t, 0, delivered())
 		})

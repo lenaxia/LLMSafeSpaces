@@ -667,7 +667,7 @@ func TestDevPreviewHeadersToolRegistered(t *testing.T) {
 // devPreviewHeadersSchemaFields introspects the production tool
 // definition's schema (the same var tools/list serves).
 func devPreviewHeadersSchemaFields() []string {
-	props, _ := devPreviewHeadersTool.InputSchema["properties"].(map[string]any)
+	props, _ := devPreviewHeadersTool.InputSchema.(map[string]any)["properties"].(map[string]any)
 	fields := make([]string, 0, len(props))
 	for k := range props {
 		fields = append(fields, k)

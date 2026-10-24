@@ -921,7 +921,7 @@ func TestMCPHandler_ToolDescriptionGuidance(t *testing.T) {
 		d, ok := descs["session_list"]
 		require.True(t, ok, "session_list in tools/list")
 		assert.Contains(t, d, "NON-ARCHIVED sessions by default")
-		sd, ok := schemaDescs["session_list/include_archived"]
+		sd, ok := schemaDescs["session_list/includeArchived"]
 		require.True(t, ok, "session_list/include_archived schema description present")
 		for _, want := range []string{
 			"archived_set_stale:true", // the per-row stale marker is named

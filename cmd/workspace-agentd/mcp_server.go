@@ -58,9 +58,53 @@ type mcpError struct {
 }
 
 type mcpTool struct {
-	Name        string         `json:"name"`
-	Description string         `json:"description"`
-	InputSchema map[string]any `json:"inputSchema"`
+	Name        string `json:"name"`
+	Description string `json:"description"`
+	// InputSchema is `any` (not map[string]any): JSON object key order on
+	// the wire matters for emission reliability — glm-class models latch
+	// into duplication loops when a long freeform string (message, content)
+	// is emitted with structural keys still owed AFTER it (#1849 factorial:
+	// platform tools put long strings last and never corrupt; send_message
+	// put `message` first and corrupted 5/5). Map marshaling is alphabetical
+	// and cannot express "string field last", so order-sensitive schemas are
+	// supplied as pre-ordered json.RawMessage.
+	InputSchema any `json:"inputSchema"`
+	// Annotations: the MCP spec's behavioral hints (readOnlyHint,
+	// destructiveHint, idempotentHint, openWorldHint) — clients MUST
+	// treat them as untrusted disclosure, which is exactly their use
+	// here: telling the harness which tools mutate or destroy state
+	// so it can gate/surface them without parsing descriptions.
+	Annotations *mcpToolAnnotations `json:"annotations,omitempty"`
+	// OutputSchema: when a tool's result is a stable JSON object, the
+	// schema declares it (MCP 2026-07-28: results then carry a
+	// structuredContent twin validated against this schema, alongside
+	// the TextContent form for compatibility).
+	OutputSchema json.RawMessage `json:"outputSchema,omitempty"`
+}
+
+// mcpToolAnnotations mirrors the spec's ToolAnnotations. Only hints
+// that are TRUE are set; omission means "not claimed" (the client
+// treats every hint as untrusted anyway).
+type mcpToolAnnotations struct {
+	Title           string `json:"title,omitempty"`
+	ReadOnlyHint    *bool  `json:"readOnlyHint,omitempty"`
+	DestructiveHint *bool  `json:"destructiveHint,omitempty"`
+	IdempotentHint  *bool  `json:"idempotentHint,omitempty"`
+	OpenWorldHint   *bool  `json:"openWorldHint,omitempty"`
+}
+
+func boolPtr(b bool) *bool { return &b }
+
+// annot builds tool annotations. Every tool in this catalog operates
+// on closed workspace state (no open-world interaction), so
+// openWorldHint:false rides along whenever any hint is declared.
+func annot(readOnly, destructive, idempotent bool) *mcpToolAnnotations {
+	return &mcpToolAnnotations{
+		ReadOnlyHint:    &readOnly,
+		DestructiveHint: &destructive,
+		IdempotentHint:  &idempotent,
+		OpenWorldHint:   boolPtr(false),
+	}
 }
 
 // maxMCPBodyBytes bounds a /v1/mcp request body (#1561's socialized
@@ -108,6 +152,7 @@ func boardManagerTools() []mcpTool {
 			// stays per-task (the worker view); board_list/board_health
 			// are the manager's project/fleet projections.
 			Name:        "board_list",
+			Annotations: annot(true, false, false),
 			Description: "List EVERY task of one board project in a single call (#1837 P2a) — the orchestrator's overview the per-task board_read cannot give. Each row carries the stage, claim (assignee session), lease expiry, paused, blocked, attempts, and cooldown columns (live claim TOKENS are deliberately absent from the bulk projection — board_read keeps the token for the claimant's own flow); the response also derives the project's ready HINT (backlog + unblocked + unpaused + not cooling — the task-level claim predicates; epic-quota and project gates resolve at claim time; rendered only on fully unfiltered lists). Manager tool (user-collaborator sessions only); workspace-scoped (a foreign workspace's project is a plain 404).",
 			InputSchema: map[string]any{"type": "object", "properties": map[string]any{
 				"projectId": map[string]any{"type": "string", "description": "Project short id (prj-… or UUID)"},
@@ -117,6 +162,7 @@ func boardManagerTools() []mcpTool {
 		},
 		{
 			Name:        "board_health",
+			Annotations: annot(true, false, false),
 			Description: "The WORKSPACE's board health snapshot (#1837 P2a): active leases with expiry and assignee, task and project-slot cooldowns, pending_input counts by origin, recent reclaims, and per-project worker slots in use — one call over every board this workspace's projects carry. Use it to answer 'what is in flight, what is stuck, what cools down' before scheduling decisions. Manager tool (user-collaborator sessions only); workspace-scoped.",
 			InputSchema: map[string]any{"type": "object", "properties": map[string]any{}},
 		},
@@ -181,24 +227,12 @@ func boardManagerTools() []mcpTool {
 		{
 			Name:        "board_create_epic",
 			Description: "Create a DRAFT epic in a board project (the default state). The epic holds tasks and gates their claiming; activate it to start feeding work to fresh workers. The outcome field is the human's steering wheel — what this epic exists to achieve. Manager tool (user-collaborator sessions only).",
-			InputSchema: map[string]any{"type": "object", "properties": map[string]any{
-				"projectId":    map[string]any{"type": "string", "description": "Project short id (prj-… or UUID)"},
-				"title":        map[string]any{"type": "string", "description": "Epic title"},
-				"outcome":      map[string]any{"type": "string", "description": "What this epic exists to achieve"},
-				"outcome_file": map[string]any{"type": "string", "description": "Workspace file whose content becomes the outcome (#1837: for long steering-wheel text — the file is read verbatim under a 128 KiB UTF-8 cap; mutually exclusive with outcome)"},
-				"tags":         map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Tags"},
-			}, "required": []string{"projectId", "title"}},
+			InputSchema: json.RawMessage(`{"properties":{"projectId":{"description":"Project short id (prj-… or UUID)","type":"string"},"title":{"description":"Epic title","type":"string"},"tags":{"description":"Tags","items":{"type":"string"},"type":"array"},"outcomeFile":{"description":"Workspace file whose content becomes the outcome (#1837: for long steering-wheel text — the file is read verbatim under a 128 KiB UTF-8 cap; mutually exclusive with outcome)","type":"string"},"outcome":{"description":"What this epic exists to achieve","type":"string"}},"required":["projectId","title"],"type":"object"}`),
 		},
 		{
 			Name:        "board_update_epic",
 			Description: "Patch an epic (title, outcome, tags). The outcome is the steering wheel for every worker under the epic. A title rename cascades to its tasks' display. Manager tool (user-collaborator sessions only).",
-			InputSchema: map[string]any{"type": "object", "properties": map[string]any{
-				"epicId":       map[string]any{"type": "string", "description": "Epic short id (epc-… or UUID)"},
-				"title":        map[string]any{"type": "string", "description": "New title"},
-				"outcome":      map[string]any{"type": "string", "description": "Steering-wheel outcome (REPLACE)"},
-				"outcome_file": map[string]any{"type": "string", "description": "Workspace file whose content becomes the outcome (#1837: for long steering-wheel text — read verbatim under a 128 KiB UTF-8 cap; mutually exclusive with outcome)"},
-				"tags":         map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Tags (REPLACE — send the full set)"},
-			}, "required": []string{"epicId"}},
+			InputSchema: json.RawMessage(`{"properties":{"epicId":{"description":"Epic short id (epc-… or UUID)","type":"string"},"title":{"description":"New title","type":"string"},"tags":{"description":"Tags (REPLACE — send the full set)","items":{"type":"string"},"type":"array"},"outcomeFile":{"description":"Workspace file whose content becomes the outcome (#1837: for long steering-wheel text — read verbatim under a 128 KiB UTF-8 cap; mutually exclusive with outcome)","type":"string"},"outcome":{"description":"Steering-wheel outcome (REPLACE)","type":"string"}},"required":["epicId"],"type":"object"}`),
 		},
 		{
 			Name:        "board_epic_activate",
@@ -231,6 +265,7 @@ func boardManagerTools() []mcpTool {
 		},
 		{
 			Name:        "board_delete_epic",
+			Annotations: annot(false, true, false),
 			Description: "Destructively delete an epic AND its tasks (#1747: cancel is eliminated — delete replaces it). The audit log keeps every removal: each deleted row's event embeds its full final-state snapshot. REFUSES while any claim under the epic is in-flight unless force=true (the delete commits, then in-flight workers are aborted — post-commit) — confirm with the user before forcing. Tasks with dependents outside the epic: those dependents lose their edges (listed in the response, each gets an unblocked_by_delete audit event — visible, never a refusal). Not for reversible shelving — archive instead. Manager tool (user-collaborator sessions only).",
 			InputSchema: map[string]any{"type": "object", "properties": map[string]any{
 				"epicId": map[string]any{"type": "string", "description": "Epic short id (epc-… or UUID)"},
@@ -240,63 +275,28 @@ func boardManagerTools() []mcpTool {
 		{
 			Name:        "board_create_task",
 			Description: "Create a backlog task in an epic. The description (markdown) seeds the worker charter; acceptance criteria define Done (ALL met + evidence). ATOMIC-CREATE CONTRACT (#1849): a non-empty description AND at least one acceptance criterion are REQUIRED — a create missing either, or whose title/description/criterion is ENTIRELY a placeholder-class token (placeholder, todo, tbd, asdf, qwerty…), is rejected outright; re-compose. Prose that merely mentions such a token is fine. dependsOn (short ids of existing tasks) adds prerequisite edges in the same write. Ordering is dependency-only FIFO by creation — no priority field exists; if the user asks to reorder, explain that execution order is creation order and dependencies are the only blocking mechanism. Manager tool (user-collaborator sessions only).",
-			InputSchema: map[string]any{"type": "object", "properties": map[string]any{
-				"epicId":           map[string]any{"type": "string", "description": "Epic short id (epc-… or UUID)"},
-				"title":            map[string]any{"type": "string", "description": "Task title"},
-				"description":      map[string]any{"type": "string", "description": "Markdown; seeds the fresh worker's charter"},
-				"description_file": map[string]any{"type": "string", "description": "Workspace file whose content becomes the description (#1837: for long charters — read verbatim under a 128 KiB UTF-8 cap; mutually exclusive with description)"},
-				"tags":             map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Tags (may include one pr:N anchor, and review-of:<subject-short-id> for a delegated review task — #1832: the subject's done settles it)"},
-				"acceptanceCriteria": map[string]any{"type": "array", "items": map[string]any{
-					"type": "object", "properties": map[string]any{
-						"text": map[string]any{"type": "string"},
-						"met":  map[string]any{"type": "boolean"},
-					}, "required": []string{"text"}}, "description": "Checkable criteria [{text, met}]"},
-				"dependsOn": map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Prerequisite task short ids — edges added in the same transaction"},
-			}, "required": []string{"epicId", "title", "description", "acceptanceCriteria"}},
+			InputSchema: json.RawMessage(`{"properties":{"epicId":{"description":"Epic short id (epc-… or UUID)","type":"string"},"title":{"description":"Task title","type":"string"},"tags":{"description":"Tags (may include one pr:N anchor, and review-of:<subject-short-id> for a delegated review task — #1832: the subject's done settles it)","items":{"type":"string"},"type":"array"},"descriptionFile":{"description":"Workspace file whose content becomes the description (#1837: for long charters — read verbatim under a 128 KiB UTF-8 cap; mutually exclusive with description)","type":"string"},"acceptanceCriteria":{"description":"Checkable criteria [{text, met}]","items":{"properties":{"met":{"type":"boolean"},"text":{"type":"string"}},"required":["text"],"type":"object"},"type":"array"},"dependsOn":{"description":"Prerequisite task short ids — edges added in the same transaction","items":{"type":"string"},"type":"array"},"description":{"description":"Markdown; seeds the fresh worker's charter","type":"string"}},"required":["epicId","title","description","acceptanceCriteria"],"type":"object"}`),
 		},
 		{
 			Name:        "board_update_task",
 			Description: "Patch a task (title, description, tags, criteria). setCriteriaMet is {index, met} — check off OR uncheck the criterion at the 0-based index (the reviewer's Done preparation can walk flags BOTH ways, #1837 P2b); the bare-integer form still decodes as {index, met:true}. REFUSED alongside an acceptanceCriteria replace (send one or the other); out-of-bounds indices are loud errors; the response echoes the mutated criterion's text. Omitted fields keep existing values; criteria REPLACE when present. Manager tool (user-collaborator sessions only).",
-			InputSchema: map[string]any{"type": "object", "properties": map[string]any{
-				"taskId":           map[string]any{"type": "string", "description": "Task short id (phrase form tsk-crimson-finch-blooms, legacy tsk-XXXXXXXX forms still resolve, or UUID)"},
-				"title":            map[string]any{"type": "string", "description": "New title"},
-				"description":      map[string]any{"type": "string", "description": "New description (REPLACE)"},
-				"description_file": map[string]any{"type": "string", "description": "Workspace file whose content becomes the description (#1837: for long charters — read verbatim under a 128 KiB UTF-8 cap; mutually exclusive with description)"},
-				"tags":             map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Tags (REPLACE — send the full set)"},
-				"acceptanceCriteria": map[string]any{"type": "array", "items": map[string]any{
-					"type": "object", "properties": map[string]any{
-						"text": map[string]any{"type": "string"},
-						"met":  map[string]any{"type": "boolean"},
-					}, "required": []string{"text"}}, "description": "Criteria (REPLACE when present)"},
-				"setCriteriaMet": map[string]any{
-					"type": "object",
-					"properties": map[string]any{
-						"index": map[string]any{"type": "integer", "description": "0-based criterion index"},
-						"met":   map[string]any{"type": "boolean", "description": "The flag to write (default true — the legacy bare-integer form)"},
-					},
-					"required":    []string{"index"},
-					"description": "{index, met} — check off OR uncheck the criterion (the legacy bare integer = check-off); refused alongside acceptanceCriteria",
-				},
-			}, "required": []string{"taskId"}},
+			InputSchema: json.RawMessage(`{"properties":{"taskId":{"description":"Task short id (phrase form tsk-crimson-finch-blooms, legacy tsk-XXXXXXXX forms still resolve, or UUID)","type":"string"},"title":{"description":"New title","type":"string"},"tags":{"description":"Tags (REPLACE — send the full set)","items":{"type":"string"},"type":"array"},"descriptionFile":{"description":"Workspace file whose content becomes the description (#1837: for long charters — read verbatim under a 128 KiB UTF-8 cap; mutually exclusive with description)","type":"string"},"setCriteriaMet":{"description":"{index, met} — check off OR uncheck the criterion (the legacy bare integer = check-off); refused alongside acceptanceCriteria","properties":{"index":{"description":"0-based criterion index","type":"integer"},"met":{"description":"The flag to write (default true — the legacy bare-integer form)","type":"boolean"}},"required":["index"],"type":"object"},"acceptanceCriteria":{"description":"Criteria (REPLACE when present)","items":{"properties":{"met":{"type":"boolean"},"text":{"type":"string"}},"required":["text"],"type":"object"},"type":"array"},"description":{"description":"New description (REPLACE)","type":"string"}},"required":["taskId"],"type":"object"}`),
 		},
 		{
 			Name:        "board_add_dependency",
+			Annotations: annot(false, false, true),
 			Description: "Add a structural dependency edge — the ONLY blocking mechanism: task→task within this workspace (cross-epic allowed, never cross-workspace). Cycles are rejected (409 with did-you-mean suggestions); duplicate edges are idempotent no-ops; edges per node are capped (16 default). Dependencies are SEMANTIC prerequisites — never use edges to express preference (ordering is FIFO by creation; ruling #1747). Manager tool (user-collaborator sessions only).",
-			InputSchema: map[string]any{"type": "object", "properties": map[string]any{
-				"taskId":    map[string]any{"type": "string", "description": "Dependent task short id (tsk-… phrase/legacy form, or UUID)"},
-				"dependsOn": map[string]any{"type": "string", "description": "Prerequisite task short id (tsk-… phrase/legacy form, or UUID)"},
-			}, "required": []string{"taskId", "dependsOn"}},
+			InputSchema: json.RawMessage(`{"properties":{"taskId":{"description":"Dependent task short id (tsk-… phrase/legacy form, or UUID)","type":"string"},"dependsOn":{"description":"Prerequisite task short id (tsk-… phrase/legacy form, or UUID)","type":"string"}},"required":["taskId","dependsOn"],"type":"object"}`),
 		},
 		{
 			Name:        "board_remove_dependency",
+			Annotations: annot(false, false, true),
 			Description: "Remove one dependency edge. Removing an abandoned prerequisite's edge unblocks the dependent row (one of the pending_input resolutions). Manager tool (user-collaborator sessions only).",
-			InputSchema: map[string]any{"type": "object", "properties": map[string]any{
-				"taskId":    map[string]any{"type": "string", "description": "Dependent task short id (tsk-… phrase/legacy form, or UUID)"},
-				"dependsOn": map[string]any{"type": "string", "description": "Prerequisite task short id (tsk-… phrase/legacy form, or UUID)"},
-			}, "required": []string{"taskId", "dependsOn"}},
+			InputSchema: json.RawMessage(`{"properties":{"taskId":{"description":"Dependent task short id (tsk-… phrase/legacy form, or UUID)","type":"string"},"dependsOn":{"description":"Prerequisite task short id (tsk-… phrase/legacy form, or UUID)","type":"string"}},"required":["taskId","dependsOn"],"type":"object"}`),
 		},
 		{
 			Name:        "board_delete_task",
+			Annotations: annot(false, true, false),
 			Description: "Destructively delete a task (#1747: cancel is eliminated — delete replaces it). An idle row goes straight; an in-flight row's worker turn is cut AFTER the delete commits (post-commit abort — the row's removal is the authority). The audit event embeds the task's full final-state snapshot. The task's edges cascade away: orphaned dependents are LISTED in the response and each gets an unblocked_by_delete audit event — they simply become ready; NO auto-reconnect ever happens (a wrong reconnect is a silent stale-chain stall). reconnect=true lets orphans inherit the deleted node's direct upstream edges (deduplicated, cycle-guarded) — only when the user's intent says so. Manager tool (user-collaborator sessions only).",
 			InputSchema: map[string]any{"type": "object", "properties": map[string]any{
 				"taskId":    map[string]any{"type": "string", "description": "Task short id (phrase form tsk-crimson-finch-blooms, legacy tsk-XXXXXXXX forms still resolve, or UUID)"},
@@ -328,47 +328,48 @@ func boardManagerTools() []mcpTool {
 		{
 			Name:        "board_import_plan",
 			Description: "Materialize an ENTIRE plan atomically (#1747): one epic + its tasks + dependency edges from a single payload, all-or-nothing. ALWAYS dry-run first (dryRun=true): the response renders the graph, warnings, and the initial ready set — show it to the user as the plan-approval moment; write only after approval. Tasks address each other by payload key. Nodes-per-epic and edges-per-node caps apply. Manager tool (user-collaborator sessions only).",
-			InputSchema: map[string]any{"type": "object", "properties": map[string]any{
-				"projectId": map[string]any{"type": "string", "description": "Project short id (prj-… or UUID)"},
-				"epicTitle": map[string]any{"type": "string", "description": "The created epic's title"},
-				"outcome":   map[string]any{"type": "string", "description": "The epic's outcome (steering wheel)"},
-				"dryRun":    map[string]any{"type": "boolean", "description": "Validate + render only — nothing is written (the plan-approval moment)"},
-				"tasks": map[string]any{"type": "array", "items": map[string]any{
-					"type": "object", "properties": map[string]any{
-						"key":                map[string]any{"type": "string"},
-						"title":              map[string]any{"type": "string"},
-						"description":        map[string]any{"type": "string"},
-						"tags":               map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
-						"acceptanceCriteria": map[string]any{"type": "array"},
-						"dependsOn":          map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
-					}, "required": []string{"key", "title", "description", "acceptanceCriteria"}}, "description": "Plan nodes (#1849: a non-empty description and >=1 acceptance criterion per node are REQUIRED — the dry-run refuses seedless nodes; dependsOn names other KEYS in this payload)"},
-			}, "required": []string{"projectId", "epicTitle"}},
+			InputSchema: json.RawMessage(`{"properties":{"projectId":{"description":"Project short id (prj-… or UUID)","type":"string"},"epicTitle":{"description":"The created epic's title","type":"string"},"dryRun":{"description":"Validate + render only — nothing is written (the plan-approval moment)","type":"boolean"},"outcome":{"description":"The epic's outcome (steering wheel)","type":"string"},"tasks":{"description":"Plan nodes (#1849 atomic-create: a non-empty description and >=1 acceptance criterion per node are REQUIRED — the dry-run refuses seedless nodes; dependsOn names other KEYS in this payload)","items":{"properties":{"key":{"type":"string"},"title":{"type":"string"},"tags":{"items":{"type":"string"},"type":"array"},"dependsOn":{"items":{"type":"string"},"type":"array"},"acceptanceCriteria":{"type":"array"},"description":{"type":"string"}},"required":["key","title","description","acceptanceCriteria"],"type":"object"},"type":"array"}},"required":["projectId","epicTitle"],"type":"object"}`),
 		},
 	}
+}
+
+// mcpToolByName returns the catalog entry for a tool name (nil when
+// unknown) — used by tools/call to decide whether the result carries
+// a structuredContent twin.
+func mcpToolByName(name string) *mcpTool {
+	cat := mcpToolCatalog()
+	for i := range cat {
+		if cat[i].Name == name {
+			return &cat[i]
+		}
+	}
+	return nil
 }
 
 func mcpToolCatalog() []mcpTool {
 	return append(boardManagerTools(), []mcpTool{
 		{
 			Name:        "session_list",
+			Annotations: annot(true, false, false),
 			Description: "List past agent sessions (conversations) from this workspace — NON-ARCHIVED sessions by default (archived history is opt-in: pass include_archived:true to add it back). This workspace's history is often the fastest source of context: what was already built, tried, decided, or broken. Use when: starting a task in a workspace you did not create from scratch; the user references earlier work (\"continue\", \"like last time\", \"that bug from before\"); you are about to rebuild something that may already exist; you are resuming after a suspend/resume or a fresh chat in the same workspace; the user asks what was done previously. Not for: the current conversation (you already have it in context). Pair with session_read to pull the details of a specific session. Archive status is NOT included here — use session_metadata (its entries carry archived) when you need to know which sessions are archived.",
 			InputSchema: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
-					"include_archived": map[string]any{"type": "boolean", "description": "true = archived sessions are included (the pre-#1735 behavior). Default false = archived sessions are EXCLUDED — they are read-only history, not ambient noise; the filter only applies while the archived set is fresh (~15s), so during a platform outage it degrades to the unfiltered list (every row then carries archived_set_stale:true — known-unfiltered, never a failed tool), never a silent gap"},
+					"includeArchived": map[string]any{"type": "boolean", "description": "true = archived sessions are included (the pre-#1735 behavior). Default false = archived sessions are EXCLUDED — they are read-only history, not ambient noise; the filter only applies while the archived set is fresh (~15s), so during a platform outage it degrades to the unfiltered list (every row then carries archived_set_stale:true — known-unfiltered, never a failed tool), never a silent gap"},
 				},
 			},
 		},
 		{
 			Name:        "session_read",
+			Annotations: annot(true, false, false),
 			Description: "Read the message history of a past session in this workspace (IDs from session_list). Use when you need the specifics of prior work: file paths touched, approaches tried and abandoned, decisions and their reasons, commands that worked or failed. Prefer a limit first and read more only if needed — summarize for yourself rather than dumping full histories into your reply. Not for: current-conversation content or live program state (these are past transcripts, not a running log).",
 			InputSchema: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
-					"session_id": map[string]any{"type": "string", "description": "The session to read — its 3-word phrase (from session_list / session_metadata; case-insensitive), an unambiguous title/slug alias, or (deprecated, one release) the full/hashed id"},
-					"limit":      map[string]any{"type": "integer", "description": "Max messages to return (default 20)"},
+					"sessionId": map[string]any{"type": "string", "description": "The session to read — its 3-word phrase (from session_list / session_metadata; case-insensitive), an unambiguous title/slug alias, or (deprecated, one release) the full/hashed id"},
+					"limit":     map[string]any{"type": "integer", "description": "Max messages to return (default 20)"},
 				},
-				"required": []string{"session_id"},
+				"required": []string{"sessionId"},
 			},
 		},
 		{
@@ -385,6 +386,7 @@ func mcpToolCatalog() []mcpTool {
 		},
 		{
 			Name:        "feature_status",
+			Annotations: annot(true, false, false),
 			Description: "Inspect this space's feature flags: which features are active, their SOURCE (space-set via the workspace CRD vs operator/chart-set), and whether any are agent-controllable (one today: dev_preview_headers — the rest are reported as fact, not assumed). Read-only, no API call. Use when: diagnosing why a feature (e.g. dev preview) is not working before assuming breakage; checking whether the inference relay plane is active; understanding the deployment shape (sidecar vs single-container, upload staging). Output: a machine-readable JSON array of {feature, active, source, source_detail, controllable}. Note: instance-level operator settings (rate limits, workflow/triggers knobs, the dev-preview kill-switch) live in the API's settings store and are intentionally NOT readable from inside the space — their absence here is the D3 posture, not an omission.",
 			InputSchema: map[string]any{
 				"type":       "object",
@@ -412,10 +414,10 @@ func mcpToolCatalog() []mcpTool {
 			InputSchema: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
-					"session_id": map[string]any{"type": "string", "description": "The session to rename (from session_list, or your own session)"},
-					"title":      map[string]any{"type": "string", "description": "The new title (max 200 chars)"},
+					"sessionId": map[string]any{"type": "string", "description": "The session to rename (from session_list, or your own session)"},
+					"title":     map[string]any{"type": "string", "description": "The new title (max 200 chars)"},
 				},
-				"required": []string{"session_id", "title"},
+				"required": []string{"sessionId", "title"},
 			},
 		},
 		{
@@ -431,6 +433,7 @@ func mcpToolCatalog() []mcpTool {
 		},
 		{
 			Name:        "list_models",
+			Annotations: annot(true, false, false),
 			Description: "List the models usable in this workspace — one entry per model of every CONNECTED provider, as provider/model references ready for call_with_model's model argument (bare model names are NOT valid; the qualified provider/model form is — the entries themselves are the examples). Each entry carries contextWindow/maxOutput and a tri-state vision field: vision:true / vision:false when the catalog knows, ABSENT when unknown (never guess from absence). Use it BEFORE call_with_model when the valid names are unknown, AFTER any call_with_model failure naming an unknown provider or model — the failures quote this tool by name — and to find a vision-capable model for image calls. Read-only catalog query (the workspace's provider list); no LLM call is made. Not for: switching the session's own model (the user does that).",
 			InputSchema: map[string]any{
 				"type":       "object",
@@ -441,43 +444,67 @@ func mcpToolCatalog() []mcpTool {
 		{
 			Name:        "call_with_model",
 			Description: "Make ONE single-shot LLM call with a different model than the session's, returning its text response — the exchange lands in THIS conversation as the tool call + result (like every tool), in line with your turn. A clean carrier session runs the call and is deleted afterward, leaving history clean; the carrier is required, not a quirk: a session running a turn (yours, by definition, while a tool executes) BLOCKS incoming messages, so the call must run on an idle session. Use when a capability would serve one sub-task better than switching the whole session's model: a VISION model to interpret images (pass their workspace paths in images — bytes ride the call as attachments), a long-context model to digest a huge file, a fast/cheap model to draft or classify, a second opinion. The model does not inherit your conversation — only your prompt (and images) crosses over — though it does receive the workspace agent's standard setup, so include every bit of context the call needs explicitly. Prefer switching the session model (or asking the user to) when the capability is needed for the ongoing conversation rather than one call.",
-			InputSchema: map[string]any{
-				"type": "object",
-				"properties": map[string]any{
-					"prompt": map[string]any{"type": "string", "description": "The complete prompt for the one-shot call — the target model has no tools and no conversation context"},
-					"model":  map[string]any{"type": "string", "description": "Target model as provider/model — see list_models for this workspace's valid names (no example is given here on purpose: providers vary per workspace and a wrong prefix is refused with the valid alternatives); a bare name is rejected with a did-you-mean hint"},
-					"images": map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Optional workspace file paths of images to show the model (png/jpg/jpeg/gif/webp, 5 MiB each, 8 MiB combined). Vision-incapable models are refused up front"},
-				},
-				"required": []string{"prompt", "model"},
-			},
+			// Ordered schema (#1849 emission findings): discrete keys
+			// first (model), bulk array mid (images), longest freeform
+			// string LAST (prompt) — alphabetical map marshaling put
+			// images before model, a bulk-before-discrete emission shape.
+			InputSchema: json.RawMessage(`{"type":"object","properties":{"model":{"type":"string","description":"Target model as provider/model — see list_models for this workspace's valid names (no example is given here on purpose: providers vary per workspace and a wrong prefix is refused with the valid alternatives); a bare name is rejected with a did-you-mean hint"},"images":{"type":"array","items":{"type":"string"},"description":"Optional workspace file paths of images to show the model (png/jpg/jpeg/gif/webp, 5 MiB each, 8 MiB combined). Vision-incapable models are refused up front"},"prompt":{"type":"string","description":"The complete prompt for the one-shot call — the target model has no tools and no conversation context"}},"required":["prompt","model"]}`),
 		},
 		{
 			Name:        "create_session",
 			Description: "Create a NEW top-level agent session in this workspace — a peer of yours — and hand it a starting prompt, fire-and-forget: returns the session_id immediately while the first turn runs in the background. The result does NOT come back to you — create_session never returns the session's output to this thread. Use it ONLY when: (1) the task is independent and you will NOT depend on its result (true fire-and-forget — launch it and move on), or (2) the task will require HUMAN input or is intended for human consumption — the session appears in the workspace's session list, where a person can open it, answer its questions, and steer it. NOT for fully autonomous work whose outcome you need (implementing a user story, an investigation, any question you need answered): use the task tool instead — it blocks and returns the result to this thread. The new session is a full agent sharing this workspace's files and tools — coordinate via files, not assumptions, and make the prompt self-contained (it does not inherit this conversation's context). Include the returned session_id in the child's prompt when you can: a session that knows its own ID can attribute its send_message traffic without looking it up. Track it later with session_list / session_read / session_metadata. Delivery is not retried: if the agent restarts mid-turn the prompt is lost — re-send by reading the session and continuing it.",
-			InputSchema: map[string]any{
-				"type": "object",
-				"properties": map[string]any{
-					"prompt": map[string]any{"type": "string", "description": "The first prompt for the new session — self-contained: same workspace files, none of this conversation's context. Its output will NOT return to you."},
-					"title":  map[string]any{"type": "string", "description": "Optional title (max 200 chars); omitted = auto-generated"},
-				},
-				"required": []string{"prompt"},
-			},
+			// Ordered schema (#1849 emission findings): title (discrete,
+			// optional) first, prompt (the long freeform string) LAST —
+			// map marshaling would emit prompt first with title still
+			// owed after it, the exact resume-after-string seam where
+			// glm-class emission dies (send_message corrupted 5/5 in
+			// that shape; write/bash-style long-string-last never does).
+			InputSchema: json.RawMessage(`{"type":"object","properties":{"title":{"type":"string","description":"Optional title (max 200 chars); omitted = auto-generated"},"prompt":{"type":"string","description":"The first prompt for the new session — self-contained: same workspace files, none of this conversation's context. Its output will NOT return to you."}},"required":["prompt"]}`),
 		},
 		{
 			Name:        "send_message",
-			Description: "Send a text message to another session in this workspace (IDs from session_list / session_metadata), fire-and-forget: the message is delivered and the target session's reply — if any — stays in THAT session; nothing returns to you. Read the target later with session_read if you need its response. Every delivered message carries your origin as a return address (visible to the recipient as \"message from session …\") so they know who to reply to — reply via send_message to that origin. The origin is metadata, not authentication: claiming another session's ID grants nothing (all sessions share one credential) — it exists so the receiving thread knows where to direct its response. The platform stamps your session ID automatically; pass from_session_id (your own session, findable via session_metadata — your title identifies you) ONLY as a fallback when the result says the platform could not inject it. Use to steer or follow up on sessions you created (create_session), to hand work to an idle session, or to answer a question another session's agent asked you in its transcript. Busy targets queue the message server-side and deliver it the moment their current turn ends (status says delivering_after_current_turn). Sending to your OWN current session schedules the message as your next turn after this one completes — a self follow-up, not mid-turn injection — and the result carries a loud warning field when target==your own session (self-addressed sends are a common misfire; intentional self-notes may carry on). If the session_id value you emit accidentally pastes duplicated JSON syntax after a valid target id (a known emission slip when a similar prior call is visible in context), the server recovers the leading id and delivers there, with a loud warning: pass clean single ids, copied whole from session_list / session_metadata. The message must be the complete intended content. If you notice your drafted text was replaced by a placeholder token or truncated, do NOT send — re-compose. Placeholder/TODO-class payloads (a known emission-corruption symptom) are rejected outright by the platform. The message must be self-contained either way: the target does not inherit this conversation's context. Delivery is not retried: if the workspace restarts while a message waits or before it lands, it is lost — re-send. Not for: questions you need answered in THIS thread (use the task tool, which blocks and returns the result), or starting a new session (create_session).",
-			InputSchema: map[string]any{
-				"type": "object",
-				"properties": map[string]any{
-					"session_id":      map[string]any{"type": "string", "description": "The target session — its 3-word phrase (from session_list / session_metadata; case-insensitive), an unambiguous title/slug alias, or (deprecated, one release) the full/hashed id"},
-					"message":         map[string]any{"type": "string", "description": "The message text — self-contained: the target does not inherit this conversation's context"},
-					"from_session_id": map[string]any{"type": "string", "description": "Optional fallback: YOUR own session — ID, short id, or unambiguous alias — used only when the platform could not inject it automatically (the result tells you). Find yours via session_metadata — your title identifies you. Lets the recipient reply to you."},
-				},
-				"required": []string{"session_id", "message"},
+			Description: "Send a text message to another session in this workspace (IDs from session_list / session_metadata), fire-and-forget: the message is delivered and the target session's reply — if any — stays in THAT session; nothing returns to you. Read the target later with session_read if you need its response. Every delivered message carries your origin as a return address (visible to the recipient as \"message from session …\") so they know who to reply to — reply via send_message to that origin. The origin is metadata, not authentication: claiming another session's ID grants nothing (all sessions share one credential) — it exists so the receiving thread knows where to direct its response. The platform stamps your session ID automatically — you never supply it. Use to steer or follow up on sessions you created (create_session), to hand work to an idle session, or to answer a question another session's agent asked you in its transcript. Busy targets queue the message server-side and deliver it the moment their current turn ends (status says delivering_after_current_turn). Sending to your OWN current session schedules the message as your next turn after this one completes — a self follow-up, not mid-turn injection — and the result carries a loud warning field when destination==your own session (self-addressed sends are a common misfire; intentional self-notes may carry on). If the destination value you emit accidentally pastes duplicated JSON syntax after a valid target id (a known emission slip when a similar prior call is visible in context), the server recovers the leading id and delivers there, with a loud warning: pass clean single ids, copied whole from session_list / session_metadata. The message must be the complete intended content. If you notice your drafted text was replaced by a placeholder token or truncated, do NOT send — re-compose. Placeholder/TODO-class payloads (a known emission-corruption symptom) are rejected outright by the platform. The message must be self-contained either way: the target does not inherit this conversation's context. Delivery is not retried: if the workspace restarts while a message waits or before it lands, it is lost — re-send. Not for: questions you need answered in THIS thread (use the task tool, which blocks and returns the result), or starting a new session (create_session).",
+			// Ordered schema (#1849 emission findings): destination FIRST,
+			// message LAST. The 5 live send_message corruptions all opened
+			// with the long prose key and died resuming structural emission
+			// after it (Unterminated string / Expected '}'); platform tools
+			// (write: filePath→content, edit, bash) always emit long strings
+			// last and never corrupt across thousands of calls. The former
+			// session_id param is renamed destination (#1849 casing pass:
+			// one camelCase catalog) — chosen so ALPHABETICAL order is
+			// also correct (destination < message): even if this schema
+			// ever regressed to a Go map, the bulk-last shape survives.
+			// The snake_case spelling still resolves (one-release legacy
+			// alias). from_session_id is GONE: origin is platform-injected
+			// only (the plugin's lsp_injected_session stamp) — the agent
+			// is never responsible for supplying its own return address.
+			InputSchema: json.RawMessage(`{
+			"type": "object",
+			"properties": {
+				"destination": {"type": "string", "description": "The target session — its 3-word phrase (from session_list / session_metadata; case-insensitive), an unambiguous title/slug alias, or (deprecated, one release) the full/hashed id"},
+				"message": {"type": "string", "description": "The message text — self-contained: the target does not inherit this conversation's context"}
 			},
+			"required": ["destination", "message"]
+		}`),
+			Annotations: annot(false, false, false),
+			OutputSchema: json.RawMessage(`{
+				"type": "object",
+				"properties": {
+					"status": {"type": "string"},
+					"session_id": {"type": "string"},
+					"origin": {"type": "string"},
+					"origin_mode": {"type": "string"},
+					"warning": {"type": "string"},
+					"session_id_deprecated": {"type": "string"},
+					"origin_deprecated": {"type": "string"},
+					"deprecation": {"type": "string"}
+				},
+				"required": ["status", "session_id", "origin", "origin_mode"]
+			}`),
 		},
 		{
 			Name:        "trigger_list",
+			Annotations: annot(true, false, false),
 			Description: "List YOUR automation triggers (cron schedules + webhooks) - the workspace owner's, resolved from this pod's identity. Each entry carries sourceType/sourceConfig, target workspace/workflow, enabled, consecutiveFailures, lastFiredAt/nextFireAt. Start here before create/update: live entries show the exact body shapes. Pair with trigger_fires for why a trigger is misbehaving.",
 			InputSchema: map[string]any{"type": "object", "properties": map[string]any{}},
 		},
@@ -498,6 +525,7 @@ func mcpToolCatalog() []mcpTool {
 		},
 		{
 			Name:        "trigger_delete",
+			Annotations: annot(false, true, false),
 			Description: "Delete one trigger permanently. Disarm-first alternative for temporary pauses: trigger_update {enabled:false}.",
 			InputSchema: map[string]any{"type": "object", "properties": map[string]any{
 				"id": map[string]any{"type": "string", "description": "Trigger ID (from trigger_list)"},
@@ -505,6 +533,7 @@ func mcpToolCatalog() []mcpTool {
 		},
 		{
 			Name:        "trigger_fires",
+			Annotations: annot(true, false, false),
 			Description: "The debugging gold: a trigger's fire audit - per-fire status, the input envelope (cron render / webhook body), error payloads, and the consecutive-failure trail behind consecutiveFailures/auto-disable. A `validation_error` fire means the resolved run input failed the workflow's inputSchema: its actionResult carries the typed schema_mismatch violations (locations only, never payload values) and no run was queued. A `skipped` fire on a script-gated trigger (#1812) means the gate script returned proceed=false - the LLM leg never ran, by the script's own decision; its actionResult carries {gate: {proceed: false, vars}} showing what the script computed. An open gate records {gate: {proceed: true, vars}} BEFORE the agent leg, so a delivered/failed fire explains which vars shaped the prompt. A gate-script error (runtime failure or a return violating the {proceed: bool, vars: {str: str}} schema) is a `failed` fire with the named error in actionResult.gate.error - fail-closed, no LLM call. Use when a trigger 'is not working': this says whether it fired, what it saw, and why it failed.",
 			InputSchema: map[string]any{"type": "object", "properties": map[string]any{
 				"id": map[string]any{"type": "string", "description": "Trigger ID (from trigger_list)"},
@@ -519,6 +548,7 @@ func mcpToolCatalog() []mcpTool {
 		},
 		{
 			Name:        "workflow_list",
+			Annotations: annot(true, false, false),
 			Description: "List YOUR workflows (DAG specs) - the workspace owner's. Entries show the full spec (nodes, edges, input schema) - the reference shape for workflow_create.",
 			InputSchema: map[string]any{"type": "object", "properties": map[string]any{}},
 		},
@@ -539,6 +569,7 @@ func mcpToolCatalog() []mcpTool {
 		},
 		{
 			Name:        "workflow_delete",
+			Annotations: annot(false, true, false),
 			Description: "Delete one workflow permanently. Triggers referencing it will fail to fire - check trigger_list first.",
 			InputSchema: map[string]any{"type": "object", "properties": map[string]any{
 				"id": map[string]any{"type": "string", "description": "Workflow ID (from workflow_list)"},
@@ -554,6 +585,7 @@ func mcpToolCatalog() []mcpTool {
 		},
 		{
 			Name:        "workflow_runs",
+			Annotations: annot(true, false, false),
 			Description: "A workflow's run history: statuses (running/succeeded/failed), error codes + payloads, started/finished times. The debugging read for a failing DAG - pair with trigger_fires when the run was trigger-fired.",
 			InputSchema: map[string]any{"type": "object", "properties": map[string]any{
 				"id": map[string]any{"type": "string", "description": "Workflow ID (from workflow_list)"},
@@ -567,6 +599,7 @@ func mcpToolCatalog() []mcpTool {
 			// surfaces, and the claim token (charter envelope) is the
 			// in-flight guard on every stage/lease write.
 			Name:        "board_read",
+			Annotations: annot(true, false, false),
 			Description: "Read ONE Task Board task — your claimed task's full worker view: the charter (description + acceptance criteria), stage, blocked-by dependencies with their stages, attempts, and your lease (claim state, expiry). Address it by shortId (a word-phrase id like tsk-crimson-finch-blooms from your charter envelope, #1831; legacy random tsk-XXXXXXXX ids still resolve, deprecated) or taskId (UUID); resolution is case-insensitive, and a near-miss id returns 404 with did-you-mean suggestions (verify the id and retry once). No claim token is needed — a read is not an in-flight write. Use it to re-ground yourself on the task's current truth: after a 409 claim_token (your claim lapsed or the task moved — re-read before doing anything else), before reporting throttle or moving stage (stage and criteria may have changed), or whenever your charter's snapshot might be stale. The board's list/health overview projections live on the manager tools board_list/board_health (#1837).",
 			InputSchema: map[string]any{"type": "object", "properties": map[string]any{
 				"shortId": map[string]any{"type": "string", "description": "The task's short id (word-phrase, tsk-crimson-finch-blooms, from your charter envelope); case-insensitive"},
@@ -607,17 +640,19 @@ func mcpToolCatalog() []mcpTool {
 		},
 		{
 			Name:        "abort_session",
+			Annotations: annot(false, true, false),
 			Description: "Stop a session's current turn (IDs from session_list / session_metadata — the busy ones). The turn ends immediately; the session's history and recorded work are kept — only the in-flight generation is cut. Use for cross-session management: a runaway or wrong-direction session you started (create_session / send_message), or stopping work that is no longer needed so it stops consuming tokens. Abort stops the in-flight turn DESTRUCTIVELY: any message queued for the target (e.g. a send_message still waiting for its turn to end) may be dropped — after aborting, re-send anything that mattered. Aborting an idle session is a harmless no-op. Sending another message afterwards (send_message) starts a new turn as usual. Not for: your own current session (you cannot abort your way out of this turn — finish it), or deleting history (compact summarizes; deleting is delete_session's job — abort never removes anything).",
 			InputSchema: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
-					"session_id": map[string]any{"type": "string", "description": "The session whose current turn should be stopped"},
+					"sessionId": map[string]any{"type": "string", "description": "The session whose current turn should be stopped"},
 				},
-				"required": []string{"session_id"},
+				"required": []string{"sessionId"},
 			},
 		},
 		{
 			Name:        "get_datetime",
+			Annotations: annot(true, false, false),
 			Description: "Get the current date and time — in UTC and in the USER's timezone (IANA zone name and UTC offset included). The user's zone comes live from their browser when connected (source: browser); pass an explicit `timezone` argument (IANA name like \"America/Los_Angeles\") to convert for any other zone or when no browser is connected (source: argument); without either you get the pod's zone (source: pod — usually UTC). Use before any timestamp-sensitive work: scheduling, log correlation, interpreting relative times in user requests (\"yesterday\", \"next week\", \"this afternoon\"), file timestamps, or when the user asks for the time. Do not assume the user's zone matches the pod's. When source is not browser and the user's zone matters, ask or infer from context and pass it explicitly.",
 			InputSchema: map[string]any{
 				"type": "object",
@@ -628,13 +663,14 @@ func mcpToolCatalog() []mcpTool {
 		},
 		{
 			Name:        "session_metadata",
+			Annotations: annot(true, false, false),
 			Description: "Read-only vitals for sessions in this workspace: per-session message count, how full the context window is (tokens used vs the model's limit), total token usage, age, model, busy flag, archive status — plus the workspace ID and agent version. SCOPE (breaking change): an explicit session_id returns that one session (an archived session still resolves — the listing filter below never blocks single-ID lookups); with NO session_id the default is YOUR CURRENT SESSION ONLY (the platform injects your session ID automatically); pass all_sessions:true to list EVERY NON-ARCHIVED session's metadata (the old every-session behavior is include_archived:true). Use when deciding whether to compact (context fill high), whether to spawn a parallel session (who is busy with what), before long work that might exhaust context, or when the user asks how big/old/costly a session is. Sessions with archived:true are read-only for the user (chat sends rejected; history viewable) — pair with session_archive/unarchive. A top-level archived_set_stale:true means the archive annotations could not prove freshness (~15s platform cache degraded) — treat archive flags in that result as possibly stale. Output is aggregate metadata only — read message CONTENT with session_read.",
 			InputSchema: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
-					"session_id":       map[string]any{"type": "string", "description": "One session's metadata (from session_list). Omitted = your current session only (the default); use all_sessions:true for every session. An archived session still resolves by ID"},
-					"all_sessions":     map[string]any{"type": "boolean", "description": "true = metadata for every NON-ARCHIVED session in the workspace. Default false = current session only"},
-					"include_archived": map[string]any{"type": "boolean", "description": "true = archived sessions appear in the all_sessions listing too (the pre-#1735 behavior). Default false = they are excluded from the aggregate; single-session session_id lookups are never filtered"},
+					"sessionId":       map[string]any{"type": "string", "description": "One session's metadata (from session_list). Omitted = your current session only (the default); use allSessions:true for every session. An archived session still resolves by ID"},
+					"allSessions":     map[string]any{"type": "boolean", "description": "true = metadata for every NON-ARCHIVED session in the workspace. Default false = current session only"},
+					"includeArchived": map[string]any{"type": "boolean", "description": "true = archived sessions appear in the all_sessions listing too (the pre-#1735 behavior). Default false = they are excluded from the aggregate; single-session sessionId lookups are never filtered"},
 				},
 				"required": []string{},
 			},
@@ -645,21 +681,22 @@ func mcpToolCatalog() []mcpTool {
 			InputSchema: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
-					"session_id": map[string]any{"type": "string", "description": "The session to archive or unarchive (from session_list / session_metadata)"},
-					"archived":   map[string]any{"type": "boolean", "description": "REQUIRED DIRECTION: true = ARCHIVE (make read-only, move to the Archived group); false = UNARCHIVE (restore chat). There is no default — pass it explicitly."},
+					"sessionId": map[string]any{"type": "string", "description": "The session to archive or unarchive (from session_list / session_metadata)"},
+					"archived":  map[string]any{"type": "boolean", "description": "REQUIRED DIRECTION: true = ARCHIVE (make read-only, move to the Archived group); false = UNARCHIVE (restore chat). There is no default — pass it explicitly."},
 				},
-				"required": []string{"session_id", "archived"},
+				"required": []string{"sessionId", "archived"},
 			},
 		},
 		{
 			Name:        "delete_session",
+			Annotations: annot(false, true, false),
 			Description: "PERMANENTLY delete a session from this workspace — HARD DELETE, no undo: the session's transcript disappears from BOTH the platform's index AND the agent's store in this workspace. This is not archive (session_archive is the reversible read-only marker); this is destruction. Use ONLY when the user explicitly asks to delete a session and its history ('delete that chat', 'get rid of it'), or to clean up an empty/accidental session YOU created (a leftover carrier or probe). Always prefer archiving when the user's intent is ambiguous — deletion cannot be undone. Refuses to delete YOUR OWN current session (identified by the platform's injection, or — on pods without the plugin — as the single busy session; its turn — this tool call — is still running; finish the turn and let the user or a peer delete it). The session_id comes from session_list / session_metadata.",
 			InputSchema: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
-					"session_id": map[string]any{"type": "string", "description": "The session to hard-delete (from session_list / session_metadata) — its history is destroyed on both sides"},
+					"sessionId": map[string]any{"type": "string", "description": "The session to hard-delete (from session_list / session_metadata) — its history is destroyed on both sides"},
 				},
-				"required": []string{"session_id"},
+				"required": []string{"sessionId"},
 			},
 		},
 		{
@@ -668,8 +705,8 @@ func mcpToolCatalog() []mcpTool {
 			InputSchema: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
-					"session_id": map[string]any{"type": "string", "description": "Optional: the session to compact; omitted = the single busy session (your own when unambiguous)"},
-					"model":      map[string]any{"type": "string", "description": "Optional provider/model to summarize with (default: the session's current model)"},
+					"sessionId": map[string]any{"type": "string", "description": "Optional: the session to compact; omitted = the single busy session (your own when unambiguous)"},
+					"model":     map[string]any{"type": "string", "description": "Optional provider/model to summarize with (default: the session's current model)"},
 				},
 				"required": []string{},
 			},
@@ -849,14 +886,68 @@ func mcpHandler(password string) http.HandlerFunc {
 			if note := sessionArgsDeprecationNote(params.Arguments); note != "" {
 				content = append(content, map[string]any{"type": "text", "text": note})
 			}
-			writeMCPResult(w, req.ID, map[string]any{
+			res := map[string]any{
 				"content": content,
-			})
+			}
+			// MCP 2026-07-28 structuredContent: tools that declare an
+			// outputSchema AND returned a parseable JSON object get the
+			// structured twin alongside the text form (spec: both, for
+			// compatibility). Parse failures degrade to text-only — the
+			// text form is always the source of truth here.
+			if t := mcpToolByName(params.Name); t != nil && len(t.OutputSchema) > 0 {
+				var structured map[string]any
+				if err := json.Unmarshal([]byte(result), &structured); err == nil && structured != nil {
+					res["structuredContent"] = structured
+				}
+			}
+			writeMCPResult(w, req.ID, res)
 
 		default:
 			writeMCPError(w, req.ID, -32601, "Method not found: "+req.Method)
 		}
 	}
+}
+
+// argStr reads a string argument under the catalog's camelCase key,
+// falling back to the legacy snake_case spelling (#1849 casing pass:
+// one camelCase catalog; the snake spelling resolves for one release
+// so prior-call precedent in a model's context never breaks a call).
+func argStr(args map[string]any, key string) string {
+	if v, ok := args[key].(string); ok && v != "" {
+		return v
+	}
+	if v, ok := args[camelToSnake(key)].(string); ok {
+		return v
+	}
+	return ""
+}
+
+// camelToSnake converts a camelCase key to its legacy snake_case
+// spelling (destination→destination, sessionId→session_id,
+// includeArchived→include_archived, allSessions→all_sessions).
+func camelToSnake(k string) string {
+	out := make([]byte, 0, len(k)+4)
+	for i := 0; i < len(k); i++ {
+		c := k[i]
+		if c >= 'A' && c <= 'Z' {
+			out = append(out, '_', c-'A'+'a')
+		} else {
+			out = append(out, c)
+		}
+	}
+	return string(out)
+}
+
+// argBool reads a boolean argument under camelCase with the legacy
+// snake_case fallback (same contract as argStr).
+func argBool(args map[string]any, key string) (bool, bool) {
+	if v, ok := args[key].(bool); ok {
+		return v, true
+	}
+	if v, ok := args[camelToSnake(key)].(bool); ok {
+		return v, true
+	}
+	return false, false
 }
 
 func callMCPTool(ctx context.Context, password, name string, args map[string]any) (string, error) {
@@ -865,14 +956,14 @@ func callMCPTool(ctx context.Context, password, name string, args map[string]any
 		// #1735: archived sessions are opt-in on the listing — the
 		// filter is advisory (platform fact), defaulting to excluded.
 		includeArchived := false
-		if raw, ok := args["include_archived"].(bool); ok {
-			includeArchived = raw
+		if v, ok := argBool(args, "includeArchived"); ok {
+			includeArchived = v
 		}
 		return mcpSessionList(ctx, password, includeArchived)
 	case "session_read":
-		sessionID, _ := args["session_id"].(string)
+		sessionID := argStr(args, "sessionId")
 		if sessionID == "" {
-			return "", fmt.Errorf("session_id is required")
+			return "", fmt.Errorf("sessionId is required")
 		}
 		limit := 20
 		if l, ok := args["limit"].(float64); ok && l > 0 {
@@ -887,7 +978,7 @@ func callMCPTool(ctx context.Context, password, name string, args map[string]any
 		// the dispatcher and are ignored here by construction.
 		return mcpSecretsResync(ctx, password)
 	case "rename_session":
-		sessionID, _ := args["session_id"].(string)
+		sessionID := argStr(args, "sessionId")
 		title, _ := args["title"].(string)
 		return mcpRenameSession(ctx, password, sessionID, title)
 	case "rename_workspace":
@@ -914,25 +1005,28 @@ func callMCPTool(ctx context.Context, password, name string, args map[string]any
 		title, _ := args["title"].(string)
 		return mcpCreateSession(ctx, password, prompt, title)
 	case "send_message":
-		sessionID, _ := args["session_id"].(string)
+		// destination is canonical; session_id is its one-release
+		// legacy alias (the argStr helper cannot derive it — the rename
+		// is not a case fold — so the fallback is explicit).
+		sessionID := argStr(args, "destination")
+		if sessionID == "" {
+			sessionID, _ = args["session_id"].(string)
+		}
 		message, _ := args["message"].(string)
-		// Hybrid origin (#1469 ruling): lsp_injected_session is the
-		// platform plugin's harness-attested injection — not an
-		// inputSchema property, but #1530's model-emission findings
-		// showed models DO sometimes supply copies of the key (it is
-		// visible in their own prior calls' rendered arguments, and
-		// the send_message description references it), so "never
-		// model-supplied by construction" no longer holds — the
-		// injection OVERWRITES any model-supplied copy (unconditional,
-		// last-write-wins at the plugin). from_session_id is the
-		// optional self-declared fallback. mcpSendMessage prefers
-		// injection, validates by-ID either way, and labels the mode
-		// in the sentinel and the result.
+		// Origin (#1465/#1469, #1849 tightening): lsp_injected_session is
+		// the platform plugin's harness-attested injection — the ONLY
+		// source. The former from_session_id self-declared fallback is
+		// GONE from the schema and the seam: the agent is never
+		// responsible for supplying its own return address (it was also
+		// an emission-corruption surface). Injection OVERWRITES any
+		// model-supplied copy (unconditional, last-write-wins at the
+		// plugin); a degraded pod (plugin absent) refuses delivery with
+		// a report-the-platform error rather than accepting an
+		// unattested origin.
 		injected, _ := args["lsp_injected_session"].(string)
-		declared, _ := args["from_session_id"].(string)
-		return mcpSendMessage(ctx, password, sessionID, message, injected, declared)
+		return mcpSendMessage(ctx, password, sessionID, message, injected)
 	case "abort_session":
-		sessionID, _ := args["session_id"].(string)
+		sessionID := argStr(args, "sessionId")
 		return mcpAbortSession(ctx, password, sessionID)
 	case "trigger_list", "trigger_create", "trigger_update", "trigger_delete", "trigger_fires",
 		"trigger_rotate_webhook_secret",
@@ -956,7 +1050,7 @@ func callMCPTool(ctx context.Context, password, name string, args map[string]any
 		timezoneArg, _ := args["timezone"].(string)
 		return mcpGetDatetime(timezoneArg)
 	case "session_metadata":
-		sessionID, _ := args["session_id"].(string)
+		sessionID := argStr(args, "sessionId")
 		// lsp_injected_session is the platform plugin's harness-attested
 		// current-session stamp (the send_message pattern): schema-
 		// invisible, unconditional overwrite at the plugin, and the
@@ -964,19 +1058,19 @@ func callMCPTool(ctx context.Context, password, name string, args map[string]any
 		// explicit opt-in to the OLD every-session behavior.
 		injected, _ := args["lsp_injected_session"].(string)
 		allSessions := false
-		if raw, ok := args["all_sessions"].(bool); ok {
-			allSessions = raw
+		if v, ok := argBool(args, "allSessions"); ok {
+			allSessions = v
 		}
 		// #1735: the aggregate defaults to non-archived sessions;
 		// include_archived is the explicit opt-in. Single-ID scopes
 		// are never filtered (handler-side rule).
 		includeArchived := false
-		if raw, ok := args["include_archived"].(bool); ok {
-			includeArchived = raw
+		if v, ok := argBool(args, "includeArchived"); ok {
+			includeArchived = v
 		}
 		return mcpSessionMetadata(ctx, password, sessionID, injected, allSessions, includeArchived)
 	case "session_archive":
-		sessionID, _ := args["session_id"].(string)
+		sessionID := argStr(args, "sessionId")
 		// The schema says "REQUIRED DIRECTION … no default — pass it
 		// explicitly"; the dispatcher is the enforcement (the hand-rolled
 		// JSON-RPC layer has no schema validator). An omitted or non-bool
@@ -989,7 +1083,7 @@ func callMCPTool(ctx context.Context, password, name string, args map[string]any
 		}
 		return mcpSessionArchive(ctx, password, sessionID, archived)
 	case "delete_session":
-		sessionID, _ := args["session_id"].(string)
+		sessionID := argStr(args, "sessionId")
 		injected, _ := args["lsp_injected_session"].(string)
 		return mcpDeleteSession(ctx, password, sessionID, injected)
 	case "feature_status":
@@ -1000,7 +1094,7 @@ func callMCPTool(ctx context.Context, password, name string, args map[string]any
 		// wire convention); the tool's own schema owns the surface.
 		return mcpDevPreviewHeaders(args)
 	case "compact":
-		sessionID, _ := args["session_id"].(string)
+		sessionID := argStr(args, "sessionId")
 		model, _ := args["model"].(string)
 		return mcpCompact(ctx, password, sessionID, model)
 	case "dev_preview_url":

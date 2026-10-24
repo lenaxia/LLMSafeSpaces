@@ -837,7 +837,7 @@ func TestSendMessage_AcceptsShortIDAndAlias(t *testing.T) {
 	origin := f.newSession("Origin Session")
 	store.put("amber-falcon-glides", target)
 
-	if _, err := mcpSendMessage(context.Background(), mcpTestPassword, "amber-falcon-glides", "ping", "", origin); err != nil {
+	if _, err := mcpSendMessage(context.Background(), mcpTestPassword, "amber-falcon-glides", "ping", origin); err != nil {
 		t.Fatalf("send_message must accept a short id: %v", err)
 	}
 	f.awaitMsgDone(t, target, 1)
@@ -845,7 +845,7 @@ func TestSendMessage_AcceptsShortIDAndAlias(t *testing.T) {
 		t.Fatal("the short-id-addressed message must deliver to the canonical session")
 	}
 
-	if _, err := mcpSendMessage(context.Background(), mcpTestPassword, "alias sendable", "pong", "", "origin session"); err != nil {
+	if _, err := mcpSendMessage(context.Background(), mcpTestPassword, "alias sendable", "pong", "origin session"); err != nil {
 		t.Fatalf("send_message must accept aliases for target and origin: %v", err)
 	}
 	f.awaitMsgDone(t, target, 2)

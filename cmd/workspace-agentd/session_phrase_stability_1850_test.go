@@ -215,7 +215,7 @@ func TestCreateSession_PhraseStableAcrossFirstTurnBoundary(t *testing.T) {
 	// Send to the ORIGINAL phrase: resolves and delivers (the #1820
 	// delivery boundary; a re-phrased session is what made this 500).
 	caller := f.newSession("caller")
-	sendOut, serr := mcpSendMessage(context.Background(), mcpTestPassword, phrase, "status?", caller, "")
+	sendOut, serr := mcpSendMessage(context.Background(), mcpTestPassword, phrase, "status?", caller)
 	require.NoError(t, serr, "send_message to the ORIGINAL spawn phrase must not fail")
 	assert.Contains(t, sendOut, "delivering", "the phrase-addressed send must deliver: %s", sendOut)
 	f.awaitMsgDone(t, harnessID, 2)

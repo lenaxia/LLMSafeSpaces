@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -1614,7 +1615,7 @@ func TestMCPSendMessage_IdleTarget(t *testing.T) {
 	caller := f.newSession("caller")
 	withAgentServer(t, f.handler(t))
 
-	out, err := mcpSendMessage(context.Background(), mcpTestPassword, s1, "please continue", caller, "")
+	out, err := mcpSendMessage(context.Background(), mcpTestPassword, s1, "please continue", caller)
 	require.NoError(t, err)
 	assert.Contains(t, out, `"delivering"`)
 	assert.Contains(t, out, fmt.Sprintf(`"origin":%q`, caller))
@@ -1642,7 +1643,7 @@ func TestMCPSendMessage_BusyTargetQueues(t *testing.T) {
 	f.busySet[s1] = true
 	withAgentServer(t, f.handler(t))
 
-	out, err := mcpSendMessage(context.Background(), mcpTestPassword, s1, "next: run the tests", caller, "")
+	out, err := mcpSendMessage(context.Background(), mcpTestPassword, s1, "next: run the tests", caller)
 	require.NoError(t, err)
 	assert.Contains(t, out, "delivering_after_current_turn")
 	assert.Contains(t, out, fmt.Sprintf(`"origin":%q`, caller))
@@ -1680,7 +1681,7 @@ func TestMCPSendMessage_UnknownSession(t *testing.T) {
 	f.newSession("real")
 	withAgentServer(t, f.handler(t))
 
-	_, err := mcpSendMessage(context.Background(), mcpTestPassword, "ses_absent", "hi", caller, "")
+	_, err := mcpSendMessage(context.Background(), mcpTestPassword, "ses_absent", "hi", caller)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "not found")
 }
@@ -1689,71 +1690,37 @@ func TestMCPSendMessage_MissingArgs(t *testing.T) {
 	f := newFakeAgent()
 	withAgentServer(t, f.handler(t))
 	for _, tc := range []struct {
-		name, target, message, injected, declared string
+		name, target, message, injected string
 	}{
-		{"no target", "", "hi", "ses_2", ""},
-		{"blank message", "ses_1", "   ", "ses_2", ""},
-		{"no origin at all", "ses_1", "hi", "", ""},
-		{"blank injected only", "ses_1", "hi", "  ", ""},
-		{"blank declared only", "ses_1", "hi", "", "  "},
+		{"no target", "", "hi", "ses_2"},
+		{"blank message", "ses_1", "   ", "ses_2"},
+		{"no origin at all", "ses_1", "hi", ""},
+		{"blank injected only", "ses_1", "hi", "  "},
 	} {
-		_, err := mcpSendMessage(context.Background(), mcpTestPassword, tc.target, tc.message, tc.injected, tc.declared)
+		_, err := mcpSendMessage(context.Background(), mcpTestPassword, tc.target, tc.message, tc.injected)
 		require.Error(t, err, tc.name)
 	}
 	assert.Empty(t, f.sentBodies, "no delivery without valid args")
 	assert.Empty(t, f.msgArrived, "no wire traffic at all without valid args")
 }
 
-// The ALWAYS-ATTRIBUTED invariant: with NEITHER an injected origin
-// NOR a self-declared one there is nothing to attribute — the only
-// refusal left (#1469 hybrid ruling). With from_session_id
-// schema-visible the model can always self-declare, so a degraded pod
-// self-reports instead of breaking.
+// The ALWAYS-ATTRIBUTED invariant (#1849 tightening): origin is
+// platform-injected ONLY. Absent injection (plugin missing/drifted —
+// a degraded pod) there is nothing to attribute, so delivery refuses
+// and the error names the platform-side cause. The former
+// from_session_id self-declared fallback is gone: the agent is never
+// responsible for supplying its own return address.
 func TestMCPSendMessage_NoOriginAtAllRefusesDelivery(t *testing.T) {
 	f := newFakeAgent()
 	s1 := f.newSession("target")
 	withAgentServer(t, f.handler(t))
 
-	_, err := mcpSendMessage(context.Background(), mcpTestPassword, s1, "hi", "", "")
+	_, err := mcpSendMessage(context.Background(), mcpTestPassword, s1, "hi", "")
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "from_session_id")
-	assert.Contains(t, err.Error(), "session_metadata", "the error must teach self-discovery for the fallback")
 	assert.Contains(t, err.Error(), "plugin", "the error must name the platform-side cause")
+	assert.Contains(t, err.Error(), "degraded pod")
+	assert.NotContains(t, err.Error(), "from_session_id", "the fallback is gone — the error must not teach it")
 	assert.Empty(t, f.msgArrived, "nothing may reach the wire — delivery without attribution is forbidden")
-}
-
-// The degraded-pod fallback: no injection (plugin absent), the model
-// supplied from_session_id — accepted, validated, and labeled
-// self-declared in BOTH the result and the sentinel.
-func TestMCPSendMessage_SelfDeclaredFallback(t *testing.T) {
-	f := newFakeAgent()
-	s1 := f.newSession("target")
-	caller := f.newSession("caller")
-	withAgentServer(t, f.handler(t))
-
-	out, err := mcpSendMessage(context.Background(), mcpTestPassword, s1, "fallback hi", "", caller)
-	require.NoError(t, err)
-	assert.Contains(t, out, fmt.Sprintf(`"origin":%q`, caller))
-	assert.Contains(t, out, `"origin_mode":"self-declared"`)
-
-	require.Eventually(t, func() bool { return len(f.sentFor(s1)) == 1 }, 5*time.Second, 50*time.Millisecond)
-	f.awaitMsgDone(t, s1, 1)
-	parts := f.sentFor(s1)[0]["parts"].([]any)
-	delivered := parts[0].(map[string]any)["text"].(string)
-	assert.True(t, strings.HasPrefix(delivered, "<!-- lsp:agent-message-v1 "))
-	assert.Contains(t, delivered, `"fromSession":"`+caller+`"`)
-	assert.Contains(t, delivered, `"mode":"self-declared"`)
-}
-
-func TestMCPSendMessage_SelfDeclaredUnknownIDRefusesDelivery(t *testing.T) {
-	f := newFakeAgent()
-	s1 := f.newSession("target")
-	withAgentServer(t, f.handler(t))
-
-	_, err := mcpSendMessage(context.Background(), mcpTestPassword, s1, "hi", "", "ses_ghost")
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "ses_ghost")
-	assert.Empty(t, f.msgArrived, "an unattributable origin must never deliver")
 }
 
 // Injection is the platform's attestation and wins over any
@@ -1766,7 +1733,7 @@ func TestMCPSendMessage_InjectionWinsOverDeclared(t *testing.T) {
 	decoy := f.newSession("decoy")
 	withAgentServer(t, f.handler(t))
 
-	out, err := mcpSendMessage(context.Background(), mcpTestPassword, s1, "hi", caller, decoy)
+	out, err := mcpSendMessage(context.Background(), mcpTestPassword, s1, "hi", caller)
 	require.NoError(t, err)
 	assert.Contains(t, out, fmt.Sprintf(`"origin":%q`, caller))
 	assert.Contains(t, out, `"origin_mode":"injected"`)
@@ -1778,7 +1745,7 @@ func TestMCPSendMessage_OriginUnknownIDRefusesDelivery(t *testing.T) {
 	s1 := f.newSession("target")
 	withAgentServer(t, f.handler(t))
 
-	_, err := mcpSendMessage(context.Background(), mcpTestPassword, s1, "hi", "ses_ghost", "")
+	_, err := mcpSendMessage(context.Background(), mcpTestPassword, s1, "hi", "ses_ghost")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "ses_ghost")
 	assert.Empty(t, f.msgArrived, "an unattributable origin must never deliver")
@@ -1799,7 +1766,7 @@ func TestMCPSendMessage_OriginProbeIndeterminateRefusesDelivery(t *testing.T) {
 		inner(w, r)
 	})
 
-	_, err := mcpSendMessage(context.Background(), mcpTestPassword, s1, "hi", caller, "")
+	_, err := mcpSendMessage(context.Background(), mcpTestPassword, s1, "hi", caller)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "500")
 	assert.Empty(t, f.msgArrived)
@@ -1815,7 +1782,7 @@ func TestMCPSendMessage_SelfSend(t *testing.T) {
 	f.busySet[s1] = true // the caller's own turn is running the tool
 	withAgentServer(t, f.handler(t))
 
-	out, err := mcpSendMessage(context.Background(), mcpTestPassword, s1, "follow-up after this turn", s1, "")
+	out, err := mcpSendMessage(context.Background(), mcpTestPassword, s1, "follow-up after this turn", s1)
 	require.NoError(t, err)
 	assert.Contains(t, out, "delivering_after_current_turn")
 	assert.Contains(t, out, fmt.Sprintf(`"origin":%q`, s1))
@@ -1842,7 +1809,7 @@ func TestMCPSendMessage_ResendNeverDoubleSentinels(t *testing.T) {
 	withAgentServer(t, f.handler(t))
 
 	preSentineled := "<!-- lsp:agent-message-v1 {\"fromSession\":\"ses_priorhop\"} -->\nforwarded payload"
-	_, err := mcpSendMessage(context.Background(), mcpTestPassword, s1, preSentineled, caller, "")
+	_, err := mcpSendMessage(context.Background(), mcpTestPassword, s1, preSentineled, caller)
 	require.NoError(t, err)
 	require.Eventually(t, func() bool { return len(f.sentFor(s1)) == 1 }, 5*time.Second, 50*time.Millisecond)
 	f.awaitMsgDone(t, s1, 1)
@@ -1856,33 +1823,381 @@ func TestMCPSendMessage_ResendNeverDoubleSentinels(t *testing.T) {
 	assert.True(t, strings.HasSuffix(delivered, "\nforwarded payload"))
 }
 
-// The model-facing schema advertises ONLY the self-declared fallback
-// (#1469 hybrid ruling): from_session_id is optional, lsp_injected_session
-// (the platform plugin's harness-attested key) must stay invisible —
-// an advertised attestation key invites spoofing the mode label.
-func TestMCPSendMessage_SchemaAdvertisesFallbackOnly(t *testing.T) {
+// The model-facing schema advertises exactly session_id + message
+// (#1849 tightening): from_session_id is GONE (origin is
+// platform-injected; the agent never supplies its own return address)
+// and lsp_injected_session (the platform plugin's harness-attested
+// key) must stay invisible — an advertised attestation key invites
+// spoofing the mode label. Message must be the LAST property on the
+// wire: the 5 live send_message corruptions all died resuming
+// structural emission after the long prose string (Unterminated
+// string / Expected '}'); write/edit-style long-string-last
+// ordering never corrupts.
+func TestMCPSendMessage_SchemaInjectedOnly_MessageLast(t *testing.T) {
 	req := mcpRequest{JSONRPC: "2.0", ID: 1, Method: "tools/list"}
 	body, _ := json.Marshal(req)
 	w := httptest.NewRecorder()
 	r := mcpAuthedRequest(body)
 	mcpHandler(mcpTestPassword)(w, r)
 
+	// ORDER must be asserted on the RAW wire bytes: unmarshaling into
+	// map[string]any destroys key order (Go maps are unordered), and
+	// the whole point of the ordered RawMessage schema is the byte
+	// order the model actually sees.
+	raw := w.Body.Bytes()
 	var resp mcpResponse
-	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+	require.NoError(t, json.Unmarshal(raw, &resp))
 	tools := resp.Result.(map[string]any)["tools"].([]any)
-	var schema map[string]any
+	found := false
 	for _, tool := range tools {
-		tt := tool.(map[string]any)
-		if tt["name"] == "send_message" {
-			schema = tt["inputSchema"].(map[string]any)
+		if tt := tool.(map[string]any); tt["name"] == "send_message" {
+			found = true
 		}
 	}
-	require.NotNil(t, schema, "send_message must be advertised")
-	props := schema["properties"].(map[string]any)
-	assert.ElementsMatch(t, []string{"session_id", "message", "from_session_id"}, mcpSchemaKeys(props),
-		"only the self-declared fallback is advertised")
-	assert.ElementsMatch(t, []string{"session_id", "message"}, schema["required"].([]any),
-		"from_session_id is optional — injection needs no model help")
+	require.True(t, found, "send_message must be advertised")
+
+	// Extract the send_message schema's raw bytes from the body.
+	// Match the registry key (`"name":"send_message"`), not the bare
+	// tool name: other tools' descriptions reference send_message and
+	// would match first.
+	idx := bytes.Index(raw, []byte(`"name":"send_message"`))
+	require.GreaterOrEqual(t, idx, 0)
+	seg := raw[idx:]
+	var schema struct {
+		Properties map[string]any `json:"properties"`
+		Required   []string       `json:"required"`
+	}
+	sidx := bytes.Index(seg, []byte(`"properties"`))
+	require.GreaterOrEqual(t, sidx, 0)
+	// decode the properties object value ({...}) that follows the key;
+	// json.Decoder.Decode cannot cross the key's colon after Token(),
+	// so position the reader at the opening brace.
+	bidx := bytes.IndexByte(seg[sidx:], '{')
+	require.GreaterOrEqual(t, bidx, 0)
+	dec := json.NewDecoder(bytes.NewReader(seg[sidx+bidx:]))
+	var propsRaw json.RawMessage
+	require.NoError(t, dec.Decode(&propsRaw), "decode the properties object")
+	require.NoError(t, json.Unmarshal(propsRaw, &schema.Properties))
+	assert.ElementsMatch(t, []string{"destination", "message"}, mcpSchemaKeys(schema.Properties),
+		"no from_session_id — origin is injected, never model-supplied")
+	// `required` is a sibling of `properties` — decode it separately.
+	ridx := bytes.Index(seg, []byte(`"required"`))
+	require.GreaterOrEqual(t, ridx, 0)
+	raidx := bytes.IndexByte(seg[ridx:], '[')
+	require.GreaterOrEqual(t, raidx, 0)
+	rest := seg[ridx+raidx:]
+	end := bytes.IndexByte(rest, ']')
+	require.GreaterOrEqual(t, end, 0)
+	var required []string
+	require.NoError(t, json.Unmarshal(rest[:end+1], &required))
+	assert.ElementsMatch(t, []string{"destination", "message"}, required,
+		"both fields required")
+	// Wire ORDER (this is why the schema is ordered RawMessage, not a
+	// Go map): message last, session_id first.
+	assert.Equal(t, []string{"destination", "message"}, propertyOrder(propsRaw),
+		"destination first, message LAST — long-string-last ordering (and alphabetically safe: destination < message)")
+}
+
+
+// --- catalog-wide emission-shape invariant (#1849) ------------------------
+//
+// glm-class models latch into duplicate-key runaway when a long
+// freeform string (or repetition-prone bulk array) is emitted with
+// structural keys still owed AFTER it, and when repetition-prone bulk
+// fields come first in repeated-skeleton payloads. The live evidence:
+// send_message corrupted 5/5 with `message` opening the object;
+// board_create_task/board_update_task runaways (#1832, #1849) with
+// acceptanceCriteria/dependsOn/description emitted before the discrete
+// ids (alphabetical map marshaling put them first). The safe shape —
+// proven by bash/read/edit/write across thousands of calls — is
+// discrete/scalar keys first, bulk arrays mid, longest freeform string
+// LAST. This test pins that shape for EVERY tool in the catalog, on
+// the raw wire bytes (order-preserving), recursively into nested
+// object schemas.
+//
+// bulkLast fields are the long-freeform/bulk set; anything not in the
+// set is discrete (ids, flags, short enums). A schema violates the
+// invariant when a bulk property appears before ANY non-bulk property.
+var emissionBulkFields = map[string]bool{
+	"prompt": true, "message": true, "description": true, "outcome": true,
+	"tasks": true, "content": true, "notes": true, "text": true,
+	"body": true, "patch": true, "input": true, "trigger": true,
+	"workflow": true, "acceptanceCriteria": true, "dependsOn": true,
+	"images": true, "handler": true, "reasoning": true,
+}
+
+func assertBulkLastInvariant(t *testing.T, propsOrder []string, where string) {
+	t.Helper()
+	bulkSeen := false
+	for _, k := range propsOrder {
+		if emissionBulkFields[k] {
+			bulkSeen = true
+		} else if bulkSeen {
+			t.Errorf("%s: bulk field precedes discrete field %q — wire order %v (discrete first, longest freeform LAST; #1849)",
+				where, k, propsOrder)
+		}
+	}
+}
+
+func TestMCPCatalogEmissionShape_BulkLastEverywhere(t *testing.T) {
+	req := mcpRequest{JSONRPC: "2.0", ID: 1, Method: "tools/list"}
+	body, _ := json.Marshal(req)
+	w := httptest.NewRecorder()
+	r := mcpAuthedRequest(body)
+	mcpHandler(mcpTestPassword)(w, r)
+	raw := w.Body.Bytes()
+
+	// Walk the raw bytes tool by tool: find each "name":"<tool>" entry
+	// and its properties objects in wire order (json.Decoder over the
+	// raw segment preserves byte order; unmarshaling into Go maps
+	// would destroy it).
+	var resp struct {
+		Result struct {
+			Tools []struct {
+				Name string `json:"name"`
+			} `json:"tools"`
+		} `json:"result"`
+	}
+	require.NoError(t, json.Unmarshal(raw, &resp))
+	require.NotEmpty(t, resp.Result.Tools)
+
+	for _, tool := range resp.Result.Tools {
+		key := `"name":"` + tool.Name + `"`
+		idx := bytes.Index(raw, []byte(key))
+		require.GreaterOrEqual(t, idx, 0, "tool %s not found in raw body", tool.Name)
+		// segment: from this tool's name to the next tool's name (or end)
+		seg := raw[idx:]
+		if next := bytes.Index(raw[idx+len(key):], []byte(`"name":"`)); next >= 0 {
+			seg = seg[:len(key)+next]
+		}
+		for _, at := range bytesAllIndexes(seg, []byte(`"properties"`)) {
+			b := bytes.IndexByte(seg[at:], '{')
+			if b < 0 {
+				continue
+			}
+			dec := json.NewDecoder(bytes.NewReader(seg[at+b:]))
+			var propsObj json.RawMessage
+			if err := dec.Decode(&propsObj); err != nil {
+				continue // not a properties object (e.g. inside a description string is impossible — escaped)
+			}
+			order := propertyOrder(propsObj)
+			if len(order) == 0 {
+				continue
+			}
+			assertBulkLastInvariant(t, order, tool.Name+".properties")
+		}
+	}
+}
+
+func bytesAllIndexes(haystack, needle []byte) []int {
+	var out []int
+	for i := 0; ; {
+		j := bytes.Index(haystack[i:], needle)
+		if j < 0 {
+			return out
+		}
+		out = append(out, i+j)
+		i += j + 1
+	}
+}
+
+// --- structuredContent twin (#1849 best-practices pass, MCP 2026-07-28) --
+
+// send_message declares an outputSchema; a successful tools/call must
+// carry the structuredContent twin alongside the text block (spec:
+// both, for compatibility). The text form stays the source of truth;
+// the structured form is validated shape, not a second authority.
+func TestMCPSendMessage_StructuredContentTwin(t *testing.T) {
+	f := newFakeAgent()
+	target := f.newSession("target")
+	caller := f.newSession("caller")
+	withAgentServer(t, f.handler(t))
+
+	req := mcpRequest{JSONRPC: "2.0", ID: 1, Method: "tools/call",
+		Params: marshalParams(t, map[string]any{
+			"name":      "send_message",
+			"arguments": map[string]any{"destination": target, "message": "struct hi", "lsp_injected_session": caller},
+		})}
+	body, _ := json.Marshal(req)
+	w := httptest.NewRecorder()
+	r := mcpAuthedRequest(body)
+	mcpHandler(mcpTestPassword)(w, r)
+
+	var resp struct {
+		Result struct {
+			StructuredContent map[string]any `json:"structuredContent"`
+			Content           []struct {
+				Type string `json:"type"`
+				Text string `json:"text"`
+			} `json:"content"`
+		} `json:"result"`
+	}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+	require.NotEmpty(t, resp.Result.Content, "the text form always rides along")
+	sc := resp.Result.StructuredContent
+	require.NotNil(t, sc, "outputSchema-declaring tool carries the structured twin")
+	assert.Equal(t, "delivering", sc["status"])
+	assert.Equal(t, caller, sc["origin"])
+	assert.Equal(t, "injected", sc["origin_mode"])
+}
+
+// marshalParams is a test helper for tools/call request params.
+func marshalParams(t *testing.T, m map[string]any) json.RawMessage {
+	t.Helper()
+	b, err := json.Marshal(m)
+	require.NoError(t, err)
+	return b
+}
+
+// --- catalog casing + annotations invariants (#1849 best-practices pass) --
+
+// TestMCPCatalogNoSnakeCaseProperties: one camelCase catalog. The
+// casing pass unified the last snake_case params (session_id →
+// sessionId/destination, include_archived → includeArchived,
+// all_sessions → allSessions, description_file → descriptionFile,
+// outcome_file → outcomeFile); legacy spellings resolve at dispatch
+// for one release but are never advertised. Mixed casing is the
+// audit's conformance gap #3 (no source endorses mixing; both
+// vendors favor one convention).
+func TestMCPCatalogNoSnakeCaseProperties(t *testing.T) {
+	req := mcpRequest{JSONRPC: "2.0", ID: 1, Method: "tools/list"}
+	body, _ := json.Marshal(req)
+	w := httptest.NewRecorder()
+	r := mcpAuthedRequest(body)
+	mcpHandler(mcpTestPassword)(w, r)
+	raw := w.Body.Bytes()
+
+	var resp struct {
+		Result struct {
+			Tools []struct {
+				Name        string          `json:"name"`
+				InputSchema json.RawMessage `json:"inputSchema"`
+			} `json:"tools"`
+		} `json:"result"`
+	}
+	require.NoError(t, json.Unmarshal(raw, &resp))
+	for _, tool := range resp.Result.Tools {
+		// every property NAME anywhere in the schema (recursive walk)
+		var walk func(v any, path string)
+		walk = func(v any, path string) {
+			switch x := v.(type) {
+			case map[string]any:
+				if props, ok := x["properties"].(map[string]any); ok {
+					for k, sub := range props {
+						if strings.Contains(k, "_") {
+							t.Errorf("%s: snake_case property %q — one camelCase catalog (#1849 casing pass)", tool.Name, k)
+						}
+						walk(sub, path+"."+k)
+					}
+				}
+				for k, sub := range x {
+					if k != "properties" {
+						walk(sub, path)
+					}
+				}
+			case []any:
+				for _, e := range x {
+					walk(e, path)
+				}
+			}
+		}
+		var schema any
+		require.NoError(t, json.Unmarshal(tool.InputSchema, &schema), tool.Name)
+		walk(schema, tool.Name)
+	}
+}
+
+// TestMCPCatalogAnnotations: the MCP spec's behavioral hints disclose
+// state mutation. Destructive tools MUST carry destructiveHint:true
+// (best-practices gap #1: board deletes, session delete/abort,
+// trigger/workflow delete); read-only tools carry readOnlyHint:true.
+func TestMCPCatalogAnnotations(t *testing.T) {
+	req := mcpRequest{JSONRPC: "2.0", ID: 1, Method: "tools/list"}
+	body, _ := json.Marshal(req)
+	w := httptest.NewRecorder()
+	r := mcpAuthedRequest(body)
+	mcpHandler(mcpTestPassword)(w, r)
+
+	var resp struct {
+		Result struct {
+			Tools []struct {
+				Name        string `json:"name"`
+				Annotations *struct {
+					ReadOnlyHint    *bool `json:"readOnlyHint"`
+					DestructiveHint *bool `json:"destructiveHint"`
+					OpenWorldHint   *bool `json:"openWorldHint"`
+				} `json:"annotations"`
+			} `json:"tools"`
+		} `json:"result"`
+	}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+	byName := map[string]*struct {
+		Name        string `json:"name"`
+		Annotations *struct {
+			ReadOnlyHint    *bool `json:"readOnlyHint"`
+			DestructiveHint *bool `json:"destructiveHint"`
+			OpenWorldHint   *bool `json:"openWorldHint"`
+		} `json:"annotations"`
+	}{}
+	for i := range resp.Result.Tools {
+		byName[resp.Result.Tools[i].Name] = &resp.Result.Tools[i]
+	}
+	for _, n := range []string{"board_delete_epic", "board_delete_task", "delete_session", "abort_session", "workflow_delete", "trigger_delete"} {
+		a := byName[n].Annotations
+		require.NotNil(t, a, "%s must carry annotations", n)
+		require.NotNil(t, a.DestructiveHint, "%s destructiveHint", n)
+		assert.True(t, *a.DestructiveHint, "%s is destructive — destructiveHint:true", n)
+	}
+	for _, n := range []string{"session_list", "session_read", "board_list", "board_health", "board_read", "trigger_list", "trigger_fires", "workflow_list", "workflow_runs", "list_models", "session_metadata"} {
+		a := byName[n].Annotations
+		require.NotNil(t, a, "%s must carry annotations", n)
+		require.NotNil(t, a.ReadOnlyHint, "%s readOnlyHint", n)
+		assert.True(t, *a.ReadOnlyHint, "%s is read-only — readOnlyHint:true", n)
+	}
+}
+
+// No tool may advertise a platform-attestation field: lsp_injected_session
+// is the harness's own key (an advertised attestation key invites the
+// model to spoof it) and from_session_id is gone entirely (#1849 —
+// origin is injected, the agent never supplies its own return address).
+func TestMCPCatalogAdvertisesNoAttestationFields(t *testing.T) {
+	req := mcpRequest{JSONRPC: "2.0", ID: 1, Method: "tools/list"}
+	body, _ := json.Marshal(req)
+	w := httptest.NewRecorder()
+	r := mcpAuthedRequest(body)
+	mcpHandler(mcpTestPassword)(w, r)
+	raw := w.Body.Bytes()
+	assert.NotContains(t, string(raw), `"from_session_id"`,
+		"from_session_id is removed — origin is platform-injected only")
+	// lsp_injected_session must never appear as a schema property name
+	// (a description may legitimately MENTION the recovery shape; the
+	// check is on the property-key position).
+	for _, pat := range []string{`"lsp_injected_session":{`, `"properties":{"lsp_injected_session"`} {
+		assert.NotContains(t, string(raw), pat, "attestation key must stay schema-invisible")
+	}
+}
+
+// propertyOrder returns the properties object's key order from raw
+// schema JSON — Go maps destroy it, so this only works on schemas
+// emitted as ordered RawMessage.
+func propertyOrder(propsObj json.RawMessage) []string {
+	dec := json.NewDecoder(bytes.NewReader(propsObj))
+	dec.Token() // opening {
+	var out []string
+	for dec.More() {
+		kt, err := dec.Token()
+		if err != nil {
+			return out
+		}
+		if k, ok := kt.(string); ok {
+			out = append(out, k)
+		}
+		var skip json.RawMessage
+		if err := dec.Decode(&skip); err != nil {
+			return out
+		}
+	}
+	return out
 }
 
 func mcpSchemaKeys(m map[string]any) []string {
@@ -2004,7 +2319,7 @@ func TestMCPSendMessage_RetryStatusTreatedAsBusy(t *testing.T) {
 		f.handler(t)(w, r)
 	})
 
-	out, err := mcpSendMessage(context.Background(), mcpTestPassword, s1, "hold please", caller, "")
+	out, err := mcpSendMessage(context.Background(), mcpTestPassword, s1, "hold please", caller)
 	require.NoError(t, err)
 	assert.Contains(t, out, "delivering_after_current_turn")
 	require.Eventually(t, func() bool { return len(f.sentFor(s1)) == 1 }, 7*time.Second, 25*time.Millisecond)
@@ -2022,7 +2337,7 @@ func TestMCPSendMessage_AbortDropsQueued(t *testing.T) {
 	caller := f.newSession("caller")
 	withAgentServer(t, f.handler(t))
 
-	_, err := mcpSendMessage(context.Background(), mcpTestPassword, s1, "will be dropped", caller, "")
+	_, err := mcpSendMessage(context.Background(), mcpTestPassword, s1, "will be dropped", caller)
 	require.NoError(t, err)
 	require.Eventually(t, func() bool {
 		f.mu.Lock()
@@ -2463,7 +2778,7 @@ func TestMCPSendMessage_SelfSendGuard_WarnsButDelivers_Injected(t *testing.T) {
 	caller := f.newSession("orchestrator")
 	withAgentServer(t, f.handler(t))
 
-	out, err := mcpSendMessage(context.Background(), mcpTestPassword, caller, "self note: re-check the board", caller, "")
+	out, err := mcpSendMessage(context.Background(), mcpTestPassword, caller, "self note: re-check the board", caller)
 	require.NoError(t, err, "self-send is a WARNING, never a refusal")
 	assert.Contains(t, out, `"warning"`, "the warning field must be present on self-send")
 	assert.Contains(t, out, "target is your own session", "the warning text names the condition")
@@ -2477,25 +2792,13 @@ func TestMCPSendMessage_SelfSendGuard_WarnsButDelivers_Injected(t *testing.T) {
 	assert.Contains(t, delivered, "self note: re-check the board")
 }
 
-func TestMCPSendMessage_SelfSendGuard_WarnsButDelivers_Declared(t *testing.T) {
-	f := newFakeAgent()
-	caller := f.newSession("orchestrator")
-	withAgentServer(t, f.handler(t))
-
-	out, err := mcpSendMessage(context.Background(), mcpTestPassword, caller, "note to self", "", caller)
-	require.NoError(t, err)
-	assert.Contains(t, out, `"warning"`)
-	assert.Contains(t, out, "target is your own session")
-	assert.Contains(t, out, `"origin_mode":"self-declared"`)
-}
-
 func TestMCPSendMessage_SelfSendGuard_AbsentOnNormalSend(t *testing.T) {
 	f := newFakeAgent()
 	target := f.newSession("worker")
 	caller := f.newSession("orchestrator")
 	withAgentServer(t, f.handler(t))
 
-	out, err := mcpSendMessage(context.Background(), mcpTestPassword, target, "status?", caller, "")
+	out, err := mcpSendMessage(context.Background(), mcpTestPassword, target, "status?", caller)
 	require.NoError(t, err)
 	assert.NotContains(t, out, `"warning"`, "a normal cross-session send carries NO warning — the guard must not fire")
 }
@@ -2526,7 +2829,7 @@ func TestMCPSendMessage_EmissionDuplicationGuard_RecoversTargetAndWarns(t *testi
 	withAgentServer(t, f.handler(t))
 
 	corrupt := target + `","lsp_injected_session":"` + caller + `"}`
-	out, err := mcpSendMessage(context.Background(), mcpTestPassword, corrupt, "lane report", caller, "")
+	out, err := mcpSendMessage(context.Background(), mcpTestPassword, corrupt, "lane report", caller)
 	require.NoError(t, err, "recovery is a WARNING + delivery, never a refusal")
 	assert.Contains(t, out, `"warning"`, "the warning field must be present on a recovered send")
 	assert.Contains(t, out, "duplicated-argument fragment", "the warning names the condition")
@@ -2549,7 +2852,7 @@ func TestMCPSendMessage_EmissionDuplicationGuard_NoBraceVariant(t *testing.T) {
 	withAgentServer(t, f.handler(t))
 
 	corrupt := target + `","lsp_injected_session":"` + caller + `"`
-	out, err := mcpSendMessage(context.Background(), mcpTestPassword, corrupt, "lane report", caller, "")
+	out, err := mcpSendMessage(context.Background(), mcpTestPassword, corrupt, "lane report", caller)
 	require.NoError(t, err)
 	assert.Contains(t, out, `"warning"`)
 	assert.Contains(t, out, `"session_id":"`+target+`"`)
@@ -2569,7 +2872,7 @@ func TestMCPSendMessage_EmissionDuplicationGuard_MismatchedEmbeddedOriginStillDe
 	withAgentServer(t, f.handler(t))
 
 	corrupt := target + `","lsp_injected_session":"` + `ses_SOMEONE_ELSE` + `"}`
-	out, err := mcpSendMessage(context.Background(), mcpTestPassword, corrupt, "lane report", caller, "")
+	out, err := mcpSendMessage(context.Background(), mcpTestPassword, corrupt, "lane report", caller)
 	require.NoError(t, err)
 	assert.Contains(t, out, `"warning"`)
 	assert.Contains(t, out, "differs from the resolved origin", "the mismatch is surfaced, not silently ignored")
@@ -2676,7 +2979,7 @@ func TestMCPSendMessage_EmissionDuplicationGuard_ComposedWithSelfSend(t *testing
 	withAgentServer(t, f.handler(t))
 
 	corrupt := caller + `","lsp_injected_session":"` + caller + `"}`
-	out, err := mcpSendMessage(context.Background(), mcpTestPassword, corrupt, "self report", caller, "")
+	out, err := mcpSendMessage(context.Background(), mcpTestPassword, corrupt, "self report", caller)
 	require.NoError(t, err)
 	assert.Contains(t, out, `"warning"`, "the composed warning must be present")
 	assert.Contains(t, out, "target is your own session", "the self-send part survives composition")
@@ -2696,11 +2999,11 @@ func TestMCPSendMessage_EmissionDuplicationGuard_AbsentOnCleanIDs(t *testing.T) 
 	caller := f.newSession("orchestrator")
 	withAgentServer(t, f.handler(t))
 
-	out, err := mcpSendMessage(context.Background(), mcpTestPassword, target, "status?", caller, "")
+	out, err := mcpSendMessage(context.Background(), mcpTestPassword, target, "status?", caller)
 	require.NoError(t, err)
 	assert.NotContains(t, out, `"warning"`, "a normal send carries NO warning — the recovery must not fire")
 
-	_, err = mcpSendMessage(context.Background(), mcpTestPassword, "ses_CLEAN_BOGUS", "hi", caller, "")
+	_, err = mcpSendMessage(context.Background(), mcpTestPassword, "ses_CLEAN_BOGUS", "hi", caller)
 	require.Error(t, err)
 	assert.NotContains(t, err.Error(), "fragment", "clean bogus ids take the plain not-found path")
 	assert.Contains(t, err.Error(), "ses_CLEAN_BOGUS", "the error names the clean id")
@@ -2717,7 +3020,7 @@ func TestMCPSendMessage_OriginEmitsPhraseOrFlaggedID(t *testing.T) {
 	withAgentServer(t, f.handler(t))
 
 	// Cold replica: raw id ships, but FLAGGED.
-	out, err := mcpSendMessage(context.Background(), mcpTestPassword, s1, "hi", caller, "")
+	out, err := mcpSendMessage(context.Background(), mcpTestPassword, s1, "hi", caller)
 	require.NoError(t, err)
 	assert.Contains(t, out, fmt.Sprintf(`"origin":%q`, caller))
 	assert.Contains(t, out, `"origin_deprecated":"true"`, "cold replica: the raw origin id must be flagged, never silent")
@@ -2726,7 +3029,7 @@ func TestMCPSendMessage_OriginEmitsPhraseOrFlaggedID(t *testing.T) {
 	// unflagged.
 	store := withShortIDStore(t)
 	store.put("calm-otter-naps", caller)
-	out2, err2 := mcpSendMessage(context.Background(), mcpTestPassword, s1, "hi again", caller, "")
+	out2, err2 := mcpSendMessage(context.Background(), mcpTestPassword, s1, "hi again", caller)
 	require.NoError(t, err2)
 	assert.Contains(t, out2, `"origin":"calm-otter-naps"`)
 	assert.NotContains(t, out2, `"origin_deprecated"`, "warm replica: the phrase needs no flag")
@@ -2867,13 +3170,13 @@ func TestMCPEmission_SessionIDDeprecatedMarker_AllSurfaces(t *testing.T) {
 		target := f.newSession("marker-target")
 		origin := f.newSession("marker-origin")
 		withAgentServer(t, f.handler(t))
-		cold, err := mcpSendMessage(context.Background(), mcpTestPassword, target, "hi", origin, "")
+		cold, err := mcpSendMessage(context.Background(), mcpTestPassword, target, "hi", origin)
 		require.NoError(t, err)
 		assert.Contains(t, cold, `"session_id_deprecated":"true"`,
 			"cold: the target's raw harness id must be flagged")
 		store := withShortIDStore(t)
 		store.put("amber-falcon-naps", target)
-		warm, err := mcpSendMessage(context.Background(), mcpTestPassword, "amber-falcon-naps", "hi", origin, "")
+		warm, err := mcpSendMessage(context.Background(), mcpTestPassword, "amber-falcon-naps", "hi", origin)
 		require.NoError(t, err)
 		assert.Contains(t, warm, `"session_id":"amber-falcon-naps"`)
 		assert.NotContains(t, warm, "session_id_deprecated")

@@ -66,7 +66,7 @@ func seamClientWithPassword(password string) *opencode.Client {
 func mcpRenameSession(ctx context.Context, password, sessionID, title string) (string, error) {
 	sessionID = strings.TrimSpace(sessionID)
 	if sessionID == "" {
-		return "", fmt.Errorf("session_id is required")
+		return "", fmt.Errorf("sessionId is required")
 	}
 	// Design 0066: the ref resolves first (short id / alias accepted;
 	// legacy ids pass through byte-identical).
@@ -693,7 +693,7 @@ func podPlatformClient() (*opencode.Client, string, string, error) {
 func mcpSessionArchive(ctx context.Context, password, sessionID string, archived bool) (string, error) {
 	sessionID = strings.TrimSpace(sessionID)
 	if sessionID == "" {
-		return "", fmt.Errorf("session_id is required")
+		return "", fmt.Errorf("sessionId is required")
 	}
 	// Design 0066: resolve the ref (short id / alias) to the canonical
 	// harness id BEFORE the platform call — the platform's index keys
@@ -763,7 +763,7 @@ func mcpSessionArchive(ctx context.Context, password, sessionID string, archived
 func mcpDeleteSession(ctx context.Context, password, sessionID, injectedSession string) (string, error) {
 	sessionID = strings.TrimSpace(sessionID)
 	if sessionID == "" {
-		return "", fmt.Errorf("session_id is required")
+		return "", fmt.Errorf("sessionId is required")
 	}
 	// Design 0066: resolve the ref first; the self-guard and the
 	// platform delete then operate on the canonical harness id.
@@ -1440,22 +1440,22 @@ func recoverableRefForm(v string) bool {
 // session — nothing returns to the caller (the same philosophy as
 // create_session; the task tool is the blocking/returns-result path).
 //
-// Origin attribution (#1465, #1469 hybrid ruling): the origin is
-// ALWAYS attributed and the mode is VISIBLE. Two sources, in priority:
+// Origin attribution (#1465, #1469; #1849 tightening): the origin is
+// ALWAYS attributed and platform-attested. ONE source:
 //
 //   - INJECTED: the platform's opencode plugin (tool.execute.before)
 //     stamps lsp_injected_session with the harness's own session
 //     identity — the model never supplies it and the schema does not
 //     advertise it. Sentinel/result mode: "injected".
-//   - SELF-DECLARED: absent injection (plugin missing/drifted/no-op —
-//     a degraded pod), the optional from_session_id argument the model
-//     supplied is used, validated by-ID. Sentinel/result mode:
-//     "self-declared".
 //
-// Neither source present → tool error, no delivery (the only refusal
-// left; with from_session_id schema-visible the model can always
-// self-declare, so a degraded pod self-reports rather than breaks).
-// Both sources validate by-ID (SessionExists — immune to the #1452
+// The former SELF-DECLARED fallback (from_session_id) is removed: the
+// agent is never responsible for supplying its own return address, and
+// the extra long-id argument was an emission-corruption surface (#1849
+// factorial — send_message corrupted 5/5 with the long prose key
+// opening the object; every added key is another resume-after-string
+// seam). Absent injection (plugin missing/drifted — a degraded pod) →
+// tool error, no delivery, report-the-platform.
+// The origin validates by-ID (SessionExists — immune to the #1452
 // list-visibility gap). The sentinel is provenance metadata, NOT
 // authentication — every session shares the pod credential, so the
 // origin is a return address; the mode makes the degree of platform
@@ -1473,10 +1473,10 @@ func recoverableRefForm(v string) bool {
 // in scripts/1530-arg-mutation-probe.mjs) is recovered to its leading
 // id, delivered, and warned — never silently lost to a resolution
 // error. See splitDuplicatedArgFragment for the exact shape contract.
-func mcpSendMessage(ctx context.Context, password, sessionID, message, injectedSession, declaredSession string) (string, error) {
+func mcpSendMessage(ctx context.Context, password, sessionID, message, injectedSession string) (string, error) {
 	sessionID = strings.TrimSpace(sessionID)
 	if sessionID == "" {
-		return "", fmt.Errorf("session_id is required")
+		return "", fmt.Errorf("destination is required")
 	}
 	// #1530 emission-duplication recovery: a session_id carrying the
 	// duplicated-argument fragment (model emission slip — see
@@ -1505,13 +1505,15 @@ func mcpSendMessage(ctx context.Context, password, sessionID, message, injectedS
 		return "", fmt.Errorf("message rejected: placeholder-class payload (%q) — your drafted text was likely replaced by a placeholder token mid-write (a known emission-corruption mode). Re-read your drafted message; if emission corruption ate it, re-compose the intended content and resend. Nothing was delivered", message)
 	}
 	origin, mode := "", ""
-	switch {
-	case strings.TrimSpace(injectedSession) != "":
+	if strings.TrimSpace(injectedSession) != "" {
 		origin, mode = strings.TrimSpace(injectedSession), agentmessage.ModeInjected
-	case strings.TrimSpace(declaredSession) != "":
-		origin, mode = strings.TrimSpace(declaredSession), agentmessage.ModeSelfDeclared
-	default:
-		return "", fmt.Errorf("no origin: the platform could not inject your session ID (plugin absent or outdated) and from_session_id was not provided — pass from_session_id (find your session via session_metadata; your title identifies you) or report the missing plugin to the platform")
+	} else {
+		// #1849 tightening: the from_session_id self-declared fallback
+		// is removed — the agent is never responsible for its own
+		// return address. Absent injection means the pod's opencode
+		// plugin is missing or drifted (degraded); refuse delivery and
+		// say so instead of accepting an unattested origin.
+		return "", fmt.Errorf("no origin: the platform could not inject your session ID — the workspace's opencode plugin is absent or outdated (degraded pod). Nothing was delivered; report the missing plugin to the platform")
 	}
 
 	client := seamClientWithPassword(password)
@@ -1521,7 +1523,7 @@ func mcpSendMessage(ctx context.Context, password, sessionID, message, injectedS
 	// through byte-identical (the #1530 recovery above stays on the
 	// raw id, which resolution then confirms or leaves alone).
 	sendOrigRef := sessionID // pre-resolution target, for the §2 note
-	for _, pair := range []struct{ name, ref string }{{"session_id", sessionID}, {"from_session_id", origin}} {
+	for _, pair := range []struct{ name, ref string }{{"session_id", sessionID}, {"origin", origin}} {
 		resolved, rerr := resolveSessionRef(ctx, password, pair.ref)
 		if rerr != nil {
 			return "", fmt.Errorf("%s: %w", pair.name, rerr)
@@ -1681,7 +1683,7 @@ func mcpSendMessage(ctx context.Context, password, sessionID, message, injectedS
 func mcpAbortSession(ctx context.Context, password, sessionID string) (string, error) {
 	sessionID = strings.TrimSpace(sessionID)
 	if sessionID == "" {
-		return "", fmt.Errorf("session_id is required")
+		return "", fmt.Errorf("sessionId is required")
 	}
 	// Design 0066: resolve the ref first (abort is destructive — an
 	// ambiguous alias REFUSES here, never guesses).

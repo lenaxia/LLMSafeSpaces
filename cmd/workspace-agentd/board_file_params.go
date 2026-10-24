@@ -32,28 +32,34 @@ import (
 // KiB): the platform-side cap stays the single authority.
 const boardFileFieldMaxBytes = 128 << 10
 
-// resolveBoardFileArgs resolves the <field>_file param into the inline
-// <field> string on args, consuming the file spelling (no *_file
+// resolveBoardFileArgs resolves the <field>File param into the inline
+// <field> string on args, consuming the file spelling (no file
 // spelling ever reaches the wire — the platform API has no such key).
-// targetField is the ONE field this tool admits (description_file on
-// task create/update; outcome_file on epic create/update); an empty
-// targetField admits NO file param at all. Any *_file key for another
-// field — or on a no-file tool — is a caller mistake, refused loudly;
-// never silently dropped onto the wire.
+// targetField is the ONE field this tool admits (descriptionFile on
+// task create/update; outcomeFile on epic create/update); an empty
+// targetField admits NO file param at all. Any file-suffixed key for
+// another field — or on a no-file tool — is a caller mistake, refused
+// loudly; never silently dropped onto the wire. #1849 casing pass:
+// the camelCase descriptionFile/outcomeFile spellings are canonical;
+// the legacy snake_case *_file spellings still resolve (one-release
+// alias) but are never advertised.
 func resolveBoardFileArgs(args map[string]any, targetField string) error {
-	admitted := targetField + "_file"
+	admitted := targetField + "File"
 	if targetField == "" {
-		admitted = "_" // no admitted spelling: every *_file key is foreign
+		admitted = "\x00" // no admitted spelling: every file key is foreign
 	}
 	for k := range args {
-		// A *_file key for another field is a caller mistake, refused
-		// loudly — never silently dropped onto the wire (a null value
-		// included: "I mentioned the param" is still a mention).
-		if strings.HasSuffix(k, "_file") && k != admitted {
+		// A file-suffixed key for another field is a caller mistake,
+		// refused loudly — never silently dropped onto the wire (a null
+		// value included: "I mentioned the param" is still a mention).
+		if (strings.HasSuffix(k, "_file") || strings.HasSuffix(k, "File")) && k != admitted && k != targetField+"_file" {
 			return fmt.Errorf("%s is not admitted here (this tool accepts %s) — refusing rather than silently dropping it", k, admitted)
 		}
 	}
 	raw, present := args[admitted]
+	if !present {
+		raw, present = args[targetField+"_file"] // legacy snake_case alias
+	}
 	if !present {
 		return nil
 	}
