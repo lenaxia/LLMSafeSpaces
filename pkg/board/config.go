@@ -19,9 +19,10 @@ package board
 // stays UI-only later and the key set can grow without a row-shape
 // change (grow = key vocabulary + CHECK constraint migration).
 //
-// Initial keys: reviewColumn (off|manual|auto, default manual — PR-B1/B2
-// own any review automation; this stores the preference only),
-// autoAssignReviewer (bool, default false), defaultWorkerSlots
+// Initial keys: reviewColumn (off|manual|auto, default auto — owner
+// ruling 2026-10-24 flipped the #1832 default manual→auto),
+// autoAssignReviewer (bool, default true — same ruling; explicit
+// stored opt-outs at either tier still win), defaultWorkerSlots
 // (int > 0, default 2 — the platform's worker-slots default; it feeds
 // CreateProject's fallback when the caller specifies none).
 //
@@ -91,12 +92,15 @@ type ProjectBoardConfig struct {
 	Effective BoardConfig         `json:"effective"`
 }
 
-// DefaultBoardConfig returns the code defaults (#1832 item 6): manual
-// review column, no auto reviewer assignment, worker slots 2.
+// DefaultBoardConfig returns the code defaults (owner ruling
+// 2026-10-24 — "flip defaults for review to on"): auto review column
+// with auto reviewer assignment, worker slots 2. A stored explicit
+// opt-out at either tier (user defaults, project overrides) still wins
+// at the read-time merge — the flip changes only the inheritance floor.
 func DefaultBoardConfig() BoardConfig {
 	return BoardConfig{
-		ReviewColumn:       ReviewColumnManual,
-		AutoAssignReviewer: false,
+		ReviewColumn:       ReviewColumnAuto,
+		AutoAssignReviewer: true,
 		DefaultWorkerSlots: DefaultBoardWorkerSlots,
 	}
 }

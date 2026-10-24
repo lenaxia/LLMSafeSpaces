@@ -42,6 +42,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **#1856** — ai-workflows v0.2.24 reapply (#1896).
 
 ## [Unreleased]
+### Changed — Task Board: auto-review defaults flipped to on (owner ruling 2026-10-24)
+
+- **The code defaults for review automation are now `reviewColumn=auto`
+  + `autoAssignReviewer=true`** (was `manual`/`false` — the #1832
+  landing default that left auto-review dormant for every
+  freshly-created board project). A fresh project with zero config rows
+  now dispatches a reviewer directly on →in_review.
+- **Explicit stored opt-outs still win** (back-compat): the flip changes
+  only the inheritance floor of the code → user → project read-time
+  merge — a deliberate `reviewColumn=manual|off` or
+  `autoAssignReviewer=false` at either tier (board-wide defaults or
+  per-project overrides) keeps auto-review off; clearing the map
+  (REPLACE `{}`) re-inherits the new default. Pinned in the PG harness
+  (`TestReview_AutoReviewDefaultOn`,
+  `TestReview_ExplicitOptOutSurvivesDefaultFlip`).
+- OpenAPI `BoardConfig` documents the new defaults; the Settings
+  pre-data display fallbacks match the new floor.
 ### Added — board bulk claim/complete variants (#1836)
 
 - **Bulk task claim/complete with per-item result arrays** (#1836):

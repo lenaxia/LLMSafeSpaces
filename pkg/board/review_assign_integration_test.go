@@ -166,6 +166,149 @@ func (s *BoardSuite) TestReview_1832_VerdictChainRidesNextClaim() {
 	require.NotEmpty(s.T(), spawner.claims[1].VerdictChain, "the bounce re-arm's charter embeds the verdict chain")
 }
 
+// TestReview_AutoReviewDefaultOn — the owner ruling of 2026-10-24
+// ("flip defaults for review to on"): the CODE defaults resolve
+// reviewColumn=auto + autoAssignReviewer=true, so a FRESHLY-CREATED
+// board project (no board_config_defaults row for the owner, no
+// board_project_config_overrides row for the project) dispatches the
+// reviewer on →in_review with NO configuration writes at all. RED on
+// the pre-flip defaults (manual/false → no dispatch).
+func (s *BoardSuite) TestReview_AutoReviewDefaultOn() {
+	ctx := context.Background()
+	ws := s.seedWorkspace()
+	p := s.seedProject(ws, 2)
+	e := s.seedEpic(p, board.EpicActive)
+	task := s.seedTask(e, "default-on", nil, false)
+
+	spawner := &claimCapture{}
+	assigner := &captureAssigner{}
+	svc := board.NewService(s.pool, s.cfg,
+		board.WithWorkerSpawner(spawner.Spawn),
+		board.WithReviewAssigner(assigner.Assign),
+	)
+
+	// Effective config, straight read: the fresh rows must render the
+	// flipped defaults (the same merge the gate consumes).
+	pc, err := svc.GetProjectBoardConfig(ctx, s.owner(), p.ID, "")
+	s.Require().NoError(err)
+	s.Equal(board.ReviewColumnAuto, pc.Effective.ReviewColumn,
+		"fresh project: reviewColumn inherits the flipped code default")
+	s.True(pc.Effective.AutoAssignReviewer,
+		"fresh project: autoAssignReviewer inherits the flipped code default")
+
+	c, err := svc.ClaimNext(ctx, "w-"+ws, ws)
+	s.Require().NoError(err)
+	s.Require().Equal(task.ID, c.TaskID)
+	_, err = svc.MoveStage(ctx, s.agent(c.Assignee, c.ClaimToken), "", c.ShortID, board.StageInReview, "", "")
+	s.Require().NoError(err)
+
+	s.Equal(1, assigner.count(), "fresh project, zero config rows: the flipped defaults dispatch the reviewer")
+	s.Equal(1, s.countProjectEvents(p.ID, "review_assign"), "the intent event records")
+}
+
+// TestReview_ExplicitOptOutSurvivesDefaultFlip — the back-compat half
+// of the 2026-10-24 ruling: flipping a DEFAULT must never override a
+// DELIBERATE stored opt-out. An explicit off at EITHER tier (user
+// defaults or project overrides) keeps auto-review off after the flip,
+// and clearing the opt-out (REPLACE `{}`) re-enables the new default —
+// the opt-out lives in the stored map, not a sticky flag.
+func (s *BoardSuite) TestReview_ExplicitOptOutSurvivesDefaultFlip() {
+	ctx := context.Background()
+	ws := s.seedWorkspace()
+	spawner := &claimCapture{}
+	assigner := &captureAssigner{}
+	svc := board.NewService(s.pool, s.cfg,
+		board.WithWorkerSpawner(spawner.Spawn),
+		board.WithReviewAssigner(assigner.Assign),
+	)
+
+	// drive seeds one more task in the GIVEN project, claims it, and
+	// moves it to in_review; returns whether the reviewer dispatched
+	// for THAT project (the claim is workspace-scoped, but the only
+	// claimable task is the one just seeded — earlier tasks are past
+	// backlog).
+	drive := func(ctx context.Context, p *board.Project, name string) bool {
+		e := s.seedEpic(p, board.EpicActive)    //nolint:contextcheck // grandfathered harness helper (ctx-less by design, like the gating matrix's seed sites)
+		task := s.seedTask(e, name, nil, false) //nolint:contextcheck // same grandfathered harness helper seam
+		c, err := svc.ClaimNext(ctx, "w-"+ws+"-"+name, ws)
+		s.Require().NoError(err)
+		s.Require().Equal(task.ID, c.TaskID, "one claimable task at a time: the claim is deterministic")
+		_, err = svc.MoveStage(ctx, s.agent(c.Assignee, c.ClaimToken), "", c.ShortID, board.StageInReview, "", "")
+		s.Require().NoError(err)
+		return s.countProjectEvents(p.ID, "review_assign") > 0 //nolint:contextcheck // same grandfathered harness helper seam (self-scoped query ctx)
+	}
+
+	// Project tier, key 1: explicit reviewColumn=manual opts the project
+	// out even though autoAssignReviewer re-inherits (now: true).
+	pOff := s.seedProject(ws, 2)
+	manual := board.ReviewColumnManual
+	_, err := svc.SetProjectBoardConfig(ctx, s.owner(), pOff.ID, "", &board.BoardConfigOverride{ReviewColumn: &manual})
+	s.Require().NoError(err)
+	s.False(drive(ctx, pOff, "optout-proj-manual"), "explicit project reviewColumn=manual stays off after the default flip")
+
+	// Clearing the opt-out re-enables the flipped default (REPLACE
+	// semantics: absent = inherit, never sticky).
+	_, err = svc.SetProjectBoardConfig(ctx, s.owner(), pOff.ID, "", &board.BoardConfigOverride{})
+	s.Require().NoError(err)
+	s.True(drive(ctx, pOff, "optout-proj-cleared"), "cleared override re-inherits the flipped on-default")
+
+	// Project tier, key 2: explicit autoAssignReviewer=false opts the
+	// project out even though reviewColumn re-inherits (now: auto).
+	pNoAssign := s.seedProject(ws, 2)
+	noAssign := false
+	_, err = svc.SetProjectBoardConfig(ctx, s.owner(), pNoAssign.ID, "", &board.BoardConfigOverride{AutoAssignReviewer: &noAssign})
+	s.Require().NoError(err)
+	s.False(drive(ctx, pNoAssign, "optout-proj-noassign"), "explicit project autoAssignReviewer=false stays off after the default flip")
+
+	// User tier: explicit user-default reviewColumn=off opts EVERY
+	// inheriting project out; restoring it (replace with {}) re-enables.
+	pUser := s.seedProject(ws, 2)
+	off := board.ReviewColumnOff
+	_, err = svc.SetUserBoardConfig(ctx, s.owner(), &board.BoardConfigOverride{ReviewColumn: &off})
+	s.Require().NoError(err)
+	s.False(drive(ctx, pUser, "optout-user-off"), "explicit user reviewColumn=off stays off after the default flip")
+	_, err = svc.SetUserBoardConfig(ctx, s.owner(), &board.BoardConfigOverride{})
+	s.Require().NoError(err)
+	s.True(drive(ctx, pUser, "optout-user-cleared"), "cleared user map re-inherits the flipped on-default")
+}
+
+// TestReview_GateFailsClosedOnUserMapDrift — the dispatch gate is the
+// flip's fail-closed counterpart (r1 review finding): a drifted row in
+// the owner's board_config_defaults map (known key, malformed value)
+// must surface as NO dispatch — the flipped on-defaults never ride a
+// corrupt row into enabling reviewer dispatch. Same construction as
+// TestBoardConfig_FailClosedOnDrift's user-map arm; this pins the
+// GATE's behavior (warn + return, no event), not just the read seam.
+func (s *BoardSuite) TestReview_GateFailsClosedOnUserMapDrift() {
+	ctx := context.Background()
+	ws := s.seedWorkspace()
+	p := s.seedProject(ws, 2)
+	e := s.seedEpic(p, board.EpicActive)
+	task := s.seedTask(e, "gate-drift", nil, false)
+
+	spawner := &claimCapture{}
+	assigner := &captureAssigner{}
+	svc := board.NewService(s.pool, s.cfg,
+		board.WithWorkerSpawner(spawner.Spawn),
+		board.WithReviewAssigner(assigner.Assign),
+	)
+
+	// Drift: the exact TestBoardConfig_FailClosedOnDrift construction —
+	// a known key with a malformed value, landed via raw SQL.
+	_, err := s.pool.Exec(ctx,
+		`INSERT INTO board_config_defaults (user_id, key, value) VALUES ($1, 'autoAssignReviewer', '"not-a-bool"')`, testUser)
+	s.Require().NoError(err)
+
+	c, err := svc.ClaimNext(ctx, "w-"+ws, ws)
+	s.Require().NoError(err)
+	s.Require().Equal(task.ID, c.TaskID)
+	_, err = svc.MoveStage(ctx, s.agent(c.Assignee, c.ClaimToken), "", c.ShortID, board.StageInReview, "", "")
+	s.Require().NoError(err)
+
+	s.Equal(0, assigner.count(), "drifted user map: the gate fails closed — no dispatch under the flipped defaults")
+	s.Equal(0, s.countProjectEvents(p.ID, "review_assign"), "and no intent event (the manual path remains)")
+}
+
 func boolStr(b bool) string {
 	if b {
 		return "on"

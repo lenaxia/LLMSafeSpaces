@@ -145,7 +145,7 @@ func TestIntegrationRouterBoardConfig(t *testing.T) {
 	// --- authenticated round-trips through the production route table -------------
 	w := call("router-cfg", http.MethodGet, "/api/v1/me/board/config", "")
 	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
-	assert.JSONEq(t, `{"reviewColumn":"manual","autoAssignReviewer":false,"defaultWorkerSlots":2}`, w.Body.String())
+	assert.JSONEq(t, `{"reviewColumn":"auto","autoAssignReviewer":true,"defaultWorkerSlots":2}`, w.Body.String())
 
 	w = call("router-cfg", http.MethodPut, "/api/v1/me/board/config", `{"reviewColumn":"off","defaultWorkerSlots":6}`)
 	require.Equal(t, http.StatusOK, w.Code, w.Body.String())

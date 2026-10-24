@@ -29,32 +29,34 @@ import (
 func (s *BoardSuite) TestBoardConfig_UserRoundTrip() {
 	ctx := context.Background()
 
-	// Fresh install: every key renders its code default.
+	// Fresh install: every key renders its code default (owner ruling
+	// 2026-10-24: review defaults flipped to on).
 	cfg, err := s.svc.GetUserBoardConfig(ctx, s.owner())
 	s.Require().NoError(err)
 	s.Require().NotNil(cfg)
-	s.Equal("manual", cfg.ReviewColumn)
-	s.False(cfg.AutoAssignReviewer)
+	s.Equal("auto", cfg.ReviewColumn)
+	s.True(cfg.AutoAssignReviewer)
 	s.Equal(2, cfg.DefaultWorkerSlots)
 
 	// Partial write: one key set, two revert to (stay at) defaults.
-	set := board.BoardConfigOverride{ReviewColumn: strVal(board.ReviewColumnAuto)}
+	set := board.BoardConfigOverride{ReviewColumn: strVal(board.ReviewColumnManual)}
 	cfg, err = s.svc.SetUserBoardConfig(ctx, s.owner(), &set)
 	s.Require().NoError(err)
-	s.Equal("auto", cfg.ReviewColumn)
-	s.False(cfg.AutoAssignReviewer)
+	s.Equal("manual", cfg.ReviewColumn)
+	s.True(cfg.AutoAssignReviewer)
 	s.Equal(2, cfg.DefaultWorkerSlots)
 
 	// Persisted across a fresh read.
 	cfg, err = s.svc.GetUserBoardConfig(ctx, s.owner())
 	s.Require().NoError(err)
-	s.Equal("auto", cfg.ReviewColumn)
+	s.Equal("manual", cfg.ReviewColumn)
 
-	// Replace-write: absent keys revert (reviewColumn back to manual).
+	// Replace-write: absent keys revert (reviewColumn back to the
+	// flipped code default).
 	set = board.BoardConfigOverride{DefaultWorkerSlots: intVal(9)}
 	cfg, err = s.svc.SetUserBoardConfig(ctx, s.owner(), &set)
 	s.Require().NoError(err)
-	s.Equal("manual", cfg.ReviewColumn, "absent key on replace reverts to the code default")
+	s.Equal("auto", cfg.ReviewColumn, "absent key on replace reverts to the code default")
 	s.Equal(9, cfg.DefaultWorkerSlots)
 
 	// Empty map clears every override.
@@ -242,7 +244,7 @@ func (s *BoardSuite) TestBoardConfig_ValidationAndAuthz() {
 	// Nothing landed: effective values still the defaults.
 	pc, err := s.svc.GetProjectBoardConfig(ctx, s.owner(), p.ID, "")
 	s.Require().NoError(err)
-	s.Equal("manual", pc.Effective.ReviewColumn)
+	s.Equal("auto", pc.Effective.ReviewColumn)
 
 	// User-scoped write needs an acting user (guards once, in the
 	// service — a caller that bypassed the adapter still cannot write
@@ -425,7 +427,11 @@ func (s *BoardSuite) TestBoardConfig_ConcurrentReplaceWrites() {
 	ws := s.seedWorkspace()
 	p := s.seedProject(ws, 0)
 
-	mapA := board.BoardConfigOverride{ReviewColumn: strVal(board.ReviewColumnOff), DefaultWorkerSlots: intVal(3)}
+	// mapA pins autoAssignReviewer=false explicitly: post-2026-10-24
+	// the code default inherits true, so without the explicit key the
+	// two written maps would agree on autoAssignReviewer and the
+	// union-detection would lose a dimension.
+	mapA := board.BoardConfigOverride{ReviewColumn: strVal(board.ReviewColumnOff), AutoAssignReviewer: boolVal(false), DefaultWorkerSlots: intVal(3)}
 	mapB := board.BoardConfigOverride{AutoAssignReviewer: boolVal(true)}
 	// The project surface rejects defaultWorkerSlots (user-level key),
 	// so its competing maps differ on the other two keys.
@@ -454,7 +460,7 @@ func (s *BoardSuite) TestBoardConfig_ConcurrentReplaceWrites() {
 	cfg, err := s.svc.GetUserBoardConfig(ctx, s.owner())
 	s.Require().NoError(err)
 	uIsA := cfg.ReviewColumn == board.ReviewColumnOff && cfg.DefaultWorkerSlots == 3 && !cfg.AutoAssignReviewer
-	uIsB := cfg.ReviewColumn == board.ReviewColumnManual && cfg.DefaultWorkerSlots == 2 && cfg.AutoAssignReviewer
+	uIsB := cfg.ReviewColumn == board.ReviewColumnAuto && cfg.DefaultWorkerSlots == 2 && cfg.AutoAssignReviewer
 	s.True(uIsA || uIsB, "final user map is one written map, not a union: %+v", cfg)
 
 	// Final PROJECT OVERRIDE map is exactly A or exactly B (never a
