@@ -263,6 +263,34 @@ func TestScheduler_RoutineGateScriptOnlyNoLLMLeg(t *testing.T) {
 	}
 }
 
+// Script-path-only triggers (#1882 Bug 1 gap a): a pre-script
+// (ScriptPath) with NO prompt and NO gate is script-only work too —
+// the script runs sessionless for its side effects and the fire
+// delivers without any LLM leg. Pre-#1882 the early-return tested
+// ScriptLanguage only, so this shape fell through to the agent leg
+// and minted an ephemeral carrier for an empty prompt.
+func TestScheduler_RoutineScriptPathOnlyNoLLMLeg(t *testing.T) {
+	store := newMockSchedulerStore()
+	trig := makeDueRoutineTrigger("trig-spath-only", "")
+	trig.ScriptPath = "/usr/local/bin/probe.sh"
+	store.triggers = []*wf.TriggerRow{trig}
+
+	agentd := newMockAgentd()
+	agentd.outputs["routine-script"] = json.RawMessage(`{"exitCode":0,"stdout":"ok","stderr":""}`)
+
+	sched := &Scheduler{Store: store, Activator: &mockActivator{}, AgentdClient: agentd,
+		Logger: noopLogger{}, TickInterval: 30 * time.Second}
+	sched.tick(context.Background(), noopLogger{}, 10)
+
+	if got := agentd.callNodeIDs(); len(got) != 1 || got[0] != "routine-script" {
+		t.Fatalf("script-path-only trigger must never dispatch an agent leg, got %v", got)
+	}
+	fire := fireByTriggerID(t, store, "trig-spath-only")
+	if fire.Status != "delivered" {
+		t.Fatalf("script-path-only fire must deliver via its script side effects, got %q", fire.Status)
+	}
+}
+
 // Backward compat: a prompt-only trigger (no script columns) dispatches
 // exactly as before — one agent leg, no gate node, no gate audit write.
 func TestScheduler_RoutinePromptOnlyUnchanged(t *testing.T) {

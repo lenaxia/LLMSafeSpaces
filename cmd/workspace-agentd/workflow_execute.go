@@ -65,13 +65,12 @@ type workflowExecuteResponse struct {
 	// leak is real and must stay discoverable). Older API servers
 	// ignore it; older agentd simply never sets it.
 	SessionID string `json:"sessionId,omitempty"`
-	// DeletedSessionID reports which session an ephemeral teardown
-	// DELETED (#1882) — the id the engine needs to run the platform
-	// delete effects (tombstone, session_index row removal, SSE
-	// session.status:deleted). Mutually exclusive with SessionID by
-	// construction: the deleted session no longer exists, so the
-	// #1470 field stays omitted exactly as before. Older API servers
-	// ignore it.
+	// DeletedSessionID names the ephemeral session agentd itself
+	// deleted (#1882) — disjoint from SessionID by the existence
+	// contract: this id does NOT exist when the node finishes. The
+	// engine propagates the delete platform-side (tombstone + index
+	// row + deleted broadcast); without it the carrier's index row
+	// outlives the carrier as a sidebar ghost.
 	DeletedSessionID string `json:"deletedSessionId,omitempty"`
 }
 
@@ -81,8 +80,8 @@ type workflowExecuteError struct {
 	// SessionID carries the surviving session of a FAILED agent turn
 	// (#1470) — same existence contract as the success envelope.
 	SessionID string `json:"sessionId,omitempty"`
-	// DeletedSessionID reports the session the failure leg's ephemeral
-	// teardown deleted (#1882) — same contract as the success envelope.
+	// DeletedSessionID: the ephemeral the failure path tore down
+	// (#1882) — same contract as the success envelope's field.
 	DeletedSessionID string `json:"deletedSessionId,omitempty"`
 }
 
@@ -558,15 +557,19 @@ func execAgentNode(ctx context.Context, password string, w http.ResponseWriter, 
 	deletedSessionID := ""
 	failAgentNode := func(status int, code, detail string) {
 		surviving := sessionID
+		deleted := ""
 		if createdEphemeral && sessionMode == "ephemeral" {
 			dctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
 			defer cancel() //nolint:gocritic // defer-in-closure: fires when the handler returns
 			if deleteOpencodeSession(dctx, password, sessionID) {
 				surviving = ""
-				deletedSessionID = sessionID
+				deleted = sessionID
 			}
 		}
-		writeWorkflowErrorSession(w, status, code, detail, surviving, deletedSessionID)
+		writeWorkflowErrorEnvelope(w, status, workflowExecuteError{
+			ErrorCode: code, Detail: detail,
+			SessionID: surviving, DeletedSessionID: deleted,
+		})
 	}
 
 	// #1327: the agent POST carries the execution-derived dedupe key.
@@ -652,12 +655,12 @@ func execAgentNode(ctx context.Context, password string, w http.ResponseWriter, 
 		result["response"] = parsed
 	}
 
+	// #1882: the success leg's ephemeral teardown reports the deleted
+	// id via the shared outer variable (failAgentNode paths return
+	// before reaching here, so the reset is unambiguous).
+	deletedSessionID = ""
 	if createdEphemeral && sessionMode == "ephemeral" {
 		if deleteOpencodeSession(ctx, password, sessionID) {
-			// #1882: report which session died so the engine runs the
-			// platform delete effects (the ghost-row mint the live
-			// event bridge performed during the carrier's turn is
-			// undone). SessionID itself stays "" (#1470).
 			deletedSessionID = sessionID
 			sessionID = ""
 			result["session_deleted"] = true
@@ -741,6 +744,9 @@ func writeWorkflowSuccess(w http.ResponseWriter, output any, branch ...string) {
 	writeWorkflowSuccessResponse(w, output, resp)
 }
 
+// writeWorkflowSuccessResponse writes the raw success envelope — the
+// #1882 success legs build it directly (session survival + the
+// reported teardown id are disjoint envelope fields).
 // writeWorkflowSuccessSession writes the success envelope with the
 // node's surviving session identity (#1470); an empty sessionID renders
 // identically to the session-less success writer (omitempty). The
@@ -764,13 +770,22 @@ func writeWorkflowError(w http.ResponseWriter, status int, code, detail string) 
 
 // writeWorkflowErrorSession writes the error envelope with the session
 // that survived a failed agent turn (#1470); an empty sessionID renders
+// writeWorkflowErrorSession writes the error envelope with the session
+// that survived a failed agent turn (#1470); an empty sessionID renders
 // identically to the session-less writers (omitempty). The #1882
 // deletedSessionID rides alongside when the failure leg's ephemeral
 // teardown deleted the carrier.
 func writeWorkflowErrorSession(w http.ResponseWriter, status int, code, detail, sessionID, deletedSessionID string) {
+	writeWorkflowErrorEnvelope(w, status, workflowExecuteError{ErrorCode: code, Detail: detail, SessionID: sessionID, DeletedSessionID: deletedSessionID})
+}
+
+// writeWorkflowErrorEnvelope writes the raw error envelope (#1882: the
+// failure leg reports the ephemeral it tore down alongside the
+// survivor — disjoint fields, the existence contract holds).
+func writeWorkflowErrorEnvelope(w http.ResponseWriter, status int, e workflowExecuteError) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(workflowExecuteError{ErrorCode: code, Detail: detail, SessionID: sessionID, DeletedSessionID: deletedSessionID})
+	_ = json.NewEncoder(w).Encode(e)
 }
 
 func loadSecretsEnv() (map[string]string, error) {
@@ -889,6 +904,9 @@ func parseCreatedSessionID(r io.Reader) (string, error) {
 // outcome (transport error, opencode 5xx) means the session must be
 // treated as still alive. Callers that must report the REALITY of a
 // surviving session use the return; fire-and-forget callers may ignore it.
+// #1882: a confirmed delete also invalidates the pod-side short-id
+// replica — a dead session's phrase must stop resolving (the
+// delete-invalidates-the-replica seam; see forget).
 func deleteOpencodeSession(ctx context.Context, password, sessionID string) bool {
 	req, err := http.NewRequestWithContext(ctx, "DELETE", //nolint:gosec // G704: local-only, sessionID from opencode
 		fmt.Sprintf("%s/session/%s", getAgentAddr(), sessionID), nil)
@@ -903,5 +921,9 @@ func deleteOpencodeSession(ctx context.Context, password, sessionID string) bool
 		return false
 	}
 	defer func() { _ = resp.Body.Close() }()
-	return (resp.StatusCode >= 200 && resp.StatusCode < 300) || resp.StatusCode == http.StatusNotFound
+	gone := (resp.StatusCode >= 200 && resp.StatusCode < 300) || resp.StatusCode == http.StatusNotFound
+	if gone {
+		currentSessionShortIDs().forget(sessionID)
+	}
+	return gone
 }

@@ -382,6 +382,14 @@ func (h *ProxyHandler) backfillShortIDs(ctx context.Context, workspaceID string,
 		if minted >= shortIDBackfillBudget {
 			break
 		}
+		// #1882 r1: the rows are a PRE-PASS snapshot — a session whose
+		// confirmed delete propagated mid-pass (tombstone set, row
+		// removed) must not be re-registered: Register is a
+		// row-creating mint, so the dead carrier would be re-born.
+		//nolint:contextcheck // the tombstone read is store-local; the sweep's detached ctx never reaches it (isSessionDeleted precedent)
+		if h.isSessionDeleted(workspaceID, row.InternalID) {
+			continue
+		}
 		if h.sessionIndex.Register(ctx, workspaceID, row.InternalID, "opencode") != "" {
 			minted++
 		}
@@ -510,6 +518,17 @@ func (h *ProxyHandler) rebuildMessageCounts(ctx context.Context, workspaceID str
 			// logs, which is how the drift went unnoticed for hours.
 			h.logger.Warn("session reconcile: count walk failed; row skipped",
 				"workspaceID", workspaceID, "sessionID", row.ID, "error", err.Error())
+			continue
+		}
+		// #1882 r1 — the reconcile re-birth race: the count walk is the
+		// validated window (240–490ms/page of network between the list
+		// snapshot and this write). A session whose confirmed delete
+		// propagated DURING the walk (tombstone set, row removed) must
+		// not be re-written: Register + RebuildMessageCount are both
+		// row-creating mints, so the dead carrier would be re-born with
+		// message_count>0 — a DefaultReapGuard-refused ghost forever.
+		//nolint:contextcheck // the tombstone read is store-local; the sweep's detached ctx never reaches it (isSessionDeleted precedent)
+		if h.isSessionDeleted(workspaceID, row.InternalID) {
 			continue
 		}
 		if count == row.MessageCount {
@@ -687,6 +706,19 @@ func (h *ProxyHandler) ServeHarnessMessageCounts(ctx context.Context, workspaceI
 		row.MessageCount = count
 		if count == persisted {
 			sessionindex.ReconcileOutcome("listing_count_unchanged")
+			continue
+		}
+		// #1882 r4 F1: the walk above IS the race window — a carrier's
+		// confirmed delete (tombstone + row removal, the propagation
+		// tail) may have landed mid-walk. This writer's Register +
+		// RebuildMessageCount is a row-CREATING mint at count>0 (the
+		// only such writer post-r1), and a re-minted carrier row is a
+		// permanent kept_for_operator ghost the reap guard refuses
+		// (count>0). The tombstone consult — the same one-line seam
+		// the r1 fix put before the two reconcile sweeps' registers.
+		//nolint:contextcheck // the tombstone read is store-local; the listing's ctx never reaches it (isSessionDeleted precedent)
+		if h.isSessionDeleted(workspaceID, row.InternalID) {
+			sessionindex.ReconcileOutcome("listing_count_skip_tombstoned")
 			continue
 		}
 		// Row-creating upsert shape — the registration seam first

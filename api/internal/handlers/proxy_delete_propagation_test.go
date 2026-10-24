@@ -29,6 +29,64 @@ import (
 	"github.com/lenaxia/llmsafespaces/pkg/session"
 )
 
+func TestPropagateSessionDeleted_Tombstone_IndexRow_SSE(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	h := newProxyHandlerForAdapterTest(t)
+	idx := newMockSessionIndex()
+	h.sessionIndex = idx
+	h.userBroker = eventbroker.NewUserEventBroker()
+	h.userBroker.RecordWorkspaceOwner("ws-1", "user-1")
+	sub, err := h.userBroker.SubscribeWorkspace("ws-1")
+	require.NoError(t, err)
+	defer h.userBroker.UnsubscribeWorkspace("ws-1", sub)
+
+	h.PropagateSessionDeleted(context.Background(), "ws-1", "ses_ghost")
+
+	// Effect 1: tombstone (late-event suppression).
+	assert.True(t, h.state().IsSessionDeleted(context.Background(), "ws-1", "ses_ghost"),
+		"the tombstone must be set — a late pod event would otherwise re-birth the row")
+
+	// Effect 2: session_index row removal (the sidebar's only source).
+	assert.True(t, idx.deletedTree["ws-1/ses_ghost"],
+		"the session_index row must be removed")
+
+	// Effect 3: session.status:deleted on the workspace stream (the
+	// sidebar's cache-drop handler).
+	evt := recvTypeWithTimeout(t, sub, "session.status")
+	assert.Equal(t, "deleted", evt.Status, "the deleted status event clears the frontend sidebar")
+}
+
+// TestPropagateSessionDeleted_ConvergenceWithUserRoute: HardDeleteSession
+// and the propagator must produce the SAME teardown effects — the user
+// route's pins (tombstone + row + SSE) hold through the convergence.
+func TestPropagateSessionDeleted_ConvergenceWithUserRoute(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	h := newProxyHandlerForAdapterTest(t)
+	idx := newMockSessionIndex()
+	h.sessionIndex = idx
+	h.adapter = &mockAdapter{
+		deleteSessionFn: func(_ context.Context, _, _, _ string) error { return nil },
+	}
+	h.userBroker = eventbroker.NewUserEventBroker()
+	h.userBroker.RecordWorkspaceOwner("ws-1", "user-1")
+	sub, err := h.userBroker.SubscribeWorkspace("ws-1")
+	require.NoError(t, err)
+	defer h.userBroker.UnsubscribeWorkspace("ws-1", sub)
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Params = gin.Params{{Key: "id", Value: "ws-1"}, {Key: "sessionId", Value: "ses_u1"}}
+	c.Request = httptest.NewRequest(http.MethodDelete, "/", nil)
+	h.DeleteSession(c)
+	c.Writer.WriteHeaderNow()
+
+	require.Equal(t, http.StatusNoContent, w.Code)
+	assert.True(t, h.state().IsSessionDeleted(context.Background(), "ws-1", "ses_u1"))
+	assert.True(t, idx.deletedTree["ws-1/ses_u1"], "the user route still removes the row")
+	evt := recvTypeWithTimeout(t, sub, "session.status")
+	assert.Equal(t, "deleted", evt.Status)
+}
+
 // stubOriginLister feeds the #1901 carrier-mark lookup (carrier-class
 // ids only — the seam's contract).
 type stubOriginLister struct {
