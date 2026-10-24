@@ -42,6 +42,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **#1856** — ai-workflows v0.2.24 reapply (#1896).
 
 ## [Unreleased]
+### Fixed — Test hygiene: the usagestream resync/flight family no longer reddens on byte-identical content (#1927)
+
+- **Cross-test contamination through two package-global state cells
+  rooted out, test-side only** (the #1910/#1916 discipline extended to
+  the whole family). The `TestUsageBridgeStreamResynced_*` /
+  `TestStreamUserEvents_ConnectPathFlightNotCoalesced` family reddened
+  ~2/5 in the wild because (A) the per-IP SSE connection budget
+  (`sseConnCounts`, 10/min per loopback IP) is shared by every
+  SSE-connecting test in one test process — in-process stress
+  (`-count>1`) and fast family+neighbors runs exhaust it, and the 429
+  JSON body reads to an SSE collector as "no events" (silent 0.00 s
+  reds), and (B) the on-demand flight-coalescing marker
+  (`busyFlightsInFlight`, keyed by the shared `busySnapWS` id) is
+  deleted only in the flight goroutine's defer — a flight finishing
+  after its test returns leaks a marker that swallows the next test's
+  first cue ("resync flight incomplete before deadline; got []").
+  Fixes: `newBusySnapHarness` clears the workspace's stale marker at
+  construction and wipes its loopback budget consumption on teardown;
+  `collectSSE` starts each connect from a live budget and fails loudly
+  on any non-200 (a budget regression now names its status instead of
+  masquerading as a missing flight); `ConnectPathFlightNotCoalesced`
+  gains #1916's defer-based idempotent park-release (a fatal inside a
+  collector while fetches are parked no longer strands the stub's
+  `srv.Close` to the 10-minute timeout). Red-first: pre-fix
+  origin/main redden 15/20 at `-race -count=20` (exactly the connects
+  past the 10/min budget); mutations (neutered budget reset with a
+  planted consumed budget; neutered marker clear with a planted stale
+  marker) redden deterministically with the named signatures; post-fix
+  270 in-process runs + 20 fresh-process runs across GOMAXPROCS 1/2,
+  `-race`, and the CI `-short -covermode=atomic` shape: 0 reds.
 
 ### Added — Task Board: atomic-create seed validation (#1849 items 1+6)
 

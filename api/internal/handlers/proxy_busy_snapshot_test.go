@@ -64,8 +64,48 @@ type busySnapHarness struct {
 	statuszN func() int // calls received by the statusz stub
 }
 
+// resetLoopbackSSEBudget clears the per-IP SSE connection budget's
+// loopback entries under the limiter's own lock — the reset discipline
+// TestSSEConnAllowed_* established for this package-global state
+// (#1927). Two directions, one invariant: a test's connects must not
+// inherit a predecessor's consumption (reset before connecting), and a
+// test's consumption must not bleed into a successor's connects (reset
+// on harness teardown). Without it, every SSE connect past the 10/min
+// loopback budget inside ONE test process — in-process stress
+// (-count>1), or a fast family+neighbors run — is answered 429, and a
+// 429 body reads as "no events" to an SSE collector: the byte-identical
+// flake class this family reddened with.
+func resetLoopbackSSEBudget() {
+	sseConnMu.Lock()
+	delete(sseConnCounts, "127.0.0.1")
+	delete(sseConnCounts, "::1")
+	sseConnMu.Unlock()
+}
+
 func newBusySnapHarness(t *testing.T, userID string, statuszHandler http.HandlerFunc, si interfaces.SessionIndexService) *busySnapHarness {
 	t.Helper()
+
+	// #1927 cross-test isolation of the flight-coalescing marker:
+	// busyFlightsInFlight is package-global and keyed by the shared
+	// busySnapWS id, while its Delete runs in the flight goroutine's
+	// defer — AFTER the flight's final publish. A predecessor whose
+	// flight goroutine outlived its test (ConnectPath returns on the
+	// JOINER's complete while the on-demand flight is still finishing;
+	// every flight test returns on a complete that strictly precedes
+	// its marker Delete) leaves a stale marker that would swallow THIS
+	// harness's first on-demand cue as a no-op coalesce — the
+	// "resync flight incomplete before deadline" red. The stale marker
+	// belongs to a torn-down harness (its markers publish into a dead
+	// broker), so clearing it here is pure state hygiene: this
+	// harness's cues deterministically start their own flights.
+	busyFlightsInFlight.Delete(busySnapWS)
+
+	// #1927 the same isolation for the SSE connect budget: this
+	// harness's tests will consume loopback connects; wipe that
+	// consumption on teardown so non-harness SSE tests that run after
+	// this file (stream_user_events_test.go's collectors do not reset)
+	// start from a live budget, not this family's leftovers.
+	t.Cleanup(resetLoopbackSSEBudget)
 
 	// The stub is hit from concurrent flight goroutines (an on-demand
 	// flight parking on the handler while a joiner's connect-path flight
@@ -150,6 +190,15 @@ func busyStatuszBody() string {
 func collectSSE(t *testing.T, hs *busySnapHarness, lastEventID string, done func([]apitypes.WorkspaceSSEEvent) bool) []apitypes.WorkspaceSSEEvent {
 	t.Helper()
 
+	// #1927: this connect must not inherit the in-process budget
+	// consumed by earlier tests or -count iterations — the 11th
+	// loopback connect inside one process gets a 429 whose JSON body
+	// would read below as an event-less stream (the family's stress
+	// red). Each collector connect starts from a live budget; the
+	// harness teardown wipes what this test consumed for its
+	// successors.
+	resetLoopbackSSEBudget()
+
 	srv := httptest.NewServer(hs.router)
 	defer srv.Close()
 
@@ -164,6 +213,14 @@ func collectSSE(t *testing.T, hs *busySnapHarness, lastEventID string, done func
 	resp, err := http.DefaultClient.Do(req)
 	require.NoError(t, err)
 	defer resp.Body.Close()
+	// #1927: a rejected connect must fail LOUDLY with its status, never
+	// degrade into "connected but no events arrived" — the silent-429
+	// shape is exactly how budget exhaustion masqueraded as a missing
+	// flight (0.00 s reds, "got no begin marker"). If this ever reddens,
+	// the test-hygiene reset above regressed — not the flight under
+	// test.
+	require.Equal(t, http.StatusOK, resp.StatusCode,
+		"SSE connect rejected (status %d): a non-200 here is connect-budget or auth test-hygiene, not a missing flight", resp.StatusCode)
 
 	scanner := bufio.NewScanner(resp.Body)
 	var evts []apitypes.WorkspaceSSEEvent
@@ -713,6 +770,16 @@ func TestStreamUserEvents_ConnectPathFlightNotCoalesced(t *testing.T) {
 	release := make(chan struct{})
 	fetched := make(chan struct{})
 	var once sync.Once
+	// #1927 (#1916's discipline, same hazard): every require inside this
+	// test and its collectSSE helpers (including the non-200 loud-fail)
+	// Goexits while fetches are parked on <-release; the harness's
+	// t.Cleanup(stub srv.Close) waits for outstanding requests and would
+	// hang the package until go test's 10m timeout. Defers run before
+	// every t.Cleanup, so this idempotent release makes park-release
+	// strictly precede the stub Close on every exit path; the happy path
+	// closes it inline first and the once makes that final.
+	var releaseOnce sync.Once
+	defer releaseOnce.Do(func() { close(release) })
 	hs := newBusySnapHarness(t, "user-join", func(w http.ResponseWriter, r *http.Request) {
 		once.Do(func() { close(fetched) }) // first fetch = the on-demand flight's begin is already published
 		<-release                          // hold every flight's fetch
@@ -754,7 +821,7 @@ func TestStreamUserEvents_ConnectPathFlightNotCoalesced(t *testing.T) {
 
 	// Release the stub: both flights complete; the joiner's own flight
 	// delivers its complete (its authoritative seed).
-	close(release)
+	releaseOnce.Do(func() { close(release) })
 	evts2 := collectSSE(t, hs, "", func(evts []apitypes.WorkspaceSSEEvent) bool {
 		for _, e := range evts {
 			if e.Type == "session.status.snapshot_complete" {
