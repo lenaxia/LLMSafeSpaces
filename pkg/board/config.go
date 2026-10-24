@@ -108,19 +108,19 @@ var personaEligibleStages = map[string]bool{
 // BoardConfig is the effective merged configuration row (every key
 // always present on the wire).
 type BoardConfig struct {
-	ReviewColumn       string                     `json:"reviewColumn"`
-	AutoAssignReviewer bool                       `json:"autoAssignReviewer"`
-	DefaultWorkerSlots int                        `json:"defaultWorkerSlots"`
-	StagePersonas      map[string]PersonaConfig   `json:"stagePersonas"`
+	ReviewColumn       string                   `json:"reviewColumn"`
+	AutoAssignReviewer bool                     `json:"autoAssignReviewer"`
+	DefaultWorkerSlots int                      `json:"defaultWorkerSlots"`
+	StagePersonas      map[string]PersonaConfig `json:"stagePersonas"`
 }
 
 // BoardConfigOverride is a PARTIAL config: nil fields are unset and
 // inherit at merge time. On the wire an unset key is absent (omitempty),
 // never null.
 type BoardConfigOverride struct {
-	ReviewColumn       *string                  `json:"reviewColumn,omitempty"`
-	AutoAssignReviewer *bool                    `json:"autoAssignReviewer,omitempty"`
-	DefaultWorkerSlots *int                     `json:"defaultWorkerSlots,omitempty"`
+	ReviewColumn       *string `json:"reviewColumn,omitempty"`
+	AutoAssignReviewer *bool   `json:"autoAssignReviewer,omitempty"`
+	DefaultWorkerSlots *int    `json:"defaultWorkerSlots,omitempty"`
 	// StagePersonas is one key whose value is an object (stage →
 	// persona). Merge semantics are per-KEY like every other key: a set
 	// stagePersonas object REPLACES the inherited map wholesale (an

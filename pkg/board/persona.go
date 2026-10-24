@@ -141,6 +141,24 @@ func personaClaimEventTx(ctx context.Context, tx pgx.Tx, projectID, taskID, stag
 	return err
 }
 
+// personaRearmCandidatesSQL is the re-arm pass's cheap prefilter:
+// unclaimed in_review rows past their cooldown whose project (or its
+// owner) holds ANY board-config row. It names user_id (the owner's
+// defaults tier) so it lives HERE, beside effectiveConfigForProject —
+// engine.go/reconciler.go stay ownership-agnostic by construction
+// (§4.7, pinned by TestKill_SourceLevelOwnershipPins; the
+// inFlightCountsForProject precedent: the owner column is the config
+// seam's business alone).
+const personaRearmCandidatesSQL = `
+	SELECT t.id, t.project_id, t.failure_count
+	FROM tasks t
+	WHERE t.stage='in_review' AND t.claim_token IS NULL AND t.lease_expires_at IS NULL
+	  AND (t.cooldown_until IS NULL OR t.cooldown_until < now())
+	  AND (
+	    EXISTS (SELECT 1 FROM board_project_config_overrides o WHERE o.project_id = t.project_id)
+	    OR EXISTS (SELECT 1 FROM projects p3 JOIN board_config_defaults d ON d.user_id = p3.user_id
+	               WHERE p3.id = t.project_id))`
+
 // effectiveConfigForProject merges the owner's user-level defaults
 // with the project's overrides (A1 semantics, read time).
 func (s *Service) effectiveConfigForProject(ctx context.Context, p *Project) (BoardConfig, error) {
