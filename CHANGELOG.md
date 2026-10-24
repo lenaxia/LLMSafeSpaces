@@ -1138,6 +1138,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (2a300c9d) re-verified on current main — `-race -count=50` green and
   its mutation recipe (threshold → `cap1MiB`) re-confirmed to redden
   both streaming tests deterministically.
+### Fixed — reap-net coverage gap: engine-authorized and DAG-leg carrier deletes origin-mark before effects (#1915)
+
+- **Every effects-bearing session delete the engine authorizes or
+  observes now runs the mark→effects→clean discipline** previously
+  unique to the Scheduler's `propagateCarrierDelete` (#1882/#1901).
+  Pre-#1915, two leg families ran the platform delete effects with NO
+  origin mark: `deleteSessionAuthorized` (the caller-neutral core
+  behind the routine PreserveOnFailure-success cleanup, the
+  retry-intermediate cleanup, and the DAG reconciler's node-retry
+  cleanup) and the DAG reconciler's `propagateDeletedSession` (both
+  envelope legs — errorCode and delivered). The effects' error return
+  is void, so when the effects' session_index writes failed (or the
+  effects tail died mid-sequence) the ghost row carried **no carrier
+  mark**: the #1901 reap bypass (`ListCarrierOriginMarks` —
+  kind='carrier' rows only) could not admit it, and a history-bearing
+  kept_for_operator ghost survived until operator review — a
+  self-heal coverage gap, not a wrong-reap risk (these are
+  policy-deleted sessions, never preserved ones).
+- **`ReconcilerStore` gains the origin seam** (`RecordSessionOrigin` /
+  `DeleteSessionOrigin` — the structural cause was their absence from
+  the reconciler's store interface); the concrete store already
+  implemented both, so no store-package change. The authorized-delete
+  core takes a deliberately NARROW `SessionOriginStore` (the two
+  origin verbs, not a full store interface) so the caller-neutral
+  dependency stays minimal; nil degrades to the pre-#1915 unmarked
+  behavior for unwired/embedded engines.
+- **Fail-safe semantics, mirroring the carrier tail:** the kind=
+  'carrier' mark is best-effort BEFORE the effects (a failed mark
+  logs; the effects still run — only the reconcile self-heal
+  degrades), and the clean after is best-effort too — when the same
+  DB outage that failed the effects' index writes fails the mark
+  clean, the mark SURVIVES as the reap bypass's admission data
+  (pinned). The #1901 item-b invariant is untouched: a refused delete
+  (the session survived) writes no carrier mark, and preserved
+  sessions' kind='session' verdicts stay invisible to the bypass.
 ## [0.40.1] - 2026-10-21
 
 ### Fixed — v0.40.0 regression: user-stream session events carry the phrase id (#1817, #1821 piece 1)
