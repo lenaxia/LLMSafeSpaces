@@ -42,7 +42,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **#1856** — ai-workflows v0.2.24 reapply (#1896).
 
 ## [Unreleased]
-<<<<<<< HEAD
 
 ### Added — Task Board: atomic-create seed validation (#1849 items 1+6)
 
@@ -63,7 +62,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   first, the seed contract second — a corrupted OR seedless create
   never stores. agentd's board_create_task description teaches the
   contract (Layer 2).
-=======
 ### Fixed — Automation: auto-disable disarms webhook triggers; the routine path's circuit breaker stops wedged-outage hammering (#1834)
 
 ### Fixed — Session-ID emission: the agent-message sentinel carries the phrase, never the raw harness id (#1919)
@@ -215,7 +213,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   bucket, repairing the stationarity defect where the same first-K
   NULL rows were re-walked every pass while the starved tail never
   converged.
->>>>>>> origin/main
 
 ### Added — zero-fill corruption: detection, push guard, and flush belt (#1808)
 
@@ -1127,8 +1124,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (`?limit=`, default 200, max 500 — lease heartbeats write a row per
   call, so long-lived claims stay bounded). OpenAPI schemas and the
   frontend client ship with it.
-### Added — Task Board: kebab menus + delete flows (#1832 item 3)
-
 ### Fixed — CI flake: TestRequestSessionStatusSnapshot_Coalesces coalescing precondition now established, not hoped for (issue #1907)
 
 - **The `-short`+coverage-suite flake (run 39914818351, "got 2")** was a
