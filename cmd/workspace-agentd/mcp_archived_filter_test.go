@@ -194,7 +194,7 @@ func TestMCPSessionList_FilterPreservesElementBytes(t *testing.T) {
 		`{ "id": "ses_live_2", "title": "c", "time": {"created": 1789274402332} }`,
 	}, ", ") + `]`
 
-	filtered := filterArchivedFromSessionList(context.Background(), []byte(body))
+	filtered, fresh := filterArchivedFromSessionList(context.Background(), []byte(body))
 	rawFiltered := splitJSONArray(t, filtered)
 	assert.Equal(t, []string{
 		`{ "id": "ses_live_1", "title": "Fix a & b <script>", "unknownField": { "nested": [1, 2] } }`,
@@ -202,6 +202,7 @@ func TestMCPSessionList_FilterPreservesElementBytes(t *testing.T) {
 	}, rawFiltered, "survivors are byte-exact — internal whitespace and & < > unescaped, unknown fields intact (only inter-element separators normalize)")
 	assert.NotContains(t, filtered, `\u0026`, "no HTML-escaping may be introduced (json.Marshal re-serialization would)")
 	assert.NotContains(t, filtered, `\u003c`)
+	assert.True(t, fresh, "a fresh-set filter reports its capture as provably fresh (#1879 single-capture contract)")
 }
 
 // splitJSONArray splits a JSON array body into its raw element texts
@@ -247,6 +248,8 @@ func TestMCPSessionList_WarmCacheOutage_DegradesToUnfiltered(t *testing.T) {
 	ids := sessionIDs(t, out)
 	assert.Len(t, ids, 2, "a set fetched beyond the TTL no longer filters — the outage degrade is the unfiltered list")
 	assert.Contains(t, ids, s1)
+	assert.Contains(t, out, "archived_set_stale",
+		"the degraded listing is stamped (#1879) — the unfiltered degrade is known-unfiltered, never silent")
 }
 
 // The within-window complement: a last-known set whose successful fetch
@@ -269,7 +272,10 @@ func TestMCPSessionList_WarmCacheWithinTTL_StillFilters(t *testing.T) {
 
 // Malformed / non-array bodies pass through unfiltered — the filter
 // must never rewrite or break the raw list contract on a parse failure
-// (the implemented-but-previously-unpinned fail-open path).
+// (the implemented-but-previously-unpinned fail-open path). The
+// #1879 freshness verdict still rides the same single capture: fresh
+// set + parse failure = provably fresh (nothing hidden); a degraded
+// set reports false.
 func TestMCPSessionList_MalformedBody_PassesThrough(t *testing.T) {
 	seedArchivedCache(t, map[string]bool{"ses_dead": true}, time.Now())
 	for _, body := range []string{
@@ -277,7 +283,9 @@ func TestMCPSessionList_MalformedBody_PassesThrough(t *testing.T) {
 		`{"error":"internal shape"}`,
 		`[`,
 	} {
-		assert.Equal(t, body, filterArchivedFromSessionList(context.Background(), []byte(body)),
+		filtered, fresh := filterArchivedFromSessionList(context.Background(), []byte(body))
+		assert.Equal(t, body, filtered,
 			"a non-array body must pass through byte-identical")
+		assert.True(t, fresh, "the fresh capture stands even when the body cannot be parsed — the set was provable")
 	}
 }

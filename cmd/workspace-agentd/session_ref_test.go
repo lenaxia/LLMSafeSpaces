@@ -903,6 +903,12 @@ func TestArchiveSession_AcceptsAlias(t *testing.T) {
 
 	var archivedBody string
 	platform := newPlatServer(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/internal/v1/session-archived" {
+			// #1879: the post-write confirmation read.
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"archived":[]}`))
+			return
+		}
 		buf := make([]byte, 512)
 		n, _ := r.Body.Read(buf)
 		archivedBody = string(buf[:n])
