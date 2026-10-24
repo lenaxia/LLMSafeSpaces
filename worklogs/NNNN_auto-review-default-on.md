@@ -44,6 +44,15 @@ Tests committed FIRST at a6ffa0f07 (RED on main's defaults):
 
 Implementation + stale-pin updates in the follow-up commit (see PR).
 
+## r1 review (PR #1939, REQUEST_CHANGES → addressed)
+
+Two must-fix findings, both addressed:
+
+1. **User-tier drift swallow at the dispatch gate** — `effectiveConfigForProject` (review_assign.go) discarded a `StorageDriftError` from DECODING the user-defaults map (inner `err == nil`), while the project arm propagated both. Pre-flip: inert (floor manual/false). Post-flip: silently ENABLED dispatch for a user whose stored map drifted — against the fail-closed doctrine every other consumer pins (`TestBoardConfig_FailClosedOnDrift`). Fix: user-tier decode errors propagate exactly like the project arm's (`maybeAutoAssignReview` already warn+returns → no dispatch, no event). New pin `TestReview_GateFailsClosedOnUserMapDrift`; mutation-verified (reverting to the swallow reddens exactly this pin; the fix greens it). Commit 5fd5bed41.
+2. **CHANGELOG conflict with main** — main's #1836 bulk-variants entry landed adjacent under `[Unreleased]`; union-merge commit 70fa45e79 (openapi.yaml auto-merged clean; full board suite re-run GREEN on a fresh DB post-merge at 5fd5bed41).
+
+Non-blocking noted, not taken (out of minimal-diff scope): reviewer-assigner throttle follow-up; cosmetic refresh of flip-invariant stub fixtures.
+
 ## Test evidence (final head, exact commands + outcomes)
 
 ```
