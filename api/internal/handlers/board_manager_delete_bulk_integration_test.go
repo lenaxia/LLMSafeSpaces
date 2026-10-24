@@ -195,7 +195,11 @@ func TestIntegrationBoardManagerDeleteTasksBulk(t *testing.T) {
 	foreignItem := byRef[foreignTask.ShortID]
 	assert.Equal(t, safeCode(foreignItem), board.BulkItemNotFound,
 		"the workspace binding is the perimeter: the foreign-workspace item is a plain not_found")
-	assert.Equal(t, missItem, foreignItem, "miss ≡ foreign: byte-identical items (never-disclose)")
+	// Refs echo verbatim (differ by construction); the never-disclose
+	// property lives in the error payload: byte-identical code + detail.
+	require.NotNil(t, missItem.Error)
+	require.NotNil(t, foreignItem.Error)
+	assert.Equal(t, missItem.Error, foreignItem.Error, "miss ≡ foreign: byte-identical error payloads (never-disclose)")
 	assert.NotContains(t, w.Body.String(), "claim_token", "#1864: the bulk projection carries no tokens")
 
 	// The landed item's audit: delete_task event attributed to the

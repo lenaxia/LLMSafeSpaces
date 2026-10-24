@@ -151,8 +151,9 @@ func (s *BoardSuite) TestBulk_DeleteInFlightAbortsOnce() {
 
 // TestBulk_DeleteIdempotentResubmit is contract 2 for the destructive
 // variant: re-submitting the SAME batch (same requestID) is safe — the
-// landed items render the truthful absence (not_found, byte-identical
-// to a miss's item), no new audit rows appear, nothing errors; a
+// landed items render the truthful absence (not_found, the error
+// payload byte-identical to a miss's), no new audit rows appear,
+// nothing errors; a
 // partial batch (the failed subset alone) re-arbitrates cleanly.
 func (s *BoardSuite) TestBulk_DeleteIdempotentResubmit() {
 	ws := s.seedWorkspace()
@@ -176,12 +177,16 @@ func (s *BoardSuite) TestBulk_DeleteIdempotentResubmit() {
 	require.NoError(s.T(), err, "re-submitting the batch is safe — never an error")
 	byRef2 := bulkByID(s.T(), res2)
 
-	// Absence ≡ miss ≡ foreign: the previously-deleted item's not_found
-	// is BYTE-IDENTICAL to the never-existed ref's item (same code, same
-	// detail — no way to tell "deleted earlier" from "never was", which
-	// is exactly the never-disclose property).
-	assert.Equal(s.T(), byRef2["tsk-nope-does-not-exist"], byRef2[a.ShortID],
-		"absence renders the exact item a miss renders")
+	// Absence ≡ miss ≡ foreign: the previously-deleted item's error
+	// payload is BYTE-IDENTICAL to the never-existed ref's (same code,
+	// same detail — no way to tell "deleted earlier" from "never was",
+	// which is exactly the never-disclose property; the Ref field echoes
+	// each caller's ref verbatim by design, so the ITEMS differ there
+	// and only there).
+	require.NotNil(s.T(), byRef2[a.ShortID].Error)
+	require.NotNil(s.T(), byRef2["tsk-nope-does-not-exist"].Error)
+	assert.Equal(s.T(), byRef2["tsk-nope-does-not-exist"].Error, byRef2[a.ShortID].Error,
+		"absence renders the exact error a miss renders")
 	assert.Equal(s.T(), board.BulkItemNotFound, byRef2[a.ShortID].Error.Code)
 	assert.Equal(s.T(), 2, s.countEvents("delete_task"), "no duplicate delete writes on re-submit")
 
@@ -265,8 +270,11 @@ func (s *BoardSuite) TestBulk_DeleteTripleEqualityNeverDisclose() {
 		assert.Equal(s.T(), board.BulkItemNotFound, item.Error.Code)
 		assert.NotContains(s.T(), item.Error.Detail, "did you mean", "bare not_found — no suggestions on the bulk envelope")
 	}
-	assert.Equal(s.T(), res[1], res[2], "absence ≡ miss: byte-identical items")
-	assert.Equal(s.T(), res[0].Error.Code, res[1].Error.Code, "foreign ≡ miss ≡ absence at the code tier")
+	// Refs echo verbatim (differ by construction); the never-disclose
+	// property lives in the error payload: byte-identical code + detail
+	// across absence, miss, and foreign.
+	assert.Equal(s.T(), res[1].Error, res[2].Error, "absence ≡ miss: byte-identical error payloads")
+	assert.Equal(s.T(), res[0].Error, res[1].Error, "foreign ≡ miss ≡ absence: byte-identical error payloads")
 	assert.False(s.T(), s.bulkDeleteGone(foreign.ID), "the foreign row is untouched")
 }
 
