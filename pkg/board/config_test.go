@@ -24,14 +24,16 @@ func strPtr(s string) *string { return &s }
 func boolPtr(b bool) *bool    { return &b }
 func intPtr(i int) *int       { return &i }
 
-// TestBoardConfigDefaults pins the code defaults (#1832 item 6):
-// reviewColumn=manual, autoAssignReviewer=false, defaultWorkerSlots=2
-// (the platform's existing worker-slots default — service create,
-// 000036 column default, MCP tool docs all say 2).
+// TestBoardConfigDefaults pins the code defaults (owner ruling
+// 2026-10-24 — "flip defaults for review to on"): reviewColumn=auto,
+// autoAssignReviewer=true, defaultWorkerSlots=2 (the platform's
+// existing worker-slots default — service create, 000036 column
+// default, MCP tool docs all say 2). A stored explicit opt-out at
+// either tier still wins (TestReview_ExplicitOptOutSurvivesDefaultFlip).
 func TestBoardConfigDefaults(t *testing.T) {
 	d := DefaultBoardConfig()
-	assert.Equal(t, "manual", d.ReviewColumn)
-	assert.False(t, d.AutoAssignReviewer)
+	assert.Equal(t, "auto", d.ReviewColumn)
+	assert.True(t, d.AutoAssignReviewer)
 	assert.Equal(t, 2, d.DefaultWorkerSlots)
 }
 
