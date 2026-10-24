@@ -42,6 +42,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **#1856** — ai-workflows v0.2.24 reapply (#1896).
 
 ## [Unreleased]
+
+## [0.42.0] - 2026-10-24
+
 ### Changed — Task Board: auto-review defaults flipped to on (owner ruling 2026-10-24)
 
 - **The code defaults for review automation are now `reviewColumn=auto`
