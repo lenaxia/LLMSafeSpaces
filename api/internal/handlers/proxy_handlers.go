@@ -25,6 +25,7 @@ import (
 	v1 "github.com/lenaxia/llmsafespaces/pkg/apis/llmsafespaces/v1"
 	"github.com/lenaxia/llmsafespaces/pkg/session"
 	"github.com/lenaxia/llmsafespaces/pkg/session/attachments"
+	"github.com/lenaxia/llmsafespaces/pkg/types"
 )
 
 func (h *ProxyHandler) CreateSession(c *gin.Context) {
@@ -180,6 +181,13 @@ func (h *ProxyHandler) SendMessage(c *gin.Context) {
 		}
 		if isTextOnlyWedgeSendErr(sendErr) {
 			writeTextOnlyWedgeBody(c)
+			return
+		}
+		// #1889 F2: a send that failed because the TARGET does not
+		// exist (orphaned phrase, deleted session) answers the typed
+		// session-gone verdict with the §4.6 did-you-mean payload —
+		// never a raw 5xx the #1850 expectation forbids.
+		if h.sendTargetGone(c, wid, sid, "SendMessage") {
 			return
 		}
 		errBody := []byte(`{"error":"failed to send message"}`)
@@ -834,6 +842,18 @@ func (h *ProxyHandler) ApplySessionDeleteEffects(ctx context.Context, workspaceI
 // streams). The pod-side short-id replica invalidation is agentd's
 // own on its delete legs — the fourth part of the convergence.
 func (h *ProxyHandler) PropagateSessionDeleted(ctx context.Context, workspaceID, sessionID string) {
+	// #1889 F3: capture the deleted TREE's rows BEFORE the delete so
+	// every orphaned phrase — the target's AND its descendants' — is
+	// observable after it (best-effort: a failed lookup skips the
+	// disposition, never the delete).
+	treeRows := []types.SessionListItem{{InternalID: sessionID}}
+	if h.sessionIndex != nil {
+		//nolint:contextcheck // the #1889 F3 capture must survive client disconnect (the neighbors' posture)
+		if rows, err := h.sessionIndex.ListByWorkspace(context.Background(), workspaceID); err == nil {
+			treeRows = rows
+		}
+	}
+
 	//nolint:contextcheck // tombstone must survive client disconnect
 	h.state().MarkSessionDeleted(context.Background(), workspaceID, sessionID)
 
@@ -845,6 +865,12 @@ func (h *ProxyHandler) PropagateSessionDeleted(ctx context.Context, workspaceID,
 		//nolint:contextcheck // index cleanup must survive client disconnect
 		if err := h.sessionIndex.DeleteSession(context.Background(), workspaceID, sessionID); err != nil {
 			h.logger.Error("failed to delete session from index", err, "workspaceID", workspaceID, "sessionID", sessionID)
+		} else {
+			// #1889 F3: the tree delete orphaned every minted phrase it
+			// carried — target AND descendants (DeleteSessionTree is
+			// recursive; the F1 ledger keeps the bindings recoverable,
+			// this makes the orphaning events visible).
+			h.observeTreePhrasesOrphaned(workspaceID, "delete_effects", sessionID, treeRows)
 		}
 	}
 
@@ -1125,6 +1151,10 @@ func (h *ProxyHandler) syncSend(c *gin.Context, wid, sid, text string, modelOver
 		// keep the generic 502.
 		if isTextOnlyWedgeSendErr(err) {
 			writeTextOnlyWedgeBody(c)
+			return
+		}
+		// #1889 F2: same typed not-found surface on the fallback send.
+		if h.sendTargetGone(c, wid, sid, "syncSend") {
 			return
 		}
 		if systemnotices.LevelForRatio(diskPressureRatio(workspace.Status.DiskUsedBytes, workspace.Status.DiskTotalBytes)) == systemnotices.LevelCritical {

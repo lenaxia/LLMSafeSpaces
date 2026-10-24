@@ -91,6 +91,117 @@ func (h *ProxyHandler) carrierOriginMarks(ctx context.Context, workspaceID strin
 	return marks
 }
 
+// observePhraseOrphaned is the #1889 F3 disposition: a row deletion
+// that orphaned a MINTED phrase is recorded — one counter increment
+// (reaped_with_phrase) + one Warn log. Pre-#1889 nothing recorded it:
+// a recurrence of the re-phrase class was reconstructable only from
+// repro tables, invisible in ops dashboards. Phrase-less rows orphaned
+// nothing (the outcome is the phrase-orphaning signal, not a delete
+// counter). The F1 ledger keeps the binding itself durable; this
+// observation makes the ORPHANING EVENT visible.
+func (h *ProxyHandler) observePhraseOrphaned(workspaceID, origin string, row types.SessionListItem) {
+	if row.ShortID == "" {
+		return
+	}
+	sessionindex.ReconcileOutcome("reaped_with_phrase")
+	h.logger.Warn("session index: row delete orphaned a minted phrase (#1889 F3)",
+		"workspaceID", workspaceID, "sessionID", row.InternalID, "shortID", row.ShortID, "origin", origin)
+}
+
+// collectDescendantRows walks the listing's parent links under one
+// root (r2 robustness finding 1: DeleteSessionTree is a RECURSIVE
+// delete — every descendant row dies with the root, and each can
+// carry its own minted phrase born via UpsertSessionParent's
+// phrase-bearing INSERT leg). A child's ParentID is its parent's
+// PHRASE, degrading to the parent's harness id for unminted parents —
+// both keys are indexed, and the walk enqueues both of each child's
+// keys so grandchildren link either way; a visited set bounds cycles.
+// Best-effort observability input, like every handler-side row read:
+// a descendant born after the listing is invisible here.
+func collectDescendantRows(rows []types.SessionListItem, rootInternalID string) []types.SessionListItem {
+	childrenOf := make(map[string][]types.SessionListItem, len(rows))
+	for _, r := range rows {
+		if r.ParentID == "" || r.InternalID == "" {
+			continue
+		}
+		childrenOf[r.ParentID] = append(childrenOf[r.ParentID], r)
+	}
+	keysOf := func(r types.SessionListItem) []string {
+		return []string{r.InternalID, r.ID, r.ShortID}
+	}
+	seen := map[string]bool{rootInternalID: true}
+	queue := []string{rootInternalID}
+	for _, r := range rows {
+		if r.InternalID == rootInternalID {
+			for _, k := range keysOf(r) {
+				if k != "" && !seen[k] {
+					seen[k] = true
+					queue = append(queue, k)
+				}
+			}
+		}
+	}
+	var out []types.SessionListItem
+	for len(queue) > 0 {
+		cur := queue[0]
+		queue = queue[1:]
+		for _, child := range childrenOf[cur] {
+			if seen[child.InternalID] {
+				continue
+			}
+			seen[child.InternalID] = true
+			out = append(out, child)
+			for _, k := range keysOf(child) {
+				if k != "" && !seen[k] {
+					seen[k] = true
+					queue = append(queue, k)
+				}
+			}
+		}
+	}
+	return out
+}
+
+// observeTreePhrasesOrphaned is observePhraseOrphaned over the WHOLE
+// deleted tree: the root row (if the listing still knows it) plus
+// every descendant it carries — the F3 surface must see descendant
+// phrases orphaned by a tree delete, not just the target's.
+func (h *ProxyHandler) observeTreePhrasesOrphaned(workspaceID, origin, rootInternalID string, rows []types.SessionListItem) {
+	for _, row := range collectDescendantRows(rows, rootInternalID) {
+		h.observePhraseOrphaned(workspaceID, origin, row)
+	}
+	for _, row := range rows {
+		if row.InternalID == rootInternalID {
+			h.observePhraseOrphaned(workspaceID, origin, row)
+			return
+		}
+	}
+}
+
+// sendTargetGone is the #1889 F2 seam: after a send failure, ONE
+// by-ID existence probe asks the READ route for the definitive verdict
+// — the adapter's message-POST 404 semantics are deliberately
+// unclassified (adapter_helpers: non-session routes can 404 for other
+// meanings), but the READ route's 404 IS the definitive not-found per
+// the #1340 ruling, so the probe — never the send error itself —
+// arbitrates. Definitively absent → reapSessionIfGone answers the
+// typed 410 + §4.6 did-you-mean and reaps the ghost row (the read
+// paths' exact surface for the same verdict); alive or indeterminate →
+// false (the caller keeps its transport-failure answer — an
+// unreachable pod is not evidence of deletion, and a LIVE target whose
+// turn failed mid-flight must never be told "gone"). Detached context:
+// the probe benefits the response, but must survive a client that
+// disconnected during the failed send.
+func (h *ProxyHandler) sendTargetGone(c *gin.Context, workspaceID, sessionID, route string) bool {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_, perr := h.probeSessionAliveByID(ctx, workspaceID, sessionID)
+	if perr == nil || !errors.Is(perr, agent.ErrSessionNotFound) {
+		return false
+	}
+	return h.reapSessionIfGone(c, workspaceID, sessionID, perr, route)
+}
+
 // reapSessionIfGone classifies an adapter error from a session-scoped
 // read: when the agent's definitive verdict is not-found
 // (agent.ErrSessionNotFound), the session_index row is a stale ghost
@@ -136,6 +247,7 @@ func (h *ProxyHandler) reapSessionIfGone(c *gin.Context, workspaceID, sessionID 
 					if marks[sessionID] {
 						sessionindex.ReconcileOutcome("reaped_carrier")
 					}
+					h.observeTreePhrasesOrphaned(workspaceID, "read_path_reap", sessionID, rows)
 					writeSessionGoneBodyWithSuggestions(c, sessionGoneReaped, suggestions)
 				}
 			} else {
@@ -246,6 +358,13 @@ func (h *ProxyHandler) runSessionIndexReconciliation(workspaceID string) {
 		next[id] = reconcileMissThreshold
 	}
 	h.state().SetReconcileMisses(ctx, workspaceID, next)
+	// byInternal feeds BOTH post-reap populations' lookups: the #1889
+	// F3 phrase-orphan disposition at the delete site, and the
+	// truthfulness split below (one map, built once).
+	byInternal := make(map[string]types.SessionListItem, len(rows))
+	for _, row := range rows {
+		byInternal[row.InternalID] = row
+	}
 	for _, id := range remove {
 		// #1850: the harness LIST is not a liveness authority — sessions
 		// created through the harness/Act path (exactly the
@@ -304,6 +423,7 @@ func (h *ProxyHandler) runSessionIndexReconciliation(workspaceID string) {
 		if marks[id] {
 			sessionindex.ReconcileOutcome("reaped_carrier")
 		}
+		h.observeTreePhrasesOrphaned(workspaceID, "reconcile_reap", id, rows)
 		h.logger.Info("session reconcile: reaped ghost index row",
 			"workspaceID", workspaceID, "sessionID", id)
 	}
@@ -315,10 +435,6 @@ func (h *ProxyHandler) runSessionIndexReconciliation(workspaceID string) {
 	// both conflated them. The row lookup re-derives which is which;
 	// a kept id missing from the lookup keeps the operator-review
 	// classification (never worse than the old single bucket).
-	byInternal := make(map[string]types.SessionListItem, len(rows))
-	for _, row := range rows {
-		byInternal[row.InternalID] = row
-	}
 	for _, id := range keptForOperator {
 		if row, ok := byInternal[id]; ok && row.MessageCount == 0 {
 			sessionindex.ReconcileOutcome("kept_spawn_window")

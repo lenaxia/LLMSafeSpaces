@@ -31,10 +31,22 @@ const registerRetries = 5
 // The ON CONFLICT DO UPDATE legs never bind short_id, so when the
 // row already exists the mint evaporates and the EXISTING phrase
 // wins — idempotent-to-the-original by construction.
-func (s *Service) execWithMintedPhrase(ctx context.Context, fn func(phrase string) error) error {
-	base, err := shortid.MintPhrase()
-	if err != nil {
-		return err
+//
+// #1889 F1: the base is the LEDGER phrase when one is durably bound —
+// a row re-born after row death (late title/message/context events on
+// a deleted session, the resurrection vector) CONVERGES on its
+// original phrase instead of a fresh mint. The base drawn once still
+// holds: the suffix ladder climbs from the ledger phrase.
+func (s *Service) execWithMintedPhrase(ctx context.Context, workspaceID, sessionID string, fn func(phrase string) error) error {
+	base := s.phraseBaseFor(ctx, workspaceID, sessionID)
+	if base == "" {
+		// The ledger degraded AND the mint failed — surface the mint
+		// failure exactly as before (nothing new to report).
+		fresh, err := shortid.MintPhrase()
+		if err != nil {
+			return err
+		}
+		base = fresh
 	}
 	for attempt := 0; attempt < registerRetries; attempt++ {
 		minted := base
@@ -46,6 +58,12 @@ func (s *Service) execWithMintedPhrase(ctx context.Context, fn func(phrase strin
 				continue
 			}
 			return err
+		}
+		if attempt > 0 {
+			// A suffixed birth won: the base phrase is owned by another
+			// live row (a re-mint after this session's row died), so the
+			// ledger must track the phrase the row actually holds.
+			s.recordPhraseLedger(ctx, workspaceID, sessionID, minted)
 		}
 		return nil
 	}
@@ -61,6 +79,12 @@ func (s *Service) execWithMintedPhrase(ctx context.Context, fn func(phrase strin
 // short id (rollout backfill) is filled atomically by UPDATE … WHERE
 // short_id IS NULL; a raced fill converges on re-read. Idempotent:
 // re-registering returns the surviving short id, never re-mints.
+//
+// #1889 F1: the base is the LEDGER phrase when one is durably bound —
+// a session re-registered after its row died (hard delete,
+// post-grace reap) CONVERGES on its original phrase instead of a
+// fresh mint. The ledger binding survives the row (migration 000047);
+// a fresh mint is claimed into the ledger BEFORE the row is born.
 func (s *Service) EnsureSessionRegistered(ctx context.Context, workspaceID, sessionID, harnessType string) (string, error) {
 	// #1756: the mint is a 3-word phrase; a collision (the partial
 	// unique index raises 23505) re-mints with the DETERMINISTIC
@@ -68,10 +92,16 @@ func (s *Service) EnsureSessionRegistered(ctx context.Context, workspaceID, sess
 	// BASE is drawn ONCE, outside the loop: two concurrent minters of
 	// the same base converge on the same suffixed form (that is the
 	// determinism the ruling buys — a fresh base per attempt would
-	// diverge the racers for no benefit).
-	base, err := shortid.MintPhrase()
-	if err != nil {
-		return "", err
+	// diverge the racers for no benefit). #1889: the base is the
+	// ledger phrase when bound (durable convergence), else the claim-
+	// winning fresh mint.
+	base := s.phraseBaseFor(ctx, workspaceID, sessionID)
+	if base == "" {
+		fresh, err := shortid.MintPhrase()
+		if err != nil {
+			return "", err
+		}
+		base = fresh
 	}
 	for attempt := 0; attempt < registerRetries; attempt++ {
 		minted := base
@@ -96,6 +126,12 @@ func (s *Service) EnsureSessionRegistered(ctx context.Context, workspaceID, sess
 			return "", err
 		}
 		if n == 1 {
+			if attempt > 0 {
+				// A suffixed birth won (the base phrase is owned by
+				// another live row) — the ledger tracks the phrase the
+				// row actually holds (#1889).
+				s.recordPhraseLedger(ctx, workspaceID, sessionID, minted)
+			}
 			return minted, nil
 		}
 		// Row already exists: read back the surviving short id.
@@ -107,6 +143,12 @@ func (s *Service) EnsureSessionRegistered(ctx context.Context, workspaceID, sess
 			return "", err
 		}
 		if existing.Valid && existing.String != "" {
+			// The row pre-dated the claim (born while the ledger was
+			// degraded, or a raced birth): the ROW's phrase is the
+			// truth the ledger must hold, or a later death+resurrection
+			// would converge on the never-exposed claim instead (the
+			// re-phrase class, #1889 r2 robustness finding 2).
+			s.recordPhraseLedger(ctx, workspaceID, sessionID, existing.String)
 			return existing.String, nil
 		}
 		// Pre-rollout row (short_id NULL): backfill atomically. The
@@ -128,6 +170,9 @@ func (s *Service) EnsureSessionRegistered(ctx context.Context, workspaceID, sess
 			return "", err
 		}
 		if filled.Valid && filled.String != "" {
+			if attempt > 0 {
+				s.recordPhraseLedger(ctx, workspaceID, sessionID, filled.String)
+			}
 			return filled.String, nil
 		}
 	}

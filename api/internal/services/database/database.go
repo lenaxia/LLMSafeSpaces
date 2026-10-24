@@ -1216,7 +1216,20 @@ func (s *Service) ListSessionIndex(ctx context.Context, workspaceID string) ([]t
 	return items, rows.Err()
 }
 
+// DeleteSessionIndex is the workspace-reset path: every session_index
+// row for the workspace dies, and with them every phrase binding's
+// subject — the #1889 ledger is cleared HERE (the retention posture
+// migration 000047 records: ledger rows live as long as the
+// workspace). Best-effort ordering note: the ledger clear runs FIRST
+// so a mid-reset crash cannot leave phrase bindings for rows that no
+// longer exist (a stale binding would shadow nothing — harmless — but
+// clearing rows-first would leave a window where a re-created
+// workspace id converged on dead phrases).
 func (s *Service) DeleteSessionIndex(ctx context.Context, workspaceID string) error {
+	if _, err := s.DB.ExecContext(ctx,
+		`DELETE FROM session_phrase_ledger WHERE workspace_id = $1`, workspaceID); err != nil {
+		return err
+	}
 	_, err := s.DB.ExecContext(ctx, `DELETE FROM session_index WHERE workspace_id = $1`, workspaceID)
 	return err
 }
@@ -1263,7 +1276,7 @@ func (s *Service) MarkSessionIndexDeleted(ctx context.Context, workspaceID, sess
 // carries a minted phrase — the row is born WITH its short_id (same
 // statement, same transaction); the conflict leg never touches it.
 func (s *Service) UpsertSessionMessage(ctx context.Context, workspaceID, sessionID string, at time.Time) error {
-	return s.execWithMintedPhrase(ctx, func(phrase string) error {
+	return s.execWithMintedPhrase(ctx, workspaceID, sessionID, func(phrase string) error {
 		_, err := s.DB.ExecContext(ctx,
 			`INSERT INTO session_index (workspace_id, session_id, short_id, last_message_at, message_count, updated_at)
 		 VALUES ($1, $2, $3, $4, 1, NOW())
@@ -1278,7 +1291,7 @@ func (s *Service) UpsertSessionMessage(ctx context.Context, workspaceID, session
 // UpsertSessionTitle persists the session title. #1850 phrase-bearing
 // INSERT leg; the conflict leg never touches short_id.
 func (s *Service) UpsertSessionTitle(ctx context.Context, workspaceID, sessionID, title string) error {
-	return s.execWithMintedPhrase(ctx, func(phrase string) error {
+	return s.execWithMintedPhrase(ctx, workspaceID, sessionID, func(phrase string) error {
 		_, err := s.DB.ExecContext(ctx,
 			`INSERT INTO session_index (workspace_id, session_id, short_id, title, updated_at)
 		 VALUES ($1, $2, $3, $4, NOW())
@@ -1294,7 +1307,7 @@ func (s *Service) UpsertSessionTitle(ctx context.Context, workspaceID, sessionID
 // adapter-declared usage event. Idempotent: concurrent writes of the same
 // value are safe (both replicas receive the same event and write the same data).
 func (s *Service) UpsertSessionContextUsed(ctx context.Context, workspaceID, sessionID string, contextUsed int64) error {
-	return s.execWithMintedPhrase(ctx, func(phrase string) error {
+	return s.execWithMintedPhrase(ctx, workspaceID, sessionID, func(phrase string) error {
 		_, err := s.DB.ExecContext(ctx,
 			`INSERT INTO session_index (workspace_id, session_id, short_id, context_used, updated_at)
 		 VALUES ($1, $2, $3, $4, NOW())
@@ -1312,7 +1325,7 @@ func (s *Service) UpsertSessionContextUsed(ctx context.Context, workspaceID, ses
 // workspaces write-free: the 30s reconcile pass only touches rows
 // whose count actually drifted.
 func (s *Service) UpsertSessionMessageCount(ctx context.Context, workspaceID, sessionID string, count int) error {
-	return s.execWithMintedPhrase(ctx, func(phrase string) error {
+	return s.execWithMintedPhrase(ctx, workspaceID, sessionID, func(phrase string) error {
 		_, err := s.DB.ExecContext(ctx,
 			`INSERT INTO session_index (workspace_id, session_id, short_id, message_count, updated_at)
 		 VALUES ($1, $2, $3, $4, NOW())
@@ -1334,7 +1347,7 @@ func (s *Service) UpsertSessionMessageCount(ctx context.Context, workspaceID, se
 // practice, and an UPDATE-on-conflict path costs less than a SELECT-then-
 // UPDATE round trip.
 func (s *Service) UpsertSessionParent(ctx context.Context, workspaceID, sessionID, parentID string) error {
-	return s.execWithMintedPhrase(ctx, func(phrase string) error {
+	return s.execWithMintedPhrase(ctx, workspaceID, sessionID, func(phrase string) error {
 		_, err := s.DB.ExecContext(ctx,
 			`INSERT INTO session_index (workspace_id, session_id, short_id, parent_session_id, updated_at)
 		 VALUES ($1, $2, $3, $4, NOW())
@@ -1346,7 +1359,7 @@ func (s *Service) UpsertSessionParent(ctx context.Context, workspaceID, sessionI
 }
 
 func (s *Service) UpdateSessionLastSeen(ctx context.Context, workspaceID, sessionID string) error {
-	return s.execWithMintedPhrase(ctx, func(phrase string) error {
+	return s.execWithMintedPhrase(ctx, workspaceID, sessionID, func(phrase string) error {
 		_, err := s.DB.ExecContext(ctx,
 			`INSERT INTO session_index (workspace_id, session_id, short_id, last_seen_at, message_count, updated_at)
 		 VALUES ($1, $2, $3, NOW(), 0, NOW())

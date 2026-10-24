@@ -144,6 +144,12 @@ func TestAdapterPath_SendMessage_AdapterError_CleansActiveSession(t *testing.T) 
 		sendFn: func(context.Context, string, string, string, string, session.SendOpts) (*session.Message, error) {
 			return nil, errors.New("upstream error")
 		},
+		// #1889 F2: the send-error path now probes by-ID for the typed
+		// not-found; this session is a transport failure on a LIVE
+		// target, so the probe answers alive and the 502 stands.
+		getSessionFn: func(_ context.Context, _, _, sid string) (*session.Session, error) {
+			return &session.Session{ID: sid}, nil
+		},
 	}
 
 	ms.On("CheckQuota", mock.Anything, mock.Anything, "llm_tokens").Return(true, int64(10), nil)
@@ -281,6 +287,11 @@ func TestSendPromptAsync_DiskFull_ReturnsTyped507(t *testing.T) {
 		sendFn: func(context.Context, string, string, string, string, session.SendOpts) (*session.Message, error) {
 			return nil, errors.New("upstream 500: UnknownError")
 		},
+		// #1889 F2: the send-error path's by-ID not-found probe; alive
+		// here, so the 507 classification this pin asserts stands.
+		getSessionFn: func(_ context.Context, _, _, sid string) (*session.Session, error) {
+			return &session.Session{ID: sid}, nil
+		},
 	}
 
 	ms.On("CheckQuota", mock.Anything, mock.Anything, "llm_tokens").Return(true, int64(10), nil)
@@ -324,6 +335,11 @@ func TestSendPromptAsync_DiskNotFull_KeepsGeneric502(t *testing.T) {
 		sendFn: func(context.Context, string, string, string, string, session.SendOpts) (*session.Message, error) {
 			return nil, errors.New("upstream 500: UnknownError")
 		},
+		// #1889 F2: the send-error path's by-ID not-found probe; alive
+		// here, so the generic-502-below-critical pin stands.
+		getSessionFn: func(_ context.Context, _, _, sid string) (*session.Session, error) {
+			return &session.Session{ID: sid}, nil
+		},
 	}
 
 	ms.On("CheckQuota", mock.Anything, mock.Anything, "llm_tokens").Return(true, int64(10), nil)
@@ -351,7 +367,12 @@ func TestAdapterPath_SendPromptAsync_AdapterError_CleansActiveSession(t *testing
 
 	env.handler.adapter = &mockAdapter{
 		sendFn: func(context.Context, string, string, string, string, session.SendOpts) (*session.Message, error) {
-			return nil, errors.New("upstream not found")
+			return nil, errors.New("upstream 500: UnknownError")
+		},
+		// #1889 F2: the send-error path now probes by-ID; alive here,
+		// so this pin's slot-cleanup-on-transport-failure stands.
+		getSessionFn: func(_ context.Context, _, _, sid string) (*session.Session, error) {
+			return &session.Session{ID: sid}, nil
 		},
 	}
 

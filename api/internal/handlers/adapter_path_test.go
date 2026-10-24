@@ -734,8 +734,13 @@ func TestSendMessage_AdapterPath_ReturnsContractMessage(t *testing.T) {
 func TestSendMessage_AdapterPath_Error_Returns502(t *testing.T) {
 	h := newProxyHandlerForAdapterTest(t)
 	h.adapter = &mockAdapter{
-		sendFn: func(_ context.Context, _, _, _, _ string, _ session.SendOpts) (*session.Message, error) {
+		sendFn: func(_ context.Context, _, _, _ string, _ string, _ session.SendOpts) (*session.Message, error) {
 			return nil, fmt.Errorf("pod unreachable")
+		},
+		// #1889 F2: the send-error path's by-ID not-found probe; a live
+		// target keeps the generic 502 this pin asserts.
+		getSessionFn: func(_ context.Context, _, _, sid string) (*session.Session, error) {
+			return &session.Session{ID: sid}, nil
 		},
 	}
 	w := httptest.NewRecorder()
@@ -853,6 +858,11 @@ func TestSendPromptAsync_AdapterPath_Error_Returns502(t *testing.T) {
 		sendFn: func(_ context.Context, _, _, _, _ string, _ session.SendOpts) (*session.Message, error) {
 			return nil, fmt.Errorf("pod unreachable")
 		},
+		// #1889 F2: the send-error path's by-ID not-found probe; a live
+		// target keeps the generic 502 this pin asserts.
+		getSessionFn: func(_ context.Context, _, _, sid string) (*session.Session, error) {
+			return &session.Session{ID: sid}, nil
+		},
 	}
 
 	w := httptest.NewRecorder()
@@ -867,11 +877,23 @@ func TestSendPromptAsync_AdapterPath_Error_Returns502(t *testing.T) {
 	assert.Equal(t, http.StatusBadGateway, w.Code)
 }
 
-func TestSendPromptAsync_AdapterPath_SessionNotFound_Returns404(t *testing.T) {
+// TestSendPromptAsync_AdapterPath_SessionNotFound_ReturnsTyped410:
+// pre-#1889 this pin asserted the RAW 502 ("session not found error
+// maps to 502 via Send path") — the exact "degradation marker becomes
+// a hard 500" class #1850's expectation forbade and #1889 F2 closes.
+// The send failure's cause is arbitrated by the by-ID probe; a
+// definitive not-found answers the typed session-gone surface.
+func TestSendPromptAsync_AdapterPath_SessionNotFound_ReturnsTyped410(t *testing.T) {
+	idx := newMockSessionIndex()
 	h := newProxyHandlerForAdapterTest(t)
+	h.sessionIndex = idx
+	h.sessionRefs = &phraseResolver{idx: idx}
 	h.adapter = &mockAdapter{
 		sendFn: func(_ context.Context, _, _, _, _ string, _ session.SendOpts) (*session.Message, error) {
 			return nil, fmt.Errorf("session not found: ses_missing")
+		},
+		getSessionFn: func(_ context.Context, _, _, _ string) (*session.Session, error) {
+			return nil, fmt.Errorf("%w: GET /session/ses_missing returned 404", agent.ErrSessionNotFound)
 		},
 	}
 
@@ -884,7 +906,8 @@ func TestSendPromptAsync_AdapterPath_SessionNotFound_Returns404(t *testing.T) {
 	c.Request = httptest.NewRequest(http.MethodPost, "/", strings.NewReader(`{"parts":[{"type":"text","text":"hi"}]}`))
 
 	h.SendPromptAsync(c)
-	assert.Equal(t, http.StatusBadGateway, w.Code, "session-not-found error maps to 502 via Send path")
+	assert.Equal(t, http.StatusGone, w.Code,
+		"a definitively-absent target answers the typed gone surface, not the raw 502 (#1889 F2)")
 }
 
 // TestE2E_Adapter_SendPromptAsync_UsesV1SendNotV2Queue is the regression
