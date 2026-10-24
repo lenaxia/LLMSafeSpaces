@@ -57,8 +57,8 @@ func (m *mockSessionIndex) seedRowPhrase(workspaceID, sessionID, phrase string, 
 // path).
 type phraseResolver struct{ idx *mockSessionIndex }
 
-func (r *phraseResolver) FindSessionByShortID(_ context.Context, workspaceID, shortID string) (string, error) {
-	rows, err := r.idx.ListByWorkspace(context.Background(), workspaceID)
+func (r *phraseResolver) FindSessionByShortID(ctx context.Context, workspaceID, shortID string) (string, error) {
+	rows, err := r.idx.ListByWorkspace(ctx, workspaceID)
 	if err != nil {
 		return "", err
 	}

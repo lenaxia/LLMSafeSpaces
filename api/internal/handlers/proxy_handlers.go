@@ -848,6 +848,7 @@ func (h *ProxyHandler) PropagateSessionDeleted(ctx context.Context, workspaceID,
 	// disposition, never the delete).
 	treeRows := []types.SessionListItem{{InternalID: sessionID}}
 	if h.sessionIndex != nil {
+		//nolint:contextcheck // the #1889 F3 capture must survive client disconnect (the neighbors' posture)
 		if rows, err := h.sessionIndex.ListByWorkspace(context.Background(), workspaceID); err == nil {
 			treeRows = rows
 		}
