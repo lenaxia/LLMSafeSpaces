@@ -54,8 +54,9 @@ Merge per orchestrator adjudication; #1849 items 3+4 stay dropped,
 item 2 already subsumed by #1864.
 
 ## Files Modified
-All 42 branch files (git diff origin/main...HEAD --name-only, this
-worklog included):
+All 43 branch files (git diff origin/main...HEAD --name-only, this
+worklog included; worklogs/1180 joined via the round-11 stash-block
+union):
 - CHANGELOG.md
 - api/internal/handlers/board_manager_semantics_integration_test.go
 - api/internal/handlers/board_parity_test.go
@@ -97,4 +98,5 @@ worklog included):
 - sdks/tests/contract/board.hurl
 - sdks/typescript/src/types.ts
 - sdks/typescript/tests/client.test.ts
+- worklogs/1180_2026-10-22_task-drawer-audit-timeline.md
 - worklogs/NNNN_2026-10-23_1849-seed-validation.md
