@@ -612,10 +612,12 @@ export interface BoardEpicUpdateRequest {
 
 export interface BoardTaskCreateRequest {
   title: string;
-  description?: string;
+  /** REQUIRED at create (#1849): markdown; seeds the fresh worker's charter. */
+  description: string;
   /** May carry the pr:N anchor tag (owner ruling OR4: pattern ^pr:[1-9][0-9]*$). */
   tags?: string[];
-  acceptanceCriteria?: BoardAcceptanceCriterion[];
+  /** REQUIRED at create (#1849): Done is undefined without at least one. */
+  acceptanceCriteria: BoardAcceptanceCriterion[];
   requestId?: string;
 }
 
