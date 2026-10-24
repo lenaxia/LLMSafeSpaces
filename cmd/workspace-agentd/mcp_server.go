@@ -326,6 +326,20 @@ func boardManagerTools() []mcpTool {
 			}, "required": []string{"taskId"}},
 		},
 		{
+			// #1836: the bulk complete — the review-settlement sweep in
+			// one call (the #1832 WS2 manager move's batch twin). The
+			// bulk CLAIM variant deliberately does not exist on this
+			// surface: task_start is owner-surface only (round-3 #2).
+			Name:        "board_move_stage_bulk",
+			Description: "Bulk stage move (#1836): one shared target stage + evidenceUrl across up to 50 tasks in ONE call — each item is one full server-arbitrated board_move_stage (Done guard — ALL criteria met + evidence for done; pause guards; claim-token rule; auto-review dispatch on toStage=in_review; the done settle cascade). Response is a per-item result array [{id, status: done|failed, error?}] — partial failures are reported per item, never all-or-nothing; one malformed id sinks only its own item. Re-submitting the batch (same requestId) is safe: an item already at the target stage returns done, not conflict. The canonical use: completing review sets (in_review → done) after a verification sweep. Manager tool (user-collaborator sessions only).",
+			InputSchema: map[string]any{"type": "object", "properties": map[string]any{
+				"taskIds":     map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Task short ids (phrase form preferred; legacy forms and UUIDs resolve) — 1 to 50 items"},
+				"toStage":     map[string]any{"type": "string", "enum": []string{"in_progress", "in_review", "done", "pending_input", "backlog"}, "description": "The ONE target stage every item moves to (per-item from-stage legality stays server-arbitrated)"},
+				"evidenceUrl": map[string]any{"type": "string", "description": "Artifact link applied to every item's transition (required when toStage=done)"},
+				"requestId":   map[string]any{"type": "string", "description": "Idempotency key: ONE per logical batch, reused across retries of the same batch"},
+			}, "required": []string{"taskIds", "toStage"}},
+		},
+		{
 			Name:        "board_import_plan",
 			Description: "Materialize an ENTIRE plan atomically (#1747): one epic + its tasks + dependency edges from a single payload, all-or-nothing. ALWAYS dry-run first (dryRun=true): the response renders the graph, warnings, and the initial ready set — show it to the user as the plan-approval moment; write only after approval. Tasks address each other by payload key. Nodes-per-epic and edges-per-node caps apply. Manager tool (user-collaborator sessions only).",
 			InputSchema: map[string]any{"type": "object", "properties": map[string]any{
@@ -947,6 +961,7 @@ func callMCPTool(ctx context.Context, password, name string, args map[string]any
 		"board_create_task", "board_update_task",
 		"board_add_dependency", "board_remove_dependency",
 		"board_delete_task", "board_pause_task", "board_resume_task", "board_rearm_task",
+		"board_move_stage_bulk",
 		"board_import_plan":
 		// #1701: the board worker tools ride the same automation seam
 		// (pod SA token, verbatim passthrough, platform-validated).

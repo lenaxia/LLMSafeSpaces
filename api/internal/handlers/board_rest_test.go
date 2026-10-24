@@ -87,6 +87,52 @@ type fakeBoardManager struct {
 	wsTasks             []board.Task
 	wsHealth            *board.Health
 	lastTaskInput       *board.TaskInput
+
+	// #1836 bulk arms: the engine's per-item result batches.
+	lastBulkStartRefs      []string
+	lastBulkStartRequestID string
+	bulkStartResults       []board.BulkItemResult
+
+	lastBulkMoveRefs      []string
+	lastBulkMoveTo        string
+	lastBulkMoveEvidence  string
+	lastBulkMoveRequestID string
+	bulkMoveResults       []board.BulkItemResult
+}
+
+func (f *fakeBoardManager) BulkTaskStart(_ context.Context, actor board.Actor, refs []string, requestID string) ([]board.BulkItemResult, error) {
+	f.call("bulk_start")
+	f.lastActor, f.lastRequestID = actor, requestID
+	f.lastBulkStartRefs, f.lastBulkStartRequestID = refs, requestID
+	if err := f.errFor["bulk_start"]; err != nil {
+		return nil, err
+	}
+	if f.bulkStartResults != nil {
+		return f.bulkStartResults, nil
+	}
+	out := make([]board.BulkItemResult, 0, len(refs))
+	for _, ref := range refs {
+		out = append(out, board.BulkItemResult{Ref: ref, Status: board.BulkDone})
+	}
+	return out, nil
+}
+
+func (f *fakeBoardManager) BulkMoveStage(_ context.Context, actor board.Actor, refs []string, toStage, evidenceURL, requestID string) ([]board.BulkItemResult, error) {
+	f.call("bulk_move_stage")
+	f.lastActor, f.lastRequestID = actor, requestID
+	f.lastBulkMoveRefs, f.lastBulkMoveTo = refs, toStage
+	f.lastBulkMoveEvidence, f.lastBulkMoveRequestID = evidenceURL, requestID
+	if err := f.errFor["bulk_move_stage"]; err != nil {
+		return nil, err
+	}
+	if f.bulkMoveResults != nil {
+		return f.bulkMoveResults, nil
+	}
+	out := make([]board.BulkItemResult, 0, len(refs))
+	for _, ref := range refs {
+		out = append(out, board.BulkItemResult{Ref: ref, Status: board.BulkDone})
+	}
+	return out, nil
 }
 
 func (f *fakeBoardManager) IsWorkerSession(_ context.Context, sessionID string) (bool, error) {
@@ -572,6 +618,10 @@ func newBoardRESTRouter(t *testing.T, svc *fakeBoardManager) *gin.Engine {
 	k.DELETE("/:id", h.DeleteTask)
 	k.POST("/:id/dependencies", h.AddDependency)
 	k.DELETE("/:id/dependencies/:dependsOnId", h.RemoveDependency)
+	// #1836: the bulk claim/complete projections (engine batch seams —
+	// static siblings of the /:id routes; gin routes statics first).
+	k.POST("/bulk-start", h.StartTasksBulk)
+	k.POST("/bulk-move-stage", h.MoveStageBulk)
 	return r
 }
 

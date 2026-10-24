@@ -76,6 +76,12 @@ type boardManager interface {
 	AddDependency(ctx context.Context, actor board.Actor, taskID, shortIDOrID, dependsOnID, requestID string) error
 	RemoveDependency(ctx context.Context, actor board.Actor, taskID, shortIDOrID, dependsOnID, requestID string) error
 
+	// #1836: the bulk claim/complete batches — per-item result arrays,
+	// partial failures included (the engine owns every per-item write;
+	// the adapters render the envelope).
+	BulkTaskStart(ctx context.Context, actor board.Actor, refs []string, requestID string) ([]board.BulkItemResult, error)
+	BulkMoveStage(ctx context.Context, actor board.Actor, refs []string, toStage, evidenceURL, requestID string) ([]board.BulkItemResult, error)
+
 	ImportPlan(ctx context.Context, actor board.Actor, projectID, shortIDOrID string, in board.PlanInput, dryRun bool, requestID string) (*board.ImportResult, error)
 
 	GetUserBoardConfig(ctx context.Context, actor board.Actor) (*board.BoardConfig, error)

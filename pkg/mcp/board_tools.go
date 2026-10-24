@@ -268,6 +268,38 @@ var boardStartTaskTool = mcp.NewTool("board_start_task",
 	mcp.WithString("request_id", mcp.Description("Idempotency key (one per logical operation)")),
 )
 
+// #1836: the bulk claim/complete pair — per-item result arrays, partial
+// failures included; the batch cap is 50. board_start_tasks is the
+// plural claim form; board_move_stage_bulk is the batch stage move
+// (one shared target stage — per-item stages would be N single calls).
+var boardStartTasksTool = mcp.NewTool("board_start_tasks",
+	mcp.WithDescription("Bulk claim (#1836): dispatch up to 50 tasks in one call — each item is one full "+
+		"task_start (claim + fresh-charter worker spawn; draft∪active epics; every guard identical to the "+
+		"single form). Response is a per-item result array [{id, status: done|failed, escalated?, error?}] — "+
+		"partial failures are reported per item, never all-or-nothing; re-submitting the batch (same "+
+		"request_id) is safe: an item already claimed (in_progress) returns done, not conflict. NO claim "+
+		"tokens render on the bulk projection (#1864 ruling) — the spawned workers receive theirs in their "+
+		"charters. Prefer this over N board_start_task calls whenever the dispatch set is known up front."),
+	mcp.WithArray("task_ids", mcp.Required(), mcp.WithStringItems(),
+		mcp.Description("Task short ids (phrase form preferred; legacy forms resolve) — 1 to 50 items")),
+	mcp.WithString("request_id", mcp.Description("Idempotency key: ONE per logical batch, reused across retries of the same batch")),
+)
+
+var boardMoveStageBulkTool = mcp.NewTool("board_move_stage_bulk",
+	mcp.WithDescription("Bulk stage move (#1836): one shared target stage + evidence across up to 50 tasks in "+
+		"one call — each item is one full server-arbitrated board_move_stage (the Done guard, pause guards, "+
+		"claim-token rule, auto-review on →in_review, and the →done settle cascade all apply per item). "+
+		"Response is a per-item result array [{id, status: done|failed, error?}] — partial failures per item, "+
+		"never all-or-nothing; re-submitting the batch (same request_id) is safe: an item already at the "+
+		"target stage returns done, not conflict. The canonical use: completing review sets (in_review → done)."),
+	mcp.WithArray("task_ids", mcp.Required(), mcp.WithStringItems(),
+		mcp.Description("Task short ids (phrase form preferred; legacy forms resolve) — 1 to 50 items")),
+	mcp.WithString("to_stage", mcp.Required(), mcp.Enum(boardMoveTargets...),
+		mcp.Description("The ONE target stage every item moves to (per-item from-stage legality stays server-arbitrated)")),
+	mcp.WithString("evidence_url", mcp.Description("Artifact link applied to every item's transition (required when to_stage=done)")),
+	mcp.WithString("request_id", mcp.Description("Idempotency key: ONE per logical batch, reused across retries of the same batch")),
+)
+
 var boardRearmTaskTool = mcp.NewTool("board_rearm_task",
 	mcp.WithDescription("Re-pool an attempts-exhausted task (#1832 WS3): an escalated pending_input row (attempts at the cap) "+
 		"returns to backlog with attempts reset to 0 — a fresh-judgment ledger (the pre-reset count rides the rearm audit event). "+
@@ -768,6 +800,66 @@ func (h *handlers) boardStartTask(ctx context.Context, req mcp.CallToolRequest) 
 	return mcp.NewToolResultText(string(resp)), nil
 }
 
+// bulkIDsArg reads + validates the #1836 batch arrays: present,
+// non-empty, under the cap. Front-running a doomed wire call at the
+// tier that can is the #1904 discipline.
+func bulkIDsArg(args map[string]any) ([]string, error) {
+	ids, ok := args["task_ids"]
+	if !ok || ids == nil {
+		return nil, fmt.Errorf("task_ids is required (1 to %d task ids)", board.BulkMaxItems)
+	}
+	raw, ok := ids.([]any)
+	if !ok || len(raw) == 0 {
+		return nil, fmt.Errorf("task_ids is required (1 to %d task ids)", board.BulkMaxItems)
+	}
+	if len(raw) > board.BulkMaxItems {
+		return nil, fmt.Errorf("bulk batch capped at %d items (got %d) — split the batch", board.BulkMaxItems, len(raw))
+	}
+	out := make([]string, 0, len(raw))
+	for _, e := range raw {
+		s, ok := e.(string)
+		if !ok || s == "" {
+			return nil, fmt.Errorf("task_ids entries must be non-empty task id strings")
+		}
+		out = append(out, s)
+	}
+	return out, nil
+}
+
+func (h *handlers) boardStartTasks(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	args := req.GetArguments()
+	ids, err := bulkIDsArg(args)
+	if err != nil {
+		return mcp.NewToolResultError(err.Error()), nil
+	}
+	resp, err := h.client.BoardStartTasks(ctx, ids, strArg(args, "request_id"))
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("failed to bulk start tasks: %v", err)), nil
+	}
+	return mcp.NewToolResultText(string(resp)), nil
+}
+
+func (h *handlers) boardMoveStageBulk(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	args := req.GetArguments()
+	ids, err := bulkIDsArg(args)
+	if err != nil {
+		return mcp.NewToolResultError(err.Error()), nil
+	}
+	toStage := strArg(args, "to_stage")
+	if toStage == "" {
+		return mcp.NewToolResultError("to_stage is required"), nil
+	}
+	if !boardMoveTargetSet()[toStage] {
+		return mcp.NewToolResultError("to_stage must be a legal manager move target: " + strings.Join(boardMoveTargets, ", ") +
+			" (removal is board_delete — never a stage move; entering the pipeline from backlog is claim-only — board_start_task)"), nil
+	}
+	resp, err := h.client.BoardMoveStageBulk(ctx, ids, toStage, strArg(args, "evidence_url"), strArg(args, "request_id"))
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("failed to bulk move stages: %v", err)), nil
+	}
+	return mcp.NewToolResultText(string(resp)), nil
+}
+
 func (h *handlers) boardRearmTask(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	args := req.GetArguments()
 	taskID := strArg(args, "task_id")
@@ -1158,6 +1250,8 @@ func AddBoardTools(srv *server.MCPServer, h *handlers) {
 		server.ServerTool{Tool: boardRecordVerdictTool, Handler: h.boardRecordVerdict},
 		server.ServerTool{Tool: boardTaskVerdictsTool, Handler: h.boardTaskVerdicts},
 		server.ServerTool{Tool: boardStartTaskTool, Handler: h.boardStartTask},
+		server.ServerTool{Tool: boardStartTasksTool, Handler: h.boardStartTasks},
+		server.ServerTool{Tool: boardMoveStageBulkTool, Handler: h.boardMoveStageBulk},
 		server.ServerTool{Tool: boardRearmTaskTool, Handler: h.boardRearmTask},
 		server.ServerTool{Tool: boardEpicActivateTool, Handler: h.boardEpicActivate},
 		server.ServerTool{Tool: boardEpicPauseTool, Handler: h.boardEpicPause},

@@ -83,10 +83,11 @@ func TestIntegration_FullWorkflow(t *testing.T) {
 	// board_delete) + 1 workspace_status (#1760) + 2 #1832 item 5
 	// verdict tools (board_record_verdict, board_task_verdicts) + 1
 	// board_task_events (#1832 item 4) + 1 board_rearm_task
-	// (#1832 WS3) = 54).
+	// (#1832 WS3) + 2 #1836 bulk tools (board_start_tasks,
+	// board_move_stage_bulk) = 56).
 	toolsResp, err := mcpClient.ListTools(ctx, mcp.ListToolsRequest{})
 	require.NoError(t, err)
-	assert.Len(t, toolsResp.Tools, 54)
+	assert.Len(t, toolsResp.Tools, 56)
 
 	toolNames := make(map[string]bool)
 	toolSchemas := make(map[string]mcp.Tool)
