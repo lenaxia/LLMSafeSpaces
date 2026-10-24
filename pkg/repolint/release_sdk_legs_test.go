@@ -259,7 +259,23 @@ func TestReleaseWorkflow_CreateReleaseReRunIdempotent(t *testing.T) {
 	if !strings.Contains(createRun, "--verify-tag") {
 		t.Errorf("fresh `gh release create` lost `--verify-tag` — the release must only ever cut against the pushed tag (pre-existing contract, kept through #1918)")
 	}
-	if !strings.Contains(uploadRun, "--clobber") {
-		t.Errorf("asset upload lacks `--clobber` — a re-run would fail on existing asset filenames and leave the release under-attached (#1918 finding 2)")
+	// r3 (bot round 2): assert on the executable command line, not the
+	// whole run block — the previous Contains was comment-satisfiable
+	// (the run block's own `# #1918: --clobber …` comment kept the pin
+	// green with the flag deleted from the command; mutation-demonstrated
+	// by the reviewer). Comment lines are stripped, then `--clobber` must
+	// ride the same line as the `gh release upload` invocation.
+	uploadCmd := ""
+	for _, ln := range strings.Split(uploadRun, "\n") {
+		if t := strings.TrimSpace(ln); t == "" || strings.HasPrefix(t, "#") {
+			continue
+		}
+		if strings.Contains(ln, "gh release upload") {
+			uploadCmd = ln
+			break
+		}
+	}
+	if uploadCmd == "" || !strings.Contains(uploadCmd, "--clobber") {
+		t.Errorf("asset upload command line lacks `--clobber` — a re-run would fail on existing asset filenames and leave the release under-attached (#1918 finding 2; comment text must not satisfy this pin)")
 	}
 }
