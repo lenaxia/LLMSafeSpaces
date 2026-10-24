@@ -1439,12 +1439,25 @@ jobs:
   # release tag (v*.*.*) is pushed. SDK versions track the platform version
   # (the tag without the 'v' prefix). Maven Central is intentionally
   # skipped — see US-62.8 for rationale.
+  #
+  # #1918: both SDK legs are continue-on-error (fail-soft). Root cause of
+  # the incident: the npm leg's NPM_TOKEN died between 10-21 and 10-23,
+  # and npm answers a publish PUT a token cannot see with E404 — the red
+  # SDK leg then painted the whole release run `failure` even though
+  # every container image, the chart, signing, and the GitHub Release
+  # had shipped, washing out real release signal. The release conclusion
+  # must reflect the platform artifacts; SDK red is surfaced DISTINCTLY
+  # by the sdk-outcome job (annotations + run summary) instead. Pinned
+  # by pkg/repolint/release_sdk_legs_test.go.
 
   publish-python-sdk:
     name: Publish Python SDK to PyPI
     runs-on: ubuntu-latest
     needs: [verify-changelog, merge-api, merge-controller, merge-frontend, merge-relay-router, merge-relay-proxy]
     environment: pypi
+    # #1918: non-blocking — PyPI red must not redden container releases
+    # (sdk-outcome surfaces the result distinctly).
+    continue-on-error: true
     permissions:
       id-token: write  # PyPI trusted publishing (OIDC)
     steps:
@@ -1469,6 +1482,12 @@ jobs:
     runs-on: ubuntu-latest
     needs: [verify-changelog, merge-api, merge-controller, merge-frontend, merge-relay-router, merge-relay-proxy]
     environment: npm
+    # #1918: non-blocking — npm red must not redden container releases
+    # (sdk-outcome surfaces the result distinctly). The npm registry
+    # answers a publish PUT whose token cannot see the package with
+    # E404 Not Found — NOT 401/403 — so an expired/revoked/mis-scoped
+    # NPM_TOKEN masquerades as "package not found" in the publish step.
+    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -1483,9 +1502,88 @@ jobs:
           echo "Publishing version ${VERSION}"
       - name: Build
         run: cd sdks/typescript && npm ci && npm run build
+      - name: Preflight npm auth (fail fast on a dead NPM_TOKEN)
+        # #1918: verify the token can see + write the package BEFORE the
+        # publish PUT, with an actionable message. npm access ls-packages
+        # (not `npm whoami`): whoami cannot authenticate granular access
+        # tokens; ls-packages works for classic AND granular tokens and
+        # additionally proves the @llmsafespaces scope is on the token's
+        # allowlist — exactly the mis-scope that produces E404 on PUT.
+        run: |
+          set -euo pipefail
+          cd sdks/typescript
+          if ! ACCESS=$(npm access ls-packages --json 2>&1); then
+            echo "$ACCESS"
+            echo "::error::npm auth preflight FAILED — NPM_TOKEN is missing, expired, or revoked (#1918)."
+            echo "::error::Fix: npmjs.com → Access Tokens → generate a Read-and-write token for the @llmsafespaces scope (or classic Automation) → update the repo-level NPM_TOKEN secret → re-run this job."
+            exit 1
+          fi
+          PERM=$(printf '%s' "$ACCESS" | jq -r '."@llmsafespaces/sdk" // "missing"')
+          if [ -z "$PERM" ] || [ "$PERM" = "missing" ]; then
+            echo "$ACCESS"
+            echo "::error::NPM_TOKEN cannot see @llmsafespaces/sdk — mis-scoped (#1918)."
+            echo "::error::Fix: regenerate the token with Read-and-write access to the @llmsafespaces scope (or the whole account), update the repo-level NPM_TOKEN secret, re-run this job."
+            exit 1
+          fi
+          if [ "$PERM" != "read-write" ]; then
+            echo "::error::NPM_TOKEN has '$PERM' access to @llmsafespaces/sdk — publish needs read-write (#1918)."
+            echo "::error::Fix: regenerate the token as Read-and-write, update the repo-level NPM_TOKEN secret, re-run this job."
+            exit 1
+          fi
+          echo "npm auth preflight OK: @llmsafespaces/sdk access is read-write."
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
       - name: Publish to npm
         run: cd sdks/typescript && npm publish --access public
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+  # #1918: distinct outcome-surfacing for the fail-soft SDK legs. The
+  # publish jobs above are continue-on-error, so their red never reaches
+  # the run conclusion — which means it also must never VANISH (the
+  # never-a-silent-skip rule, run-watchdog.yml convention). This job
+  # runs after both legs in every non-cancelled case and converts each
+  # leg's raw `result` into: (a) a run annotation (::warning:: — visible
+  # on the run page without opening the job) naming the fix lever, and
+  # (b) a step-summary table row. It deliberately exits 0 on SDK red —
+  # the release conclusion stays owned by the container-artifact jobs;
+  # the SDK signal lives in this job's own check-run row instead.
+  sdk-outcome:
+    name: SDK publish outcome (non-blocking, #1918)
+    if: ${{ !cancelled() }}
+    needs: [publish-python-sdk, publish-typescript-sdk]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Surface SDK publish outcomes
+        env:
+          PYPI_RESULT: ${{ needs.publish-python-sdk.result }}
+          NPM_RESULT: ${{ needs.publish-typescript-sdk.result }}
+        run: |
+          set -euo pipefail
+          {
+            echo "## SDK publish outcomes (non-blocking legs — #1918)"
+            echo
+            echo "| Leg | Result |"
+            echo "|---|---|"
+            echo "| Python SDK → PyPI (publish-python-sdk) | ${PYPI_RESULT} |"
+            echo "| TypeScript SDK → npm (publish-typescript-sdk) | ${NPM_RESULT} |"
+            echo
+            echo "SDK legs are fail-soft: a red row does NOT block the release conclusion."
+            echo "An unpublished SDK version must still be shipped: fix the leg (npm →"
+            echo "rotate NPM_TOKEN, #1918), then \`gh run rerun <run> --failed\`."
+          } >> "$GITHUB_STEP_SUMMARY"
+          fail=0
+          if [ "$PYPI_RESULT" != "success" ]; then
+            echo "::warning::publish-python-sdk result: ${PYPI_RESULT} — the Python SDK did NOT ship in this release. Container artifacts are unaffected (fail-soft legs, #1918); re-run this job once the leg is fixed."
+            fail=1
+          fi
+          if [ "$NPM_RESULT" != "success" ]; then
+            echo "::warning::publish-typescript-sdk result: ${NPM_RESULT} — @llmsafespaces/sdk did NOT ship in this release. Container artifacts are unaffected (fail-soft legs, #1918). E404 on publish PUT = dead NPM_TOKEN (npm hides unauthorized packages as 404): rotate the repo-level NPM_TOKEN secret (Read-and-write, @llmsafespaces scope), then re-run this job."
+            fail=1
+          fi
+          if [ "$fail" -eq 0 ]; then
+            echo "::notice::Both SDK legs published successfully (PyPI + npm)."
+          fi
+          exit 0
 
 
