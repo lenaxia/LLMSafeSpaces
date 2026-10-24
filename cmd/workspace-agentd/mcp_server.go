@@ -914,7 +914,9 @@ func mcpHandler(password string) http.HandlerFunc {
 // so prior-call precedent in a model's context never breaks a call).
 // Presence semantics (matching argBool): an explicitly-present camel
 // key — even the empty string — is authoritative and never falls
-// through; the legacy key resolves only when the camel key is absent.
+// through; the legacy key resolves when the camel key is ABSENT or
+// present with a wrong type (a mistyped value is not a value — the
+// pinned contract's wrong-type case).
 func argStr(args map[string]any, key string) string {
 	if v, ok := args[key].(string); ok {
 		return v
@@ -1010,10 +1012,10 @@ func callMCPTool(ctx context.Context, password, name string, args map[string]any
 	case "send_message":
 		// destination is canonical; session_id is its one-release
 		// legacy alias. PRESENCE semantics (argStr's contract): the
-		// alias resolves only when destination is ABSENT — an explicit
-		// empty destination never falls through to the alias (the
-		// silent-precedence class the round-1 review killed for file
-		// params).
+		// alias resolves only when destination is ABSENT (or present
+		// with a wrong type) — an explicit empty destination never
+		// falls through to the alias (the silent-precedence class the
+		// round-1 review killed for file params).
 		sessionID := argStr(args, "destination")
 		if _, present := args["destination"]; !present {
 			sessionID, _ = args["session_id"].(string)

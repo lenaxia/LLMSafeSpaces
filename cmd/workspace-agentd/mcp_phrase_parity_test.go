@@ -290,6 +290,50 @@ func TestMCPEnvelope_BoardDeclaredSessionIDNotice(t *testing.T) {
 	assert.Contains(t, blocks[1], "DEPRECATED")
 }
 
+// TestMCPEnvelope_BoardIdentityAliasStrippedAndResolved (r4/r5 review
+// TDD gate): the board manager identity reads the snake session_id
+// alias on camel ABSENCE (one-release policy) and boardWireBody
+// strips BOTH spellings from the platform wire — the identity-key
+// wire leak class this PR exists to kill. Mutation-verified unpinned
+// before this test.
+func TestMCPEnvelope_BoardIdentityAliasStrippedAndResolved(t *testing.T) {
+	f := newFakeAgent()
+	s1 := f.newSession("board-alias")
+	withAgentServer(t, f.handler(t))
+
+	// Snake alias resolves as the caller identity when sessionId is absent.
+	sid, err := boardManagerSession(context.Background(), mcpTestPassword, "board_create_project",
+		map[string]any{"session_id": s1})
+	require.NoError(t, err, "the snake identity alias resolves on camel absence")
+	assert.Equal(t, s1, sid)
+
+	// boardWireBody strips BOTH identity spellings + the injected stamp.
+	wire := boardWireBody(map[string]any{
+		"name": "p-alias", "session_id": "ses-x", "sessionId": "ses-y",
+		"lsp_injected_session": "ses-z",
+	})
+	var got map[string]json.RawMessage
+	require.NoError(t, json.Unmarshal(wire, &got))
+	assert.NotContains(t, got, "session_id", "the snake identity spelling never rides the wire")
+	assert.NotContains(t, got, "sessionId", "the camel identity spelling never rides the wire")
+	assert.NotContains(t, got, "lsp_injected_session", "the injected stamp never rides the wire")
+	assert.Contains(t, string(got["name"]), "p-alias", "payload fields pass through")
+}
+
+// Presence policy on the identity alias: an explicitly-present camel
+// sessionId wins; the snake alias never overrides it.
+func TestBoardManagerIdentity_CamelPresenceWins(t *testing.T) {
+	f := newFakeAgent()
+	s1 := f.newSession("board-camel")
+	s2 := f.newSession("board-snake")
+	withAgentServer(t, f.handler(t))
+
+	sid, err := boardManagerSession(context.Background(), mcpTestPassword, "board_create_project",
+		map[string]any{"sessionId": s1, "session_id": s2})
+	require.NoError(t, err)
+	assert.Equal(t, s1, sid, "present camel sessionId is authoritative; the alias never overrides")
+}
+
 // TestMCPSendMessage_SameSessionEmbeddedOriginNoMismatchClause (r2 f1):
 // a #1530 fragment whose embedded origin is the SAME session as the
 // resolved origin (typed in the other id space — a phrase beside a
