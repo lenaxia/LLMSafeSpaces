@@ -67,7 +67,7 @@ func TestSendMessage_OriginSentinelCarriesPhrase_WarmReplica(t *testing.T) {
 	store.put(phrase, caller)
 	withAgentServer(t, f.handler(t))
 
-	out, err := mcpSendMessage(context.Background(), mcpTestPassword, target, "status report", caller, "")
+	out, err := mcpSendMessage(context.Background(), mcpTestPassword, target, "status report", caller)
 	require.NoError(t, err)
 	assert.Contains(t, out, `"origin":"`+phrase+`"`,
 		"the result's origin field already phrase-emits (#1756); the sentinel must match")
@@ -97,7 +97,7 @@ func TestSendMessage_OriginSentinelRawOnlyWhenReplicaCold(t *testing.T) {
 	withShortIDStore(t)
 	withAgentServer(t, f.handler(t))
 
-	_, err := mcpSendMessage(context.Background(), mcpTestPassword, target, "status report", caller, "")
+	_, err := mcpSendMessage(context.Background(), mcpTestPassword, target, "status report", caller)
 	require.NoError(t, err)
 
 	delivered := deliveredSentinelText(t, f, target)
