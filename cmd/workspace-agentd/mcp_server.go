@@ -336,7 +336,7 @@ func boardManagerTools() []mcpTool {
 				"taskIds":     map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Task short ids (phrase form preferred; legacy forms and UUIDs resolve) — 1 to 50 items"},
 				"toStage":     map[string]any{"type": "string", "enum": []string{"in_progress", "in_review", "done", "pending_input", "backlog"}, "description": "The ONE target stage every item moves to (per-item from-stage legality stays server-arbitrated)"},
 				"evidenceUrl": map[string]any{"type": "string", "description": "Artifact link applied to every item's transition (required when toStage=done)"},
-				"requestId":   map[string]any{"type": "string", "description": "Idempotency key: ONE per logical batch, reused across retries of the same batch"},
+				"requestId":   map[string]any{"type": "string", "description": "Idempotency key: ONE per logical batch, reused across retries of the same batch — reusing a batch's key for a DIFFERENT batch replays the first batch's recorded outcomes (stale done items)"},
 			}, "required": []string{"taskIds", "toStage"}},
 		},
 		{

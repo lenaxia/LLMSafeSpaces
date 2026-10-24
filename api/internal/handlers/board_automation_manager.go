@@ -412,8 +412,11 @@ func (h *PodAutomationHandler) BoardManagerMoveStageBulk(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "toStage is required", "code": board.GuardInput})
 		return
 	}
-	if !map[string]bool{"backlog": true, "in_progress": true, "in_review": true, "done": true, "pending_input": true}[req.ToStage] {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "toStage must be one of the five stages: backlog, in_progress, in_review, done, pending_input", "code": board.GuardInput})
+	// The five-stage vocabulary's shared helper (board.go's boardStages
+	// — the same single source the REST bulk adapter and the engine's
+	// StageInVocabulary render from; #1836 review r1 style finding).
+	if !boardStages()[req.ToStage] {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "toStage must be one of the five stages: " + board.StageVocabulary(), "code": board.GuardInput})
 		return
 	}
 	results, err := h.boardMgr.BulkMoveStage(c.Request.Context(), h.managerActor(owner, ws, session),
@@ -667,7 +670,7 @@ func (h *PodAutomationHandler) BoardManagerListTasks(c *gin.Context) {
 		return
 	}
 	stage := c.Query("stage")
-	if stage != "" && !map[string]bool{"backlog": true, "in_progress": true, "in_review": true, "done": true, "pending_input": true}[stage] {
+	if stage != "" && !boardStages()[stage] {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "stage filter must be one of the five stages", "code": board.GuardInput})
 		return
 	}

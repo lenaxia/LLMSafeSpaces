@@ -136,6 +136,46 @@ openapi.yaml. openapi.yaml rows ARE included (the contract test
 enforces route↔spec agreement). A follow-up can add typed SDK methods
 mechanically if wanted.
 
+## Review round 1 (CHANGES_REQUESTED @ f34722c8) — remediation
+
+Hard gates:
+1. **Issue closure**: the PR claimed `Closes #1836` while this lane
+   delivers the chartered subset (move_stage-across-tasks + the bulk
+   claim addition; the issue's session/delete/dependency/create batches
+   stay open for sibling lanes). Fixed: PR body now `Refs #1836 —
+   partially addresses`; no auto-close.
+2. **Pod-seam real-wiring e2e**: added
+   `TestIntegrationBoardManagerMoveStageBulk` (real BoardService + real
+   belt + PG): per-item envelope through real wiring (done +
+   failed(done_guard) in one 200; foreign-workspace item per-item
+   not_found), the live-assignee worker refusal from Postgres on the
+   bulk route, session-attributed audit for landed items, no-tokens.
+
+Non-blocking findings fixed:
+- **Incorrect comment** (house rule): bulkFailedItem's "resolution
+  misses keep their did-you-mean detail" was FALSE — the bulk envelope
+  renders a bare not_found for misses AND foreign rows (miss ≡ foreign,
+  the never-disclose shape; the single-task 404's suggestions are safe
+  there, not here). Comment + PR body corrected.
+- **Missing pin — read-then-act boundary**:
+  `TestBulk_PreCheckBoundaryDelegatesAuthority` (converge arm via the
+  move_stage.effect failpoint flipping an item between writes; refuse
+  arm: pre-check passes, machine refuses → failed with guard_stage,
+  nothing written) — the pre-check never fabricates outcomes; the
+  row-locked single-task seam is authoritative.
+- **Missing pin — agent-surface perimeter**:
+  `TestBulk_AgentSurfacePerimeter` (agent-manager actor, workspace
+  binding: a same-owner foreign-workspace row renders bare not_found on
+  both variants — the owner≡workspace-owner invariant made
+  load-bearing-visible) + the e2e's foreign item arm at the HTTP tier.
+- **requestId blast radius teaching**: tool descriptions (external MCP
+  both tools + agentd) now say reusing a batch key for a DIFFERENT
+  batch replays the first batch's outcomes.
+- **Style — vocabulary consolidation**: single source
+  `stageVocabulary`/`StageInVocabulary`/`StageVocabulary()` in
+  pkg/board (bulk.go's set, both handlers' presence checks, the
+  manager list filter's inline literal all render from it now).
+
 ## Files
 
 - CHANGELOG.md
@@ -144,6 +184,7 @@ mechanically if wanted.
 - api/internal/handlers/board_automation_test.go
 - api/internal/handlers/board_bulk.go
 - api/internal/handlers/board_bulk_rest_test.go
+- api/internal/handlers/board_manager_bulk_integration_test.go
 - api/internal/handlers/board_manager_bulk_test.go
 - api/internal/handlers/board_parity_test.go
 - api/internal/handlers/board_rest_test.go
@@ -154,6 +195,7 @@ mechanically if wanted.
 - cmd/workspace-agentd/mcp_tools.go
 - docs/api/mcp.md
 - pkg/agent/opencode/loopback.go
+- pkg/board/board.go
 - pkg/board/bulk.go
 - pkg/board/bulk_integration_test.go
 - pkg/mcp/board_tools.go

@@ -480,3 +480,111 @@ func (s *BoardSuite) TestBulk_WorkerTokenGuardHoldsPerItem() {
 	assert.Equal(s.T(), board.BulkFailed, byRef[theirs.ShortID].Status, "a foreign claimed row refuses")
 	assert.Equal(s.T(), board.GuardClaimToken, byRef[theirs.ShortID].Error.Code)
 }
+
+// TestBulk_PreCheckBoundaryDelegatesAuthority pins the pre-checks'
+// read-then-act boundary (#1836 review r1, missing-test 3): the
+// unlocked pre-check NEVER fabricates an outcome — authority is the
+// delegated single-task seam's row-locked arbitration.
+//
+//   - CONVERGE arm: a completion landing between items (deterministic:
+//     the failpoint during item 1's write flips item 2 to done) makes
+//     item 2's pre-check see the fresh state → done, no second write.
+//   - REFUSE arm: a pre-check that passes (stage ≠ target) while the
+//     machine refuses the transition (backlog → done is not
+//     enumerated) renders failed with the machine's own code — the
+//     same path a concurrent write that invalidated the pre-check
+//     takes; a retry converges.
+func (s *BoardSuite) TestBulk_PreCheckBoundaryDelegatesAuthority() {
+	ctx := context.Background()
+	ws := s.seedWorkspace()
+	p := s.seedProject(ws, 5)
+	e := s.seedEpic(p, board.EpicActive)
+
+	// REFUSE arm: backlog rows target done — pre-check passes (≠ done),
+	// the machine refuses (not enumerated), item failed, nothing written.
+	backlog := s.seedTask(e, "backlog", nil, true)
+	res, err := s.svc.BulkMoveStage(ctx, s.owner(), []string{backlog.ShortID},
+		board.StageDone, "https://example/p", "pc-1")
+	require.NoError(s.T(), err)
+	assert.Equal(s.T(), board.BulkFailed, res[0].Status,
+		"a stale pre-check never fabricates done — the seam's arbitration is authoritative")
+	require.NotNil(s.T(), res[0].Error)
+	assert.Equal(s.T(), board.GuardStage, res[0].Error.Code)
+	assert.Equal(s.T(), board.StageBacklog, s.reloadTask(backlog.ID).Stage)
+	var transitions int
+	s.Require().NoError(s.pool.QueryRow(ctx,
+		`SELECT count(*) FROM board_transitions WHERE task_id=$1`, backlog.ID).Scan(&transitions))
+	assert.Zero(s.T(), transitions, "the refused item writes nothing")
+
+	// CONVERGE arm: two in_review items; item 2 is completed
+	// concurrently (failpoint during item 1's write) — item 2's LATER
+	// pre-check sees done == target → idempotent done, one write total.
+	a := s.seedTask(e, "A", nil, true)
+	b := s.seedTask(e, "B", nil, true)
+	s.bulkToReview(a, ws)
+	s.bulkToReview(b, ws)
+	s.fps.armAtFn("move_stage.effect", func() error {
+		s.fps.disarm("move_stage.effect")
+		_, err := s.pool.Exec(ctx,
+			`UPDATE tasks SET stage='done' WHERE id=$1 AND stage='in_review'`, b.ID)
+		s.Require().NoError(err)
+		return nil
+	})
+	res2, err := s.svc.BulkMoveStage(ctx, s.owner(), []string{a.ShortID, b.ShortID},
+		board.StageDone, "https://example/p", "pc-2")
+	require.NoError(s.T(), err)
+	assert.Equal(s.T(), board.BulkDone, res2[0].Status, "item 1 completes through the seam")
+	assert.Equal(s.T(), board.BulkDone, res2[1].Status,
+		"the concurrently-completed item reports done (the pre-check re-read is the convergent path)")
+	var aDone, bDone int
+	s.Require().NoError(s.pool.QueryRow(ctx,
+		`SELECT count(*) FROM board_transitions WHERE task_id=$1 AND to_stage='done'`, a.ID).Scan(&aDone))
+	s.Require().NoError(s.pool.QueryRow(ctx,
+		`SELECT count(*) FROM board_transitions WHERE task_id=$1 AND to_stage='done'`, b.ID).Scan(&bDone))
+	assert.Equal(s.T(), 1, aDone)
+	assert.LessOrEqual(s.T(), bDone, 1, "no second done transition for the concurrent item")
+}
+
+// TestBulk_AgentSurfacePerimeter pins the agent branch of the bulk
+// perimeter (#1836 review r1, missing-test 2): on the agent surfaces
+// (worker/manager-grade) the caller-workspace binding IS the scope —
+// a task living in a project targeting ANOTHER workspace renders the
+// same not_found item a miss renders, even though the owner is the
+// same user (the owner≡workspace-owner invariant, made
+// load-bearing-visible).
+func (s *BoardSuite) TestBulk_AgentSurfacePerimeter() {
+	ctx := context.Background()
+	ws1 := s.seedWorkspace()
+	p1 := s.seedProject(ws1, 5)
+	e1 := s.seedEpic(p1, board.EpicActive)
+	mine := s.seedTask(e1, "in-ws1", nil, true)
+
+	// A SECOND workspace (same owner) with its own board: unreachable
+	// from an agent actor bound to ws1.
+	ws2 := s.seedWorkspace()
+	p2 := s.seedProject(ws2, 5)
+	e2 := s.seedEpic(p2, board.EpicActive)
+	other := s.seedTask(e2, "in-ws2", nil, true)
+
+	agentMgr := board.Actor{Kind: board.ActorUser, UserID: testUser,
+		Surface: board.SurfaceAgentManager, WorkspaceID: ws1}
+
+	res, err := s.svc.BulkTaskStart(ctx, agentMgr, []string{mine.ShortID, other.ShortID}, "ag-1")
+	require.NoError(s.T(), err)
+	byRef := bulkByID(s.T(), res)
+	assert.Equal(s.T(), board.BulkDone, byRef[mine.ShortID].Status, "the caller-workspace's own row claims")
+	foreignItem := byRef[other.ShortID]
+	assert.Equal(s.T(), board.BulkFailed, foreignItem.Status)
+	require.NotNil(s.T(), foreignItem.Error)
+	assert.Equal(s.T(), board.BulkItemNotFound, foreignItem.Error.Code,
+		"the workspace binding is the agent perimeter: a foreign-workspace row is the same not_found a miss is")
+	assert.NotContains(s.T(), foreignItem.Error.Detail, "did you mean",
+		"bare not_found — the bulk envelope never carries did-you-mean suggestions")
+
+	res2, err := s.svc.BulkMoveStage(ctx, agentMgr, []string{other.ShortID},
+		board.StageDone, "https://example/p", "ag-2")
+	require.NoError(s.T(), err)
+	assert.Equal(s.T(), board.BulkFailed, res2[0].Status)
+	assert.Equal(s.T(), board.BulkItemNotFound, res2[0].Error.Code, "the move variant shares the perimeter")
+	assert.Equal(s.T(), board.StageBacklog, s.reloadTask(other.ID).Stage, "the foreign-workspace row is untouched")
+}

@@ -94,7 +94,10 @@ func bulkValidateBatch(refs []string) error {
 // eventWriter's 200-with-original), distinct per item (two same-
 // project items under one batch key never collide into one audit
 // event). An absent batch key delegates to the single-task seams' own
-// id generation.
+// id generation. CALLER CONTRACT (the single-task rule, N-times
+// amplified): one batch key per LOGICAL batch — reusing a key across
+// two DIFFERENT batches replays the first batch's recorded outcomes
+// as the second's (stale done items).
 func bulkItemRequestID(requestID, ref string) string {
 	if requestID == "" {
 		return ""
@@ -103,9 +106,12 @@ func bulkItemRequestID(requestID, ref string) string {
 }
 
 // bulkFailedItem maps an item's single-task error to the per-item
-// envelope. Resolution misses keep their did-you-mean detail; every
-// other error class keeps its engine code verbatim (the parity
-// vocabulary); unknown errors are honest internals.
+// envelope. Every error class keeps its engine code verbatim (the
+// parity vocabulary); resolution misses and foreign rows render the
+// SAME bare not_found (miss ≡ foreign — the never-disclose shape: no
+// did-you-mean on the bulk envelope, unlike the single-task 404 whose
+// suggestions are safe to show there); unknown errors are honest
+// internals (the single-task 500 body renders the same string).
 func bulkFailedItem(ref string, err error) BulkItemResult {
 	res := BulkItemResult{Ref: ref, Status: BulkFailed}
 	switch e := err.(type) {
@@ -185,9 +191,9 @@ func (s *Service) BulkMoveStage(ctx context.Context, actor Actor, refs []string,
 	if err := bulkValidateBatch(refs); err != nil {
 		return nil, err
 	}
-	if !stageSetOfFive()[toStage] {
+	if !StageInVocabulary(toStage) {
 		return nil, &GuardError{Code: GuardInput,
-			Detail: "toStage must be one of the five stages: " + stringsJoinStages()}
+			Detail: "toStage must be one of the five stages: " + StageVocabulary()}
 	}
 	out := make([]BulkItemResult, 0, len(refs))
 	for _, ref := range refs {
@@ -204,6 +210,15 @@ func (s *Service) bulkMoveStageOne(ctx context.Context, actor Actor, ref, toStag
 	if t.Stage == toStage {
 		// Already at the target stage — the batch's prior outcome:
 		// done, not conflict (#1836 contract 2). No write.
+		//
+		// The pre-checks (this and the claim variant's in_progress
+		// arm) are unlocked read-then-act by design: a concurrent
+		// write landing between the read and the delegated write is
+		// re-arbitrated UNDER THE ROW LOCK inside the single-task
+		// seam — the item then reports failed with the machine's own
+		// guard code (e.g. stage_transition), never a fabricated
+		// outcome, and a retry converges (pinned by
+		// TestBulk_PreCheckBoundaryDelegatesAuthority).
 		return BulkItemResult{Ref: ref, Status: BulkDone}
 	}
 	if _, err := s.MoveStage(ctx, actor, "", ref, toStage, evidenceURL, bulkItemRequestID(requestID, ref)); err != nil {
@@ -212,17 +227,7 @@ func (s *Service) bulkMoveStageOne(ctx context.Context, actor Actor, ref, toStag
 	return BulkItemResult{Ref: ref, Status: BulkDone}
 }
 
-// stageSetOfFive is the five-stage vocabulary as a set (the move
-// TARGET set and the read filter set are the same five literals —
-// #1747: cancel is eliminated; per-item from-stage enumeration stays
-// the stage machine's).
-func stageSetOfFive() map[string]bool {
-	return map[string]bool{
-		StageBacklog: true, StageInProgress: true, StageInReview: true,
-		StageDone: true, StagePendingInput: true,
-	}
-}
-
-func stringsJoinStages() string {
-	return StageBacklog + ", " + StageInProgress + ", " + StageInReview + ", " + StageDone + ", " + StagePendingInput
-}
+// (The five-stage vocabulary's single source is stageVocabulary in
+// board.go — StageInVocabulary/StageVocabulary — shared with the
+// adapters' presence checks; per-item from-stage enumeration stays
+// the stage machine's.)

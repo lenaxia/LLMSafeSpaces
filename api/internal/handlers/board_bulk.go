@@ -77,7 +77,7 @@ func (h *BoardHandler) MoveStageBulk(c *gin.Context) {
 		return
 	}
 	if !boardStages()[req.ToStage] {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "toStage must be one of the five stages: backlog, in_progress, in_review, done, pending_input", "code": board.GuardInput})
+		c.JSON(http.StatusBadRequest, gin.H{"error": "toStage must be one of the five stages: " + board.StageVocabulary(), "code": board.GuardInput})
 		return
 	}
 	results, err := h.board.BulkMoveStage(c.Request.Context(), h.boardActor(c), req.TaskIDs, req.ToStage, req.EvidenceURL, req.RequestID)

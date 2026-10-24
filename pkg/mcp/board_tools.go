@@ -282,7 +282,8 @@ var boardStartTasksTool = mcp.NewTool("board_start_tasks",
 		"charters. Prefer this over N board_start_task calls whenever the dispatch set is known up front."),
 	mcp.WithArray("task_ids", mcp.Required(), mcp.WithStringItems(),
 		mcp.Description("Task short ids (phrase form preferred; legacy forms resolve) — 1 to 50 items")),
-	mcp.WithString("request_id", mcp.Description("Idempotency key: ONE per logical batch, reused across retries of the same batch")),
+	mcp.WithString("request_id", mcp.Description("Idempotency key: ONE per logical batch, reused across retries of the same batch — "+
+		"reusing a batch's key for a DIFFERENT batch replays the first batch's recorded outcomes (stale done items)")),
 )
 
 var boardMoveStageBulkTool = mcp.NewTool("board_move_stage_bulk",
@@ -297,7 +298,8 @@ var boardMoveStageBulkTool = mcp.NewTool("board_move_stage_bulk",
 	mcp.WithString("to_stage", mcp.Required(), mcp.Enum(boardMoveTargets...),
 		mcp.Description("The ONE target stage every item moves to (per-item from-stage legality stays server-arbitrated)")),
 	mcp.WithString("evidence_url", mcp.Description("Artifact link applied to every item's transition (required when to_stage=done)")),
-	mcp.WithString("request_id", mcp.Description("Idempotency key: ONE per logical batch, reused across retries of the same batch")),
+	mcp.WithString("request_id", mcp.Description("Idempotency key: ONE per logical batch, reused across retries of the same batch — "+
+		"reusing a batch's key for a DIFFERENT batch replays the first batch's recorded outcomes (stale done items)")),
 )
 
 var boardRearmTaskTool = mcp.NewTool("board_rearm_task",
