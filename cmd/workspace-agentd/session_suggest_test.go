@@ -180,7 +180,7 @@ func withIncidentAgent(t *testing.T) {
 // ever delivered on a guess) AND name the live id it shadows.
 func TestSendMessage_MistypedID_SuggestsLiveID(t *testing.T) {
 	withIncidentAgent(t)
-	_, err := mcpSendMessage(context.Background(), mcpTestPassword, incidentDropMid, "status ping", otherID, "")
+	_, err := mcpSendMessage(context.Background(), mcpTestPassword, incidentDropMid, "status ping", otherID)
 	require.Error(t, err, "a mistyped id must NEVER auto-deliver")
 	msg := err.Error()
 	assert.Contains(t, msg, incidentDropMid, "the failing id is still named")
@@ -193,7 +193,7 @@ func TestSendMessage_MistypedID_SuggestsLiveID(t *testing.T) {
 // slip class).
 func TestSendMessage_OriginMistyped_AlsoSuggests(t *testing.T) {
 	withIncidentAgent(t)
-	_, err := mcpSendMessage(context.Background(), mcpTestPassword, incidentID, "hello", incidentDropFinal, "")
+	_, err := mcpSendMessage(context.Background(), mcpTestPassword, incidentID, "hello", incidentDropFinal)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), incidentID)
 	assert.Contains(t, err.Error(), "did you mean")

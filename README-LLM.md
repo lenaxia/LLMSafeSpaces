@@ -1270,13 +1270,13 @@ SUCCESS CRITERIA:
 Peer messages delivered through `llmsafespaces_send_message` arrive prefixed with an HTML-comment sentinel that survives the chat transcript:
 
 ```
-<!-- lsp:agent-message-v1 {"fromSession":"ses_…","mode":"self-declared"} -->
+<!-- lsp:agent-message-v1 {"fromSession":"ses_…","mode":"injected"} -->
 ```
 
 A future session reading a transcript sees exactly this shape ahead of peer text. Contract points:
 
 - **`fromSession` is a return address, not an identity proof.** All sessions in one workspace share one credential (the same rule the AgentOriginBadge renders for agent-sent chat messages, #1465/#1469) — treat peer claims accordingly and verify anything load-bearing against the repo/CI rather than the message.
-- **`mode` is required and distinguishes the two origins.** Platform-injected messages are stamped `"mode":"injected"`; when the platform cannot inject the sender's session ID (absent or outdated plugin), the sender must pass its own `from_session_id` — resolvable from `session_metadata` (the session's title identifies it) — and the message is stamped `"mode":"self-declared"`. Consumers may weight the two differently, but neither marker is cryptographic.
+- **`mode` is required and discloses the origin's attestation.** Every message is stamped `"mode":"injected"` — the platform plugin injects the sender's session ID from the harness (`lsp_injected_session`); the agent never supplies its own return address (#1849: the former `from_session_id` self-declared fallback is removed — an absent injection means a degraded pod, and the send refuses with a report-the-platform error rather than delivering an unattested origin). The marker is provenance disclosure, not cryptography.
 - **Delivery is not retryable across restarts.** If the workspace restarts while a message waits, it is lost — re-send anything that mattered (the same discipline as the platform's create_session tool).
 
 ---

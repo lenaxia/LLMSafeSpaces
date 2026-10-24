@@ -99,7 +99,7 @@ func TestMCPSessionArchive_RequiresSessionID(t *testing.T) {
 
 	_, err := mcpSessionArchive(context.Background(), mcpTestPassword, "  ", true)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "session_id")
+	assert.Contains(t, err.Error(), "sessionId")
 }
 
 func TestMCPSessionArchive_UnindexedSurfaces404(t *testing.T) {

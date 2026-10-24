@@ -10,7 +10,8 @@ package main
 // REAL agentd MCP handler over the REAL seam loopback — no stub MCP, no
 // fake agent. The freeze pin (pkg/agent/opencode) proves the plugin's
 // injection reaches a stub; this test proves the whole production chain:
-// model tool call → plugin injects from_session_id → mcpHandler
+// model tool call → plugin injects lsp_injected_session (#1849: the
+// sole origin source — from_session_id is removed) → mcpHandler
 // validates by-ID and composes the sentinel → the delivered message
 // lands in the TARGET session's transcript carrying the CALLER's
 // origin, and the tool result echoes it.
@@ -406,19 +407,12 @@ func realAgentdMCCHandler(t *testing.T, toolResults *[]string) http.Handler {
 			})
 		case "tools/list":
 			// Advertise send_message exactly as the production schema
-			// does (the model can only call registered tools).
+			// does (#1849: destination+message, ordered — mirroring the
+			// agentd catalog; the model can only call registered tools).
 			writeMCPResult(w, req.ID, map[string]any{"tools": []map[string]any{{
 				"name":        "send_message",
 				"description": "test surface",
-				"inputSchema": map[string]any{
-					"type": "object",
-					"properties": map[string]any{
-						"session_id":      map[string]any{"type": "string"},
-						"message":         map[string]any{"type": "string"},
-						"from_session_id": map[string]any{"type": "string"},
-					},
-					"required": []string{"session_id", "message"},
-				},
+				"inputSchema": json.RawMessage(`{"type":"object","properties":{"destination":{"type":"string"},"message":{"type":"string"}},"required":["destination","message"]}`),
 			}}})
 		case "tools/call":
 			var params struct {

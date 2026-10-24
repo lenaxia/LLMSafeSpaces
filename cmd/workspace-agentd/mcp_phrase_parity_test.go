@@ -110,11 +110,14 @@ func TestMCPEnvelope_PhraseRefCarriesNoNotice(t *testing.T) {
 	assert.NotContains(t, blocks[0], "DEPRECATED")
 }
 
-// TestMCPEnvelope_SendMessageDeprecatedOriginNotice: send_message's
-// from_session_id (the declared origin fallback) in deprecated form
-// attaches the notice even when the TARGET is a clean phrase — the
-// origin is the id the recipient re-uses to reply (#1816 A3).
-func TestMCPEnvelope_SendMessageDeprecatedOriginNotice(t *testing.T) {
+// TestMCPEnvelope_SendMessageInjectedOriginDeprecatedFlagged: with
+// origin platform-injected (#1849: from_session_id is gone, the agent
+// never types its own return address), a deprecated-form ORIGIN no
+// longer produces a teach-the-model envelope notice — the agent
+// cannot act on it. The flag survives in the result JSON
+// (origin_deprecated) for platform visibility; the TARGET ref keeps
+// its envelope notice (#1816 A3).
+func TestMCPEnvelope_SendMessageInjectedOriginDeprecatedFlagged(t *testing.T) {
 	f := newFakeAgent()
 	target := f.newSession("target")
 	origin := f.newSession("origin")
@@ -123,15 +126,17 @@ func TestMCPEnvelope_SendMessageDeprecatedOriginNotice(t *testing.T) {
 	store.put("calm-otter-naps", target)
 
 	result := callMCPEnvelope(t, mcpTestPassword, "send_message", map[string]any{
-		"session_id":      "calm-otter-naps",
-		"message":         "hello",
-		"from_session_id": origin,
+		"session_id":           "calm-otter-naps",
+		"message":              "hello",
+		"lsp_injected_session": origin,
 	})
 	blocks := envelopeTextBlocks(t, result)
 	require.NotEmpty(t, blocks)
 	assert.NotContains(t, blocks[0], "Error:", "send must succeed: %s", blocks[0])
-	require.Len(t, blocks, 2, "the deprecated ORIGIN ref must carry the notice")
-	assert.Contains(t, blocks[1], "DEPRECATED")
+	require.Len(t, blocks, 1, "injected deprecated origin: NO envelope notice — the agent never typed it")
+	assert.Contains(t, blocks[0], `"origin_deprecated":"true"`,
+		"the deprecated injected origin is flagged in the result for platform visibility")
+	assert.Contains(t, blocks[0], `"origin_mode":"injected"`)
 }
 
 // --- emission closure: no raw harness ids in strings when a phrase is known --
@@ -150,7 +155,7 @@ func TestMCPSendMessage_RecoveryWarningEmitsPhrase(t *testing.T) {
 	// The #1530 duplicated-argument shape: TARGET + the injected-session
 	// fragment mark + ORIGIN + trailing quote/brace.
 	mangled := target + `","lsp_injected_session":"` + other + `"}`
-	out, err := mcpSendMessage(context.Background(), mcpTestPassword, mangled, "hi", other, "")
+	out, err := mcpSendMessage(context.Background(), mcpTestPassword, mangled, "hi", other)
 	require.NoError(t, err)
 	assert.Contains(t, out, "amber-falcon-naps", "the recovered target ships as the phrase")
 	assert.NotContains(t, out, target, "the TARGET harness id must not leak once the phrase is known")
@@ -171,7 +176,7 @@ func TestMCPSendMessage_PhraseTargetDuplicatedFragmentRecovers(t *testing.T) {
 	store.put("calm-otter-naps", other)
 
 	mangled := "amber-falcon-naps" + `","lsp_injected_session":"` + "calm-otter-naps" + `"}`
-	out, err := mcpSendMessage(context.Background(), mcpTestPassword, mangled, "hi", other, "")
+	out, err := mcpSendMessage(context.Background(), mcpTestPassword, mangled, "hi", other)
 	require.NoError(t, err)
 	assert.Contains(t, out, `"session_id":"amber-falcon-naps"`, "the recovered phrase target ships as the phrase")
 	assert.Contains(t, out, "duplicated-argument fragment", "the recovery warning must be present")
@@ -218,9 +223,9 @@ func TestRealMCP_PhraseTargetedSendMessageAndAbort(t *testing.T) {
 
 	// send_message by phrase through the real envelope.
 	result := callMCPEnvelope(t, mcpTestPassword, "send_message", map[string]any{
-		"session_id":      "Amber-Falcon-Glides", // case-insensitive phrase form
-		"message":         "phrase hello",
-		"from_session_id": "amber-falcon-glides", // self-send: resolves, warns, still delivers
+		"session_id":           "Amber-Falcon-Glides", // case-insensitive phrase form
+		"message":              "phrase hello",
+		"lsp_injected_session": "amber-falcon-glides", // self-send: resolves, warns, still delivers
 	})
 	blocks := envelopeTextBlocks(t, result)
 	require.NotEmpty(t, blocks)
@@ -254,7 +259,7 @@ func TestMCPPhraseInput_CaseInsensitiveNormalization(t *testing.T) {
 	store := withShortIDStore(t)
 	store.put("amber-falcon-glides", target)
 
-	out, err := mcpSendMessage(context.Background(), mcpTestPassword, "AMBER-FALCON-GLIDES", "upper", target, "")
+	out, err := mcpSendMessage(context.Background(), mcpTestPassword, "AMBER-FALCON-GLIDES", "upper", target)
 	require.NoError(t, err)
 	assert.Contains(t, out, "amber-falcon-glides")
 	f.awaitMsgDone(t, target, 1)
@@ -285,6 +290,65 @@ func TestMCPEnvelope_BoardDeclaredSessionIDNotice(t *testing.T) {
 	assert.Contains(t, blocks[1], "DEPRECATED")
 }
 
+// TestMCPEnvelope_BoardIdentityAliasStrippedAndResolved (r4/r5 review
+// TDD gate): the board manager identity reads the snake session_id
+// alias on camel ABSENCE (one-release policy) and boardWireBody
+// strips BOTH spellings from the platform wire — the identity-key
+// wire leak class this PR exists to kill. Mutation-verified unpinned
+// before this test.
+func TestMCPEnvelope_BoardIdentityAliasStrippedAndResolved(t *testing.T) {
+	f := newFakeAgent()
+	s1 := f.newSession("board-alias")
+	withAgentServer(t, f.handler(t))
+
+	// Snake alias resolves as the caller identity when sessionId is absent.
+	sid, err := boardManagerSession(context.Background(), mcpTestPassword, "board_create_project",
+		map[string]any{"session_id": s1})
+	require.NoError(t, err, "the snake identity alias resolves on camel absence")
+	assert.Equal(t, s1, sid)
+
+	// boardWireBody strips BOTH identity spellings + the injected stamp.
+	wire := boardWireBody(map[string]any{
+		"name": "p-alias", "session_id": "ses-x", "sessionId": "ses-y",
+		"lsp_injected_session": "ses-z",
+	})
+	var got map[string]json.RawMessage
+	require.NoError(t, json.Unmarshal(wire, &got))
+	assert.NotContains(t, got, "session_id", "the snake identity spelling never rides the wire")
+	assert.NotContains(t, got, "sessionId", "the camel identity spelling never rides the wire")
+	assert.NotContains(t, got, "lsp_injected_session", "the injected stamp never rides the wire")
+	assert.Contains(t, string(got["name"]), "p-alias", "payload fields pass through")
+}
+
+// Presence policy on the identity alias: an explicitly-present camel
+// sessionId wins; the snake alias never overrides it; and a
+// present-but-MISTYPED sessionId refuses fail-closed instead of
+// consulting the alias (r5/r6 review corner: the board gate is
+// absence-only, narrower than argStr's wrong-type case).
+func TestBoardManagerIdentity_CamelPresenceWins(t *testing.T) {
+	t.Run("mistyped camel refuses, never consults the alias", func(t *testing.T) {
+		f := newFakeAgent()
+		s1 := f.newSession("board-camel")
+		s2 := f.newSession("board-snake")
+		withAgentServer(t, f.handler(t))
+
+		_, err := boardManagerSession(context.Background(), mcpTestPassword, "board_create_project",
+			map[string]any{"sessionId": 42, "session_id": s2})
+		require.Error(t, err, "a mistyped sessionId is present-and-authoritative — fail closed, no alias")
+		assert.NotContains(t, err.Error(), s2, "the alias must not leak into the failure")
+		_ = s1
+	})
+	f := newFakeAgent()
+	s1 := f.newSession("board-camel")
+	s2 := f.newSession("board-snake")
+	withAgentServer(t, f.handler(t))
+
+	sid, err := boardManagerSession(context.Background(), mcpTestPassword, "board_create_project",
+		map[string]any{"sessionId": s1, "session_id": s2})
+	require.NoError(t, err)
+	assert.Equal(t, s1, sid, "present camel sessionId is authoritative; the alias never overrides")
+}
+
 // TestMCPSendMessage_SameSessionEmbeddedOriginNoMismatchClause (r2 f1):
 // a #1530 fragment whose embedded origin is the SAME session as the
 // resolved origin (typed in the other id space — a phrase beside a
@@ -302,7 +366,7 @@ func TestMCPSendMessage_SameSessionEmbeddedOriginNoMismatchClause(t *testing.T) 
 	// Fragment: harness target + embedded origin as the PHRASE of the
 	// SAME session as the declared origin.
 	mangled := target + `","lsp_injected_session":"calm-otter-naps"}`
-	out, err := mcpSendMessage(context.Background(), mcpTestPassword, mangled, "hi", origin, "")
+	out, err := mcpSendMessage(context.Background(), mcpTestPassword, mangled, "hi", origin)
 	require.NoError(t, err)
 	assert.Contains(t, out, "duplicated-argument fragment", "the recovery warning is present")
 	assert.NotContains(t, out, "differs from the resolved origin",

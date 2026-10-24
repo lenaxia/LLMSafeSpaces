@@ -32,40 +32,58 @@ import (
 // KiB): the platform-side cap stays the single authority.
 const boardFileFieldMaxBytes = 128 << 10
 
-// resolveBoardFileArgs resolves the <field>_file param into the inline
-// <field> string on args, consuming the file spelling (no *_file
+// resolveBoardFileArgs resolves the <field>File param into the inline
+// <field> string on args, consuming the file spelling (no file
 // spelling ever reaches the wire — the platform API has no such key).
-// targetField is the ONE field this tool admits (description_file on
-// task create/update; outcome_file on epic create/update); an empty
-// targetField admits NO file param at all. Any *_file key for another
-// field — or on a no-file tool — is a caller mistake, refused loudly;
-// never silently dropped onto the wire.
+// targetField is the ONE field this tool admits (descriptionFile on
+// task create/update; outcomeFile on epic create/update); an empty
+// targetField admits NO file param at all. Any file-suffixed key for
+// another field — or on a no-file tool — is a caller mistake, refused
+// loudly; never silently dropped onto the wire. #1849 casing pass:
+// the camelCase descriptionFile/outcomeFile spellings are canonical;
+// the legacy snake_case *_file spellings still resolve (one-release
+// alias) but are never advertised.
 func resolveBoardFileArgs(args map[string]any, targetField string) error {
-	admitted := targetField + "_file"
+	// canonical (camelCase) and legacy (snake_case) spellings of the
+	// ONE admitted field; both are consumed so neither ever reaches
+	// the wire.
+	canonical := targetField + "File"
+	legacy := targetField + "_file"
 	if targetField == "" {
-		admitted = "_" // no admitted spelling: every *_file key is foreign
+		canonical, legacy = "\x00", "\x00" // no admitted spelling: every file key is foreign
 	}
 	for k := range args {
-		// A *_file key for another field is a caller mistake, refused
-		// loudly — never silently dropped onto the wire (a null value
-		// included: "I mentioned the param" is still a mention).
-		if strings.HasSuffix(k, "_file") && k != admitted {
-			return fmt.Errorf("%s is not admitted here (this tool accepts %s) — refusing rather than silently dropping it", k, admitted)
+		// A file-suffixed key for another field is a caller mistake,
+		// refused loudly — never silently dropped onto the wire (a null
+		// value included: "I mentioned the param" is still a mention).
+		if (strings.HasSuffix(k, "_file") || strings.HasSuffix(k, "File")) && k != canonical && k != legacy {
+			return fmt.Errorf("%s is not admitted here (this tool accepts %s) — refusing rather than silently dropping it", k, canonical)
 		}
 	}
-	raw, present := args[admitted]
+	// Both spellings present is ambiguous precedence — refused loudly,
+	// the same contract as the inline-vs-file refusal below.
+	_, hasCanonical := args[canonical]
+	_, hasLegacy := args[legacy]
+	if hasCanonical && hasLegacy {
+		return fmt.Errorf("%s and %s are the same param in two spellings — send exactly one", canonical, legacy)
+	}
+	raw, present := args[canonical]
+	if !present {
+		raw, present = args[legacy] // legacy snake_case alias
+	}
 	if !present {
 		return nil
 	}
 	if raw == nil {
 		// A null mention is still a mention of the param — consume it
-		// so no *_file spelling ever reaches the wire.
-		delete(args, admitted)
+		// (BOTH spellings) so no file spelling ever reaches the wire.
+		delete(args, canonical)
+		delete(args, legacy)
 		return nil
 	}
 	path, ok := raw.(string)
 	if !ok || strings.TrimSpace(path) == "" {
-		return fmt.Errorf("%s must be a non-empty workspace file path", admitted)
+		return fmt.Errorf("%s must be a non-empty workspace file path", canonical)
 	}
 	// Ambiguity is refused: an inline field alongside its file param
 	// would silently resolve to whichever wins — exactly the silent-
@@ -74,20 +92,24 @@ func resolveBoardFileArgs(args map[string]any, targetField string) error {
 		switch v := inline.(type) {
 		case string:
 			if v != "" {
-				return fmt.Errorf("%s and %s are mutually exclusive — send one or the other", targetField, admitted)
+				return fmt.Errorf("%s and %s are mutually exclusive — send one or the other", targetField, canonical)
 			}
 		case nil:
 			// absent/JSON-null: the file wins
 		default:
-			return fmt.Errorf("%s and %s are mutually exclusive (the inline %s is neither string nor null)", targetField, admitted, targetField)
+			return fmt.Errorf("%s and %s are mutually exclusive (the inline %s is neither string nor null)", targetField, canonical, targetField)
 		}
 	}
 	content, err := readBoardFileField(path)
 	if err != nil {
-		return fmt.Errorf("%s: %w", admitted, err)
+		return fmt.Errorf("%s: %w", canonical, err)
 	}
 	args[targetField] = content
-	delete(args, admitted)
+	// Consume BOTH spellings: the resolved one and its alias — no file
+	// spelling ever reaches the wire (the platform API has no such
+	// key, and a stale legacy key would ride verbatim).
+	delete(args, canonical)
+	delete(args, legacy)
 	return nil
 }
 

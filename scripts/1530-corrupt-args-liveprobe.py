@@ -7,7 +7,8 @@
 # tail fragment (,\"lsp_injected_session\":\"<id>\"}) — valid JSON on
 # the wire (the escapes are inside the string value), which is the
 # model-emission signature. Raw HTTP has no plugin, so origin rides
-# the #1469 hybrid's declared fallback (from_session_id).
+# the probe's own lsp_injected_session stamp (the plugin-emulation
+# arm; #1849 removed the from_session_id fallback).
 #
 # Targets are bogus ids (ses_PROBE_*): nothing delivers either way.
 # The probe is ERA-AWARE (the pre-#1389 404-skip precedent): a
@@ -52,7 +53,7 @@ def note(ok, label):
     print(("PASS: " if ok else "FAIL: ") + label)
     passed, failed = passed + ok, failed + (not ok)
 
-base = {"message": "probe-1530 (no action needed)", "from_session_id": DECLARED}
+base = {"message": "probe-1530 (no action needed)", "lsp_injected_session": DECLARED}  # #1849: from_session_id is removed; emulate the origin plugin's injection stamp
 
 # v1 — the exact instance shape: escaped tail fragment inside the value,
 # VALID JSON (what the model actually emitted in the 13 misfires).

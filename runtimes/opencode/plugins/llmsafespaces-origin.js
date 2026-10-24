@@ -18,11 +18,11 @@
 //     from the harness's input.sessionID, never read — a model-supplied
 //     value can never survive a working plugin.
 //   - Defensive no-op on any shape mismatch: if the hook surface
-//     changes in a future harness, this hook does nothing and the
-//     origin falls back to the model-supplied from_session_id
-//     (mode "self-declared" — visibly labeled). Silent mode downgrade
-//     on drift is the detected, self-reporting failure; silent
-//     misattribution is impossible.
+//     changes in a future harness, this hook does nothing and agentd
+//     REFUSES the send ("no origin: the platform could not inject
+//     your session ID — degraded pod") — #1849: there is no
+//     self-declared fallback anymore, so drift is loud, never a
+//     silent downgrade to an unattested origin.
 //   - Never throws: a broken plugin must not break the host tool call.
 //
 // Delivery vehicle (overlay image vs controller volume) is decided
@@ -78,10 +78,10 @@ export default function llmsafespacesOrigin() {
         if (typeof input.sessionID !== "string" || input.sessionID === "") return
         if (!output || typeof output !== "object") return
         if (!output.args || typeof output.args !== "object") return
-        // lsp_injected_session is the PLATFORM namespace: distinct from
-        // the schema-advertised from_session_id fallback so agentd can
-        // label the origin mode (injected vs self-declared) without
-        // trusting a model-supplied copy of this key.
+        // lsp_injected_session is the PLATFORM namespace: the sole
+        // origin source (#1849 — from_session_id is gone), injected
+        // unconditionally so a model-supplied copy can never survive;
+        // agentd labels the mode "injected" from this key alone.
         output.args.lsp_injected_session = input.sessionID
       } catch {
         // never break the host tool call

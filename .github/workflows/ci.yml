@@ -582,7 +582,7 @@ jobs:
     # #1465: the tool.execute.before hook contract is load-bearing
     # platform surface (the origin-injection plugin mutates outgoing MCP
     # tool arguments through it). This job pins it EMPIRICALLY against
-    # the pinned opencode binary: the plugin's from_session_id must
+    # the pinned opencode binary: the plugin's lsp_injected_session must
     # arrive on the wire carrying the calling session's ID, and must
     # NOT arrive without the plugin (the wire carries no native caller
     # identity). A harness bump that changes the hook surface fails
