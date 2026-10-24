@@ -243,6 +243,20 @@ func (s *BoardSuite) SetupTest() {
 		ON CONFLICT (id) DO NOTHING
 	`, testUser)
 	s.Require().NoError(err, "users row must exist (FK target)")
+	// Stage-persona isolation for the legacy suites: the #1939 flipped
+	// defaults (reviewColumn=auto + autoAssignReviewer=true) render the
+	// reviewer persona on every →in_review entry through this PR's
+	// mechanism — the pre-existing kill/reads/rearm pins exercise the
+	// WORKER claim lifecycle, so the harness seeds the user-level
+	// explicit opt-out ({} owns the stage mapping outright). The
+	// persona suite builds its own services/configs per test and the
+	// flipped-default composition pin clears this row first.
+	_, err = s.pool.Exec(ctx, `
+		INSERT INTO board_config_defaults (user_id, key, value)
+		VALUES ($1, 'stagePersonas', '{}'::jsonb)
+		ON CONFLICT (user_id, key) DO NOTHING
+	`, testUser)
+	s.Require().NoError(err, "harness seeds the stage-personas opt-out (legacy-suite isolation)")
 
 	s.spawner = &fakeSpawner{}
 	s.aborter = &fakeAborter{}

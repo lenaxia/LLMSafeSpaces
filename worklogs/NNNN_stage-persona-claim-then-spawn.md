@@ -139,6 +139,19 @@ persona session (contained by the token guards; the orphan runs to
 its timeout — the drift-abort seam is a natural follow-up alongside
 #1847).
 
+**Round 4 (rebase onto #1939):** the auto-review defaults flip
+merged mid-flight; rebased and composed exactly as directed — the
+flipped floor renders the reviewer persona for in_review through the
+legacy-composition arm (auto-review on IS in_review having a reviewer
+persona via the generic config; the parallel dispatch path is gone).
+Pins reconciled: the byte-identical back-compat pin is now the
+EXPLICIT {} opt-out; the flipped-no-config default FIRES (new
+composition pin, TestPersona_FlippedDefaultFiresReviewerPersona);
+the harness seeds a user-level {} opt-out to isolate the legacy
+kill/reads/rearm suites from the now-firing floor (those pins own the
+WORKER claim lifecycle); handler wire pins carry auto/true +
+stagePersonas:{}.
+
 ## Verification
 
 go build/vet clean (incl. -tags=integration); `go test ./...` green

@@ -147,7 +147,11 @@ func (s *BoardSuite) TestPersona_FlippedDefaultFiresReviewerPersona() {
 
 	spawner := &claimCapture{}
 	svc := board.NewService(s.pool, s.cfg, board.WithWorkerSpawner(spawner.Spawn))
-	// Deliberately NO config: the code default floor decides.
+	// Deliberately NO config: the code default floor decides. Clear the
+	// harness's isolation seed (the user-level stagePersonas opt-out)
+	// so "no config anywhere" is literally true for this project's owner.
+	_, err := s.pool.Exec(ctx, `DELETE FROM board_config_defaults WHERE user_id=$1`, testUser)
+	s.Require().NoError(err)
 
 	c, err := svc.ClaimNext(ctx, "w-"+ws, ws)
 	s.Require().NoError(err)
