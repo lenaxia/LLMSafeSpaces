@@ -464,7 +464,6 @@ func (s *Service) Heartbeat(ctx context.Context, actor Actor, taskID, shortIDOrI
 		observedProgressAt = serverNow // clamp: THIS stamp stores server-clock — the future direction never stores a client stamp (past-skewed stamps store verbatim)
 	}
 	// Evidence gate: extend only when the watermark moved past the stored
-	// Evidence gate: extend only when the watermark moved past the stored
 	// progress watermark. A stored watermark ahead of the server clock is
 	// pre-fix poison (the C1 lockout) and reads as stale — never as
 	// unbeatable evidence.

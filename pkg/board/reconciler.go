@@ -447,11 +447,15 @@ func (s *Service) rc1PersonaClaims(ctx context.Context) (personaReclaim, error) 
 	}
 
 	// --- (b) re-arm pass --------------------------------------------------
-	// Cheap SQL prefilter (persona.go — the ownership-reading seam):
-	// only rows whose project (or its owner) holds ANY board-config
-	// row. Go's effective-config resolution is the authority (a
-	// prefiltered row with no persona resolves nil and is skipped
-	// without a write).
+	// personaRearmCandidatesSQL (persona.go — the ownership-adjacent
+	// seam) selects unclaimed, cooldown-expired, NOT-paused rows with
+	// NO config prefilter: under the flipped floor the persona fires
+	// with zero stored rows, so any EXISTS gate would exclude the
+	// shipped default posture (round-2 review, blocking). Go's
+	// stagePersona resolution is the sole authority; a candidate with
+	// no resolved persona is skipped without a write. A paused
+	// escalated row waits for resume to converge (pause gates claims;
+	// pending_input entry while paused is legal either way).
 	rows, err = s.q().Query(ctx, personaRearmCandidatesSQL)
 	if err != nil {
 		return out, err
@@ -525,7 +529,7 @@ func (s *Service) rc1PersonaClaims(ctx context.Context) (personaReclaim, error) 
 		token := uuidNew()
 		tag, err := tx.Exec(ctx, `
 			UPDATE tasks SET `+personaClaimSQL+`
-			WHERE id=$1 AND stage='in_review' AND claim_token IS NULL
+			WHERE id=$1 AND stage='in_review' AND claim_token IS NULL AND NOT paused
 			  AND (cooldown_until IS NULL OR cooldown_until < now())`,
 			v.id, token, s.cfg.LeaseDuration.Seconds())
 		if err != nil {

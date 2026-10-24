@@ -80,7 +80,27 @@ describe("BoardConfigTab — #1832 item 6 (2/2)", () => {
     await user.click(screen.getByTestId("cfg-save-global"));
     await waitFor(() => expect(boardApi.setUserBoardConfig).toHaveBeenCalled());
     const body = vi.mocked(boardApi.setUserBoardConfig).mock.calls[0]![0];
-    expect(body).toEqual({ reviewColumn: "manual", autoAssignReviewer: false, defaultWorkerSlots: 3, stagePersonas: {} });
+    // Round-2 pin: nothing stored, stagePersonasSet falsy → the save
+  // MUST NOT materialize a stagePersonas key ({} would become an
+  // explicit opt-out row and silently suppress the flipped default).
+  expect(body).toEqual({ reviewColumn: "manual", autoAssignReviewer: false, defaultWorkerSlots: 3 });
+  });
+
+  it("round-2 pin: an explicitly-SET stagePersonas map is carried back verbatim (REPLACE never wipes it)", async () => {
+    const user = userEvent.setup();
+    vi.mocked(boardApi.getUserBoardConfig).mockResolvedValue({
+      ...USER,
+      stagePersonas: { in_review: { name: "auditor", instructions: "Verify." } },
+      stagePersonasSet: true,
+    });
+    renderTab();
+    await screen.findByTestId("cfg-save-global");
+    const slots = screen.getByTestId("cfg-defaultWorkerSlots");
+    await user.type(slots.querySelector("input")!, "4");
+    await user.click(screen.getByTestId("cfg-save-global"));
+    await waitFor(() => expect(boardApi.setUserBoardConfig).toHaveBeenCalled());
+    const body = vi.mocked(boardApi.setUserBoardConfig).mock.calls[0]![0];
+    expect(body.stagePersonas).toEqual({ in_review: { name: "auditor", instructions: "Verify." } });
   });
 
   it("client validation mirrors the server: slots < 1 blocks the send (no PUT fires)", async () => {

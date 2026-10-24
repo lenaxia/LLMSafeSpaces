@@ -137,11 +137,11 @@ func TestBoardConfigREST_UserRoundTrip(t *testing.T) {
 
 	w := doBoardREST(t, r, http.MethodGet, "/api/v1/me/board/config", "")
 	require.Equal(t, http.StatusOK, w.Code)
-	assert.JSONEq(t, `{"reviewColumn":"auto","autoAssignReviewer":true,"defaultWorkerSlots":2,"stagePersonas":{}}`, w.Body.String())
+	assert.JSONEq(t, `{"reviewColumn":"auto","autoAssignReviewer":true,"defaultWorkerSlots":2,"stagePersonas":{},"stagePersonasSet":false}`, w.Body.String())
 
 	w = doBoardREST(t, r, http.MethodPut, "/api/v1/me/board/config", `{"reviewColumn":"auto"}`)
 	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
-	assert.JSONEq(t, `{"reviewColumn":"auto","autoAssignReviewer":true,"defaultWorkerSlots":2,"stagePersonas":{}}`, w.Body.String())
+	assert.JSONEq(t, `{"reviewColumn":"auto","autoAssignReviewer":true,"defaultWorkerSlots":2,"stagePersonas":{},"stagePersonasSet":false}`, w.Body.String())
 	require.NotNil(t, svc.lastGlobalConfigSet)
 	require.NotNil(t, svc.lastGlobalConfigSet.ReviewColumn)
 	assert.Equal(t, "auto", *svc.lastGlobalConfigSet.ReviewColumn)
@@ -260,7 +260,7 @@ func TestBoardConfigREST_ProjectRoundTrip(t *testing.T) {
 	assert.JSONEq(t, `{
 		"project_id":"p1",
 		"overrides":{"reviewColumn":"off"},
-		"effective":{"reviewColumn":"off","autoAssignReviewer":true,"defaultWorkerSlots":2,"stagePersonas":{}}
+		"effective":{"reviewColumn":"off","autoAssignReviewer":true,"defaultWorkerSlots":2,"stagePersonas":{},"stagePersonasSet":false}
 	}`, w.Body.String())
 
 	w = doBoardREST(t, r, http.MethodPut, "/api/v1/me/projects/p1/config", `{"reviewColumn":"auto","autoAssignReviewer":true}`)

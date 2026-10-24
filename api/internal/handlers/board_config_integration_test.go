@@ -106,11 +106,11 @@ func TestIntegrationBoardConfig(t *testing.T) {
 	// --- 1: user defaults round-trip through the real handler+service+PG ----------
 	w := doBoardREST(t, owner, http.MethodGet, "/api/v1/me/board/config", "")
 	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
-	assert.JSONEq(t, `{"reviewColumn":"auto","autoAssignReviewer":true,"defaultWorkerSlots":2,"stagePersonas":{}}`, w.Body.String())
+	assert.JSONEq(t, `{"reviewColumn":"auto","autoAssignReviewer":true,"defaultWorkerSlots":2,"stagePersonas":{},"stagePersonasSet":false}`, w.Body.String())
 
 	w = doBoardREST(t, owner, http.MethodPut, "/api/v1/me/board/config", `{"reviewColumn":"off","defaultWorkerSlots":6}`)
 	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
-	assert.JSONEq(t, `{"reviewColumn":"off","autoAssignReviewer":true,"defaultWorkerSlots":6,"stagePersonas":{}}`, w.Body.String())
+	assert.JSONEq(t, `{"reviewColumn":"off","autoAssignReviewer":true,"defaultWorkerSlots":6,"stagePersonas":{},"stagePersonasSet":false}`, w.Body.String())
 
 	// --- 2: project inherits → overrides → clears, all through the real seam -------
 	w = doBoardREST(t, owner, http.MethodGet, "/api/v1/me/projects/"+owned.ID+"/config", "")
@@ -118,7 +118,7 @@ func TestIntegrationBoardConfig(t *testing.T) {
 	assert.JSONEq(t, `{
 		"project_id":"`+owned.ID+`",
 		"overrides":{},
-		"effective":{"reviewColumn":"off","autoAssignReviewer":true,"defaultWorkerSlots":6,"stagePersonas":{}}
+		"effective":{"reviewColumn":"off","autoAssignReviewer":true,"defaultWorkerSlots":6,"stagePersonas":{},"stagePersonasSet":false}
 	}`, w.Body.String(), "no overrides yet: the project inherits the user's defaults")
 
 	w = doBoardREST(t, owner, http.MethodPut, "/api/v1/me/projects/"+owned.ID+"/config", `{"reviewColumn":"auto"}`)
@@ -126,7 +126,7 @@ func TestIntegrationBoardConfig(t *testing.T) {
 	assert.JSONEq(t, `{
 		"project_id":"`+owned.ID+`",
 		"overrides":{"reviewColumn":"auto"},
-		"effective":{"reviewColumn":"auto","autoAssignReviewer":true,"defaultWorkerSlots":6,"stagePersonas":{}}
+		"effective":{"reviewColumn":"auto","autoAssignReviewer":true,"defaultWorkerSlots":6,"stagePersonas":{},"stagePersonasSet":false}
 	}`, w.Body.String(), "the set key wins; unset keys keep inheriting")
 
 	// A LATER user-default flip re-flips the project's inherited value
@@ -184,6 +184,6 @@ func TestIntegrationBoardConfig(t *testing.T) {
 	// --- 5: user isolation through the real seam -----------------------------------
 	w = doBoardREST(t, foreign, http.MethodGet, "/api/v1/me/board/config", "")
 	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
-	assert.JSONEq(t, `{"reviewColumn":"auto","autoAssignReviewer":true,"defaultWorkerSlots":2,"stagePersonas":{}}`,
+	assert.JSONEq(t, `{"reviewColumn":"auto","autoAssignReviewer":true,"defaultWorkerSlots":2,"stagePersonas":{},"stagePersonasSet":false}`,
 		w.Body.String(), "another user's defaults map neither leaks nor collides")
 }

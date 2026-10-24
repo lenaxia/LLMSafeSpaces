@@ -152,6 +152,23 @@ kill/reads/rearm suites from the now-firing floor (those pins own the
 WORKER claim lifecycle); handler wire pins carry auto/true +
 stagePersonas:{}.
 
+**Round 2 on the re-cut #1941 (CHANGES_REQUESTED, head 3afeb1112):**
+three blocking findings, all fixed. (1) The re-arm pass's SQL
+prefilter required stored config rows — under the #1939 flipped floor
+the persona fires with ZERO rows, so dead-worker healing/escalation
+were unreachable in the shipped default posture. The prefilter is
+GONE: the candidate scan is pause-gated (#1747 — finding 3: the
+re-arm mint now predicates NOT paused at both the scan and the
+guarded UPDATE) and Go's stagePersona resolution is the sole
+authority; new pins: rearm-under-pure-default and
+paused-row-refuses-rearm (+resume convergence). (2) The user-tier
+Settings save materialized an explicit {} opt-out (the effective GET
+carried no set-ness surface): stagePersonasSet now renders on the
+wire and the tab carries the stored map back ONLY when set — never
+materialize {}, never delete a stored map (frontend pins inverted +
+a set-ness arm). Minor: projectFor warns on resolve failure; dup
+comment and a `_ =` discard cleaned.
+
 ## Verification
 
 go build/vet clean (incl. -tags=integration); `go test ./...` green

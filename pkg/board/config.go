@@ -118,8 +118,12 @@ type BoardConfig struct {
 	// It governs the legacy-composition fallthrough: an explicit key
 	// OWNS the stage mapping, so {} disables even the legacy
 	// reviewColumn=auto + autoAssignReviewer reviewer persona (the
-	// opt-out the defaults flip needs). Not rendered on the wire.
-	StagePersonasSet bool `json:"-"`
+	// opt-out the defaults flip needs). On the wire it is the
+	// SET-NESS surface: a REPLACE-tier client (the Settings tab)
+	// carries the stored map back ONLY when set — an unset key sent
+	// as {} would materialize an explicit opt-out and silently
+	// suppress the flipped floor for every inheriting project.
+	StagePersonasSet bool `json:"stagePersonasSet"`
 }
 
 // BoardConfigOverride is a PARTIAL config: nil fields are unset and
@@ -241,11 +245,9 @@ func ValidateBoardConfigKey(key string, raw json.RawMessage) error {
 		}
 		return nil
 	case ConfigKeyStagePersonas:
-		m, err := decodePersonaMap(raw)
-		if err != nil {
+		if _, err := decodePersonaMap(raw); err != nil {
 			return &GuardError{Code: GuardInput, Detail: fmt.Sprintf("%s: %s", key, err.Error())}
 		}
-		_ = m
 		return nil
 	default:
 		return &GuardError{Code: GuardInput, Detail: fmt.Sprintf("unknown config key %q (known: reviewColumn, autoAssignReviewer, defaultWorkerSlots, stagePersonas)", key)}

@@ -44,9 +44,13 @@ export function BoardConfigTab() {
         autoAssignReviewer: body.autoAssignReviewer,
         defaultWorkerSlots: body.defaultWorkerSlots,
         // The user PUT is REPLACE-semantics (absent key = revert to the
-        // code default): carry the loaded stagePersonas back verbatim
-        // or saving the tab would silently clear configured personas.
-        stagePersonas: body.stagePersonas ?? {},
+        // code default). Carry the loaded map back ONLY when it is an
+        // EXPLICIT set (stagePersonasSet): sending {} when nothing was
+        // stored would MATERIALIZE an opt-out row and silently suppress
+        // the flipped default's reviewer persona for every inheriting
+        // project; sending nothing when something WAS stored would
+        // delete it (the round-1 wipe). Set-ness is the only safe rule.
+        ...(body.stagePersonasSet ? { stagePersonas: body.stagePersonas ?? {} } : {}),
       }),
     onSuccess: () => {
       setGlobalError(null);

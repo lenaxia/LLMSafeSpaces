@@ -219,7 +219,7 @@ func TestBoardConfigOverrideWireShape(t *testing.T) {
 
 	eff, err := json.Marshal(BoardConfig{ReviewColumn: "manual", AutoAssignReviewer: false, DefaultWorkerSlots: 2, StagePersonas: map[string]PersonaConfig{}})
 	require.NoError(t, err)
-	assert.JSONEq(t, `{"reviewColumn":"manual","autoAssignReviewer":false,"defaultWorkerSlots":2,"stagePersonas":{}}`, string(eff))
+	assert.JSONEq(t, `{"reviewColumn":"manual","autoAssignReviewer":false,"defaultWorkerSlots":2,"stagePersonas":{},"stagePersonasSet":false}`, string(eff))
 }
 
 // TestBoardConfigOverrideRowsRoundTrip pins the storage encoding seam:

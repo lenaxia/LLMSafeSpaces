@@ -498,11 +498,14 @@ func (s *Service) spawnAfter(ctx context.Context, claim *Claim) {
 }
 
 // projectFor resolves a project row (nil on any failure — the persona
-// attach is best-effort; a config-read failure degrades to the default
-// worker charter, never a failed spawn).
+// attach is best-effort; a failure degrades to the default worker
+// charter, never a failed spawn, WITH a warn line so the degradation
+// is observable).
 func (s *Service) projectFor(ctx context.Context, projectID string) *Project {
 	p, err := s.store.resolveProject(ctx, s.q(), "", projectID)
 	if err != nil {
+		slog.WarnContext(ctx, "board: project resolve failed — persona resolution degrades to the default charter",
+			"project_id", projectID, "err", err.Error())
 		return nil
 	}
 	return p

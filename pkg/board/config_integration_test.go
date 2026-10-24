@@ -96,11 +96,16 @@ func (s *BoardSuite) TestBoardConfig_UserIsolation() {
 	// rendered config is the pure default.
 	cfg, err := s.svc.GetUserBoardConfig(ctx, s.owner())
 	s.Require().NoError(err)
-	wantDefault, wantErr := json.Marshal(board.DefaultBoardConfig())
+	// Expected = the flipped defaults overlaid with the harness's own
+	// seeded opt-out (the owner's stored map) — a foreign user's rows
+	// never appear in it.
+	empty := map[string]board.PersonaConfig{}
+	want := board.MergeBoardConfig(board.DefaultBoardConfig(), &board.BoardConfigOverride{StagePersonas: &empty})
+	wantJSON, wantErr := json.Marshal(want)
 	s.Require().NoError(wantErr)
-	gotOwner, gotErr := json.Marshal(cfg)
+	gotJSON, gotErr := json.Marshal(cfg)
 	s.Require().NoError(gotErr)
-	s.JSONEq(string(wantDefault), string(gotOwner), "a foreign user's defaults never leak into the owner's effective config")
+	s.JSONEq(string(wantJSON), string(gotJSON), "a foreign user's defaults never leak into the owner's effective config")
 
 	// Each user reads back their own map.
 	cfg, err = s.svc.GetUserBoardConfig(ctx, other)

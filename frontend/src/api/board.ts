@@ -244,6 +244,10 @@ export type BoardConfig = {
   /** Stage → persona. Merges per-KEY: a set object replaces the
    * inherited map wholesale; {} is the explicit opt-out. */
   stagePersonas?: Record<string, BoardPersonaConfig>;
+  /** Whether stagePersonas was EXPLICITLY set at any merged tier —
+   * the REPLACE-tier carry-through rule (never materialize {} when
+   * nothing was stored; never delete a stored map). */
+  stagePersonasSet?: boolean;
 };
 
 /** Partial config — absent keys inherit; never null on the wire. */

@@ -322,6 +322,101 @@ func (s *BoardSuite) TestPersona_DeadWorkerLeaseLapseFreshReclaim() {
 	s.Require().Nil(row.ClaimToken)
 }
 
+// TestPersona_RearmUnderPureFlippedDefault — round-2 blocking finding
+// #1: with ZERO stored config rows (the #1939 shipped default posture)
+// the healing loop must still work — the re-arm pass may not gate on
+// config-row existence (the default fires with none).
+func (s *BoardSuite) TestPersona_RearmUnderPureFlippedDefault() {
+	ctx := context.Background()
+	ws := s.seedWorkspace()
+	p := s.seedProject(ws, 2)
+	e := s.seedEpic(p, board.EpicActive)
+	task := s.seedTask(e, "pure-default", nil, false)
+
+	spawner := &claimCapture{}
+	svc := board.NewService(s.pool, s.cfg, board.WithWorkerSpawner(spawner.Spawn))
+	// ZERO config rows anywhere: clear the harness's isolation seed.
+	_, err := s.pool.Exec(ctx, `DELETE FROM board_config_defaults WHERE user_id=$1`, testUser)
+	s.Require().NoError(err)
+
+	c, err := svc.ClaimNext(ctx, "w-"+ws, ws)
+	s.Require().NoError(err)
+	s.Require().Equal(task.ID, c.TaskID)
+	_, err = svc.MoveStage(ctx, s.agent(c.Assignee, c.ClaimToken), "", c.ShortID, board.StageInReview, "", "")
+	s.Require().NoError(err)
+	s.Require().Len(spawner.claims, 2, "the flipped default fired the reviewer persona on entry")
+
+	s.recon = board.NewReconciler(s.pool, s.cfg,
+		board.WithWorkerSpawner(spawner.Spawn),
+		board.WithWorkerAborter(s.aborter.Abort),
+		board.WithPRDriftSource(s.drift),
+		board.WithPendingInputSource(s.pending),
+		board.WithFailpoint(s.fps.fp),
+	)
+
+	// The reviewer dies; the healing loop must converge with NO config
+	// rows: lapse → mark → cooldown → re-arm → fresh reviewer.
+	s.expireLease(task.ID)
+	s.sweep()
+	s.Require().Nil(s.rawTask(task.ID).ClaimToken, "the lapse marked the dead claim")
+	s.clearTaskBackoff(task.ID)
+	s.sweep()
+	row := s.rawTask(task.ID)
+	s.Require().NotNil(row.ClaimToken, "the re-arm fires under the pure default posture (no config rows)")
+	s.Require().Len(spawner.claims, 3, "a fresh default-posture reviewer spawned")
+	require.NotNil(s.T(), spawner.claims[2].Persona)
+	s.Equal(board.DefaultReviewerPersona.Name, spawner.claims[2].Persona.Name)
+}
+
+// TestPersona_PausedRowRefusesRearm — round-2 blocking finding #3: the
+// re-arm is a claim mint and respects #1747 (pause gates claiming and
+// claim mints): a paused task's lapsed persona claim heals (the clear
+// is reclaim-class, rc1 parity) but NO fresh persona worker is minted
+// or spawned until resume.
+func (s *BoardSuite) TestPersona_PausedRowRefusesRearm() {
+	ctx := context.Background()
+	ws := s.seedWorkspace()
+	p := s.seedProject(ws, 2)
+	e := s.seedEpic(p, board.EpicActive)
+	task := s.seedTask(e, "paused", nil, false)
+
+	spawner := &claimCapture{}
+	svc := board.NewService(s.pool, s.cfg, board.WithWorkerSpawner(spawner.Spawn))
+	s.setStagePersonas(svc, p, map[string]board.PersonaConfig{"in_review": {Name: "reviewer"}})
+	s.recon = board.NewReconciler(s.pool, s.cfg,
+		board.WithWorkerSpawner(spawner.Spawn),
+		board.WithWorkerAborter(s.aborter.Abort),
+		board.WithPRDriftSource(s.drift),
+		board.WithPendingInputSource(s.pending),
+		board.WithFailpoint(s.fps.fp),
+	)
+
+	c, err := svc.ClaimNext(ctx, "w-"+ws, ws)
+	s.Require().NoError(err)
+	_, err = svc.MoveStage(ctx, s.agent(c.Assignee, c.ClaimToken), "", c.ShortID, board.StageInReview, "", "")
+	s.Require().NoError(err)
+	s.Require().Len(spawner.claims, 2)
+
+	// Pause, then the reviewer's lease lapses.
+	_, err = s.pool.Exec(ctx, `UPDATE tasks SET paused=true WHERE id=$1`, task.ID)
+	s.Require().NoError(err)
+	s.expireLease(task.ID)
+	s.sweep()
+	s.clearTaskBackoff(task.ID)
+	s.sweep()
+	row := s.rawTask(task.ID)
+	s.Require().Nil(row.ClaimToken, "the healing clear is reclaim-class (rc1 parity) and stays legal on a paused row")
+	s.Require().Len(spawner.claims, 2, "NO fresh persona worker while paused — pause gates claim mints (#1747)")
+
+	// Resume converges: the next sweep re-arms the fresh reviewer.
+	_, err = s.pool.Exec(ctx, `UPDATE tasks SET paused=false WHERE id=$1`, task.ID)
+	s.Require().NoError(err)
+	s.sweep()
+	s.Require().NotNil(s.rawTask(task.ID).ClaimToken, "resume converges — the re-arm mints the fresh persona claim")
+	s.Require().Len(spawner.claims, 3, "the fresh persona worker spawns after resume")
+	require.NotNil(s.T(), spawner.claims[2].Persona)
+}
+
 // TestPersona_HeartbeatOnReviewClaim — the persona worker renews under
 // the SAME token + evidence rules (liveness = new progress evidence);
 // an UNCLAIMED in_review row still refuses heartbeats (today's
