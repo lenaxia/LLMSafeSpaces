@@ -101,10 +101,13 @@ func TestReleaseWorkflow_SDKLegsFailSoft(t *testing.T) {
 	}
 }
 
-// alwaysRunExpr is GitHub Actions' literal status-function spelling —
-// misspell's US locale wants one "l", but the yaml must contain the
-// expression VERBATIM for `Contains` to mean anything.
-const alwaysRunExpr = "!cancelled()" //nolint:misspell // GitHub's own expression spelling, not prose
+// alwaysRunExpr is GitHub Actions' literal status-function spelling.
+// Built by concatenation on purpose: the raw-text spelling fixers in
+// `make pre-commit-fix` (misspell -w, US locale — and golangci's
+// misspell) would silently rewrite a contiguous source literal into
+// "!canceled()", at which point Contains() would never match GitHub's
+// real expression and the pin would pass while checking nothing.
+const alwaysRunExpr = "!cancel" + "led()"
 
 // TestReleaseWorkflow_SDKOutcomeJobSurfacesResults: fail-soft legs must
 // come with a DISTINCT surfacing job — never-a-silent-skip (the
