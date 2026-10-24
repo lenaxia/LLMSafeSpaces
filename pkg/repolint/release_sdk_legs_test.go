@@ -101,10 +101,15 @@ func TestReleaseWorkflow_SDKLegsFailSoft(t *testing.T) {
 	}
 }
 
+// alwaysRunExpr is GitHub Actions' literal status-function spelling —
+// misspell's US locale wants one "l", but the yaml must contain the
+// expression VERBATIM for `Contains` to mean anything.
+const alwaysRunExpr = "!cancelled()" //nolint:misspell // GitHub's own expression spelling, not prose
+
 // TestReleaseWorkflow_SDKOutcomeJobSurfacesResults: fail-soft legs must
 // come with a DISTINCT surfacing job — never-a-silent-skip (the
-// run-watchdog.yml convention). sdk-outcome must run in every
-// non-cancelled case, depend on both legs, and read each leg's RAW
+// run-watchdog.yml convention). sdk-outcome must run even when a leg is
+// red or skipped, depend on both legs, and read each leg's RAW
 // `result` (under continue-on-error, `outcome` lies "success"; `result`
 // carries the failure). Without this pin the decoupling could silently
 // degrade into "green run, SDK never shipped, nobody told".
@@ -114,8 +119,8 @@ func TestReleaseWorkflow_SDKOutcomeJobSurfacesResults(t *testing.T) {
 	if !ok {
 		t.Fatalf("release.yml has no sdk-outcome job — the fail-soft SDK legs (#1918) would fail SILENTLY; the distinct outcome-surfacing job is part of the contract")
 	}
-	if !strings.Contains(job.If, "!cancelled()") && !strings.Contains(job.If, "always()") {
-		t.Errorf("sdk-outcome if = %q — lacks !cancelled()/always(); a skipped-because-SDK-red outcome job leaves the failure unsurfaced (#1918)", job.If)
+	if !strings.Contains(job.If, alwaysRunExpr) && !strings.Contains(job.If, "always()") {
+		t.Errorf("sdk-outcome if = %q — lacks %s/always(); a skipped-because-SDK-red outcome job leaves the failure unsurfaced (#1918)", job.If, alwaysRunExpr)
 	}
 	for _, leg := range []string{"publish-python-sdk", "publish-typescript-sdk"} {
 		found := false
