@@ -368,9 +368,9 @@ var boardImportPlanTool = mcp.NewTool("board_import_plan",
 				"acceptance_criteria": map[string]any{"type": "array"},
 				"depends_on":          map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
 			},
-			"required": []string{"key", "title"},
+			"required": []string{"key", "title", "description", "acceptance_criteria"},
 		}),
-		mcp.Description("Plan nodes: [{key, title, description, tags, acceptance_criteria, depends_on:[keys]}]")),
+		mcp.Description("Plan nodes (#1849: a non-empty description and >=1 acceptance criterion per node are REQUIRED — the dry-run refuses seedless nodes): [{key, title, description, tags, acceptance_criteria, depends_on:[keys]}]")),
 	mcp.WithString("request_id", mcp.Description("Idempotency key (one per logical operation)")),
 )
 

@@ -13440,7 +13440,11 @@ components:
           description: With reconnect=true, the inherited "orphan→upstream" pairs
     BoardPlanTask:
       type: object
-      required: [key, title]
+      required: [key, title, description, acceptanceCriteria]
+      description: |
+        #1849 atomic-create contract rides plan nodes: a non-empty
+        description and >=1 acceptance criterion per node — the dry-run
+        refuses seedless nodes (the approval moment never blesses one).
       properties:
         key:
           type: string

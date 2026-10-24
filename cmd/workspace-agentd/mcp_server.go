@@ -316,7 +316,7 @@ func boardManagerTools() []mcpTool {
 						"tags":               map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
 						"acceptanceCriteria": map[string]any{"type": "array"},
 						"dependsOn":          map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
-					}, "required": []string{"key", "title"}}, "description": "Plan nodes (dependsOn names other KEYS in this payload)"},
+					}, "required": []string{"key", "title", "description", "acceptanceCriteria"}}, "description": "Plan nodes (#1849: a non-empty description and >=1 acceptance criterion per node are REQUIRED — the dry-run refuses seedless nodes; dependsOn names other KEYS in this payload)"},
 			}, "required": []string{"projectId", "epicTitle"}},
 		},
 	}

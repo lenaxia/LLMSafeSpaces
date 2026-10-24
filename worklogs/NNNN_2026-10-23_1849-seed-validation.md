@@ -44,8 +44,10 @@ overlap; reported to the orchestrator.)
 Local: build, vet(+integration x3), gofmt, openapi-validate,
 repolint, pkg/board, pkg/mcp, handlers, agentd (full 360s), vitest
 217/217 + the board specs, tsc --noEmit, python ast-parse.
-CI: full matrix green on the final head (SDK Contract, Frontend e2e,
-both Go jobs, secrets-integration PG suite).
+CI: per-head record at review time — SDK Contract + Frontend e2e +
+secrets-integration PG suite green; the full-race job intermittently
+red on the KNOWN lane-1884 usagestream timing flake (zero diff
+overlap; cleared on every rerun).
 
 ## Next Steps
 Merge per orchestrator adjudication; #1849 items 3+4 stay dropped,
@@ -57,5 +59,6 @@ pkg/board/{service,plan}.go; cmd/workspace-agentd/{mcp_server,
 mcp_tools,board_manager_e2e_integration_test}.go; pkg/mcp/board_tools.
 go; api/internal/handlers/{board.go,board_worker_semantics_integration
 _test.go,board_manager_semantics_integration_test.go}; frontend TaskDialog
-+ 2 test files + tests/e2e/board.spec.ts; sdks/{openapi.yaml,go,python,
-typescript,canary/*}; docs/api/mcp.md; CHANGELOG.md.
++ board validation/swimlane tests + tests/e2e/board.spec.ts;
+sdks/{openapi.yaml,go,python,typescript,canary/go,canary/python,
+canary/typescript,tests/contract}; docs/api/mcp.md; CHANGELOG.md.
