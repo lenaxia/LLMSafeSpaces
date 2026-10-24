@@ -79,9 +79,6 @@ None. Environmental notes: fleet memory sat near/over the 7.2e9 gate for much of
 - api/internal/handlers/board.go, board_rest_test.go, board_events_rest_test.go (new); api/internal/server/router.go
 - sdks/openapi.yaml
 - frontend/src/api/board.ts; frontend/src/components/board/TaskDrawer.tsx (new), TaskDrawer.test.tsx (new), TaskCard.tsx; frontend/src/pages/BoardPage.tsx, BoardPage.drawer.test.tsx (new), boardTestUtils.tsx
-<<<<<<<< Updated upstream:worklogs/1175_2026-10-22_task-drawer-audit-timeline.md
-- CHANGELOG.md; worklogs/1175_2026-10-22_task-drawer-audit-timeline.md (this file)
-========
 - CHANGELOG.md; worklogs/1180_2026-10-22_task-drawer-audit-timeline.md (this file)
 
 ## R2 (2026-10-22, post-ruling): rebase + construction-parity mirror
@@ -97,4 +94,3 @@ handlers/reads/router/board.ts, #1823's failed fields in the drawer
 test fixture. Gates: handlers + pkg/mcp suites green (incl. the three
 forcing suites), sweep 2394/2394, tsc clean, eslint 0 errors, repolint
 green (worklog 1176 — 1175 held by C1's branch), board e2e 12/12.
->>>>>>>> Stashed changes:worklogs/1180_2026-10-22_task-drawer-audit-timeline.md

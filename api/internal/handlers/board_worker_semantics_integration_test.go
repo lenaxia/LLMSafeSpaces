@@ -148,7 +148,7 @@ func TestIntegrationBoardWorkerSemantics(t *testing.T) {
 		_, err = pool.Exec(ctx, `UPDATE epics SET status='active' WHERE id=$1`, e.ID)
 		require.NoError(t, err)
 		task, err := svc.CreateTask(ctx, owner, e.ID, "",
-			board.TaskInput{Title: "t-" + targetWorkspace, Tags: []string{},
+			board.TaskInput{Title: "t-" + targetWorkspace, Description: "seeded charter", Tags: []string{},
 				AcceptanceCriteria: []board.AcceptanceCriterion{{Text: "c1", Met: true}}}, "")
 		require.NoError(t, err)
 		return task.ShortID, p.ID

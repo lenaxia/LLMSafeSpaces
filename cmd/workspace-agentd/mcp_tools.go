@@ -26,6 +26,7 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/lenaxia/llmsafespaces/pkg/agent/opencode"
+	"github.com/lenaxia/llmsafespaces/pkg/board"
 	"github.com/lenaxia/llmsafespaces/pkg/session/agentmessage"
 	"github.com/lenaxia/llmsafespaces/pkg/shortid"
 )
@@ -1931,18 +1932,10 @@ func patchWithoutID(body map[string]any) json.RawMessage {
 // payloads and probe traffic ("ok", "x", "test", "ping") are NOT
 // members, and containment never matches — only whole-body equality
 // after trim+case-fold rejects.
-var placeholderClassPayloads = map[string]bool{
-	"placeholder":         true,
-	"placeholder-removed": true,
-	"<placeholder>":       true,
-	"todo":                true,
-	"tbd":                 true,
-	"asdf":                true,
-	"qwerty":              true,
-}
-
 // isPlaceholderClassPayload reports whether the (already-trimmed)
-// message body is ENTIRELY a placeholder-class token.
+// message body is ENTIRELY a placeholder-class token. The set lives in
+// pkg/board (#1849): send_message and the task-seed guard share ONE
+// vocabulary by construction.
 func isPlaceholderClassPayload(message string) bool {
-	return placeholderClassPayloads[strings.ToLower(message)]
+	return board.IsPlaceholderClass(message)
 }

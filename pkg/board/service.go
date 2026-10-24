@@ -721,6 +721,12 @@ func (s *Service) CreateTask(ctx context.Context, actor Actor, epicID, shortIDOr
 	if err := ValidateTaskInput(in); err != nil {
 		return nil, err
 	}
+	// #1849 items 1+6: the atomic-create seed contract — a charter,
+	// criteria, and no placeholder-class tokens (UPDATE is exempt:
+	// patches clear fields deliberately).
+	if err := validateTaskSeed(in); err != nil {
+		return nil, err
+	}
 	// #1747 DAG blast-radius bound: nodes per epic.
 	var nodes int
 	if err := s.q().QueryRow(ctx, `SELECT count(*) FROM tasks WHERE epic_id=$1`, e.ID).Scan(&nodes); err != nil {

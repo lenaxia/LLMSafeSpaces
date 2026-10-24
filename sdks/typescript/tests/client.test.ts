@@ -804,6 +804,7 @@ describe("userPrompts", () => {
       mockFetch.mockResolvedValueOnce(jsonResponse({ id: "t1", short_id: "tsk-cccc3333", stage: "backlog", tags: ["pr:1234"] }, 201));
       const task = await client.board.createTask("epc-bbbb2222", {
         title: "T",
+        description: "seeded charter",
         tags: ["pr:1234"],
         acceptanceCriteria: [{ text: "c", met: false }],
       });

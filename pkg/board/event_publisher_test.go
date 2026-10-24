@@ -67,7 +67,7 @@ func (s *BoardSuite) TestPublisher_UserActionsPersistThenPublish() {
 
 	before := len(capt.snapshot())
 	created, err := s.svc.CreateTask(ctx, s.owner(), e.ID, "",
-		board.TaskInput{Title: "published work", Tags: []string{}}, "pub-task-1")
+		board.TaskInput{Title: "published work", Description: "seeded charter", AcceptanceCriteria: []board.AcceptanceCriterion{{Text: "c1"}}, Tags: []string{}}, "pub-task-1")
 	require.NoError(s.T(), err)
 
 	events := capt.snapshot()
@@ -101,7 +101,7 @@ func (s *BoardSuite) TestPublisher_NoPublishOnAbort() {
 	s.fps.armAt("create_task.effect", assertErr("publisher abort fixture"))
 
 	_, err := s.svc.CreateTask(context.Background(), s.owner(), e.ID, "",
-		board.TaskInput{Title: "aborted work", Tags: []string{}}, "")
+		board.TaskInput{Title: "aborted work", Description: "seeded charter", AcceptanceCriteria: []board.AcceptanceCriterion{{Text: "c1"}}, Tags: []string{}}, "")
 	require.Error(s.T(), err)
 	assert.Empty(s.T(), capt.snapshot(), "an aborted transaction publishes nothing")
 }
@@ -182,7 +182,7 @@ func (s *BoardSuite) TestPublisher_NilPublisherWritesSucceed() {
 	ws := s.seedWorkspace()
 	p := s.seedProject(ws, 0)
 	e := s.seedEpic(p, board.EpicActive)
-	_, err := s.svc.CreateTask(ctx, s.owner(), e.ID, "", board.TaskInput{Title: "dark write", Tags: []string{}}, "")
+	_, err := s.svc.CreateTask(ctx, s.owner(), e.ID, "", board.TaskInput{Title: "dark write", Description: "seeded charter", AcceptanceCriteria: []board.AcceptanceCriterion{{Text: "c1"}}, Tags: []string{}}, "")
 	require.NoError(s.T(), err)
 	_, err = s.svc.ArchiveProject(ctx, s.owner(), p.ID, "dark-1")
 	require.NoError(s.T(), err)

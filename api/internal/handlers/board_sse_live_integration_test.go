@@ -139,7 +139,7 @@ func TestIntegrationBoardSSELiveProjection(t *testing.T) {
 	require.NoError(t, err)
 	e, err := svc.CreateEpic(ctx, owner, p.ID, "", board.EpicInput{Title: "E"}, "")
 	require.NoError(t, err)
-	_, err = svc.CreateTask(ctx, owner, e.ID, "", board.TaskInput{Title: "live feed"}, "")
+	_, err = svc.CreateTask(ctx, owner, e.ID, "", board.TaskInput{Title: "live feed", Description: "seeded charter", AcceptanceCriteria: []board.AcceptanceCriterion{{Text: "c1"}}}, "")
 	require.NoError(t, err)
 
 	var frame string

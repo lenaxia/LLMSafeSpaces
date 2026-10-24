@@ -91,7 +91,12 @@ export function TaskDialog({
   }
 
   async function handleSubmit() {
+    // #1849 atomic-create contract: a create carries a charter AND at
+    // least one criterion (the engine refuses otherwise; the dialog
+    // gates it client-side first). Edits stay loose — patches clear
+    // fields deliberately.
     if (!title.trim() || tagErrors.length > 0) return;
+    if (!editing && (!description.trim() || criteria.length === 0)) return;
     setSubmitting(true);
     try {
       const ok = await onSubmit({
@@ -178,7 +183,7 @@ export function TaskDialog({
 
             <div className="flex flex-col gap-1 text-xs">
               <span className="font-medium">Acceptance criteria <span className="text-muted-foreground">(Done = ALL met + evidence, R2)</span></span>
-              {criteria.length === 0 && <span className="text-[10px] text-muted-foreground">None — Done then needs only the evidence URL.</span>}
+              {criteria.length === 0 && <span className="text-[10px] text-muted-foreground">{editing ? "None — Done then needs only the evidence URL." : "At least one criterion is required to create (#1849) — Done is undefined without one."}</span>}
               {criteria.map((c, i) => (
                 <div key={i} className="flex items-center gap-2">
                   <button
@@ -319,7 +324,7 @@ export function TaskDialog({
               <Button
                 size="sm"
                 onClick={handleSubmit}
-                disabled={!title.trim() || tagErrors.length > 0 || submitting}
+                disabled={!title.trim() || tagErrors.length > 0 || submitting || (!editing && (!description.trim() || criteria.length === 0))}
                 data-testid="task-save"
               >
                 {submitting ? "Saving…" : editing ? "Save" : "Create"}

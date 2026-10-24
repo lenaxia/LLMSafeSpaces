@@ -42,6 +42,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **#1856** — ai-workflows v0.2.24 reapply (#1896).
 
 ## [Unreleased]
+
+### Added — Task Board: atomic-create seed validation (#1849 items 1+6)
+
+- **A task CREATE requires a charter and criteria**: non-empty
+  description (the worker's charter) and at least one acceptance
+  criterion are mandatory at create on every surface (service-layer
+  guard; import_plan dry-run refuses seedless nodes the same way —
+  the approval moment never blesses one). Updates stay exempt (patches
+  clear fields deliberately).
+- **Placeholder-class charters reject at the boundary** (#1820/#1814
+  discipline, shared vocabulary): whole-value placeholder tokens
+  (placeholder, placeholder-removed, <placeholder>, todo, tbd, asdf,
+  qwerty — trimmed, case-folded) reject with `text_rejected` in title,
+  description, or criterion text; prose that merely mentions a token
+  passes, short legitimate payloads pass. send_message's guard now
+  delegates to the ONE shared set (pkg/board).
+- Composes with #1837's guardrails: caps and corruption scans run
+  first, the seed contract second — a corrupted OR seedless create
+  never stores. agentd's board_create_task description teaches the
+  contract (Layer 2).
 ### Fixed — Automation: auto-disable disarms webhook triggers; the routine path's circuit breaker stops wedged-outage hammering (#1834)
 
 ### Fixed — Board reads: assignee/actor session ids emit the phrase at the read edge, never the raw harness id (#1922)
@@ -1132,34 +1152,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (`?limit=`, default 200, max 500 — lease heartbeats write a row per
   call, so long-lived claims stay bounded). OpenAPI schemas and the
   frontend client ship with it.
-### Added — Task Board: kebab menus + delete flows (#1832 item 3)
-- **Kebab menus at all three board levels.** Each project swimlane
-  header, epic band header, and task card carries a kebab menu
-  (distinct a11y labels; triggers stopPropagation — a kebab click
-  never toggles band selection nor opens the task editor).
-- **Task delete modal with the 'reconnect dependents to upstream'
-  checkbox** (#1747's optional flag): dependents are surfaced
-  pre-flight from the read model; unchecked (default) they are simply
-  unblocked (each gets an `unblocked_by_delete` audit event), checked
-  they inherit the deleted task's direct upstream edges (deduplicated,
-  cycle-guarded server-side). Both semantics are pinned at the wire in
-  e2e (`?reconnect=true` presence/absence exact-matched) and in
-  component tests (API-client args asserted). The delete result
-  surfaces as a page notice (orphans listed / `orphan→upstream` pairs).
-- **Epic delete surfaces in-flight workers with refuse/force-confirm
-  matching the API**: the modal lists the epic's in-flight claims
-  (in_progress + assignee, live read model) and its honest cascade
-  count; the first attempt never sends force — the engine's 409
-  `epic_state` renders inside the modal, and only that real refusal
-  reveals the acknowledge-gated "Force delete" (force deletes, then
-  aborts each in-flight worker post-commit).
-- **Project kebab is archive/unarchive ONLY** (#1747: project delete
-  is eliminated) — the menu structurally offers exactly one lifecycle
-  item; the absence of any delete item is pinned in both test layers.
-- This lane's e2e runs at **E2E_PORT=18521** (registry discipline:
-  18517/18519 claimed by sibling lanes; nightly PORTFWD 18083–18093
-  untouched).
-
 ### Fixed — CI flake: TestRequestSessionStatusSnapshot_Coalesces coalescing precondition now established, not hoped for (issue #1907)
 
 - **The `-short`+coverage-suite flake (run 39914818351, "got 2")** was a

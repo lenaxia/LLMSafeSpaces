@@ -223,12 +223,13 @@ func (s *boardE2ESeam) createTask(c *gin.Context) {
 		return
 	}
 	var req struct {
-		Title       string `json:"title"`
-		Description string `json:"description"`
+		Title              string                      `json:"title"`
+		Description        string                      `json:"description"`
+		AcceptanceCriteria []board.AcceptanceCriterion `json:"acceptanceCriteria"`
 	}
 	_ = json.Unmarshal(boardE2EFieldsJSON(fields), &req)
 	t, err := s.svc.CreateTask(c.Request.Context(), s.actor(owner, ws, session), "", c.Param("id"),
-		board.TaskInput{Title: req.Title, Description: req.Description}, "")
+		board.TaskInput{Title: req.Title, Description: req.Description, AcceptanceCriteria: req.AcceptanceCriteria}, "")
 	if err != nil {
 		s.engineError(c, err)
 		return
@@ -402,6 +403,7 @@ func TestIntegrationBoardManagerE2E(t *testing.T) {
 		"epicId":               epic.ShortID,
 		"title":                "E2E Task",
 		"description":          "charter",
+		"acceptanceCriteria":   []any{map[string]any{"text": "e2e criterion met", "met": false}},
 	}, "sa-token", wsPod)
 	require.NoError(t, err)
 	require.Equal(t, http.StatusCreated, resp.Status)
@@ -449,6 +451,8 @@ func TestIntegrationBoardManagerE2E(t *testing.T) {
 		"lsp_injected_session": claim.Assignee,
 		"epicId":               epic.ShortID,
 		"title":                "worker power grab",
+		"description":          "seeded charter",
+		"acceptanceCriteria":   []any{map[string]any{"text": "c", "met": false}},
 	}, "sa-token", wsPod)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "403")
@@ -531,6 +535,7 @@ func e2eFileBackedCharterSections(t *testing.T, ctx context.Context, client *ope
 		"epicId":               epic.ShortID,
 		"title":                "file-backed charter",
 		"description_file":     path,
+		"acceptanceCriteria":   []any{map[string]any{"text": "byte-identical storage", "met": false}},
 	}, "sa-token", wsPod)
 	require.NoError(t, err)
 	require.Equal(t, http.StatusCreated, resp.Status)
@@ -544,6 +549,19 @@ func e2eFileBackedCharterSections(t *testing.T, ctx context.Context, client *ope
 		`SELECT description FROM tasks WHERE id=$1`, fileTask.ID).Scan(&storedDesc))
 	require.Equal(t, content, storedDesc, "file bytes → wire → PG row, byte-identical")
 
+	// --- H0 (#1849, the noted full-chain arm): a seedless create through
+	// the real dispatch chain refuses with the seed-contract class —
+	// the shape the model actually experiences.
+	_, err = dispatchBoardManagerTool(ctx, client, e2eMCPPassword, "board_create_task", map[string]any{
+		"lsp_injected_session": mgrSession,
+		"epicId":               epic.ShortID,
+		"title":                "seedless",
+	}, "sa-token", wsPod)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "400")
+	assert.Contains(t, err.Error(), "description is required at create")
+
+	// --- F: composed corruption refusal — nothing stored ------------------------
 	// --- H: composed corruption refusal — nothing stored ------------------------
 	before := boardE2EEventCount(t, ctx, pool)
 	_, err = dispatchBoardManagerTool(ctx, client, e2eMCPPassword, "board_create_task", map[string]any{
