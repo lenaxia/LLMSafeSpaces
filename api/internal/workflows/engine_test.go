@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -50,6 +51,18 @@ type mockStore struct {
 	// (the #1834 audit-mirror assertion).
 	fireStatuses map[string]string
 	fireResults  map[string]json.RawMessage
+	// sessionOrigins/originWrites/originDeletes mirror the scheduler
+	// mock's #1882/#1901 origin recording on the reconciler side
+	// (#1915: the DAG legs' kind=carrier marks are only observable in
+	// the write history — they are cleaned post-effects).
+	sessionOrigins map[string]*wf.SessionOriginRow
+	originWrites   []*wf.SessionOriginRow
+	originDeletes  []string
+	// failOriginDeletes, when set, makes DeleteSessionOrigin fail —
+	// the #1915 mid-outage survive pin (the same DB outage that fails
+	// the effects' index writes fails the mark clean; the mark must
+	// survive for the #1901 reap net).
+	failOriginDeletes bool
 }
 
 func newMockStore() *mockStore {
@@ -65,6 +78,43 @@ func newMockStore() *mockStore {
 		fireStatuses:  make(map[string]string),
 		fireResults:   make(map[string]json.RawMessage),
 	}
+}
+
+// RecordSessionOrigin mirrors the scheduler mock's recording (#1915:
+// the reconciler store seam gains the origin pair).
+func (m *mockStore) RecordSessionOrigin(_ context.Context, row *wf.SessionOriginRow) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.sessionOrigins == nil {
+		m.sessionOrigins = make(map[string]*wf.SessionOriginRow)
+	}
+	m.sessionOrigins[row.SessionID] = row
+	m.originWrites = append(m.originWrites, row)
+	return nil
+}
+
+// DeleteSessionOrigin records the #1915 carrier-mark cleanup calls;
+// failOriginDeletes simulates the shared DB outage without which the
+// mark would not survive for the reap net.
+func (m *mockStore) DeleteSessionOrigin(_ context.Context, sessionID string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.originDeletes = append(m.originDeletes, sessionID)
+	if m.failOriginDeletes {
+		return errors.New("origin delete failed (simulated outage)")
+	}
+	delete(m.sessionOrigins, sessionID)
+	return nil
+}
+
+// carrierMarked reports whether a kind=carrier mark is currently
+// recorded for the session — the #1901 discriminator's data
+// (ListCarrierOriginMarks' shape) for the ordering probes.
+func (m *mockStore) carrierMarked(sessionID string) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	row, ok := m.sessionOrigins[sessionID]
+	return ok && row.Kind == types.SessionOriginKindCarrier
 }
 
 func (m *mockStore) ClaimQueuedRuns(_ context.Context, _ int) ([]*wf.WorkflowRunRow, error) {
@@ -541,8 +591,13 @@ type mockSchedulerStore struct {
 	originWrites []*wf.SessionOriginRow
 	// originDeletes records DeleteSessionOrigin calls (#1882 carrier
 	// mark cleanup).
-	originDeletes   []string
-	overridePending []*wf.TriggerFireRow
+	originDeletes []string
+	// failOriginDeletes, when set, makes DeleteSessionOrigin fail —
+	// the #1915 mid-outage survive pin (the DB outage that failed the
+	// effects' index writes fails the mark clean too; the mark must
+	// survive for the #1901 reap net to admit).
+	failOriginDeletes bool
+	overridePending   []*wf.TriggerFireRow
 }
 
 func newMockSchedulerStore() *mockSchedulerStore {
@@ -734,8 +789,21 @@ func (m *mockSchedulerStore) DeleteSessionOrigin(_ context.Context, sessionID st
 		m.originDeletes = make([]string, 0)
 	}
 	m.originDeletes = append(m.originDeletes, sessionID)
+	if m.failOriginDeletes {
+		return errors.New("origin delete failed (simulated outage)")
+	}
 	delete(m.sessionOrigins, sessionID)
 	return nil
+}
+
+// carrierMarked reports whether a kind=carrier mark is currently
+// recorded for the session — the #1901 discriminator's data
+// (ListCarrierOriginMarks' shape) for the #1915 ordering probes.
+func (m *mockSchedulerStore) carrierMarked(sessionID string) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	row, ok := m.sessionOrigins[sessionID]
+	return ok && row.Kind == types.SessionOriginKindCarrier
 }
 
 func makeDueTrigger(id, wfID, wsID string) *wf.TriggerRow {
