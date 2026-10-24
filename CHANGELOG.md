@@ -59,6 +59,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `TestReview_ExplicitOptOutSurvivesDefaultFlip`).
 - OpenAPI `BoardConfig` documents the new defaults; the Settings
   pre-data display fallbacks match the new floor.
+### Added — board bulk claim/complete variants (#1836)
+
+- **Bulk task claim/complete with per-item result arrays** (#1836):
+  `BulkTaskStart` + `BulkMoveStage` at the engine seam (each item ONE
+  full single-task delegation — its own transaction, audit event,
+  `board_transitions` row, spawn/directive side effects), rendered on
+  REST (`POST /api/v1/me/tasks/bulk-start`, `…/bulk-move-stage`), the
+  agentd manager surface (`board_move_stage_bulk` — the bulk claim
+  deliberately stays off it: task_start is owner-surface only,
+  round-3 #2), and the external platform MCP (`board_start_tasks`,
+  `board_move_stage_bulk`). Contract: per-item `{id, status:
+  done|failed, escalated?, error?}` with partial failures reported,
+  never all-or-nothing; idempotent retry (already-landed items return
+  done, not conflict); one malformed id sinks only its own item; batch
+  capped at 50. Bulk projections carry NO claim tokens (#1864 ruling
+  extension); foreign rows render the same `not_found` item a miss
+  renders (never-disclose parity). Validate-first deltas vs the spec
+  documented in the worklog.
 
 ### Fixed — Test hygiene: the #1922 phrase pins revived after the #1849 atomic-create contract (#1922 lane, validate-first)
 

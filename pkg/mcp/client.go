@@ -132,6 +132,9 @@ type APIClient interface {
 	BoardRecordVerdict(ctx context.Context, taskID string, body BoardVerdictBody) (json.RawMessage, error)
 	BoardTaskVerdicts(ctx context.Context, taskID string) (json.RawMessage, error)
 	BoardStartTask(ctx context.Context, taskID, requestID string) (json.RawMessage, error)
+	// #1836: the bulk claim/complete batches (per-item result arrays).
+	BoardStartTasks(ctx context.Context, taskIDs []string, requestID string) (json.RawMessage, error)
+	BoardMoveStageBulk(ctx context.Context, taskIDs []string, toStage, evidenceURL, requestID string) (json.RawMessage, error)
 	BoardRearmTask(ctx context.Context, taskID, requestID string) (json.RawMessage, error)
 	BoardPauseTask(ctx context.Context, taskID, requestID string) (json.RawMessage, error)
 	BoardResumeTask(ctx context.Context, taskID, requestID string) (json.RawMessage, error)
@@ -1517,6 +1520,41 @@ func (c *HTTPClient) BoardStartTask(ctx context.Context, taskID, requestID strin
 		body = boardStartBody{RequestID: requestID}
 	}
 	return c.doRaw(ctx, http.MethodPost, "/api/v1/me/tasks/"+taskID+"/start", body)
+}
+
+// boardBulkStartBody is the POST /me/tasks/bulk-start payload (#1836).
+type boardBulkStartBody struct {
+	TaskIDs   []string `json:"taskIds"`
+	RequestID string   `json:"requestId,omitempty"`
+}
+
+// boardBulkMoveStageBody is the POST /me/tasks/bulk-move-stage payload
+// (#1836) — its own type so the DTOs cannot silently diverge.
+type boardBulkMoveStageBody struct {
+	TaskIDs     []string `json:"taskIds"`
+	ToStage     string   `json:"toStage"`
+	EvidenceURL string   `json:"evidenceUrl,omitempty"`
+	RequestID   string   `json:"requestId,omitempty"`
+}
+
+// BoardStartTasks is the bulk claim (#1836): N manual dispatches, one
+// call, per-item result array.
+func (c *HTTPClient) BoardStartTasks(ctx context.Context, taskIDs []string, requestID string) (json.RawMessage, error) {
+	if len(taskIDs) == 0 || len(taskIDs) > board.BulkMaxItems {
+		return nil, fmt.Errorf("task_ids must carry 1 to %d tasks (got %d)", board.BulkMaxItems, len(taskIDs))
+	}
+	return c.doRaw(ctx, http.MethodPost, "/api/v1/me/tasks/bulk-start",
+		boardBulkStartBody{TaskIDs: taskIDs, RequestID: requestID})
+}
+
+// BoardMoveStageBulk is the bulk complete (#1836): one shared target
+// stage + evidence across a batch, per-item result array.
+func (c *HTTPClient) BoardMoveStageBulk(ctx context.Context, taskIDs []string, toStage, evidenceURL, requestID string) (json.RawMessage, error) {
+	if len(taskIDs) == 0 || len(taskIDs) > board.BulkMaxItems {
+		return nil, fmt.Errorf("task_ids must carry 1 to %d tasks (got %d)", board.BulkMaxItems, len(taskIDs))
+	}
+	return c.doRaw(ctx, http.MethodPost, "/api/v1/me/tasks/bulk-move-stage",
+		boardBulkMoveStageBody{TaskIDs: taskIDs, ToStage: toStage, EvidenceURL: evidenceURL, RequestID: requestID})
 }
 
 // BoardRearmTask is board_rearm_task (#1832 WS3): re-pool an

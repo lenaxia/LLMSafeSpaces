@@ -5332,6 +5332,84 @@ paths:
           $ref: "#/components/responses/BoardNotFound"
         "409":
           $ref: "#/components/responses/BoardConflict"
+  /me/tasks/bulk-start:
+    post:
+      tags: [board]
+      summary: Bulk claim (#1836) — N manual dispatches, per-item results
+      description: |
+        The bulk form of task_start: each item is ONE full manual
+        dispatch (claim + fresh-charter worker spawn, ruling R9), with
+        every single-task guard identical (draft∪active epics; paused/
+        archived refusals; concurrency caps). The response is a
+        per-item result array — partial failures are reported per item,
+        never all-or-nothing. Idempotent retry: re-submitting the batch
+        (same `requestId`) is safe — an item already claimed
+        (`in_progress`) returns `done`, not a conflict. The batch is
+        capped at 50 items (a larger batch is a 400, nothing
+        processed). Per #1864's ruling the bulk projection NEVER
+        carries claim tokens — the spawned workers receive theirs in
+        their charters.
+      operationId: startBoardTasksBulk
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/BoardBulkStartRequest"
+      responses:
+        "200":
+          description: The per-item result array (partial failures included)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BoardBulkResults"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/BoardNotFound"
+        "409":
+          $ref: "#/components/responses/BoardConflict"
+  /me/tasks/bulk-move-stage:
+    post:
+      tags: [board]
+      summary: Bulk stage move (#1836) — one target stage across a batch
+      description: |
+        The bulk form of move-stage: one shared target stage + evidence
+        across up to 50 tasks. Each item is ONE full server-arbitrated
+        stage move — the Done guard (ALL criteria met + evidenceUrl),
+        pause guards, the claim-token rule, auto-review dispatch on
+        `in_review`, and the `done` settle cascade all apply per item.
+        The response is a per-item result array — partial failures per
+        item, never all-or-nothing; an item already at the target stage
+        returns `done` (idempotent retry), and one malformed id sinks
+        only its own item. The canonical use: completing review sets
+        (`in_review` → `done`).
+      operationId: moveBoardTasksStageBulk
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/BoardBulkMoveStageRequest"
+      responses:
+        "200":
+          description: The per-item result array (partial failures included)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BoardBulkResults"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/BoardNotFound"
+        "409":
+          $ref: "#/components/responses/BoardConflict"
   /me/tasks/{id}/pause:
     post:
       tags: [board]
@@ -13587,5 +13665,75 @@ components:
         dependsOn:
           type: string
           description: The dependency target task — UUID or short id (`tsk-…`)
+        requestId:
+          $ref: "#/components/schemas/BoardRequestId"
+    BoardBulkItemError:
+      type: object
+      required: [code, detail]
+      properties:
+        code:
+          type: string
+          description: >
+            The engine's guard vocabulary on failed items — the same
+            codes the single-task surfaces render (`not_found` for
+            misses and foreign rows, `stage_transition`, `done_guard`,
+            `claim_token`, `task_paused`, …)
+        detail:
+          type: string
+    BoardBulkItemResult:
+      type: object
+      required: [id, status]
+      properties:
+        id:
+          type: string
+          description: The caller's submitted ref, echoed verbatim (phrase short id, legacy form, or UUID)
+        status:
+          type: string
+          enum: [done, failed]
+        escalated:
+          type: boolean
+          description: Bulk claim only — the attempts cap withheld the grant; the item waits in pending_input (origin escalated)
+        error:
+          $ref: "#/components/schemas/BoardBulkItemError"
+    BoardBulkResults:
+      type: object
+      required: [results, count]
+      properties:
+        results:
+          type: array
+          items:
+            $ref: "#/components/schemas/BoardBulkItemResult"
+        count:
+          type: integer
+    BoardBulkStartRequest:
+      type: object
+      required: [taskIds]
+      properties:
+        taskIds:
+          type: array
+          items:
+            type: string
+          minItems: 1
+          maxItems: 50
+          description: Task refs (phrase short ids preferred; legacy forms and UUIDs resolve)
+        requestId:
+          $ref: "#/components/schemas/BoardRequestId"
+    BoardBulkMoveStageRequest:
+      type: object
+      required: [taskIds, toStage]
+      properties:
+        taskIds:
+          type: array
+          items:
+            type: string
+          minItems: 1
+          maxItems: 50
+        toStage:
+          type: string
+          enum: [backlog, in_progress, in_review, done, pending_input]
+          description: The ONE target stage every item moves to (per-item from-stage legality stays server-arbitrated)
+        evidenceUrl:
+          type: string
+          description: Artifact link applied to every item's transition (required when toStage is done)
         requestId:
           $ref: "#/components/schemas/BoardRequestId"

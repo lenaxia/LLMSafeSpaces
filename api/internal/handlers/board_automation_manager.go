@@ -380,6 +380,54 @@ func (h *PodAutomationHandler) BoardManagerMoveStage(c *gin.Context) {
 	c.JSON(http.StatusOK, t)
 }
 
+// BoardManagerMoveStageBulk is #1836's bulk complete on the pod seam —
+// the manager-grade batch stage move (BoardManagerMoveStage's bulk
+// twin): one shared target stage + evidence across up to 50 tasks, one
+// call. Per-item results (partial failures included — never
+// all-or-nothing); an item already at the target returns done
+// (idempotent retry); every landed item keeps its own single-task
+// transition + audit. NO claim tokens render (#1864 ruling). The bulk
+// CLAIM variant deliberately does NOT exist here: task_start is
+// owner-surface only (round-3 #2), and the bulk form follows the
+// single form's boundary.
+func (h *PodAutomationHandler) BoardManagerMoveStageBulk(c *gin.Context) {
+	raw, ws, owner, session, ok := h.resolveManager(c)
+	if !ok {
+		return
+	}
+	var req struct {
+		TaskIDs     []string `json:"taskIds"`
+		ToStage     string   `json:"toStage"`
+		EvidenceURL string   `json:"evidenceUrl"`
+		RequestID   string   `json:"requestId"`
+	}
+	if !bindBoardBody(c, raw, &req) {
+		return
+	}
+	if len(req.TaskIDs) == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "taskIds is required (at least one task id)", "code": board.GuardInput})
+		return
+	}
+	if req.ToStage == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "toStage is required", "code": board.GuardInput})
+		return
+	}
+	// The five-stage vocabulary's shared helper (board.go's boardStages
+	// — the same single source the REST bulk adapter and the engine's
+	// StageInVocabulary render from; #1836 review r1 style finding).
+	if !boardStages()[req.ToStage] {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "toStage must be one of the five stages: " + board.StageVocabulary(), "code": board.GuardInput})
+		return
+	}
+	results, err := h.boardMgr.BulkMoveStage(c.Request.Context(), h.managerActor(owner, ws, session),
+		req.TaskIDs, req.ToStage, req.EvidenceURL, req.RequestID)
+	if err != nil {
+		renderBoardError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"results": results, "count": len(results)})
+}
+
 // BoardCreateTask creates a backlog task (inline dependsOn allowed).
 func (h *PodAutomationHandler) BoardCreateTask(c *gin.Context) {
 	raw, ws, owner, session, ok := h.resolveManager(c)
@@ -622,7 +670,7 @@ func (h *PodAutomationHandler) BoardManagerListTasks(c *gin.Context) {
 		return
 	}
 	stage := c.Query("stage")
-	if stage != "" && !map[string]bool{"backlog": true, "in_progress": true, "in_review": true, "done": true, "pending_input": true}[stage] {
+	if stage != "" && !boardStages()[stage] {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "stage filter must be one of the five stages", "code": board.GuardInput})
 		return
 	}
