@@ -188,8 +188,12 @@ func (s *Service) moveStageTx(ctx context.Context, tx pgx.Tx, actor Actor, taskI
 				var token string
 				token, err = s.personaClaimMintTx(ctx, tx, taskID, StageInReview)
 				if err == nil {
-					if err = personaClaimEventTx(ctx, tx, cur.ProjectID, taskID, StageInReview, entryPersona, "engine", cur.Attempts); err == nil {
-						postNudge = nudge{taskID: taskID, token: token, spawn: true}
+					var evt Event
+					evt, err = personaClaimEventTx(ctx, tx, cur.ProjectID, taskID, StageInReview, entryPersona, "engine", cur.Attempts)
+					if err == nil {
+						// The mint's event rides the nudge for post-commit
+						// SSE publication (§4.6 persist-then-publish).
+						postNudge = nudge{taskID: taskID, token: token, spawn: true, events: []Event{evt}}
 					}
 				}
 			}

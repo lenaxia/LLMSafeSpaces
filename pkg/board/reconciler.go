@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strconv"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -503,7 +504,11 @@ func (s *Service) rc1PersonaClaims(ctx context.Context) (personaReclaim, error) 
 				_ = tx.Rollback(ctx)
 				return out, err
 			}
-			evt, err := recordEventTx(ctx, tx, v.project, "reconciler:escalate:"+v.id+":"+itoa(int(v.failures)),
+			// Episode-unique id (nanos): failure_count resets on the
+			// human re-arm (rearm.go) — an id keyed on the count would
+			// collide across escalation episodes and silently drop the
+			// audit event (ON CONFLICT DO NOTHING).
+			evt, err := recordEventTx(ctx, tx, v.project, "reconciler:escalate:"+v.id+":"+strconv.FormatInt(time.Now().UnixNano(), 10),
 				"escalate", "task", v.id, sys,
 				map[string]any{"task_id": v.id, "stage": StageInReview, "persona": persona.Name,
 					"failure_count": v.failures, "exhausted": true})
@@ -531,11 +536,12 @@ func (s *Service) rc1PersonaClaims(ctx context.Context) (personaReclaim, error) 
 			_ = tx.Rollback(ctx)
 			continue // raced (cooldown/re-arm elsewhere): converged
 		}
-		if err := personaClaimEventTx(ctx, tx, v.project, v.id, StageInReview, persona, "reconciler", int(v.failures)); err != nil {
+		evt, err := personaClaimEventTx(ctx, tx, v.project, v.id, StageInReview, persona, "reconciler", int(v.failures))
+		if err != nil {
 			_ = tx.Rollback(ctx)
 			return out, err
 		}
-		if err := s.commitPublishing(ctx, tx); err != nil {
+		if err := s.commitPublishing(ctx, tx, evt); err != nil {
 			return out, err
 		}
 		// Post-commit spawn (r1-C5): the fresh persona worker's charter

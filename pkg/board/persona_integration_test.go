@@ -405,6 +405,42 @@ func (s *BoardSuite) TestPersona_BounceAfterPersonaClaim() {
 	s.Equal(*row.ClaimToken, bounced.ClaimToken)
 }
 
+// TestPersona_ApproveDoneOnPersonaClaim — the round-1 review's missing
+// arm: an approve verdict on a persona-claimed in_review row rides the
+// existing →done clear (persona claim consumed: token+lease NULL, the
+// Done guard applies regardless of the claim).
+func (s *BoardSuite) TestPersona_ApproveDoneOnPersonaClaim() {
+	ctx := context.Background()
+	ws := s.seedWorkspace()
+	p := s.seedProject(ws, 2)
+	e := s.seedEpic(p, board.EpicActive)
+	task := s.seedTask(e, "approve", nil, true) // criteria pre-met for the Done guard
+
+	spawner := &claimCapture{}
+	svc := board.NewService(s.pool, s.cfg, board.WithWorkerSpawner(spawner.Spawn))
+	s.setStagePersonas(svc, p, map[string]board.PersonaConfig{"in_review": {Name: "reviewer"}})
+
+	c, err := svc.ClaimNext(ctx, "w-"+ws, ws)
+	s.Require().NoError(err)
+	_, err = svc.MoveStage(ctx, s.agent(c.Assignee, c.ClaimToken), "", c.ShortID, board.StageInReview, "https://example.org/evidence", "")
+	s.Require().NoError(err)
+	s.Require().NotNil(s.rawTask(task.ID).ClaimToken, "the reviewer holds the persona claim")
+
+	out, v, err := svc.RecordVerdict(ctx, s.owner(), "", c.ShortID, board.VerdictInput{
+		Verdict:     board.VerdictApprove,
+		Reviewer:    "rev-approve",
+		EvidenceURL: "https://example.org/evidence",
+	}, "")
+	s.Require().NoError(err)
+	s.Require().True(v.Applied)
+	s.Equal(board.StageDone, out.Stage)
+
+	row := s.rawTask(task.ID)
+	s.Require().Nil(row.ClaimToken, "the approve consumes the persona claim (token cleared)")
+	s.Require().Nil(row.LeaseExp)
+	s.Equal(1, row.Attempts, "one worker grant; the persona mint and the verdict never touch attempts")
+}
+
 // TestReview_1832_VerdictChainRidesNextClaim — the absorbed suite's
 // verdict-chain pin (unchanged semantics: the chain rides EVERY spawn
 // — the fresh claim, the fail-bounce's re-arm, the post-lapse

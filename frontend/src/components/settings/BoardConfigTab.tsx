@@ -185,9 +185,16 @@ function ProjectRow(props: {
     autoAssignReviewer: pc.overrides.autoAssignReviewer === undefined ? "" : pc.overrides.autoAssignReviewer ? "on" : "off",
   };
   const dirty = props.draft !== undefined;
+  // The project PUT is REPLACE-semantics server-side (absent keys are
+  // DELETED, not preserved): a save of the toggles must carry the
+  // project's stored stagePersonas override back verbatim or saving
+  // reviewColumn would silently wipe configured personas (the
+  // blocking round-1 review finding). Absent stays absent (inherit).
+  const storedPersonas = pc.overrides.stagePersonas;
   const body: ProjectBoardConfigOverrideInput = {
     ...(d.reviewColumn !== "" ? { reviewColumn: d.reviewColumn } : {}),
     ...(d.autoAssignReviewer !== "" ? { autoAssignReviewer: d.autoAssignReviewer === "on" } : {}),
+    ...(storedPersonas !== undefined ? { stagePersonas: storedPersonas } : {}),
   };
   const prov = (o: { k: string; v: boolean }) => (
     <span

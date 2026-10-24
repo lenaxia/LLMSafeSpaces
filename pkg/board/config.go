@@ -112,6 +112,13 @@ type BoardConfig struct {
 	AutoAssignReviewer bool                     `json:"autoAssignReviewer"`
 	DefaultWorkerSlots int                      `json:"defaultWorkerSlots"`
 	StagePersonas      map[string]PersonaConfig `json:"stagePersonas"`
+	// StagePersonasSet reports whether an explicit stagePersonas key
+	// was set at ANY merged tier (even an empty {} — the opt-out).
+	// It governs the legacy-composition fallthrough: an explicit key
+	// OWNS the stage mapping, so {} disables even the legacy
+	// reviewColumn=auto + autoAssignReviewer reviewer persona (the
+	// opt-out the defaults flip needs). Not rendered on the wire.
+	StagePersonasSet bool `json:"-"`
 }
 
 // BoardConfigOverride is a PARTIAL config: nil fields are unset and
@@ -124,10 +131,11 @@ type BoardConfigOverride struct {
 	// StagePersonas is one key whose value is an object (stage →
 	// persona). Merge semantics are per-KEY like every other key: a set
 	// stagePersonas object REPLACES the inherited map wholesale (an
-	// absent key inherits; an explicitly empty object {} is the
-	// opt-out — no personas, overriding an inherited map). This is the
-	// composition lever: a project override {} disables an inherited
-	// reviewer persona.
+	// absent key inherits; an explicitly empty object {} is the OPT-OUT
+	// — it owns the stage mapping outright and disables even the legacy
+	// auto-review composition's default reviewer persona for that
+	// tier). This is the composition lever: a project override {}
+	// disables an inherited reviewer persona however it was configured.
 	StagePersonas *map[string]PersonaConfig `json:"stagePersonas,omitempty"`
 }
 
@@ -182,6 +190,7 @@ func MergeBoardConfig(base BoardConfig, o *BoardConfigOverride) BoardConfig {
 			m[k] = v
 		}
 		out.StagePersonas = m
+		out.StagePersonasSet = true
 	}
 	return out
 }

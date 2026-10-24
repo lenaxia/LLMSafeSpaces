@@ -107,10 +107,17 @@ func TestStagePersonasMergeSemantics(t *testing.T) {
 	got = MergeBoardConfig(base, &BoardConfigOverride{StagePersonas: &repl})
 	assert.Equal(t, repl, got.StagePersonas)
 
-	// The explicit empty object is the opt-out (no personas).
+	// The explicit empty object is the opt-out (no personas) — and the
+	// merge carries the explicit-set flag (the legacy-composition
+	// suppressor) through every tier.
 	empty := map[string]PersonaConfig{}
 	got = MergeBoardConfig(base, &BoardConfigOverride{StagePersonas: &empty})
 	assert.Empty(t, got.StagePersonas)
+	assert.True(t, got.StagePersonasSet, "the {} opt-out is an EXPLICIT set — it owns the stage mapping")
+
+	// Absent key: neither the map nor the flag inherit a set state.
+	got = MergeBoardConfig(base, &BoardConfigOverride{ReviewColumn: strPtr("auto")})
+	assert.False(t, got.StagePersonasSet)
 }
 
 // TestPersonaForStageResolution — the effective persona resolution:
@@ -120,9 +127,11 @@ func TestStagePersonasMergeSemantics(t *testing.T) {
 // auto-review on IS in_review having a reviewer persona via the
 // generic config); everything else is nil (today's behavior).
 func TestPersonaForStageResolution(t *testing.T) {
-	// Explicit entry — arbitrary stage, arbitrary persona.
+	// Explicit entry — arbitrary stage, arbitrary persona (the flag is
+	// what the MERGE sets; direct construction models the same shape).
 	eff := DefaultBoardConfig()
 	eff.StagePersonas = map[string]PersonaConfig{"in_review": {Name: "auditor"}}
+	eff.StagePersonasSet = true
 	if p := personaForStage(eff, StageInReview); p == nil || p.Name != "auditor" {
 		t.Fatalf("explicit in_review persona must win, got %+v", p)
 	}
@@ -151,17 +160,34 @@ func TestPersonaForStageResolution(t *testing.T) {
 		}
 	}
 
-	// An explicit stagePersonas entry beats the legacy composition.
+	// An explicit stagePersonas key beats the legacy composition —
+	// INCLUDING the empty-object opt-out (round-2 review finding: {}
+	// must own the stage mapping outright, or the defaults flip could
+	// never be opted out per-project).
 	eff = DefaultBoardConfig()
 	eff.ReviewColumn = ReviewColumnAuto
 	eff.AutoAssignReviewer = true
 	eff.StagePersonas = map[string]PersonaConfig{"in_review": {Name: "custom-auditor"}}
+	eff.StagePersonasSet = true
 	if p := personaForStage(eff, StageInReview); p == nil || p.Name != "custom-auditor" {
 		t.Fatalf("explicit persona must beat the legacy composition, got %+v", p)
 	}
+	empty := map[string]PersonaConfig{}
+	eff.StagePersonas = empty
+	if p := personaForStage(eff, StageInReview); p != nil {
+		t.Fatalf("the explicit {} opt-out must disable even the legacy composition, got %+v", p)
+	}
+	// An explicit map that does not list the stage also suppresses the
+	// legacy fallthrough (the explicit key owns the mapping wholesale).
+	eff.StagePersonas = map[string]PersonaConfig{"in_progress": {Name: "implementer"}}
+	if p := personaForStage(eff, StageInReview); p != nil {
+		t.Fatalf("an explicit map owns its stages — unlisted stages get no legacy fallthrough, got %+v", p)
+	}
 
 	// The legacy composition never leaks onto other stages.
-	eff.StagePersonas = nil
+	eff = DefaultBoardConfig()
+	eff.ReviewColumn = ReviewColumnAuto
+	eff.AutoAssignReviewer = true
 	if p := personaForStage(eff, StageInProgress); p != nil {
 		t.Fatalf("legacy composition is in_review-only, got %+v", p)
 	}

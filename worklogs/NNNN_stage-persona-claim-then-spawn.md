@@ -111,6 +111,34 @@ from the sub-orchestrator board test (epic "Fix npm publish leg",
   identity); TestReview_1832_VerdictChainRidesNextClaim (carried over
   from the retired suite).
 
+## Review rounds
+
+**Round 1 (CHANGES_REQUESTED, head cb3663f06):** one blocking finding
+— the project-tier Settings save built its PUT from the toggles only,
+and the project PUT is REPLACE server-side (absent keys are DELETED):
+saving reviewColumn silently wiped a stored stagePersonas override
+(the PR body's "safe by construction" claim was wrong). Fixed + pinned
+(frontend carries pc.overrides.stagePersonas verbatim; the pinning
+test uses a project seeded with a stored auditor override). Non-
+blocking findings fixed in the same round: (a) the {} opt-out now
+OWNS the stage mapping outright (BoardConfig.StagePersonasSet — an
+explicit key at any merged tier suppresses the legacy-composition
+fallthrough; without this the defaults flip could never be opted out
+per-project); (b) persona_claim events now SSE-publish (entry mint
+rides the nudge's events; the re-arm rides commitPublishing); (c) the
+escalation audit id is episode-unique nanos (failure_count resets on
+the human re-arm — the count-keyed id collided across episodes); (d)
+config-read failures in stagePersona log a warn (the observability
+parity the absorbed path had). Also added the review's missing arm:
+approve→done on a persona-claimed row (claim consumed, token/lease
+cleared, Done guard applies regardless).
+
+Declared NOT fixed (non-blocking, reviewer-discretionary): RC2 drift
+paths move a persona-claimed in_review row without aborting the live
+persona session (contained by the token guards; the orphan runs to
+its timeout — the drift-abort seam is a natural follow-up alongside
+#1847).
+
 ## Verification
 
 go build/vet clean (incl. -tags=integration); `go test ./...` green
