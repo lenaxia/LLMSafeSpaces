@@ -1370,6 +1370,7 @@ func registerInternalAutomationRoutes(router *gin.Engine, cfg RouterConfig) {
 		b.POST("/tasks/heartbeat", h.BoardHeartbeat)
 		b.POST("/tasks/throttle", h.BoardReportThrottle)
 		b.POST("/tasks/move-stage", h.BoardMoveStage)
+		b.POST("/tasks/move-stage-bulk", h.BoardManagerMoveStageBulk) // #1836: bulk complete (claim stays owner-surface only, round-3 #2)
 
 		b.POST("/projects", h.BoardCreateProject)
 		b.PATCH("/projects/:id", h.BoardUpdateProject)
@@ -2388,6 +2389,11 @@ func registerWorkflowRoutes(router *gin.Engine, services interfaces.Services, cf
 		k.DELETE("/:id", b.DeleteTask)
 		k.POST("/:id/dependencies", b.AddDependency)
 		k.DELETE("/:id/dependencies/:dependsOnId", b.RemoveDependency)
+		// #1836: the bulk claim/complete projections — engine batch
+		// seams; static siblings of the /:id routes (gin routes
+		// statics first, so both trees resolve).
+		k.POST("/bulk-start", b.StartTasksBulk)
+		k.POST("/bulk-move-stage", b.MoveStageBulk)
 	}
 
 	// Org-scope trigger routes.

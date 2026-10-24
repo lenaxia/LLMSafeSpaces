@@ -183,6 +183,11 @@ func dispatchBoardManagerTool(ctx context.Context, client *opencode.Client, pass
 			ref = boardRefArg(args, "shortId")
 		}
 		return client.BoardManagerMoveStage(ctx, saToken, workspaceID, sessionID, ref, wire)
+	case "board_move_stage_bulk":
+		// #1836: the bulk complete — {taskIds, toStage, evidenceUrl,
+		// requestId} ride the body verbatim (the platform validates;
+		// agentd re-models nothing).
+		return client.BoardManagerMoveStageBulk(ctx, saToken, workspaceID, sessionID, wire)
 	case "board_rearm_task":
 		// #1832 WS3: the attempts-exhaustion re-pool.
 		return client.BoardRearmTask(ctx, saToken, workspaceID, sessionID, boardRefArg(args, "taskId"), wire)

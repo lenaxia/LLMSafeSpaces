@@ -1164,6 +1164,15 @@ func (c *Client) BoardManagerMoveStage(ctx context.Context, saToken, workspaceID
 		fmt.Sprintf("/internal/v1/automation/board/tasks/%s/move-stage", taskID), body)
 }
 
+// BoardManagerMoveStageBulk is #1836's bulk complete on the manager
+// seam: one shared target stage across a batch, per-item result array
+// (the single move's bulk twin; the bulk CLAIM variant deliberately
+// does not exist here — task_start is owner-surface only).
+func (c *Client) BoardManagerMoveStageBulk(ctx context.Context, saToken, workspaceID, sessionID string, body json.RawMessage) (*AutomationResponse, error) {
+	return c.boardManagerPost(ctx, saToken, workspaceID, sessionID,
+		"/internal/v1/automation/board/tasks/move-stage-bulk", body)
+}
+
 // BoardDeleteTask destructively removes a task (reconnect rides the query).
 func (c *Client) BoardDeleteTask(ctx context.Context, saToken, workspaceID, sessionID, taskID string, reconnect bool) (*AutomationResponse, error) {
 	if err := validateBoardRef(taskID); err != nil {

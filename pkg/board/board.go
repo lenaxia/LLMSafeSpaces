@@ -22,6 +22,7 @@ package board
 import (
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -177,6 +178,29 @@ const (
 	StageDone         = "done"
 	StagePendingInput = "pending_input"
 )
+
+// stageVocabulary is the five-stage binding set's single source (the
+// read filter's vocabulary, the batch move's target vocabulary, and the
+// adapters' presence checks all render from here — #1836 review r1:
+// the inline literal maps had begun to drift).
+var stageVocabulary = []string{StageBacklog, StageInProgress, StageInReview, StageDone, StagePendingInput}
+
+// StageVocabulary renders the five stages (joined) for caller-facing
+// validation errors.
+func StageVocabulary() string {
+	return strings.Join(stageVocabulary, ", ")
+}
+
+// StageInVocabulary reports whether a literal is one of the five
+// stages (case-sensitive — the binding vocabulary is lowercase).
+func StageInVocabulary(stage string) bool {
+	for _, s := range stageVocabulary {
+		if s == stage {
+			return true
+		}
+	}
+	return false
+}
 
 // PendingInput origins (§4.1: four origins with distinct exits).
 const (

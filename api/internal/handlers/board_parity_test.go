@@ -198,6 +198,18 @@ var boardParityMatrix = []parityRow{
 	{action: "task_start", restMethods: []string{"StartTask"}, rest: liveCell,
 		externalMCP: liveCell, extTools: []string{"board_start_task"}, agent: absentCell, // round-3 #2: dropped from agent surfaces (the engine claims and spawns)
 		denyErr: &board.GuardError{Code: board.GuardEpicState, Detail: "paused epics refuse task_start"}, denyCode: http.StatusConflict},
+	// #1836 bulk rows: the batch forms ride the same per-action boundary
+	// as their single forms — the bulk claim keeps task_start's
+	// agent-absence (round-3 #2); the bulk move keeps move_stage's
+	// three-live-columns shape (the manager-grade move is the #1832
+	// WS2 cell the agent column already carries).
+	{action: "bulk_start", restMethods: []string{"StartTasksBulk"}, rest: liveCell,
+		externalMCP: liveCell, extTools: []string{"board_start_tasks"}, agent: absentCell, // follows task_start's boundary
+		denyErr: &board.GuardError{Code: board.GuardInput, Detail: "bulk batch capped at 50 items"}, denyCode: http.StatusBadRequest},
+	{action: "bulk_move_stage", restMethods: []string{"MoveStageBulk"}, rest: liveCell,
+		externalMCP: liveCell, extTools: []string{"board_move_stage_bulk"}, agent: liveCell,
+		agentTools: []string{"board_move_stage_bulk"},
+		denyErr:    &board.GuardError{Code: board.GuardDone, Detail: "criteria unmet or evidence missing"}, denyCode: http.StatusConflict},
 	{action: "delete_task", restMethods: []string{"DeleteTask"}, rest: liveCell,
 		externalMCP: liveCell, extTools: []string{"board_delete"}, agent: liveCell,
 		agentTools: []string{"board_delete_task"},
@@ -379,6 +391,10 @@ func boardParityRESTCall(t *testing.T, r *gin.Engine, action string) *httptest.R
 		return doBoardREST(t, r, http.MethodPost, "/api/v1/me/tasks/tsk-cccc3333/move-stage", `{"toStage":"done"}`)
 	case "task_start":
 		return doBoardREST(t, r, http.MethodPost, "/api/v1/me/tasks/tsk-cccc3333/start", `{}`)
+	case "bulk_start":
+		return doBoardREST(t, r, http.MethodPost, "/api/v1/me/tasks/bulk-start", `{"taskIds":["tsk-cccc3333"]}`)
+	case "bulk_move_stage":
+		return doBoardREST(t, r, http.MethodPost, "/api/v1/me/tasks/bulk-move-stage", `{"taskIds":["tsk-cccc3333"],"toStage":"done"}`)
 	case "rearm_task":
 		return doBoardREST(t, r, http.MethodPost, "/api/v1/me/tasks/tsk-cccc3333/rearm", `{}`)
 	case "delete_task":
@@ -448,6 +464,7 @@ func TestBoardParity_AgentColumn(t *testing.T) {
 		"POST /internal/v1/automation/board/tasks/:id/resume",
 		"POST /internal/v1/automation/board/tasks/heartbeat",
 		"POST /internal/v1/automation/board/tasks/move-stage",
+		"POST /internal/v1/automation/board/tasks/move-stage-bulk",
 		"POST /internal/v1/automation/board/tasks/throttle",
 	}, seamBoardRoutes(t),
 		"agent seam route table: worker + manager (#1747) routes + resource-pressure telemetry; claim_next/task_start never route")
@@ -820,6 +837,10 @@ func boardParityExtToolArgs(action string) (string, map[string]any, bool) {
 		return "board_move_stage", map[string]any{"task_id": "tsk-cccc3333", "to_stage": "done"}, true
 	case "task_start":
 		return "board_start_task", map[string]any{"task_id": "tsk-cccc3333"}, true
+	case "bulk_start":
+		return "board_start_tasks", map[string]any{"task_ids": []any{"tsk-cccc3333"}}, true
+	case "bulk_move_stage":
+		return "board_move_stage_bulk", map[string]any{"task_ids": []any{"tsk-cccc3333"}, "to_stage": "done"}, true
 	case "rearm_task":
 		return "board_rearm_task", map[string]any{"task_id": "tsk-cccc3333"}, true
 	case "delete_task":
@@ -995,9 +1016,11 @@ func TestBoardParity_RestRouteTable(t *testing.T) {
 		"POST /api/v1/me/tasks/:id/resume",
 		"POST /api/v1/me/tasks/:id/start",
 		"POST /api/v1/me/tasks/:id/verdict",
+		"POST /api/v1/me/tasks/bulk-move-stage",
+		"POST /api/v1/me/tasks/bulk-start",
 		"PUT /api/v1/me/board/config",
 		"PUT /api/v1/me/projects/:id/config",
-	}, restBoardRoutes(t), "REST board route table (#1699 + #1747 rows + #1832 config rows; cancel eliminated; task_start stays owner-only; /me/board group now scanned)")
+	}, restBoardRoutes(t), "REST board route table (#1699 + #1747 rows + #1832 config rows + #1836 bulk rows; cancel eliminated; task_start stays owner-only; /me/board group now scanned)")
 }
 
 // restBoardRoutes source-scans router.go's /api/v1/me board groups and
@@ -1164,6 +1187,10 @@ func boardParityRESTCallReqID(t *testing.T, r *gin.Engine, action, requestID str
 		return doBoardREST(t, r, http.MethodPatch, "/api/v1/me/tasks/tsk-cccc3333", `{"title":"x","requestId":`+q(requestID)+`}`)
 	case "task_start":
 		return doBoardREST(t, r, http.MethodPost, "/api/v1/me/tasks/tsk-cccc3333/start", body)
+	case "bulk_start":
+		return doBoardREST(t, r, http.MethodPost, "/api/v1/me/tasks/bulk-start", `{"taskIds":["tsk-cccc3333"],"requestId":`+q(requestID)+`}`)
+	case "bulk_move_stage":
+		return doBoardREST(t, r, http.MethodPost, "/api/v1/me/tasks/bulk-move-stage", `{"taskIds":["tsk-cccc3333"],"toStage":"done","requestId":`+q(requestID)+`}`)
 	case "rearm_task":
 		return doBoardREST(t, r, http.MethodPost, "/api/v1/me/tasks/tsk-cccc3333/rearm", body)
 	case "add_dependency":

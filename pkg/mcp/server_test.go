@@ -355,6 +355,17 @@ func (m *MockAPIClient) BoardStartTask(ctx context.Context, taskID, requestID st
 	return json.RawMessage(args.String(0)), args.Error(1)
 }
 
+// #1836: the bulk claim/complete client arms.
+func (m *MockAPIClient) BoardStartTasks(ctx context.Context, taskIDs []string, requestID string) (json.RawMessage, error) {
+	args := m.Called(ctx, taskIDs, requestID)
+	return json.RawMessage(args.String(0)), args.Error(1)
+}
+
+func (m *MockAPIClient) BoardMoveStageBulk(ctx context.Context, taskIDs []string, toStage, evidenceURL, requestID string) (json.RawMessage, error) {
+	args := m.Called(ctx, taskIDs, toStage, evidenceURL, requestID)
+	return json.RawMessage(args.String(0)), args.Error(1)
+}
+
 func (m *MockAPIClient) BoardRearmTask(ctx context.Context, taskID, requestID string) (json.RawMessage, error) {
 	args := m.Called(ctx, taskID, requestID)
 	return json.RawMessage(args.String(0)), args.Error(1)
