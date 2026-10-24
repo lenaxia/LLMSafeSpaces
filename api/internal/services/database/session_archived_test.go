@@ -165,9 +165,10 @@ func TestSetSessionArchivedStatus_SQLStructure(t *testing.T) {
 		{"anchor scoped to the workspace", `SELECT session_id FROM session_index[[:space:]]*\n?[[:space:]]*WHERE workspace_id = \$1 AND session_id = \$2`},
 		{"recursive member scoped to the workspace", `ON si\.parent_session_id = d\.session_id AND si\.workspace_id = \$1`},
 		{"outer UPDATE scoped to the workspace", `UPDATE session_index si[[:space:]]*\n?[[:space:]]*SET archived = \$3,[[:space:]]*\n?[[:space:]]*archived_by_cascade`},
-		{"sticky marker set from the cascade direction", `archived_by_cascade = \$3 AND session_id <> \$2`},
+		{"sticky marker set from the cascade direction", `archived_by_cascade = \$3 AND si\.session_id <> \$2`},
 		{"archive skips already-archived descendants", `OR \(\$3 AND NOT si\.archived\)`},
 		{"unarchive releases only cascade-held descendants", `OR \(NOT \$3 AND si\.archived_by_cascade\)`},
+		{"UPDATE-target references are alias-qualified (SQLSTATE 42702 guard)", `AND \(\n?[[:space:]]*si\.session_id = \$2`},
 	}
 	for _, pin := range pins {
 		t.Run(pin.name, func(t *testing.T) {

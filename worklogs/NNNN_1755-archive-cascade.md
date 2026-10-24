@@ -2,9 +2,44 @@
 
 **Date:** 2026-10-24
 **Branch:** `fix/1755-archive-cascade`
-**Status:** PR opened; iterating to LATEST FORMAL APPROVED
+**Status:** r2 — review CHANGES_REQUESTED @ 54821f369 (SQLSTATE 42702
+ambiguity + test findings), fixed; iterating to LATEST FORMAL APPROVED
 
 ---
+
+## Round 2 (r2)
+
+Review r1 verdict: REQUEST CHANGES — correct and caught what local
+sqlmock couldn't:
+
+1. **Blocker (SQLSTATE 42702):** in
+   `UPDATE session_index si ... FROM descendants d`, the bare
+   `session_id` references (SET's `session_id <> $2` and WHERE's
+   `session_id = $2`) are ambiguous — the CTE also exposes
+   `session_id`, and PostgreSQL gives the UPDATE target no precedence
+   over FROM items. Every archive/unarchive call errored. Fixed:
+   alias-qualified both (`si.session_id`); added a structure pin
+   (`UPDATE-target references are alias-qualified`) so the ambiguity
+   cannot return unnoticed. Documented why sqlmock missed it (text
+   matching, no SQL parsing) and why CI missed it (the
+   `-tags integration` DB leg was skipped by the pre-existing
+   `pkg/board` fail-fast on main).
+2. **Test bug:** `WorkspaceScoping`'s seed INSERT had 4 target
+   columns / 3 values in row 1 (42601) — never executed its
+   assertions. Fixed with the explicit NULL.
+3. **Vacuous pass:** `AbsentRow404NoPhantom` asserted any error; now
+   asserts the typed NotFound APIError (404) specifically.
+4. **Non-blocking adopted:** marker-invariant pin
+   (`archived_by_cascade ⟹ archived`) added
+   (`TestIntegration_SessionArchiveCascade_MarkerInvariant`);
+   invariant documented in the impl comment (why the unarchive gate
+   needs no explicit `si.archived` check).
+
+**GREEN against a real database this round** (the r1 gap): local
+PostgreSQL 16.4 (portable binaries, trust auth, port 5433) with
+`TEST_DATABASE_URL` — the full cascade suite 10/10 PASS, full
+`./internal/services/database/...` integration package `ok`,
+sessionindex/workspace/server unit suites `ok`, gofmt/vet clean.
 
 ## Objective
 

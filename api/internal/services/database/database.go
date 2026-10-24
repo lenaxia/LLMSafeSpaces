@@ -1399,7 +1399,14 @@ func (s *Service) UpdateSessionLastSeen(ctx context.Context, workspaceID, sessio
 // preserved by the same statement. The CTE walks with UNION (dedupe)
 // — parentID is a tree by construction, but a corrupted cycle
 // terminates instead of hanging. Workspace scoping is enforced at the
-// CTE anchor, the recursive member, and the outer UPDATE.
+// CTE anchor, the recursive member, and the outer UPDATE. Column
+// references against the target are alias-qualified throughout —
+// `descendants` also exposes session_id, and PostgreSQL gives the
+// UPDATE target no precedence over FROM items (SQLSTATE 42702). The
+// unarchive gate checks archived_by_cascade without an explicit
+// si.archived: the marker invariant (cascade-held ⟹ archived) holds
+// through every write path — archive stamps both together, and any
+// release clears both.
 func (s *Service) SetSessionArchivedStatus(ctx context.Context, workspaceID, sessionID string, archived bool) error {
 	tag, err := s.DB.ExecContext(ctx, `
 		WITH RECURSIVE descendants AS (
@@ -1411,13 +1418,13 @@ func (s *Service) SetSessionArchivedStatus(ctx context.Context, workspaceID, ses
 		)
 		UPDATE session_index si
 		SET archived = $3,
-		    archived_by_cascade = $3 AND session_id <> $2,
+		    archived_by_cascade = $3 AND si.session_id <> $2,
 		    updated_at = NOW()
 		FROM descendants d
 		WHERE si.workspace_id = $1
 		  AND si.session_id = d.session_id
 		  AND (
-		    session_id = $2
+		    si.session_id = $2
 		    OR ($3 AND NOT si.archived)
 		    OR (NOT $3 AND si.archived_by_cascade)
 		  )`, workspaceID, sessionID, archived)

@@ -23,11 +23,13 @@ package database
 
 import (
 	"context"
+	"net/http"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	apierrors "github.com/lenaxia/llmsafespaces/api/internal/errors"
 	"github.com/lenaxia/llmsafespaces/api/internal/testharness"
 )
 
@@ -187,6 +189,8 @@ func TestIntegration_SessionArchiveCascade_LeafTarget(t *testing.T) {
 // TestIntegration_SessionArchiveCascade_AbsentRow404NoPhantom: the
 // update-only 404 contract survives the cascade — an absent target
 // errors AND stamps nothing (no phantom row, no partial cascade).
+// Asserts the NotFound APIError specifically: an any-error assertion
+// would pass vacuously on e.g. a SQL syntax error.
 func TestIntegration_SessionArchiveCascade_AbsentRow404NoPhantom(t *testing.T) {
 	h := testharness.New(t)
 	defer h.Close()
@@ -197,12 +201,43 @@ func TestIntegration_SessionArchiveCascade_AbsentRow404NoPhantom(t *testing.T) {
 	svc := &Service{DB: h.SQLDB()}
 	err := svc.SetSessionArchivedStatus(ctx, cascadeWS, "ses-ghost", true)
 	require.Error(t, err, "absent target must 404")
+	var apiErr *apierrors.APIError
+	require.ErrorAs(t, err, &apiErr, "the refusal is the typed 404, not a raw SQL error")
+	assert.Equal(t, http.StatusNotFound, apiErr.StatusCode())
 
 	var n int
 	require.NoError(t, pool.QueryRow(ctx,
 		`SELECT count(*) FROM session_index WHERE workspace_id = $1 AND archived`,
 		cascadeWS).Scan(&n))
 	assert.Zero(t, n, "no row was stamped or created by the refused call")
+}
+
+// TestIntegration_SessionArchiveCascade_MarkerInvariant: cascade-held
+// implies archived — the invariant that lets the unarchive gate check
+// archived_by_cascade alone (no explicit si.archived test in the
+// UPDATE's WHERE). Holds through every write path: archive stamps both
+// together, any release clears both. Verified across the full archive
+// → unarchive cycle of a deep subtree.
+func TestIntegration_SessionArchiveCascade_MarkerInvariant(t *testing.T) {
+	h := testharness.New(t)
+	defer h.Close()
+	seedCascadeTree(t, h)
+	pool := h.Pool()
+	ctx := h.NewContext()
+
+	svc := &Service{DB: h.SQLDB()}
+	require.NoError(t, svc.SetSessionArchivedStatus(ctx, cascadeWS, "ses_P", true))
+	var n int
+	require.NoError(t, pool.QueryRow(ctx,
+		`SELECT count(*) FROM session_index WHERE workspace_id = $1 AND archived_by_cascade AND NOT archived`,
+		cascadeWS).Scan(&n))
+	assert.Zero(t, n, "no cascade-held row is unarchived (marker invariant)")
+
+	require.NoError(t, svc.SetSessionArchivedStatus(ctx, cascadeWS, "ses_P", false))
+	require.NoError(t, pool.QueryRow(ctx,
+		`SELECT count(*) FROM session_index WHERE workspace_id = $1 AND archived_by_cascade`,
+		cascadeWS).Scan(&n))
+	assert.Zero(t, n, "the release clears the marker everywhere it wrote")
 }
 
 // TestIntegration_SessionArchiveCascade_CycleCorruptionTerminates:
@@ -271,7 +306,7 @@ func TestIntegration_SessionArchiveCascade_WorkspaceScoping(t *testing.T) {
 	_, _ = pool.Exec(ctx, "DELETE FROM session_index WHERE workspace_id = $1", otherWS)
 	_, err := pool.Exec(ctx, `
 		INSERT INTO session_index (workspace_id, session_id, title, parent_session_id) VALUES
-		('`+otherWS+`', 'ses_P', 'Other parent'),
+		('`+otherWS+`', 'ses_P', 'Other parent', NULL),
 		('`+otherWS+`', 'ses_C', 'Other child', 'ses_P')
 	`)
 	require.NoError(t, err, "seed other-workspace rows")
