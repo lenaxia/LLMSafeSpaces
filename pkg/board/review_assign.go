@@ -38,26 +38,35 @@ func WithReviewAssigner(ra ReviewAssigner) Option {
 }
 
 // effectiveConfigForProject merges the owner's user-level defaults
-// with the project's overrides (A1 semantics, read time).
+// with the project's overrides (A1 semantics, read time). Drift fails
+// CLOSED at EVERY tier (the config.go doctrine: a drifted row surfaces
+// as an error, never a silently ignored value): a decode error from
+// the user map propagates exactly like the project arm's — the
+// post-2026-10-24 flipped floor makes a swallowed user-tier drift a
+// silent dispatch-enabler (maybeAutoAssignReview warn+returns on
+// error, so a drifted map means NO auto-review, never default-on).
 func (s *Service) effectiveConfigForProject(ctx context.Context, p *Project) (BoardConfig, error) {
 	eff := DefaultBoardConfig()
 	if p.UserID != "" {
-		if raw, err := s.store.loadBoardConfigDefaults(ctx, s.q(), p.UserID); err == nil {
-			if o, err := decodeBoardConfigRows("user defaults", raw); err == nil {
-				eff = MergeBoardConfig(eff, o)
-			}
-		} else {
+		raw, err := s.store.loadBoardConfigDefaults(ctx, s.q(), p.UserID)
+		if err != nil {
 			return eff, err
 		}
-	}
-	if raw, err := s.store.loadBoardProjectConfigOverrides(ctx, s.q(), p.ID); err != nil {
-		return eff, err
-	} else if o, err := decodeBoardConfigRows("project overrides", raw); err != nil {
-		return eff, err
-	} else {
+		o, err := decodeBoardConfigRows("user defaults", raw)
+		if err != nil {
+			return eff, err
+		}
 		eff = MergeBoardConfig(eff, o)
 	}
-	return eff, nil
+	raw, err := s.store.loadBoardProjectConfigOverrides(ctx, s.q(), p.ID)
+	if err != nil {
+		return eff, err
+	}
+	o, err := decodeBoardConfigRows("project overrides", raw)
+	if err != nil {
+		return eff, err
+	}
+	return MergeBoardConfig(eff, o), nil
 }
 
 // maybeAutoAssignReview runs post-commit on →in_review (MoveStage):

@@ -272,6 +272,43 @@ func (s *BoardSuite) TestReview_ExplicitOptOutSurvivesDefaultFlip() {
 	s.True(drive(ctx, pUser, "optout-user-cleared"), "cleared user map re-inherits the flipped on-default")
 }
 
+// TestReview_GateFailsClosedOnUserMapDrift — the dispatch gate is the
+// flip's fail-closed counterpart (r1 review finding): a drifted row in
+// the owner's board_config_defaults map (known key, malformed value)
+// must surface as NO dispatch — the flipped on-defaults never ride a
+// corrupt row into enabling reviewer dispatch. Same construction as
+// TestBoardConfig_FailClosedOnDrift's user-map arm; this pins the
+// GATE's behavior (warn + return, no event), not just the read seam.
+func (s *BoardSuite) TestReview_GateFailsClosedOnUserMapDrift() {
+	ctx := context.Background()
+	ws := s.seedWorkspace()
+	p := s.seedProject(ws, 2)
+	e := s.seedEpic(p, board.EpicActive)
+	task := s.seedTask(e, "gate-drift", nil, false)
+
+	spawner := &claimCapture{}
+	assigner := &captureAssigner{}
+	svc := board.NewService(s.pool, s.cfg,
+		board.WithWorkerSpawner(spawner.Spawn),
+		board.WithReviewAssigner(assigner.Assign),
+	)
+
+	// Drift: the exact TestBoardConfig_FailClosedOnDrift construction —
+	// a known key with a malformed value, landed via raw SQL.
+	_, err := s.pool.Exec(ctx,
+		`INSERT INTO board_config_defaults (user_id, key, value) VALUES ($1, 'autoAssignReviewer', '"not-a-bool"')`, testUser)
+	s.Require().NoError(err)
+
+	c, err := svc.ClaimNext(ctx, "w-"+ws, ws)
+	s.Require().NoError(err)
+	s.Require().Equal(task.ID, c.TaskID)
+	_, err = svc.MoveStage(ctx, s.agent(c.Assignee, c.ClaimToken), "", c.ShortID, board.StageInReview, "", "")
+	s.Require().NoError(err)
+
+	s.Equal(0, assigner.count(), "drifted user map: the gate fails closed — no dispatch under the flipped defaults")
+	s.Equal(0, s.countProjectEvents(p.ID, "review_assign"), "and no intent event (the manual path remains)")
+}
+
 func boolStr(b bool) string {
 	if b {
 		return "on"
