@@ -12,7 +12,6 @@ package board
 import (
 	"context"
 	"encoding/json"
-	"reflect"
 	"testing"
 
 	"github.com/jackc/pgx/v5"
@@ -84,10 +83,24 @@ func TestTranslateActorSessionPhrase(t *testing.T) {
 func TestPayloadAssigneeIDs(t *testing.T) {
 	payload := []byte(`{"snapshot":{"assignee_session":"ses_a","stage":"in_progress"},
 		"other":{"nested":[{"assignee_session":"ses_b"},{"assignee_session":"amber-falcon-glides"}]}}`)
+	// Order-insensitive: the walk ranges a decoded map (Go randomizes
+	// iteration order) and no consumer is order-sensitive — the original
+	// DeepEqual-on-slice pin flaked CI ~50% of runs (the #1927 deflake
+	// family). The SET is the contract; phrase-form values are skipped.
 	got := PayloadAssigneeIDs(payload)
 	want := []string{"ses_a", "ses_b"}
-	if !reflect.DeepEqual(got, want) {
+	if len(got) != len(want) {
 		t.Errorf("got %v want %v (phrase-form values are skipped)", got, want)
+	}
+	gotSet := map[string]int{}
+	for _, id := range got {
+		gotSet[id]++
+	}
+	for _, id := range want {
+		if gotSet[id] == 0 {
+			t.Errorf("got %v want %v (phrase-form values are skipped)", got, want)
+		}
+		gotSet[id]--
 	}
 	if PayloadAssigneeIDs([]byte(`{"none":true}`)) != nil {
 		t.Errorf("no keys → nil")
