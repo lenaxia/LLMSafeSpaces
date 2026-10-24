@@ -259,6 +259,21 @@ type gate struct {
 	// beyond the first means frames since the previous seed may have
 	// been lost — the bridge's StreamResynced cue.
 	snapshotSeeds int
+	// connections counts the gate's Stream dial attempts (#1884 fix).
+	// The resync cue keys on this, NOT on snapshotSeeds: a connection
+	// that dies BEFORE delivering its snapshot (the kill-test's
+	// incomplete-envelope EOF) leaves no fold and no seed — the
+	// fold-count rule then misclassified the next connection's healing
+	// seed as the initial connect, and the notify never fired (~12%
+	// of race-timing runs). The subscription lived server-side during
+	// the dead connection, so frames in that window are lost whether
+	// or not a fold landed — any fold on a connection beyond the first
+	// is a resync.
+	connections int
+	// reseedArmed is set by the WithResynced callback (the in-stream
+	// projection.reseeded redial) and consumed by the next fold: that
+	// fold is a resync even on connection 1.
+	reseedArmed bool
 	// consultFails counts consecutive-or-not consult failures for the
 	// rate-limited observability warn (first + every 50th).
 	consultFails int
@@ -413,6 +428,7 @@ func (c *Consumer) run(ctx context.Context, workspaceID string, g *gate) {
 		g.frames = false
 		g.client = cl
 		g.seededFold = false
+		g.connections++
 		g.mu.Unlock()
 		err = cl.Stream(ctx, func(st *abiclient.SessionState) {
 			c.onState(workspaceID, g, st)
@@ -421,8 +437,20 @@ func (c *Consumer) run(ctx context.Context, workspaceID string, g *gate) {
 			// WITHOUT returning, so run()'s per-connection reset never
 			// fires — re-arm the snapshot reconcile here (review r1
 			// finding 1: the stale-true lease on this path).
+			//
+			// abiclient fires this callback on EVERY connection's first
+			// snapshot — the initial connect included — so arming the
+			// resync cue here unconditionally would notify on every
+			// connect. The discriminator: a true in-stream reseed is a
+			// SECOND snapshot inside one Stream call, i.e. the gate has
+			// already folded on this connection (seededFold true). Arm
+			// only then; the run-loop redial path keys on connections.
 			g.mu.Lock()
+			inStream := g.seededFold
 			g.seededFold = false
+			if inStream {
+				g.reseedArmed = true
+			}
 			g.mu.Unlock()
 		}), abiclient.WithAppliedEvents(func(evt *abiv1.Event, seq uint64) { //nolint:contextcheck // the applied-events callback cannot carry the stream ctx (abiclient's seam is ctx-less by design); the busy-truth consult inside derives from the GATE's lifecycle ctx — canceled at teardown, budget-capped otherwise.
 			c.onEvent(workspaceID, g, evt, seq)
@@ -478,12 +506,17 @@ func (c *Consumer) onState(workspaceID string, g *gate, st *abiclient.SessionSta
 		// truth verbatim.
 		g.seededFold = true
 		g.snapshotSeeds++
-		// #1884: a seed beyond the gate's first is a reconnect/reseed
-		// snapshot — frames since the previous seed may have been lost
+		// #1884: a seed on any connection beyond the first — or any
+		// in-stream reseed, even on connection 1 — is a reconnect/reseed
+		// snapshot: frames since the previous seed may have been lost
 		// silently (the stream is replay-less) while every downstream
-		// surface stayed healthy. Fire the bridge's resync cue after
-		// the corrections (both outside the lock).
-		resyncSeed = g.snapshotSeeds > 1
+		// surface stayed healthy. Keyed on connections, not the fold
+		// count: a connection that dies before its first snapshot holds
+		// the server-side subscription without ever folding, so its
+		// successor's healing seed must still fire the bridge's resync
+		// cue. Fire after the corrections (both outside the lock).
+		resyncSeed = g.connections > 1 || g.reseedArmed
+		g.reseedArmed = false
 		rebuilt := map[string]bool{}
 		for sid, s := range st.Sessions {
 			// #1817 piece 3: key the fold's derived baseline by the INTERNAL
