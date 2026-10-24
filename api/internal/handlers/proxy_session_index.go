@@ -708,6 +708,19 @@ func (h *ProxyHandler) ServeHarnessMessageCounts(ctx context.Context, workspaceI
 			sessionindex.ReconcileOutcome("listing_count_unchanged")
 			continue
 		}
+		// #1882 r4 F1: the walk above IS the race window — a carrier's
+		// confirmed delete (tombstone + row removal, the propagation
+		// tail) may have landed mid-walk. This writer's Register +
+		// RebuildMessageCount is a row-CREATING mint at count>0 (the
+		// only such writer post-r1), and a re-minted carrier row is a
+		// permanent kept_for_operator ghost the reap guard refuses
+		// (count>0). The tombstone consult — the same one-line seam
+		// the r1 fix put before the two reconcile sweeps' registers.
+		//nolint:contextcheck // the tombstone read is store-local; the listing's ctx never reaches it (isSessionDeleted precedent)
+		if h.isSessionDeleted(workspaceID, row.InternalID) {
+			sessionindex.ReconcileOutcome("listing_count_skip_tombstoned")
+			continue
+		}
 		// Row-creating upsert shape — the registration seam first
 		// (design 0066 §4.2; keyed by the harness id, never the
 		// phrase — the #1756/#1881 discipline).
