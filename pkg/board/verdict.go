@@ -145,7 +145,7 @@ func (s *Service) RecordVerdict(ctx context.Context, actor Actor, taskID, shortI
 		}
 	}
 	outcome, dup, err := (&eventWriter{svc: s, projectID: p.ID, requestID: requestID, action: "review_verdict", itemKind: "task", itemID: t.ID, actor: actor}).run(ctx, func(tx pgx.Tx) (map[string]any, error) {
-		res, n, txErr := s.moveStageTx(ctx, tx, actor, t.ID, target, in.EvidenceURL)
+		res, n, txErr := s.moveStageTx(ctx, tx, actor, t.ID, target, in.EvidenceURL, nil)
 		pendingNudge = n
 		if txErr != nil {
 			var guard *GuardError

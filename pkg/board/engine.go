@@ -475,6 +475,18 @@ func (s *Service) spawnAfter(ctx context.Context, claim *Claim) {
 	if len(claim.VerdictChain) == 0 {
 		claim.VerdictChain = s.claimVerdictChain(ctx, claim.ProjectID, claim.TaskID)
 	}
+	// Stage-persona claim-then-spawn: a grant lands the row in
+	// in_progress — the implementer persona (when configured) rides
+	// the charter. nil (the default config) leaves the charter
+	// byte-identical.
+	if claim.Stage == "" {
+		claim.Stage = StageInProgress
+	}
+	if claim.Persona == nil {
+		if p := s.projectFor(ctx, claim.ProjectID); p != nil {
+			claim.Persona = s.stagePersona(ctx, p, claim.Stage)
+		}
+	}
 	if s.asyncSpawn {
 		go func() { //nolint:gosec,contextcheck // G118/contextcheck: deliberate — the production spawn (pod activation + agentd charter dispatch) outlives the request/sweep context by design; lost races self-heal via lease lapse
 			sctx := context.Background()
@@ -483,6 +495,17 @@ func (s *Service) spawnAfter(ctx context.Context, claim *Claim) {
 		return
 	}
 	s.spawnSync(ctx, claim)
+}
+
+// projectFor resolves a project row (nil on any failure — the persona
+// attach is best-effort; a config-read failure degrades to the default
+// worker charter, never a failed spawn).
+func (s *Service) projectFor(ctx context.Context, projectID string) *Project {
+	p, err := s.store.resolveProject(ctx, s.q(), "", projectID)
+	if err != nil {
+		return nil
+	}
+	return p
 }
 
 func (s *Service) spawnSync(ctx context.Context, claim *Claim) {
@@ -495,11 +518,15 @@ func (s *Service) spawnSync(ctx context.Context, claim *Claim) {
 	if sessionID == "" {
 		return
 	}
+	stage := claim.Stage
+	if stage == "" {
+		stage = StageInProgress
+	}
 	tag, err := s.q().Exec(ctx, `
 		UPDATE tasks SET assignee_session=$2,
 			lease_expires_at=now()+make_interval(secs=>$4::float8)
-		WHERE id=$1 AND claim_token=$3 AND stage='in_progress'`,
-		claim.TaskID, sessionID, claim.ClaimToken, s.cfg.LeaseDuration.Seconds())
+		WHERE id=$1 AND claim_token=$3 AND stage=$5`,
+		claim.TaskID, sessionID, claim.ClaimToken, s.cfg.LeaseDuration.Seconds(), stage)
 	if err != nil {
 		slog.WarnContext(ctx, "board: assignee record failed", "task_id", claim.TaskID, "err", err.Error())
 		return
@@ -529,19 +556,39 @@ func WithAsyncSpawn() Option {
 
 // spawnFor delivers a re-claim token to a FRESH worker (the merged
 // design's re-spawn semantics): builds the claim envelope from the row
-// and rides the same guarded spawn-stamp as the initial claim.
+// and rides the same guarded spawn-stamp as the initial claim. For a
+// row in a persona-bearing stage the envelope resolves that stage's
+// persona (the bounce's fresh implementer, the in_review persona
+// worker); a row in a NON-worker stage (in_review without a persona)
+// spawns nothing — never a mischartered session on a stage the config
+// no longer covers (the token's lease lapse + the reconciler's
+// convergence own the row).
 func (s *Service) spawnFor(ctx context.Context, taskID, token string) {
 	if s.spawner == nil {
 		return
 	}
 	t := s.mustTask(ctx, taskID)
-	if t == nil || t.ClaimToken != token || t.Stage != StageInProgress {
+	if t == nil || t.ClaimToken != token || t.Stage == StageDone || t.Stage == StageBacklog || t.Stage == StagePendingInput {
 		return
+	}
+	p := s.projectFor(ctx, t.ProjectID)
+	if p == nil {
+		return
+	}
+	var persona *PersonaConfig
+	if t.Stage != StageInProgress {
+		// A non-worker stage spawns ONLY under a resolved persona.
+		persona = s.stagePersona(ctx, p, t.Stage)
+		if persona == nil {
+			return
+		}
+	} else {
+		persona = s.stagePersona(ctx, p, StageInProgress)
 	}
 	c := &Claim{
 		TaskID: t.ID, ShortID: t.ShortID, ProjectID: t.ProjectID, EpicID: t.EpicID,
 		WorkspaceID: s.projectWorkspace(ctx, t.ProjectID),
-		ClaimToken:  token, Task: t,
+		ClaimToken:  token, Task: t, Persona: persona, Stage: t.Stage,
 	}
 	// #1832 item 5 (2/2): the verdict chain rides the re-arm's charter
 	// too (the bounced assignee is the FIRST to see the findings).
