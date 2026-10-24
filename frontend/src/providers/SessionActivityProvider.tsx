@@ -159,6 +159,12 @@ interface BusyFlight {
   // ones) — latched entries carry it as BusyEntry.internalId so later
   // flights can block/protect them precisely.
   rowInternalIds: Map<string, string>;
+  // #1883: RESOLVED idle rows (the authority answered this session
+  // idle) — the commit mirrors them onto the sessions cache so the
+  // row's status projection cannot contradict the truth the flight
+  // just reconciled (the busy direction already mirrors; the idle
+  // direction is the #1883 un-latch completion).
+  idleRowIds: Set<string>;
   // EVERY row's client-side key (busy and idle alike) — the set of
   // sessions the authority ANSWERED. The commit stamps each answered
   // session's per-session ordering watermark with the cursor: a later
@@ -1133,7 +1139,7 @@ export function SessionActivityProvider({ children }: { children: ReactNode }) {
           open = new Map();
           busyFlightsRef.current.set(wsId, open);
         }
-        open.set(flightId, { busyRowIds: new Set(), cursor: 0, degradedBusyIds: new Set(), rowInternalIds: new Map(), answeredIds: new Set() });
+        open.set(flightId, { busyRowIds: new Set(), cursor: 0, degradedBusyIds: new Set(), rowInternalIds: new Map(), idleRowIds: new Set(), answeredIds: new Set() });
         return;
       }
 
@@ -1153,6 +1159,15 @@ export function SessionActivityProvider({ children }: { children: ReactNode }) {
           {
             const answered = translateSessionIds(wsId, row.session_id, row.internal_session_id || undefined).sessionId;
             if (answered) flight.answeredIds.add(answered);
+            // #1883: a RESOLVED idle row is the authority's explicit
+            // "this session is not busy" answer — stage it for the
+            // commit's cache mirror. A degraded row (Register failed
+            // server-side, flagged deprecated, unresolved to a phrase)
+            // stages nothing: its id join is partial and no
+            // phrase-keyed cache row can match it anyway.
+            if (!row.derived_busy && answered && !(row.session_id_deprecated && answered === row.session_id)) {
+              flight.idleRowIds.add(answered);
+            }
           }
           if (!row.derived_busy) continue;
           // #1848 r0 finding 5: a DEGRADED row (Register failed
@@ -1254,6 +1269,20 @@ export function SessionActivityProvider({ children }: { children: ReactNode }) {
         const degradedBusyIds = staged.degradedBusyIds;
         const rowInternalIds = staged.rowInternalIds;
         const now = stampBusyNow();
+        // #1883 r1: hoist the answered sessions' watermark stamps to
+        // complete-DISPATCH, before the mirrors below. The deferred
+        // updater's own stamps (the answered loop inside it) run at
+        // render time — an older overlapping flight completing right
+        // after a newer one in the same batch would otherwise read
+        // pre-stamp watermarks at its mirror guard and flip the cached
+        // row against the newer authority's answer (the reviewer's
+        // out-of-order flight pair). Idempotent max-stamps outside the
+        // updater: StrictMode-safe (nothing here consumes them
+        // non-idempotently), and the updater's Math.max absorbs them.
+        for (const sid of staged.answeredIds) {
+          const last = sessionLastDeltaIDRef.current.get(sid) ?? 0;
+          if (cursor > last) sessionLastDeltaIDRef.current.set(sid, cursor);
+        }
         // #1848 r3 finding 1: the reconcile runs INSIDE the updater
         // against its fresh `prev` — SSE frames dispatch synchronously
         // per chunk, so a render-closure read of busySessions is stale
@@ -1338,13 +1367,50 @@ export function SessionActivityProvider({ children }: { children: ReactNode }) {
 
         // Mirror the busy latch's cache flip so sidebar rows read
         // active for snapshot-busy sessions until the next refetch.
+        // #1883 r2: the SAME per-session watermark guard the idle
+        // mirror and the busy-row latch apply — an older overlapping
+        // busy flight (or a busy flight raced by a newer idle delta)
+        // must not flip the row over the newer authority answer; an
+        // unguarded flip re-freezes the badge on remount via seedBusy's
+        // add-only latch (the mirror pair must not contradict the
+        // newest answer in EITHER direction).
         const sessionsKey = ["sessions", wsId];
         const existingCache = queryClient.getQueryData(sessionsKey);
         if (existingCache && busyRowIds.size > 0) {
           queryClient.setQueryData(sessionsKey, (old: unknown) => {
             if (!Array.isArray(old)) return old;
             return old.map((s: Record<string, unknown>) =>
-              busyRowIds.has(String(s.id)) ? { ...s, status: "active" } : s
+              busyRowIds.has(String(s.id)) && (sessionLastDeltaIDRef.current.get(String(s.id)) ?? 0) <= cursor
+                ? { ...s, status: "active" }
+                : s
+            );
+          });
+        }
+        // #1883: mirror the IDLE answers too — the symmetric half the
+        // busy mirror lacked. The busy delta path stamps the row
+        // "active" when it latches; when the authority's flight then
+        // answers idle (the lost-idle shape the lease exists for), the
+        // row must return to "idle" with the badge. Without this the
+        // stale "active" projection survives the commit, and seedBusy's
+        // mount-time pass (add-only) re-latches the cleared badge from
+        // it on any provider remount — the frozen indicator returning
+        // after the authority already healed it. The per-session
+        // watermark guard (stamped at complete-dispatch above, so an
+        // older overlapping flight's mirror sees the newer flight's
+        // cursor) holds the same ordering discipline as the busy-row
+        // latch: a row superseded by a NEWER same-session answer keeps
+        // the fresher truth. No hasUnread is invented here — the flight
+        // is truth reconciliation, not turn-completion UX (the unread
+        // flip belongs to the idle delta the user's stream actually
+        // delivers).
+        const idleRowIds = staged.idleRowIds;
+        if (existingCache && idleRowIds.size > 0) {
+          queryClient.setQueryData(sessionsKey, (old: unknown) => {
+            if (!Array.isArray(old)) return old;
+            return old.map((s: Record<string, unknown>) =>
+              idleRowIds.has(String(s.id)) && (sessionLastDeltaIDRef.current.get(String(s.id)) ?? 0) <= cursor
+                ? { ...s, status: "idle" }
+                : s
             );
           });
         }

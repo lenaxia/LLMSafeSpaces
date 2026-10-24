@@ -694,10 +694,9 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 			// scheduler's authorized-delete wiring (password + default
 			// mux port; the honest 204/502 route).
 			PasswordProvider: proxyHandler,
-			// #1882 delete propagation: the node-retry cleanup and DAG
-			// ephemeral teardowns run the same effect sequence as the
-			// user proxy route (tombstone + index cleanup + SSE).
-			DeleteEffects: proxyHandler,
+			// #1882: a confirmed node-retry delete propagates the
+			// platform-side teardown (tombstone + index row + SSE).
+			SessionDelete: proxyHandler,
 		}
 		wfScheduler = &apiwf.Scheduler{
 			Store: wfStore,
@@ -712,10 +711,10 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 			// session_index at fire completion — the routine path never
 			// rides the adapter routes that otherwise populate it.
 			SessionIndex: sessionIndexSvc,
-			// #1882 delete propagation: the ephemeral carrier teardown
-			// and the authorized deletes run the same effect sequence
-			// as the user proxy route — ghost rows die with the delete.
-			DeleteEffects: proxyHandler,
+			// #1882: every session delete the engine authorizes or
+			// observes (agentd-reported ephemeral teardowns) converges
+			// on the user route's teardown — no more ghost rows.
+			SessionDelete: proxyHandler,
 		}
 		// #1901 carrier reap bypass (discriminated): the #1340 reconcile
 		// reaps CARRIER-class origin-marked routine carriers

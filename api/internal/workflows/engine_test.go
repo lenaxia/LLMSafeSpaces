@@ -183,8 +183,9 @@ type mockAgentd struct {
 	// response for the given node (empty map = field never set, the
 	// old-agentd shape).
 	sessionIDs map[string]string
-	// deletedSessionIDs stamps the #1882 deletedSessionId envelope
-	// field (empty map = field never set).
+	// deletedSessionIDs stamps the #1882 agentd-teardown field onto
+	// the response for the given node — the ephemeral agentd deleted
+	// (empty map = field never set).
 	deletedSessionIDs map[string]string
 	// calls records every Execute's node id in dispatch order — the
 	// spawn-count evidence for the #1812 no-LLM-call pins.
@@ -227,8 +228,8 @@ func (m *mockAgentd) Execute(_ context.Context, _, _ string, req *NodeExecReques
 	if sid, ok := m.sessionIDs[req.NodeID]; ok {
 		resp.SessionID = sid
 	}
-	if sid, ok := m.deletedSessionIDs[req.NodeID]; ok {
-		resp.DeletedSessionID = sid
+	if did, ok := m.deletedSessionIDs[req.NodeID]; ok {
+		resp.DeletedSessionID = did
 	}
 	if br, ok := m.branches[req.NodeID]; ok {
 		resp.Branch = br

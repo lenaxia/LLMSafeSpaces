@@ -1138,6 +1138,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (2a300c9d) re-verified on current main — `-race -count=50` green and
   its mutation recipe (threshold → `cap1MiB`) re-confirmed to redden
   both streaming tests deterministically.
+- Follow-up hardening of the coalesce pin (lane-1907, PR #1916): (a)
+  the parked fetch's release is closed idempotently in a `defer` — a
+  require/fatal firing while flight 1 is parked (trigger-2 assert,
+  drain verdict, or the park wait itself) otherwise strands the
+  harness's stub-server `Close` cleanup until go test's 10-minute
+  timeout (proven: injected early-fatal on the merged body panics
+  `test timed out after 20s`; hardened body fails cleanly in 0.01 s);
+  (b) the pre-release drain now also counts `snapshot_begin` — a
+  second flight's begin is published in-process BEFORE its authority
+  fetch, so `begins > 1` catches a begin-only mutant flight the
+  complete-only drain never sees. Both causal mutations re-verified
+  red 3/3 under `-race` on the hardened body (neutered guard; early
+  `Delete`), 0.01 s exits; still no production changes and no
+  sleeps/retries/skips.
 ## [0.40.1] - 2026-10-21
 
 ### Fixed — v0.40.0 regression: user-stream session events carry the phrase id (#1817, #1821 piece 1)

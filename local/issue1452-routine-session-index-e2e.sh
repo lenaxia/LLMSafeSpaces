@@ -15,6 +15,16 @@
 #   R2 — negative: a preserveSession "never" routine fires and delivers;
 #        its ephemeral session is deleted agent-side, and the platform
 #        session list gains NO row for it.
+#   R3 — #1882 persistence: the R2 ghost class stays gone across
+#        reconcile passes — two 30s cadences after the fire, the list
+#        has grown by nothing and carries no prompt-derived-title row
+#        (the live event bridge's ghost signature: rows titled with
+#        the prompt prefix, "900-word lighthouse keeper story" class).
+#   R4 — #1882 script-only: a scriptPath-only trigger (no prompt)
+#        fires and delivers with NO session row — scripts run
+#        sessionless ("we shouldn't need to create a session to run a
+#        script"); pre-#1882 the empty-prompt fall-through minted a
+#        carrier per fire.
 #
 # Environment: same conventions as local/issue-1342-graceful-restart-e2e.sh
 # (see local/lib/us70-common.sh). Runs on the pool/nightly kind cluster.
@@ -204,6 +214,72 @@ if [[ "${r2_after}" -eq "${r2_before}" ]]; then
     ok "R2c: ephemeral routine session (id '${r2_session:-<deleted>}') left no platform row"
 else
     note_fail "R2c: session list grew ${r2_before} -> ${r2_after} for a PreserveNever fire"
+fi
+
+# -----------------------------------------------------------------------------
+log "R3 — #1882: the carrier ghost class stays gone across reconcile passes"
+
+# Two 30s reconcile cadences (+ margin) after the R2 fire: the list
+# must still be at its pre-fire size, and NO prompt-derived-title row
+# may exist (the live event bridge mints rows titled with the prompt
+# prefix during a carrier's brief life — the owner-visible ghost).
+sleep 70
+r3_after=$(sessions_json | jq 'length')
+r3_prompt_rows=$(sessions_json | jq '[.[] | select(.title | startswith("Reply with exactly"))] | length' 2>/dev/null || echo 1)
+if [[ "${r3_after}" -eq "${r2_before}" && "${r3_prompt_rows}" -eq 0 ]]; then
+    ok "R3a: no ghost row survived two reconcile passes (list ${r2_before} -> ${r3_after}, prompt-titled rows ${r3_prompt_rows})"
+else
+    note_fail "R3a: ghost rows persisted — list ${r2_before} -> ${r3_after}, prompt-titled rows ${r3_prompt_rows}"
+fi
+
+# -----------------------------------------------------------------------------
+log "R4 — #1882: scriptPath-only trigger delivers sessionless (no carrier row)"
+
+r4_before=$(sessions_json | jq 'length')
+api POST /api/v1/me/triggers "$(jq -nc --arg w "${WS}" \
+    '{name:"e2e-1882-script-only",sourceType:"webhook",sourceConfig:{},workspaceId:$w,
+      scriptPath:"/bin/echo",scriptArgs:["e2e-1882-script-only"],captureMode:"errors"}')" >/dev/null
+r4_resp="${api_body}"
+if [[ "${api_status}" == "201" ]]; then
+    R4_ID=$(printf '%s' "${r4_resp}" | jq -r '.id')
+    created_triggers+=("${R4_ID}")
+    ok "R4a: scriptPath-only trigger created (${R4_ID})"
+else
+    note_fail "R4a: scriptPath-only trigger create failed: ${api_status} ${r4_resp:0:200}"
+    R4_ID=""
+fi
+
+if [[ -n "${R4_ID}" ]]; then
+    api POST "/api/v1/me/triggers/${R4_ID}/rotate-secret" >/dev/null
+    r4_rot="${api_body}"
+    R4_SECRET=$(printf '%s' "${r4_rot}" | jq -r '.webhookSecret // empty')
+    R4_HOOK_URL="http://127.0.0.1:${PORTFWD_PORT}$(printf '%s' "${r4_rot}" | jq -r '.webhookUrl // empty')"
+    [[ -n "${R4_SECRET}" && "${R4_HOOK_URL}" != "http://127.0.0.1:${PORTFWD_PORT}" ]] \
+        || die "R4: rotate-secret failed: ${api_status} ${r4_rot}"
+
+    r4_code=$(signed_fire "${R4_HOOK_URL}" "${R4_SECRET}" '{"e2e":"1882-r4"}')
+    if [[ "${r4_code}" == "202" ]]; then
+        ok "R4b: signed webhook delivery accepted (202)"
+    else
+        note_fail "R4b: signed webhook delivery returned ${r4_code}, expected 202"
+    fi
+
+    if wait_for "R4c: script-only fire delivered" "${FIRE_WAIT_S}" \
+        '[[ -n "$(api GET "/api/v1/me/triggers/${R4_ID}/fires" | jq -r "[.fires[] | select(.status==\"delivered\")] | first | .id // empty")" ]]'; then
+        ok "R4c: scriptPath-only fire delivered (the script's side effects ARE the delivery)"
+    else
+        note_fail "R4c: scriptPath-only fire not delivered within ${FIRE_WAIT_S}s"
+    fi
+
+    # The no-mint contract: no agent leg ran, so no carrier row may
+    # exist — now or after a reconcile pass.
+    sleep 35
+    r4_after=$(sessions_json | jq 'length')
+    if [[ "${r4_after}" -eq "${r4_before}" ]]; then
+        ok "R4d: scriptPath-only fire minted no session row (list ${r4_before} -> ${r4_after})"
+    else
+        note_fail "R4d: session list grew ${r4_before} -> ${r4_after} for a script-only fire"
+    fi
 fi
 
 # -----------------------------------------------------------------------------
