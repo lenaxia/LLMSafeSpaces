@@ -1,4 +1,4 @@
-# Worklog: #1918 — npm publish E404 (dead NPM_TOKEN) + SDK red decoupled from the release conclusion
+# Worklog: #1918 — npm publish E404 (dead NPM_TOKEN), SDK red decoupled from the release conclusion, create-release made re-run idempotent
 
 **Date:** 2026-10-24
 **Session:** Lane 1918 (worker tsk-tropical-uniform-plumbs)
@@ -8,7 +8,7 @@
 
 ## Objective
 
-Issue #1918: the `Publish TypeScript SDK to npm` job failed on release run 40046673282 (v0.41.0) and turned the whole release run `failure` even though every container image, the Helm chart, cosign signing, and the GitHub Release had shipped. Fix in-repo: fail-fast auth preflight + decouple SDK red from the release conclusion with a distinct outcome-surfacing job.
+Issue #1918: the `Publish TypeScript SDK to npm` job failed on release run 40046673282 (v0.41.0) and turned the whole release run `failure` even though every container image, the Helm chart, cosign signing, and the GitHub Release had shipped. The issue's diagnosis documents a SECOND failed leg on the same run: `Create GitHub Release` 422'd (`tag_name already exists`) on the re-run, leaving v0.41.0 with zero release assets. Fix in-repo: fail-fast auth preflight + decouple SDK red from the release conclusion with a distinct outcome-surfacing job + make create-release re-run idempotent (view/edit/clobber).
 
 ## Root cause (evidence)
 
@@ -24,6 +24,7 @@ Issue #1918: the `Publish TypeScript SDK to npm` job failed on release run 40046
 2. **Fail-soft SDK legs**: job-level `continue-on-error: true` on BOTH `publish-typescript-sdk` and `publish-python-sdk` (the issue ask covers "SDK legs" plural; a PyPI-side failure would equally redden container releases). The run conclusion now reflects the container-artifact jobs only.
 3. **Distinct outcome-surfacing** (never-a-silent-skip, run-watchdog.yml convention): new `sdk-outcome` job with `if: !cancelled()`, `needs: [publish-python-sdk, publish-typescript-sdk]`, reading each leg's RAW `result` (under continue-on-error, `outcome` lies "success"). Converts red legs into `::warning::` run annotations (with the E404→rotate-NPM_TOKEN diagnosis inline) + a `$GITHUB_STEP_SUMMARY` table, and always exits 0 — surfacing, not gating.
 4. **Pins** (`pkg/repolint/release_sdk_legs_test.go`, structural yaml.v3 — spelling-proof, `needs` parses as string or list): every `publish-*-sdk` job must be continue-on-error (future SDK legs auto-covered); `sdk-outcome` must exist, run on `!cancelled()`/`always()`, need both legs, and the workflow must read `needs.<leg>.result`; the npm leg must carry the ls-packages preflight (before the publish step, env'd with the same `NODE_AUTH_TOKEN` secret) naming NPM_TOKEN; `create-release` must NOT be gated on SDK legs. Red-first verified: all pins fail against unfixed release.yml, pass against the fix.
+5. **create-release re-run idempotent (finding 2 of the issue's diagnosis)**: the v0.41.0 re-run hit `HTTP 422: Release.tag_name already exists` on the bare `gh release create`, and the attach step after it never ran — v0.41.0 shipped with ZERO release assets. Fix: `gh release view "v${VERSION}"` probe → `gh release edit` (notes updated in place) when the release exists, `gh release create --verify-tag` only on the fresh path; asset upload now `gh release upload --clobber` so re-attaching overwrites instead of failing on existing filenames. Pinned by `TestReleaseWorkflow_CreateReleaseReRunIdempotent` (red-first verified: probe/edit/clobber findings each fire against the bare create).
 
 ## Validation
 
@@ -35,4 +36,10 @@ Issue #1918: the `Publish TypeScript SDK to npm` job failed on release run 40046
 
 ## Ops follow-up (outside the repo)
 
-Rotate the repo-level `NPM_TOKEN` secret (npmjs.com → Read-and-write, `@llmsafespaces` scope or classic Automation), then `gh run rerun 40046673282 --failed` publishes `@llmsafespaces/sdk@0.41.0`. Longer-term: consider npm OIDC trusted publishing once npm supports it for CI (the PyPI leg already went OIDC).
+Re-runs execute the workflow snapshot at the ORIGINAL triggering ref (the tag's commit) — GitHub re-uses the original `GITHUB_SHA`/`GITHUB_REF` and workflow file, so NO change in this PR applies to run 40046673282; it protects future releases and re-runs of them. Remediation for the current incident:
+
+1. Rotate the repo-level `NPM_TOKEN` secret (npmjs.com → Read-and-write, `@llmsafespaces` scope or classic Automation).
+2. Publish the SDK: `gh run rerun 40046673282 --failed` (or scope to the job via `--job <publish-job-id>`). The tag-ref snapshot's plain `npm publish` succeeds with a live token and ships `@llmsafespaces/sdk@0.41.0`. Caveat: a `--failed` re-run also re-runs `create-release`, which still 422s against the existing v0.41.0 release (the snapshot predates this PR) and keeps that run's conclusion `failure`.
+3. Attach the missing assets (v0.41.0 currently has zero): `gh release upload v0.41.0 <files> --clobber` from the run artifacts — the same idempotency this PR bakes into the workflow — or delete + recreate the release.
+
+Longer-term: consider npm OIDC trusted publishing once npm supports it for CI (the PyPI leg already went OIDC).

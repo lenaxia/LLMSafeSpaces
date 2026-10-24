@@ -206,3 +206,60 @@ func TestReleaseWorkflow_CreateReleaseNotGatedOnSDK(t *testing.T) {
 		}
 	}
 }
+
+// TestReleaseWorkflow_CreateReleaseReRunIdempotent: the SECOND #1918
+// finding. The v0.41.0 re-run hit `HTTP 422: Release.tag_name already
+// exists` on the bare `gh release create`, and because the attach step
+// follows create in the same job, the release shipped with ZERO assets
+// (no SBOMs, no relay binaries — verified via gh release view --json
+// assets → []). A re-run executes against the SAME tag, so create must
+// be guarded: `gh release view` probe first, `gh release edit` to
+// update notes in place when the release exists, `gh release create
+// --verify-tag` only on the fresh path — and asset upload must
+// `--clobber` so re-attaching overwrites instead of failing on
+// existing filenames. Dropping any leg of this guard re-opens the
+// zero-asset-release incident class on the very re-runs that retries
+// produce.
+func TestReleaseWorkflow_CreateReleaseReRunIdempotent(t *testing.T) {
+	wf := parseReleaseWorkflow(t)
+	cr, ok := wf.Jobs["create-release"]
+	if !ok {
+		t.Fatalf("release.yml has no create-release job — moved? extend the pin, do not skip it")
+	}
+	createRun, uploadRun := "", ""
+	for _, s := range cr.Steps {
+		switch {
+		case strings.Contains(s.Run, "gh release create"):
+			createRun = s.Run
+		case strings.Contains(s.Run, "gh release upload"):
+			uploadRun = s.Run
+		}
+	}
+	if createRun == "" {
+		t.Fatalf("create-release has no step running `gh release create` — the release step moved? extend the pin, do not skip it")
+	}
+	if uploadRun == "" {
+		t.Fatalf("create-release has no step running `gh release upload` — the asset-attach step moved? extend the pin, do not skip it")
+	}
+	probe, edit, create := strings.Index(createRun, "gh release view"),
+		strings.Index(createRun, "gh release edit"),
+		strings.Index(createRun, "gh release create")
+	if probe == -1 {
+		t.Errorf("create step runs `gh release create` without a `gh release view` probe — on a re-run the create 422s with `Release.tag_name already exists` and the attach step never runs: zero-asset release (#1918 finding 2)")
+	}
+	if edit == -1 {
+		t.Errorf("create step has no `gh release edit` fallback — when the release already exists (re-run), notes must be updated in place instead of 422-ing (#1918 finding 2)")
+	}
+	if probe != -1 && probe > create {
+		t.Errorf("`gh release view` probe appears AFTER `gh release create` — the probe must guard the create, not follow it (#1918 finding 2)")
+	}
+	if edit != -1 && edit > create {
+		t.Errorf("`gh release edit` fallback appears AFTER `gh release create` — the exists-branch must be handled before/instead of the fresh-create path textually, or a respelling silently drops the guard (#1918 finding 2)")
+	}
+	if !strings.Contains(createRun, "--verify-tag") {
+		t.Errorf("fresh `gh release create` lost `--verify-tag` — the release must only ever cut against the pushed tag (pre-existing contract, kept through #1918)")
+	}
+	if !strings.Contains(uploadRun, "--clobber") {
+		t.Errorf("asset upload lacks `--clobber` — a re-run would fail on existing asset filenames and leave the release under-attached (#1918 finding 2)")
+	}
+}

@@ -1418,18 +1418,35 @@ jobs:
           EOF
           cat release-notes.md >> release-body.md
 
-          gh release create "v${VERSION}" \
-            --title "v${VERSION}" \
-            --notes-file release-body.md \
-            --verify-tag
+          # #1918 (finding 2): re-run idempotent. A re-run of this job
+          # (gh run rerun --failed, or any retry) executes against the
+          # SAME tag; the unguarded create below 422'd with
+          # `Release.tag_name already exists` on the v0.41.0 re-run and
+          # the attach step after it never ran — the release shipped
+          # with ZERO assets. Probe first: update notes in place when
+          # the release exists, create fresh otherwise.
+          if gh release view "v${VERSION}" >/dev/null 2>&1; then
+            echo "Release v${VERSION} already exists — updating notes in place (re-run idempotency, #1918)."
+            gh release edit "v${VERSION}" \
+              --title "v${VERSION}" \
+              --notes-file release-body.md
+          else
+            gh release create "v${VERSION}" \
+              --title "v${VERSION}" \
+              --notes-file release-body.md \
+              --verify-tag
+          fi
 
       - name: Attach SBOM + relay binaries to release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           VERSION: ${{ needs.verify-changelog.outputs.version }}
         run: |
+          # #1918: --clobber so a re-run re-attaches (overwrites)
+          # assets instead of failing on existing filenames — the
+          # zero-asset-release incident must not recur on retries.
           for f in sbom-out/*.json relay-out/*; do
-            gh release upload "v${VERSION}" "$f"
+            gh release upload "v${VERSION}" "$f" --clobber
           done
 
   # ─────────────────────────────────────────────────────────────────────
