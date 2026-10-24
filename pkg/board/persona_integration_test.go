@@ -101,18 +101,21 @@ func (s *BoardSuite) TestPersona_StageEntryClaimsThenSpawns() {
 	s.Equal(1, s.countProjectEvents(p.ID, "persona_claim"), "the mint records its audit event")
 }
 
-// TestPersona_NoConfigByteIdenticalToday — with no persona configured
-// (the shipped defaults), →in_review is byte-identical to today: no
-// token, no lease, no extra spawn, no persona_claim event.
-func (s *BoardSuite) TestPersona_NoConfigByteIdenticalToday() {
+// TestPersona_ExplicitOptOutIsByteIdenticalToday — the back-compat
+// pin after the #1939 defaults flip: a project carrying the EXPLICIT
+// stagePersonas opt-out ({}, the {}-owns-the-mapping semantics) sees
+// →in_review byte-identical to the pre-persona engine — no token, no
+// lease, no extra spawn, no persona_claim event.
+func (s *BoardSuite) TestPersona_ExplicitOptOutIsByteIdenticalToday() {
 	ctx := context.Background()
 	ws := s.seedWorkspace()
 	p := s.seedProject(ws, 2)
 	e := s.seedEpic(p, board.EpicActive)
-	task := s.seedTask(e, "no-persona", nil, false)
+	task := s.seedTask(e, "opt-out", nil, false)
 
 	spawner := &claimCapture{}
 	svc := board.NewService(s.pool, s.cfg, board.WithWorkerSpawner(spawner.Spawn))
+	s.setStagePersonas(svc, p, map[string]board.PersonaConfig{}) // the explicit {} opt-out
 
 	c, err := svc.ClaimNext(ctx, "w-"+ws, ws)
 	s.Require().NoError(err)
@@ -126,9 +129,38 @@ func (s *BoardSuite) TestPersona_NoConfigByteIdenticalToday() {
 	s.Require().Len(spawner.claims, 1, "exactly the worker grant's spawn — nothing else")
 	s.Nil(spawner.claims[0].Persona, "the worker charter carries no persona")
 	s.Equal(0, s.countProjectEvents(p.ID, "persona_claim"))
-	s.Equal(0, s.countProjectEvents(p.ID, "review_assign"))
 	// The dormant path's parallel event vocabulary is gone too: the
 	// mechanism absorbed it (auto-review == a reviewer persona).
+}
+
+// TestPersona_FlippedDefaultFiresReviewerPersona — the #1939
+// composition pin: with the flipped code defaults (reviewColumn=auto,
+// autoAssignReviewer=true) and NO config written anywhere, entering
+// in_review claims + spawns the reviewer persona through the ONE
+// generalized mechanism (no parallel dispatch path exists).
+func (s *BoardSuite) TestPersona_FlippedDefaultFiresReviewerPersona() {
+	ctx := context.Background()
+	ws := s.seedWorkspace()
+	p := s.seedProject(ws, 2)
+	e := s.seedEpic(p, board.EpicActive)
+	task := s.seedTask(e, "flipped", nil, false)
+
+	spawner := &claimCapture{}
+	svc := board.NewService(s.pool, s.cfg, board.WithWorkerSpawner(spawner.Spawn))
+	// Deliberately NO config: the code default floor decides.
+
+	c, err := svc.ClaimNext(ctx, "w-"+ws, ws)
+	s.Require().NoError(err)
+	s.Require().Equal(task.ID, c.TaskID)
+	_, err = svc.MoveStage(ctx, s.agent(c.Assignee, c.ClaimToken), "", c.ShortID, board.StageInReview, "", "")
+	s.Require().NoError(err)
+
+	s.Require().Len(spawner.claims, 2, "grant + the flipped-default reviewer")
+	rc := spawner.claims[1]
+	require.NotNil(s.T(), rc.Persona)
+	s.Equal(board.DefaultReviewerPersona.Name, rc.Persona.Name)
+	s.Equal(board.StageInReview, rc.Stage)
+	s.Require().NotNil(s.rawTask(task.ID).ClaimToken, "the reviewer HOLDS a claim (one lease, one token)")
 }
 
 // TestPersona_LegacyCompositionIsReviewerPersona — the legacy config
@@ -322,18 +354,20 @@ func (s *BoardSuite) TestPersona_HeartbeatOnReviewClaim() {
 	_, err = svc.Heartbeat(ctx, s.agent("sess", "wrong-token"), "", task.ShortID, time.Now())
 	s.Require().Error(err)
 
-	// An UNCLAIMED in_review row (no persona configured) still refuses.
+	// An UNCLAIMED in_review row (the explicit opt-out) still refuses.
 	ws2 := s.seedWorkspace()
 	p2 := s.seedProject(ws2, 2)
 	e2 := s.seedEpic(p2, board.EpicActive)
 	t2 := s.seedTask(e2, "hb-nocfg", nil, false)
 	svc2 := board.NewService(s.pool, s.cfg, board.WithWorkerSpawner((&claimCapture{}).Spawn))
+	s.setStagePersonas(svc2, p2, map[string]board.PersonaConfig{}) // opt-out: unclaimed in_review
 	c2, err := svc2.ClaimNext(ctx, "w2-"+ws2, ws2)
 	s.Require().NoError(err)
 	_, err = svc2.MoveStage(ctx, s.agent(c2.Assignee, c2.ClaimToken), "", c2.ShortID, board.StageInReview, "", "")
 	s.Require().NoError(err)
 	_, err = svc2.Heartbeat(ctx, s.agent("sess", c2.ClaimToken), "", t2.ShortID, time.Now())
-	s.Require().Error(err, "today's rule: an unclaimed in_review row holds no live claim")
+	s.Require().Error(err, "an unclaimed in_review row holds no live claim")
+	s.Require().Nil(s.rawTask(t2.ID).ClaimToken)
 }
 
 // TestPersona_ImplementerPersonaRidesGrant — an arbitrary in_progress
@@ -454,6 +488,10 @@ func (s *BoardSuite) TestReview_1832_VerdictChainRidesNextClaim() {
 
 	spawner := &claimCapture{}
 	svc := board.NewService(s.pool, s.cfg, board.WithWorkerSpawner(spawner.Spawn))
+	// Explicit opt-out: isolate the CHAIN semantics from the #1939
+	// flipped floor (whose default reviewer spawn would shift the
+	// spawn indices this test pins).
+	s.setStagePersonas(svc, p, map[string]board.PersonaConfig{})
 
 	// Round 1: fresh claim — no verdicts yet.
 	c1, err := svc.ClaimNext(ctx, "w1-"+ws, ws)

@@ -148,16 +148,26 @@ func TestPersonaForStageResolution(t *testing.T) {
 		t.Fatalf("auto+true must render the default reviewer persona, got %+v", p)
 	}
 
-	// The legacy gate's other arms and the shipped defaults → nil.
+	// The legacy gate's non-firing arms → nil. NOTE: the plain
+	// auto+true arm is now the CODE DEFAULT (the owner ruling's flip,
+	// #1939) and renders the default reviewer persona — it moved to
+	// the firing side below; these arms are the explicit non-firing
+	// overrides over the flipped floor.
 	for _, tc := range []BoardConfig{
 		{ReviewColumn: ReviewColumnAuto, AutoAssignReviewer: false},
 		{ReviewColumn: ReviewColumnManual, AutoAssignReviewer: true},
 		{ReviewColumn: ReviewColumnOff, AutoAssignReviewer: true},
-		DefaultBoardConfig(),
 	} {
 		if p := personaForStage(tc, StageInReview); p != nil {
 			t.Fatalf("non-firing config %+v must resolve no persona", tc)
 		}
+	}
+
+	// The flipped default floor itself fires (the composition: the
+	// defaults flip IS in_review having a reviewer persona).
+	flipped := DefaultBoardConfig()
+	if p := personaForStage(flipped, StageInReview); p == nil || p.Name != DefaultReviewerPersona.Name {
+		t.Fatalf("the flipped default (auto+true) must render the reviewer persona, got %+v", p)
 	}
 
 	// An explicit stagePersonas key beats the legacy composition —
@@ -193,12 +203,26 @@ func TestPersonaForStageResolution(t *testing.T) {
 	}
 }
 
-// TestDefaultBoardConfigNoPersonas — the code default carries NO
-// personas: the mechanism is entirely opt-in (back-compat floor).
-func TestDefaultBoardConfigNoPersonas(t *testing.T) {
+// TestDefaultBoardConfigPersonaPosture — after the #1939 defaults
+// flip: the code default carries NO explicit personas but the flipped
+// legacy floor (auto+true) renders the reviewer persona for
+// in_review; the EXPLICIT {} opt-out owns the mapping and renders
+// none anywhere (the per-project/per-user disable lever).
+func TestDefaultBoardConfigPersonaPosture(t *testing.T) {
 	eff := DefaultBoardConfig()
 	assert.Empty(t, eff.StagePersonas)
+	assert.False(t, eff.StagePersonasSet)
+	if p := personaForStage(eff, StageInReview); p == nil || p.Name != DefaultReviewerPersona.Name {
+		t.Fatalf("the flipped floor renders the reviewer persona for in_review, got %+v", p)
+	}
+	if p := personaForStage(eff, StageInProgress); p != nil {
+		t.Fatalf("the floor is in_review-only, got %+v", p)
+	}
+	// The explicit opt-out: merged from an explicit {} override.
+	eff = MergeBoardConfig(DefaultBoardConfig(), &BoardConfigOverride{
+		StagePersonas: &map[string]PersonaConfig{},
+	})
 	for _, stage := range []string{StageBacklog, StageInProgress, StageInReview, StageDone, StagePendingInput} {
-		assert.Nil(t, personaForStage(eff, stage), "default config resolves no persona for %s", stage)
+		assert.Nil(t, personaForStage(eff, stage), "the explicit {} opt-out resolves no persona for %s", stage)
 	}
 }
