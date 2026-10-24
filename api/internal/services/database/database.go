@@ -1371,13 +1371,63 @@ func (s *Service) UpdateSessionLastSeen(ctx context.Context, workspaceID, sessio
 }
 
 // SetSessionArchivedStatus sets the platform-level archived marker on
-// one indexed session (#1627). Update-only by design: the row must
-// already exist — archiving an unindexed session ID is a caller error
-// (404), never a phantom row the #1340 reconcile pass would later reap.
+// one indexed session (#1627) and cascades it over the session's
+// parentID subtree (#1755): archiving a parent archives its recursive
+// descendants, unarchiving releases them. Sticky via the
+// archived_by_cascade marker — a descendant archived INDIVIDUALLY
+// keeps that state across the parent's round-trip:
+//
+//   - archive(target): the target is archived individually
+//     (marker=false); UNARCHIVED descendants are archived with
+//     marker=true. Already-archived descendants are skipped, not
+//     re-stamped — that skip is what preserves individual intent.
+//   - unarchive(target): the target is released; descendants are
+//     released only when cascade-held (marker=true). Pre-existing
+//     archived rows read as individually held (the migration default)
+//     — a cascade never releases state it did not set.
+//
+// Documented granularity of the single-marker design: in P→C→G, if C
+// was archived individually (bringing G along cascade-held),
+// unarchiving P releases G while C stays. Individual intent survives;
+// cascade-of-cascade attribution does not — per-holder tracking was
+// judged complexity for the edge.
+//
+// Update-only by design: the row must already exist — archiving an
+// unindexed session ID is a caller error (404), never a phantom row
+// the #1340 reconcile pass would later reap. An absent anchor yields
+// an empty descendants set, so the 0-rows-affected 404 contract is
+// preserved by the same statement. The CTE walks with UNION (dedupe)
+// — parentID is a tree by construction, but a corrupted cycle
+// terminates instead of hanging. Workspace scoping is enforced at the
+// CTE anchor, the recursive member, and the outer UPDATE. Column
+// references against the target are alias-qualified throughout —
+// `descendants` also exposes session_id, and PostgreSQL gives the
+// UPDATE target no precedence over FROM items (SQLSTATE 42702). The
+// unarchive gate checks archived_by_cascade without an explicit
+// si.archived: the marker invariant (cascade-held ⟹ archived) holds
+// through every write path — archive stamps both together, and any
+// release clears both.
 func (s *Service) SetSessionArchivedStatus(ctx context.Context, workspaceID, sessionID string, archived bool) error {
-	tag, err := s.DB.ExecContext(ctx,
-		`UPDATE session_index SET archived = $3, updated_at = NOW()
-		 WHERE workspace_id = $1 AND session_id = $2`, workspaceID, sessionID, archived)
+	tag, err := s.DB.ExecContext(ctx, `
+		WITH RECURSIVE descendants AS (
+			SELECT session_id FROM session_index
+			WHERE workspace_id = $1 AND session_id = $2
+			UNION
+			SELECT si.session_id FROM session_index si
+			INNER JOIN descendants d ON si.parent_session_id = d.session_id AND si.workspace_id = $1
+		)
+		UPDATE session_index si
+		SET archived = $3,
+		    archived_by_cascade = $3 AND si.session_id <> $2,
+		    updated_at = NOW()
+		FROM descendants d
+		WHERE si.workspace_id = $1
+		  AND si.session_id = d.session_id
+		  AND (
+		    si.session_id = $2
+		    OR ($3 AND NOT si.archived)
+		    OR (NOT $3 AND si.archived_by_cascade)
+		  )`, workspaceID, sessionID, archived)
 	if err != nil {
 		return err
 	}

@@ -20,7 +20,9 @@ func TestSetSessionArchivedStatus_ArchivesRow(t *testing.T) {
 	svc, mock, cleanup := setupMockDB(t)
 	defer cleanup()
 
-	mock.ExpectExec(regexp.QuoteMeta(`UPDATE session_index SET archived`)).
+	// #1755: the write is the cascade shape — recursive descendants
+	// CTE (UNION-deduped, cycle-safe) + sticky-marker UPDATE.
+	mock.ExpectExec(regexp.QuoteMeta(`WITH RECURSIVE descendants`)).
 		WithArgs("ws-1", "ses-1", true).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 
@@ -32,7 +34,7 @@ func TestSetSessionArchivedStatus_UnarchivesRow(t *testing.T) {
 	svc, mock, cleanup := setupMockDB(t)
 	defer cleanup()
 
-	mock.ExpectExec(regexp.QuoteMeta(`UPDATE session_index SET archived`)).
+	mock.ExpectExec(regexp.QuoteMeta(`WITH RECURSIVE descendants`)).
 		WithArgs("ws-1", "ses-1", false).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 
@@ -44,7 +46,9 @@ func TestSetSessionArchivedStatus_RowAbsent_ReturnsNotFound(t *testing.T) {
 	svc, mock, cleanup := setupMockDB(t)
 	defer cleanup()
 
-	mock.ExpectExec(regexp.QuoteMeta(`UPDATE session_index SET archived`)).
+	// Absent anchor → empty descendants CTE → 0 rows: the update-only
+	// 404 contract (#1627) is preserved by the cascade shape.
+	mock.ExpectExec(regexp.QuoteMeta(`WITH RECURSIVE descendants`)).
 		WithArgs("ws-1", "ses-ghost", true).
 		WillReturnResult(sqlmock.NewResult(0, 0))
 
@@ -59,7 +63,7 @@ func TestSetSessionArchivedStatus_ExecError_Propagates(t *testing.T) {
 	svc, mock, cleanup := setupMockDB(t)
 	defer cleanup()
 
-	mock.ExpectExec(regexp.QuoteMeta(`UPDATE session_index SET archived`)).
+	mock.ExpectExec(regexp.QuoteMeta(`WITH RECURSIVE descendants`)).
 		WithArgs("ws-1", "ses-1", true).
 		WillReturnError(errors.New("db down"))
 
@@ -143,4 +147,38 @@ func TestListSessionIndex_IncludesArchivedFlag(t *testing.T) {
 	require.Len(t, items, 2)
 	assert.True(t, items[0].Archived, "archived row surfaces the flag for the sidebar's Archived group")
 	assert.False(t, items[1].Archived)
+}
+
+// TestSetSessionArchivedStatus_SQLStructure pins the #1755 cascade's
+// load-bearing SQL properties one regexp at a time: the sticky marker
+// write, the UNION (not UNION ALL — dedupe is the cycle terminator),
+// workspace scoping at every CTE leg, and the sticky WHERE gates. Each
+// sub-case runs the real statement against its own pin; a rewrite that
+// drops any property goes RED on exactly that pin.
+func TestSetSessionArchivedStatus_SQLStructure(t *testing.T) {
+	pins := []struct {
+		name string
+		sql  string
+	}{
+		{"recursive walk over parent links", `WITH RECURSIVE descendants`},
+		{"UNION dedupe terminates corrupted parentID cycles", `UNION[[:space:]]+SELECT`},
+		{"anchor scoped to the workspace", `SELECT session_id FROM session_index[[:space:]]*\n?[[:space:]]*WHERE workspace_id = \$1 AND session_id = \$2`},
+		{"recursive member scoped to the workspace", `ON si\.parent_session_id = d\.session_id AND si\.workspace_id = \$1`},
+		{"outer UPDATE scoped to the workspace", `UPDATE session_index si[[:space:]]*\n?[[:space:]]*SET archived = \$3,[[:space:]]*\n?[[:space:]]*archived_by_cascade`},
+		{"sticky marker set from the cascade direction", `archived_by_cascade = \$3 AND si\.session_id <> \$2`},
+		{"archive skips already-archived descendants", `OR \(\$3 AND NOT si\.archived\)`},
+		{"unarchive releases only cascade-held descendants", `OR \(NOT \$3 AND si\.archived_by_cascade\)`},
+		{"UPDATE-target references are alias-qualified (SQLSTATE 42702 guard)", `AND \(\n?[[:space:]]*si\.session_id = \$2`},
+	}
+	for _, pin := range pins {
+		t.Run(pin.name, func(t *testing.T) {
+			svc, mock, cleanup := setupMockDB(t)
+			defer cleanup()
+			mock.ExpectExec(pin.sql).
+				WithArgs("ws-1", "ses-1", true).
+				WillReturnResult(sqlmock.NewResult(0, 1))
+			require.NoError(t, svc.SetSessionArchivedStatus(context.Background(), "ws-1", "ses-1", true))
+			require.NoError(t, mock.ExpectationsWereMet())
+		})
+	}
 }
