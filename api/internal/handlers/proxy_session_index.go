@@ -91,6 +91,47 @@ func (h *ProxyHandler) carrierOriginMarks(ctx context.Context, workspaceID strin
 	return marks
 }
 
+// observePhraseOrphaned is the #1889 F3 disposition: a row deletion
+// that orphaned a MINTED phrase is recorded — one counter increment
+// (reaped_with_phrase) + one Warn log. Pre-#1889 nothing recorded it:
+// a recurrence of the re-phrase class was reconstructable only from
+// repro tables, invisible in ops dashboards. Phrase-less rows orphaned
+// nothing (the outcome is the phrase-orphaning signal, not a delete
+// counter). The F1 ledger keeps the binding itself durable; this
+// observation makes the ORPHANING EVENT visible.
+func (h *ProxyHandler) observePhraseOrphaned(workspaceID, origin string, row types.SessionListItem) {
+	if row.ShortID == "" {
+		return
+	}
+	sessionindex.ReconcileOutcome("reaped_with_phrase")
+	h.logger.Warn("session index: row delete orphaned a minted phrase (#1889 F3)",
+		"workspaceID", workspaceID, "sessionID", row.InternalID, "shortID", row.ShortID, "origin", origin)
+}
+
+// sendTargetGone is the #1889 F2 seam: after a send failure, ONE
+// by-ID existence probe asks the READ route for the definitive verdict
+// — the adapter's message-POST 404 semantics are deliberately
+// unclassified (adapter_helpers: non-session routes can 404 for other
+// meanings), but the READ route's 404 IS the definitive not-found per
+// the #1340 ruling, so the probe — never the send error itself —
+// arbitrates. Definitively absent → reapSessionIfGone answers the
+// typed 410 + §4.6 did-you-mean and reaps the ghost row (the read
+// paths' exact surface for the same verdict); alive or indeterminate →
+// false (the caller keeps its transport-failure answer — an
+// unreachable pod is not evidence of deletion, and a LIVE target whose
+// turn failed mid-flight must never be told "gone"). Detached context:
+// the probe benefits the response, but must survive a client that
+// disconnected during the failed send.
+func (h *ProxyHandler) sendTargetGone(c *gin.Context, workspaceID, sessionID, route string) bool {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_, perr := h.probeSessionAliveByID(ctx, workspaceID, sessionID)
+	if perr == nil || !errors.Is(perr, agent.ErrSessionNotFound) {
+		return false
+	}
+	return h.reapSessionIfGone(c, workspaceID, sessionID, perr, route)
+}
+
 // reapSessionIfGone classifies an adapter error from a session-scoped
 // read: when the agent's definitive verdict is not-found
 // (agent.ErrSessionNotFound), the session_index row is a stale ghost
@@ -127,18 +168,19 @@ func (h *ProxyHandler) reapSessionIfGone(c *gin.Context, workspaceID, sessionID 
 			if row.InternalID != sessionID {
 				continue
 			}
-			if sessionindex.DefaultReapGuard(row) || marks[sessionID] {
-				if delErr := h.sessionIndex.DeleteSession(ctx, workspaceID, sessionID); delErr != nil {
-					h.logger.Warn("session_gone: index row reap failed",
-						"route", route, "workspaceID", workspaceID, "sessionID", sessionID, "error", delErr.Error())
-					writeSessionGoneBody(c, sessionGoneUncertain)
-				} else {
-					if marks[sessionID] {
-						sessionindex.ReconcileOutcome("reaped_carrier")
-					}
-					writeSessionGoneBodyWithSuggestions(c, sessionGoneReaped, suggestions)
-				}
+		if sessionindex.DefaultReapGuard(row) || marks[sessionID] {
+			if delErr := h.sessionIndex.DeleteSession(ctx, workspaceID, sessionID); delErr != nil {
+				h.logger.Warn("session_gone: index row reap failed",
+					"route", route, "workspaceID", workspaceID, "sessionID", sessionID, "error", delErr.Error())
+				writeSessionGoneBody(c, sessionGoneUncertain)
 			} else {
+				if marks[sessionID] {
+					sessionindex.ReconcileOutcome("reaped_carrier")
+				}
+				h.observePhraseOrphaned(workspaceID, "read_path_reap", row)
+				writeSessionGoneBodyWithSuggestions(c, sessionGoneReaped, suggestions)
+			}
+		} else {
 				h.logger.Warn("session_gone: history-bearing row kept for operator review",
 					"route", route, "workspaceID", workspaceID, "sessionID", sessionID,
 					"messageCount", row.MessageCount)
@@ -246,6 +288,13 @@ func (h *ProxyHandler) runSessionIndexReconciliation(workspaceID string) {
 		next[id] = reconcileMissThreshold
 	}
 	h.state().SetReconcileMisses(ctx, workspaceID, next)
+	// byInternal feeds BOTH post-reap populations' lookups: the #1889
+	// F3 phrase-orphan disposition at the delete site, and the
+	// truthfulness split below (one map, built once).
+	byInternal := make(map[string]types.SessionListItem, len(rows))
+	for _, row := range rows {
+		byInternal[row.InternalID] = row
+	}
 	for _, id := range remove {
 		// #1850: the harness LIST is not a liveness authority — sessions
 		// created through the harness/Act path (exactly the
@@ -304,6 +353,7 @@ func (h *ProxyHandler) runSessionIndexReconciliation(workspaceID string) {
 		if marks[id] {
 			sessionindex.ReconcileOutcome("reaped_carrier")
 		}
+		h.observePhraseOrphaned(workspaceID, "reconcile_reap", byInternal[id])
 		h.logger.Info("session reconcile: reaped ghost index row",
 			"workspaceID", workspaceID, "sessionID", id)
 	}
@@ -315,10 +365,6 @@ func (h *ProxyHandler) runSessionIndexReconciliation(workspaceID string) {
 	// both conflated them. The row lookup re-derives which is which;
 	// a kept id missing from the lookup keeps the operator-review
 	// classification (never worse than the old single bucket).
-	byInternal := make(map[string]types.SessionListItem, len(rows))
-	for _, row := range rows {
-		byInternal[row.InternalID] = row
-	}
 	for _, id := range keptForOperator {
 		if row, ok := byInternal[id]; ok && row.MessageCount == 0 {
 			sessionindex.ReconcileOutcome("kept_spawn_window")

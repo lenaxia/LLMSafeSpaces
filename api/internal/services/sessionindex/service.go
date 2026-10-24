@@ -59,9 +59,15 @@ var sessionIndexEvents = promauto.NewCounterVec(prometheus.CounterOpts{
 // serve-through's listing_count_served / listing_count_unchanged /
 // listing_count_walk_error / listing_count_persist_error /
 // listing_count_cooldown.
+// listing_count_walk_error / listing_count_persist_error /
+// listing_count_cooldown), and #1889 F3's reaped_with_phrase (a row
+// deletion — ghost reap post-grace, read-path reap, or the platform
+// delete-effects tail — that orphaned a MINTED phrase; the recurrence
+// signal for the re-phrase defect class, visible in ops dashboards
+// instead of reconstructable only from repro tables).
 var reconcileOutcomes = promauto.NewCounterVec(prometheus.CounterOpts{
 	Name: "session_index_reconcile_outcomes_total",
-	Help: "Session-index reconciliation dispositions (reaped, reap_vetoed_live, reap_deferred_probe, kept_for_operator, kept_spawn_window, delete_failed, reaped_carrier, count_pass_ran, count_rebuilt, count_unchanged, count_walk_error, count_skip_not_present, count_skip_pass_no_list, listing_count_served, listing_count_unchanged, listing_count_walk_error, listing_count_persist_error, listing_count_cooldown).",
+	Help: "Session-index reconciliation dispositions (reaped, reap_vetoed_live, reap_deferred_probe, kept_for_operator, kept_spawn_window, delete_failed, reaped_carrier, reaped_with_phrase, count_pass_ran, count_rebuilt, count_unchanged, count_walk_error, count_skip_not_present, count_skip_pass_no_list, listing_count_served, listing_count_unchanged, listing_count_walk_error, listing_count_persist_error, listing_count_cooldown).",
 }, []string{"outcome"})
 
 // ReconcileOutcome records one convergence disposition (handler-side).

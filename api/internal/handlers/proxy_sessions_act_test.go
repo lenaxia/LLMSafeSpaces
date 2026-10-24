@@ -118,7 +118,12 @@ func newSessionsActEnv(t *testing.T, opts sessionsActOpts) *sessionsActEnv {
 	fakeClientset := k8sfake.NewSimpleClientset()
 	k8sMock.On("Clientset").Return(fakeClientset)
 
-	adapter := &mockAdapter{}
+	// Lenient adapter defaults: the #1889 F2 send-error probe calls
+	// adapter.GetSession even in the terminus regime (the #1850
+	// probeSessionAliveByID precedent — both regimes probe the same
+	// seam); tests override with opts.adapter when they pin the
+	// adapter path itself.
+	adapter := newLenientMockAdapter()
 	if opts.adapter != nil {
 		adapter = opts.adapter
 	}

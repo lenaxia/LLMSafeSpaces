@@ -25,6 +25,7 @@ import (
 	v1 "github.com/lenaxia/llmsafespaces/pkg/apis/llmsafespaces/v1"
 	"github.com/lenaxia/llmsafespaces/pkg/session"
 	"github.com/lenaxia/llmsafespaces/pkg/session/attachments"
+	"github.com/lenaxia/llmsafespaces/pkg/types"
 )
 
 func (h *ProxyHandler) CreateSession(c *gin.Context) {
@@ -180,6 +181,13 @@ func (h *ProxyHandler) SendMessage(c *gin.Context) {
 		}
 		if isTextOnlyWedgeSendErr(sendErr) {
 			writeTextOnlyWedgeBody(c)
+			return
+		}
+		// #1889 F2: a send that failed because the TARGET does not
+		// exist (orphaned phrase, deleted session) answers the typed
+		// session-gone verdict with the §4.6 did-you-mean payload —
+		// never a raw 5xx the #1850 expectation forbids.
+		if h.sendTargetGone(c, wid, sid, "SendMessage") {
 			return
 		}
 		errBody := []byte(`{"error":"failed to send message"}`)
@@ -814,6 +822,21 @@ func (h *ProxyHandler) HardDeleteSession(ctx context.Context, workspaceID, sessi
 func (h *ProxyHandler) ApplySessionDeleteEffects(ctx context.Context, workspaceID, sessionID string) {
 	h.recordActivityIfTracked(workspaceID)
 
+	// #1889 F3: capture the row's minted phrase BEFORE the delete so
+	// the orphaning is observable after it (best-effort — a failed
+	// lookup skips the disposition, never the delete).
+	orphanedRow := types.SessionListItem{InternalID: sessionID}
+	if h.sessionIndex != nil {
+		if rows, err := h.sessionIndex.ListByWorkspace(context.Background(), workspaceID); err == nil {
+			for _, row := range rows {
+				if row.InternalID == sessionID {
+					orphanedRow = row
+					break
+				}
+			}
+		}
+	}
+
 	// Post-delete side effects run after a successful adapter delete.
 	//nolint:contextcheck // tombstone must survive client disconnect
 	h.state().MarkSessionDeleted(context.Background(), workspaceID, sessionID)
@@ -826,6 +849,11 @@ func (h *ProxyHandler) ApplySessionDeleteEffects(ctx context.Context, workspaceI
 		//nolint:contextcheck // index cleanup must survive client disconnect
 		if err := h.sessionIndex.DeleteSession(context.Background(), workspaceID, sessionID); err != nil {
 			h.logger.Error("failed to delete session from index", err, "workspaceID", workspaceID, "sessionID", sessionID)
+		} else {
+			// #1889 F3: the row delete orphaned a minted phrase (the
+			// F1 ledger keeps the binding recoverable; this makes the
+			// orphaning event itself visible).
+			h.observePhraseOrphaned(workspaceID, "delete_effects", orphanedRow)
 		}
 	}
 
@@ -1106,6 +1134,10 @@ func (h *ProxyHandler) syncSend(c *gin.Context, wid, sid, text string, modelOver
 		// keep the generic 502.
 		if isTextOnlyWedgeSendErr(err) {
 			writeTextOnlyWedgeBody(c)
+			return
+		}
+		// #1889 F2: same typed not-found surface on the fallback send.
+		if h.sendTargetGone(c, wid, sid, "syncSend") {
 			return
 		}
 		if systemnotices.LevelForRatio(diskPressureRatio(workspace.Status.DiskUsedBytes, workspace.Status.DiskTotalBytes)) == systemnotices.LevelCritical {
