@@ -128,3 +128,65 @@ func TestEnsureSessionRegistered_LedgerUnavailableStillRegisters(t *testing.T) {
 	require.NoError(t, err, "a ledger consult failure must degrade to a fresh mint, never fail the seam")
 	require.NotEmpty(t, got)
 }
+
+// ledgerCorrection1889 is the r2 robustness finding 2 pin-shape: the
+// ledger UPDATE recordPhraseLedger runs.
+const ledgerCorrection1889 = `UPDATE session_phrase_ledger SET short_id = $3, minted_at = NOW()
+		 WHERE workspace_id = $1 AND session_id = $2`
+
+// TestEnsureSessionRegistered_ReadBackLegCorrectsLedger (r2
+// robustness finding 2): a row born while the ledger was unavailable
+// (ledger empty, real phrase P1 on the row) re-registered at attempt 0
+// — the claim binds P2, the INSERT conflicts, the read-back returns
+// P1: the ledger MUST be corrected to P1 or a later death+resurrection
+// converges on the never-exposed P2 (the re-phrase class).
+func TestEnsureSessionRegistered_ReadBackLegCorrectsLedger(t *testing.T) {
+	svc, mock, cleanup := setupMockDB(t)
+	defer cleanup()
+
+	// Ledger consult misses (the degraded-birth window).
+	mock.ExpectQuery(regexp.QuoteMeta(ledgerConsult1889)).
+		WithArgs("ws-1", "ses_pre").
+		WillReturnRows(sqlmock.NewRows([]string{"short_id"}))
+	// Claim binds the fresh mint.
+	mock.ExpectQuery(regexp.QuoteMeta(ledgerClaim1889)).
+		WithArgs("ws-1", "ses_pre", sqlmock.AnyArg()).
+		WillReturnRows(sqlmock.NewRows([]string{"short_id"}).AddRow("linen-orchard-chirps"))
+	// The INSERT conflicts: the row already exists.
+	mock.ExpectExec(regexp.QuoteMeta(
+		`INSERT INTO session_index (workspace_id, session_id, short_id, message_count, updated_at)`,
+	)).WillReturnResult(sqlmock.NewResult(0, 0))
+	// Read-back returns the row's REAL phrase.
+	mock.ExpectQuery(regexp.QuoteMeta(
+		`SELECT short_id FROM session_index WHERE workspace_id = $1 AND session_id = $2`,
+	)).WithArgs("ws-1", "ses_pre").
+		WillReturnRows(sqlmock.NewRows([]string{"short_id"}).AddRow("amber-falcon-glides"))
+	// The ledger is CORRECTED to the row's real phrase.
+	mock.ExpectExec(regexp.QuoteMeta(ledgerCorrection1889)).
+		WithArgs("ws-1", "ses_pre", "amber-falcon-glides").
+		WillReturnResult(sqlmock.NewResult(0, 1))
+
+	got, err := svc.EnsureSessionRegistered(context.Background(), "ws-1", "ses_pre", "opencode")
+	require.NoError(t, err)
+	assert.Equal(t, "amber-falcon-glides", got, "the read-back phrase wins")
+}
+
+// TestDeleteSessionIndex_ClearsLedger pins the retention posture the
+// migration header records (r2 correctness finding 1): the
+// workspace-reset path clears the ledger FIRST — ledger rows live as
+// long as the workspace, not forever.
+func TestDeleteSessionIndex_ClearsLedger(t *testing.T) {
+	svc, mock, cleanup := setupMockDB(t)
+	defer cleanup()
+
+	mock.ExpectExec(regexp.QuoteMeta(
+		`DELETE FROM session_phrase_ledger WHERE workspace_id = $1`,
+	)).WithArgs("ws-1").WillReturnResult(sqlmock.NewResult(0, 3))
+	mock.ExpectExec(regexp.QuoteMeta(
+		`DELETE FROM session_index WHERE workspace_id = $1`,
+	)).WithArgs("ws-1").WillReturnResult(sqlmock.NewResult(0, 3))
+
+	require.NoError(t, svc.DeleteSessionIndex(context.Background(), "ws-1"),
+		"the reset path must clear BOTH the rows and the ledger")
+	require.NoError(t, mock.ExpectationsWereMet())
+}

@@ -1216,7 +1216,20 @@ func (s *Service) ListSessionIndex(ctx context.Context, workspaceID string) ([]t
 	return items, rows.Err()
 }
 
+// DeleteSessionIndex is the workspace-reset path: every session_index
+// row for the workspace dies, and with them every phrase binding's
+// subject — the #1889 ledger is cleared HERE (the retention posture
+// migration 000047 records: ledger rows live as long as the
+// workspace). Best-effort ordering note: the ledger clear runs FIRST
+// so a mid-reset crash cannot leave phrase bindings for rows that no
+// longer exist (a stale binding would shadow nothing — harmless — but
+// clearing rows-first would leave a window where a re-created
+// workspace id converged on dead phrases).
 func (s *Service) DeleteSessionIndex(ctx context.Context, workspaceID string) error {
+	if _, err := s.DB.ExecContext(ctx,
+		`DELETE FROM session_phrase_ledger WHERE workspace_id = $1`, workspaceID); err != nil {
+		return err
+	}
 	_, err := s.DB.ExecContext(ctx, `DELETE FROM session_index WHERE workspace_id = $1`, workspaceID)
 	return err
 }

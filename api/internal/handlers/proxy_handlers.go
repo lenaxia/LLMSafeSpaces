@@ -822,18 +822,14 @@ func (h *ProxyHandler) HardDeleteSession(ctx context.Context, workspaceID, sessi
 func (h *ProxyHandler) ApplySessionDeleteEffects(ctx context.Context, workspaceID, sessionID string) {
 	h.recordActivityIfTracked(workspaceID)
 
-	// #1889 F3: capture the row's minted phrase BEFORE the delete so
-	// the orphaning is observable after it (best-effort — a failed
-	// lookup skips the disposition, never the delete).
-	orphanedRow := types.SessionListItem{InternalID: sessionID}
+	// #1889 F3: capture the deleted TREE's rows BEFORE the delete so
+	// every orphaned phrase — the target's AND its descendants' — is
+	// observable after it (best-effort: a failed lookup skips the
+	// disposition, never the delete).
+	treeRows := []types.SessionListItem{{InternalID: sessionID}}
 	if h.sessionIndex != nil {
 		if rows, err := h.sessionIndex.ListByWorkspace(context.Background(), workspaceID); err == nil {
-			for _, row := range rows {
-				if row.InternalID == sessionID {
-					orphanedRow = row
-					break
-				}
-			}
+			treeRows = rows
 		}
 	}
 
@@ -850,10 +846,11 @@ func (h *ProxyHandler) ApplySessionDeleteEffects(ctx context.Context, workspaceI
 		if err := h.sessionIndex.DeleteSession(context.Background(), workspaceID, sessionID); err != nil {
 			h.logger.Error("failed to delete session from index", err, "workspaceID", workspaceID, "sessionID", sessionID)
 		} else {
-			// #1889 F3: the row delete orphaned a minted phrase (the
-			// F1 ledger keeps the binding recoverable; this makes the
-			// orphaning event itself visible).
-			h.observePhraseOrphaned(workspaceID, "delete_effects", orphanedRow)
+			// #1889 F3: the tree delete orphaned every minted phrase it
+			// carried — target AND descendants (DeleteSessionTree is
+			// recursive; the F1 ledger keeps the bindings recoverable,
+			// this makes the orphaning events visible).
+			h.observeTreePhrasesOrphaned(workspaceID, "delete_effects", sessionID, treeRows)
 		}
 	}
 

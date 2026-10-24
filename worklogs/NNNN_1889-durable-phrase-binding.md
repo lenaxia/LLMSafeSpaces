@@ -69,8 +69,9 @@ PK (workspace_id, session_id) ONLY — a (workspace_id, short_id) unique
 index is deliberately ABSENT (after row death the phrase is free for a
 new session to mint; ledger-level uniqueness would mis-refuse the
 legitimate re-mint); ledger rows survive reaps/hard deletes (that IS
-the feature); retention = workspace lifetime (DeleteSessionIndex, the
-workspace-reset path, clears the ledger alongside the rows).
+the feature); retention = workspace lifetime, IMPLEMENTED as the
+reset-path clear in DeleteSessionIndex (ledger cleared FIRST, then the
+rows — pinned at both tiers).
 
 Mint seams (`session_phrase_ledger.go` + `short_session_ids.go`):
 `phraseBaseFor` consults the ledger (hot path is ONE extra SELECT);
@@ -118,18 +119,25 @@ precedent).
 ### F3 — `reaped_with_phrase` disposition
 
 `observePhraseOrphaned` (one counter + one Warn log with
-workspace/session/phrase/origin) at all three delete sites:
-read-path reap (`read_path_reap`), reconcile reap (`reconcile_reap`,
-row lookup via the byInternal map, built once and shared with the
-truthfulness split), and ApplySessionDeleteEffects (`delete_effects`,
-phrase captured pre-delete via a best-effort list filter; a failed
-lookup skips the disposition, never the delete). Help text updated.
-Phrase-less rows orphan nothing — the outcome is the phrase-orphaning
-signal, not a delete counter (mirror pins). The F1 ledger doubles as
-the durable tombstone audit (binding recoverable forever after);
-this outcome makes the ORPHANING EVENT dashboard-visible. Workspace
-reset is a documented non-goal (the workspace's dashboard relevance
-dies with it; the ledger is cleared there regardless).
+workspace/session/phrase/origin) over the WHOLE deleted tree at all
+three delete sites (`observeTreePhrasesOrphaned` +
+`collectDescendantRows`, the r2 descendant finding): read-path reap
+(`read_path_reap`), reconcile reap (`reconcile_reap`), and
+ApplySessionDeleteEffects (`delete_effects`, tree rows captured
+pre-delete via a best-effort list; a failed lookup skips the
+disposition, never the delete). DeleteSessionTree is RECURSIVE —
+descendant rows die with the root and each can carry its own minted
+phrase (UpsertSessionParent's phrase-bearing INSERT leg), so the walk
+covers target AND descendants (parent links matched on every id form:
+wire ID, InternalID, phrase; cycle-guarded; pinned transitively —
+child AND grandchild). Phrase-less rows orphan nothing — the outcome
+is the phrase-orphaning signal, not a delete counter (mirror pins).
+The F1 ledger doubles as the durable tombstone audit (binding
+recoverable for the workspace's lifetime); this outcome makes the
+ORPHANING EVENT dashboard-visible. The reaped_with_phrase OUTCOME is
+not emitted on the workspace-reset path itself (the workspace's
+dashboard relevance dies with it) — the reset path's LEDGER clear is
+implemented and pinned (see F1), which is the retention half.
 
 ## Red-first evidence (captured on unmodified main, branch base)
 
@@ -152,7 +160,7 @@ dies with it; the ledger is cleared there regardless).
 ## Verification
 
 - `go test ./api/... ./pkg/... ./cmd/... -count=1` — green, with one
-  PRE-EXISTING exception (see disclosure).
+  exception AT THIS BRANCH'S BASE SNAPSHOT only (see correction).
 - `-count=3` stress over database + sessionindex + the send/reap/
   reconcile/delete-effects handler families — green.
 - `go vet` (unit + `-tags integration`) on the three touched packages
@@ -164,12 +172,14 @@ dies with it; the ledger is cleared there regardless).
   distinct-phrases): skips in this pod — no local Postgres server
   binary (client only); rides CI's provisioned Postgres per the house
   contract, the #1881 lane's exact posture.
-- **Pre-existing failure disclosed:** `pkg/repolint
-  TestLive_Worklogs_NoDuplicates` fails on UNMODIFIED main (verified
-  via stash) — the tracked `worklogs/NNNNN_2026-10-20_1788-sidebar-
-  gesture-e2e-flake.md` sentinel (from #1788's r18 merge commit
-  f0c10b612) is unnumbered on main; `make repolint` itself reports it
-  as WARN (non-gating) and passes. Not this lane's breakage.
+- **Disclosure + correction (r1):** `pkg/repolint
+  TestLive_Worklogs_NoDuplicates` failed at this branch's BASE
+  `85b121e91` (the tracked `worklogs/NNNN_2026-10-20_1788-sidebar-
+  gesture-e2e-flake.md` sentinel was unnumbered there; verified via
+  stash). Re-verified against a clean worktree of CURRENT origin/main
+  `734ec922b` (post-#1916): the repolint bot numbered it
+  (`1216_...1788...`) and the test PASSES — the claim was snapshot-
+  stale, not a live main failure. No residual relevance.
 
 ## Scope / surfaces
 
@@ -186,3 +196,48 @@ dies with it; the ledger is cleared there regardless).
 - Metrics: one new `session_index_reconcile_outcomes_total` label
   value (`reaped_with_phrase`). Storage: migration 000047 (api + helm
   mirror, byte-identical).
+
+## Review r1 remediation (CHANGES_REQUESTED → this commit)
+
+The automation's verdict: core mechanics real and verified (mutation-
+checked the 10 red-first pins on a scratch main worktree; executed the
+integration tier locally against provisioned Postgres — the dropped
+synchronize event (#1844) had left secrets-integration undispatched on
+the head). CHANGES on: CI lint (gofmt), a false retention claim, the
+descendant observability gap, a narrow read-back ledger divergence,
+and two style nits.
+
+1. **gofmt** — `proxy_session_index.go` (the F3 block was dedented)
+   and `proxy_send_notfound_1889_test.go` (struct literal + import
+   grouping) formatted; `gofmt -l` clean over the tree.
+2. **Retention claim → implemented, not reworded** (correctness
+   finding 1): `DeleteSessionIndex` (the workspace-reset path) now
+   clears the ledger FIRST, then the rows — the posture the migration
+   header records is the code's actual behavior. Pinned at both tiers
+   (`TestDeleteSessionIndex_ClearsLedger` sqlmock;
+   `TestIntegration_PhraseLedger_WorkspaceResetClearsLedger`). The
+   worklog's F3 non-goal wording is split honestly: the OUTCOME is
+   not emitted on the reset path (dashboard relevance dies with the
+   workspace); the LEDGER CLEAR is implemented and pinned.
+3. **Descendant observability** (robustness finding 1): tree deletes
+   now observe EVERY orphaned phrase they carry —
+   `collectDescendantRows` walks the listing's parent links under the
+   root (matched on every id form: wire ID, InternalID, phrase — the
+   fixtures exposed that a minted row's phrase is a link key;
+   cycle-guarded; transitive), `observeTreePhrasesOrphaned` runs at
+   all three sites. Pinned transitively:
+   `TestApplySessionDeleteEffects_DescendantPhrasesObserved` (child +
+   grandchild, phrase-less root) and
+   `TestReconcile_TreeReapObservesLiveDescendantPhrase` (a PRESENT
+   live descendant not in the reap plan still dies via the recursive
+   tree delete — its phrase observed).
+4. **Read-back leg ledger correction** (robustness finding 2): a row
+   born while the ledger was degraded (ledger empty, real phrase P1)
+   re-registered at attempt 0 left the ledger bound to the
+   never-exposed claim P2 — a later death+resurrection would converge
+   on P2 (the re-phrase class). The read-back leg now runs
+   `recordPhraseLedger(P1)`. Pinned:
+   `TestEnsureSessionRegistered_ReadBackLegCorrectsLedger`.
+5. **Stale ref + dead bool** (style): short_session_ids.go's
+   "migration 000046" → 000047; `phraseBaseFor` returns the string
+   only (the bool had no consumer).

@@ -97,3 +97,30 @@ func TestIntegration_PhraseLedger_DistinctSessionsKeepDistinctPhrases(t *testing
 	require.NoError(t, err)
 	assert.NotEqual(t, a, b, "unrelated sessions never share a phrase")
 }
+
+func TestIntegration_PhraseLedger_WorkspaceResetClearsLedger(t *testing.T) {
+	svc, h := newIntegrationService(t)
+	ctx := h.NewContext()
+	wsID, sesID := "int-ws-1889-reset", "ses_"+h.ID()
+
+	first, err := svc.EnsureSessionRegistered(ctx, wsID, sesID, "opencode")
+	require.NoError(t, err)
+	require.True(t, shortid.IsShortIDForm(first))
+
+	// The workspace-reset path clears BOTH the rows and the ledger
+	// (the migration header's recorded retention posture: ledger rows
+	// live as long as the workspace).
+	require.NoError(t, svc.DeleteSessionIndex(ctx, wsID))
+
+	var n int
+	require.NoError(t, svc.DB.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM session_phrase_ledger WHERE workspace_id = $1`, wsID).Scan(&n))
+	assert.Zero(t, n, "the reset path must clear the ledger (no phrases outliving their workspace)")
+
+	// Post-reset, a new session in the workspace mints fresh (the old
+	// binding is gone with the workspace — nothing converges on dead
+	// phrases).
+	next, err := svc.EnsureSessionRegistered(ctx, wsID, sesID, "opencode")
+	require.NoError(t, err)
+	assert.True(t, shortid.IsShortIDForm(next))
+}

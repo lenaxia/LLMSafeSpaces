@@ -25,8 +25,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	agent "github.com/lenaxia/llmsafespaces/pkg/agent"
 	"github.com/lenaxia/llmsafespaces/api/internal/services/sessionindex"
+	agent "github.com/lenaxia/llmsafespaces/pkg/agent"
 	"github.com/lenaxia/llmsafespaces/pkg/session"
 	"github.com/lenaxia/llmsafespaces/pkg/types"
 )
@@ -44,10 +44,10 @@ func (m *mockSessionIndex) seedRowPhrase(workspaceID, sessionID, phrase string, 
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.rows[workspaceID] = append(m.rows[workspaceID], types.SessionListItem{
-		ID:      sessionID,
-		InternalID: sessionID,
-		Title:      sessionID,
-		ShortID:    phrase,
+		ID:           sessionID,
+		InternalID:   sessionID,
+		Title:        sessionID,
+		ShortID:      phrase,
 		MessageCount: count,
 	})
 }

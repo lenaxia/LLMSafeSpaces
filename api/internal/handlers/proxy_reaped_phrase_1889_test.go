@@ -27,6 +27,7 @@ import (
 	"github.com/lenaxia/llmsafespaces/api/internal/services/sessionindex"
 	agent "github.com/lenaxia/llmsafespaces/pkg/agent"
 	"github.com/lenaxia/llmsafespaces/pkg/session"
+	"github.com/lenaxia/llmsafespaces/pkg/types"
 )
 
 // TestReconcile_ReapedRowWithPhrase_IsObservable: the convergence pass
@@ -90,6 +91,23 @@ func TestReadPathReap_RowWithPhrase_IsObservable(t *testing.T) {
 		"the read-path reap of a MINTED phrase must be observable")
 }
 
+// seedRowPhraseChild seeds an index row carrying a MINTED phrase and a
+// parent link (the tree-walk fixtures: a child's ParentID is the
+// parent's phrase, degrading to the parent's harness id when the
+// parent row has no phrase).
+func (m *mockSessionIndex) seedRowPhraseChild(workspaceID, sessionID, phrase, parentRef string, count int) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.rows[workspaceID] = append(m.rows[workspaceID], types.SessionListItem{
+		ID:           sessionID,
+		InternalID:   sessionID,
+		Title:        sessionID,
+		ShortID:      phrase,
+		ParentID:     parentRef,
+		MessageCount: count,
+	})
+}
+
 // TestApplySessionDeleteEffects_PhraseBearingRow_IsObservable: the
 // platform delete-effects tail (user hard delete, engine teardown,
 // carrier cleanup) orphaning a minted phrase fires the outcome.
@@ -125,4 +143,56 @@ func TestApplySessionDeleteEffects_PhraselessRow_NoOutcome(t *testing.T) {
 	assert.True(t, idx.deletedTree["ws-1/ses_del"])
 	assert.Equal(t, before, promtestutil.ToFloat64(sessionindex.ReconcileOutcomeForTest("reaped_with_phrase")),
 		"a phrase-less delete must not fire the phrase-orphaning outcome")
+}
+
+// TestApplySessionDeleteEffects_DescendantPhrasesObserved (r2
+// robustness finding 1): DeleteSessionTree is RECURSIVE — every
+// descendant row dies with the root, and each can carry its own minted
+// phrase. A phrase-less root deleting a phrased child AND grandchild
+// must observe BOTH orphaned phrases (transitive walk over the
+// listing's parent links).
+func TestApplySessionDeleteEffects_DescendantPhrasesObserved(t *testing.T) {
+	idx := newMockSessionIndex()
+	// Phrase-less root (its own observation fires nothing)…
+	idx.seedRowCounted("ws-1", "ses_root", 3)
+	// …phrased child (parent link by harness id — the degraded form
+	// for a phrase-less parent)…
+	idx.seedRowPhraseChild("ws-1", "ses_child", "linen-orchard-chirps", "ses_root", 2)
+	// …and phrased grandchild (parent link by the CHILD's PHRASE — the
+	// minted form).
+	idx.seedRowPhraseChild("ws-1", "ses_grand", "mossy-tabby-cheers", "linen-orchard-chirps", 1)
+	h := newProxyHandlerForAdapterTest(t)
+	h.sessionIndex = idx
+	h.userBroker = eventbroker.NewUserEventBroker()
+
+	before := promtestutil.ToFloat64(sessionindex.ReconcileOutcomeForTest("reaped_with_phrase"))
+
+	h.ApplySessionDeleteEffects(context.Background(), "ws-1", "ses_root")
+
+	assert.True(t, idx.deletedTree["ws-1/ses_root"])
+	assert.Equal(t, before+2, promtestutil.ToFloat64(sessionindex.ReconcileOutcomeForTest("reaped_with_phrase")),
+		"BOTH the child's and the grandchild's phrases must be observed (the tree delete orphans every phrase it carries)")
+}
+
+// TestReconcile_TreeReapObservesLiveDescendantPhrase: the reconcile's
+// tree variant of the same gap — a ghost root (absent at the harness,
+// reaped post-probe) whose DESCENDANT is PRESENT and live: the
+// descendant is not in the reap plan, but the tree delete kills its
+// row too (production DeleteSessionTree is recursive), so its phrase
+// must be observed.
+func TestReconcile_TreeReapObservesLiveDescendantPhrase(t *testing.T) {
+	h, idx := reconcileTestHandler(t, map[string]bool{"ses_descendant": true}, nil) // descendant PRESENT at harness
+	idx.seedRowPhrase("ws-1", "ses_ghost", "amber-falcon-glides", 0)                // count 0: guard admits
+	idx.seedRowPhraseChild("ws-1", "ses_descendant", "linen-orchard-chirps", "amber-falcon-glides", 4)
+
+	before := promtestutil.ToFloat64(sessionindex.ReconcileOutcomeForTest("reaped_with_phrase"))
+
+	runReconcile(t, h, "ws-1")
+	runReconcile(t, h, "ws-1") // root's miss 2 → probe (default not-found) confirms → tree reap
+
+	assert.True(t, idx.deletedTree["ws-1/ses_ghost"], "the ghost root is reaped as before")
+	assert.NotContains(t, idx.deletedTree, "ws-1/ses_descendant",
+		"the live descendant is not independently reaped (present at the harness — its row dies only via the tree delete)")
+	assert.Equal(t, before+2, promtestutil.ToFloat64(sessionindex.ReconcileOutcomeForTest("reaped_with_phrase")),
+		"the tree reap observes BOTH the root's and the live descendant's orphaned phrases")
 }

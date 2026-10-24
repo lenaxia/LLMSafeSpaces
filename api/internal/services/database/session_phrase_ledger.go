@@ -74,19 +74,18 @@ func (s *Service) recordPhraseLedger(ctx context.Context, workspaceID, sessionID
 // else a fresh mint claimed into the ledger (so the binding exists
 // before the row is born — a crash between claim and birth still
 // converges later). A ledger failure degrades to an unclaimed fresh
-// mint (today's semantics); the bool reports whether the base came
-// from the ledger.
-func (s *Service) phraseBaseFor(ctx context.Context, workspaceID, sessionID string) (string, bool) {
+// mint (today's semantics).
+func (s *Service) phraseBaseFor(ctx context.Context, workspaceID, sessionID string) string {
 	if bound := s.consultPhraseLedger(ctx, workspaceID, sessionID); bound != "" {
-		return bound, true
+		return bound
 	}
 	fresh, err := shortid.MintPhrase()
 	if err != nil {
-		return "", false
+		return ""
 	}
 	winner, err := s.claimPhraseLedger(ctx, workspaceID, sessionID, fresh)
 	if err != nil {
-		return fresh, false // ledger unavailable — birth under the fresh mint
+		return fresh // ledger unavailable — birth under the fresh mint
 	}
-	return winner, false
+	return winner
 }
