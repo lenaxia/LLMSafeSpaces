@@ -30,14 +30,15 @@
 # metadata block. R4 likewise pins create-compat only, not a
 # prompt-only fire, for the same budget reason.
 #
-# ADAPTIVE ARMS (#1455 precedent): the nightly installs
-# controller.agentdSidecar.enabled=true, and in sidecar mode agentd
-# serves script nodes from a scratch container without /tmp or
-# interpreters — script dispatch there fails LOUD with
-# script_env_unavailable. Exec-mode clusters prove the gate outcomes;
-# sidecar-mode clusters prove the SAME fail-closed contract + the
-# no-LLM-call invariant (every execution arm ends failed/skipped with
-# zero sessions). Any other terminal shape fails the row.
+# BOTH-MODES CONTRACT (#1878): the nightly installs
+# controller.agentdSidecar.enabled=true, and post-#1878 script nodes
+# execute in the WORKSPACE container in every topology (sidecar mode
+# forwards over the design-0051 control socket to the supervisor, which
+# runs the handler with the session env). Every execution row therefore
+# asserts the REAL gate outcome — R1 skips, R2 delivers with the
+# in-workspace side-effect marker, R3 fails closed — on exec-mode AND
+# sidecar-mode clusters alike, always with zero sessions. Any other
+# terminal shape fails the row.
 #
 # Environment: same conventions as local/issue-1455-scriptenv-e2e.sh
 # (local/lib/us70-common.sh). Runs on the pool/nightly kind cluster.
@@ -202,9 +203,7 @@ created_triggers+=("${R1_ID}")
 
 if wait_fire "${R1_ID}" "${FIRE_WAIT_S}"; then
     if [[ "${fire_status}" == "skipped" && "$(gate_field proceed)" == "false" && "$(gate_field vars.topic)" == "nothing-new" ]]; then
-        ok "R1 (exec mode): skipped fire with {gate:{proceed:false,vars}} in the audit"
-    elif [[ "${fire_status}" == "failed" && "$(gate_field error)" == *"script_env_unavailable"* ]]; then
-        ok "R1 (sidecar mode): fail-closed with the named script_env_unavailable cause"
+        ok "R1: skipped fire with {gate:{proceed:false,vars}} in the audit (both modes — the gate executes in the workspace container, #1878)"
     else
         note_fail "R1: terminal shape outside the gate contract (status=${fire_status}): ${fire_row:0:300}"
     fi
@@ -228,14 +227,12 @@ created_triggers+=("${R2_ID}")
 
 if wait_fire "${R2_ID}" "${FIRE_WAIT_S}"; then
     if [[ "${fire_status}" == "delivered" && "$(gate_field proceed)" == "true" && "$(gate_field vars.count)" == "3" ]]; then
-        ok "R2 (exec mode): delivered fire with {gate:{proceed:true,vars}}"
+        ok "R2: delivered fire with {gate:{proceed:true,vars}} (both modes — #1878)"
         if marker_present; then
-            ok "R2 (exec mode): side-effect marker present in the workspace — the script ran IN the sandbox"
+            ok "R2: side-effect marker present in the workspace — the script ran IN the workspace container (#1878; sidecar proves the control-socket forward)"
         else
-            note_fail "R2 (exec mode): gate reported proceed=true but the side-effect marker is missing"
+            note_fail "R2: gate reported proceed=true but the side-effect marker is missing — the script did not execute in the workspace env"
         fi
-    elif [[ "${fire_status}" == "failed" && "$(gate_field error)" == *"script_env_unavailable"* ]]; then
-        ok "R2 (sidecar mode): fail-closed with the named script_env_unavailable cause"
     else
         note_fail "R2: terminal shape outside the gate contract (status=${fire_status}): ${fire_row:0:300}"
     fi

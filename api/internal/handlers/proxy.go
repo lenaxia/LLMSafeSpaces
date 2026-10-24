@@ -83,14 +83,30 @@ type ProxyHandler struct {
 	// (nil = resolution disabled: every ref passes through and 404s
 	// stay suggestion-free — the pre-rollout behavior byte-for-byte).
 	sessionRefs sessionindex.RefResolver
-	// sessionOriginLister feeds the #1882 carrier reap-guard bypass:
-	// session_origins-marked routine sessions absent at the harness are
-	// reaped even with history (the harness-store-reset rationale does
-	// not apply to platform carriers). Nil = no marks = DefaultReapGuard
-	// semantics only.
+	// sessionOriginLister feeds the #1901 carrier reap-guard bypass:
+	// CARRIER-class origin-marked routine sessions (kind='carrier' —
+	// platform-deleted ephemerals) absent at the harness are reaped
+	// even with history (the harness-store-reset rationale does not
+	// apply to platform carriers). Preserved sessions' marks
+	// (kind='session') are invisible through the seam. Nil = no marks =
+	// DefaultReapGuard semantics only.
 	sessionOriginLister SessionOriginLister
 	userBroker          *eventbroker.UserEventBroker
 	sessionParents      *sessionParentCache
+
+	// countServe is the #1880 listing serve-through's in-replica walk
+	// tracker (rotation fairness + unchanged-row cooldown). Lazy:
+	// struct-literal constructions (tests) reach it through
+	// ProxyHandler.countServeState(), never the nil field directly.
+	countServe   *countServeTracker
+	countServeMu sync.Mutex
+
+	// countPassIndexOverride pins the #1880 r2 rebuild-rotation
+	// window (tests). Production derives the window statelessly from
+	// wall-clock buckets of the reconcile cadence (see
+	// countPassIndex); a test driving consecutive passes flips this
+	// override instead of sleeping past window boundaries.
+	countPassIndexOverride *int64
 
 	meteringSvc interfaces.MeteringService
 

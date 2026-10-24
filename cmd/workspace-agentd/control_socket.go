@@ -159,6 +159,13 @@ type controlSocketServer struct {
 	// sidecar mode). Nil answers internal — never a silent no-op.
 	diskRecover diskRecoverEngine
 
+	// scriptExec (#1878) executes workflow/trigger script nodes in the
+	// WORKSPACE container (the session environment): the sidecar's
+	// execScriptNode forwards handlers here because its own FROM-scratch
+	// container has no /tmp, no interpreters, and a read-only
+	// /workspace. Nil answers internal — never a silent no-op.
+	scriptExec *scriptExecEngine
+
 	// fsAudit (+#1808) runs the zero-fill corruption scan in the
 	// supervisor (same RW-PVC-view finding as diskRecover). Nil answers
 	// internal — never a silent no-op.
@@ -283,6 +290,8 @@ func (s *controlSocketServer) handleConn(conn net.Conn) {
 		writeJSON(conn, s.uploadApplyControlMethod(connCtx, conn, req))
 	case "disk_recover":
 		writeJSON(conn, s.diskRecoverControlMethod(connCtx, conn, req))
+	case "script_exec":
+		writeJSON(conn, s.scriptExecControlMethod(connCtx, conn, req, req.Params))
 	case "fs_audit":
 		writeJSON(conn, s.fsAuditControlMethod(connCtx, conn, req))
 	default:

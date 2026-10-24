@@ -104,6 +104,23 @@ func decodeOneDocument(r io.Reader, v any) error {
 func boardManagerTools() []mcpTool {
 	return []mcpTool{
 		{
+			// #1837 P2a: the orchestrator's overview reads. board_read
+			// stays per-task (the worker view); board_list/board_health
+			// are the manager's project/fleet projections.
+			Name:        "board_list",
+			Description: "List EVERY task of one board project in a single call (#1837 P2a) — the orchestrator's overview the per-task board_read cannot give. Each row carries the stage, claim (assignee session), lease expiry, paused, blocked, attempts, and cooldown columns (live claim TOKENS are deliberately absent from the bulk projection — board_read keeps the token for the claimant's own flow); the response also derives the project's ready HINT (backlog + unblocked + unpaused + not cooling — the task-level claim predicates; epic-quota and project gates resolve at claim time; rendered only on fully unfiltered lists). Manager tool (user-collaborator sessions only); workspace-scoped (a foreign workspace's project is a plain 404).",
+			InputSchema: map[string]any{"type": "object", "properties": map[string]any{
+				"projectId": map[string]any{"type": "string", "description": "Project short id (prj-… or UUID)"},
+				"stage":     map[string]any{"type": "string", "enum": []string{"backlog", "in_progress", "in_review", "done", "pending_input"}, "description": "Optional stage filter (one of the five stages)"},
+				"failed":    map[string]any{"type": "string", "enum": []string{"true", "false"}, "description": "Optional #1813 failed-attempt filter (true = only last-attempt-failed rows)"},
+			}, "required": []string{"projectId"}},
+		},
+		{
+			Name:        "board_health",
+			Description: "The WORKSPACE's board health snapshot (#1837 P2a): active leases with expiry and assignee, task and project-slot cooldowns, pending_input counts by origin, recent reclaims, and per-project worker slots in use — one call over every board this workspace's projects carry. Use it to answer 'what is in flight, what is stuck, what cools down' before scheduling decisions. Manager tool (user-collaborator sessions only); workspace-scoped.",
+			InputSchema: map[string]any{"type": "object", "properties": map[string]any{}},
+		},
+		{
 			// Task Board MANAGER tools (#1747, design 0067 §4.3c as
 			// amended): the collaboration-to-execution loop — take a
 			// user-approved design, create the epics/tasks, activate the
@@ -239,7 +256,7 @@ func boardManagerTools() []mcpTool {
 		},
 		{
 			Name:        "board_update_task",
-			Description: "Patch a task (title, description, tags, criteria; setCriteriaMet checks off the criterion at the 0-based index — the reviewer's Done preparation). Omitted fields keep existing values; criteria REPLACE when present. Manager tool (user-collaborator sessions only).",
+			Description: "Patch a task (title, description, tags, criteria). setCriteriaMet is {index, met} — check off OR uncheck the criterion at the 0-based index (the reviewer's Done preparation can walk flags BOTH ways, #1837 P2b); the bare-integer form still decodes as {index, met:true}. REFUSED alongside an acceptanceCriteria replace (send one or the other); out-of-bounds indices are loud errors; the response echoes the mutated criterion's text. Omitted fields keep existing values; criteria REPLACE when present. Manager tool (user-collaborator sessions only).",
 			InputSchema: map[string]any{"type": "object", "properties": map[string]any{
 				"taskId":           map[string]any{"type": "string", "description": "Task short id (phrase form tsk-crimson-finch-blooms, legacy tsk-XXXXXXXX forms still resolve, or UUID)"},
 				"title":            map[string]any{"type": "string", "description": "New title"},
@@ -251,7 +268,15 @@ func boardManagerTools() []mcpTool {
 						"text": map[string]any{"type": "string"},
 						"met":  map[string]any{"type": "boolean"},
 					}, "required": []string{"text"}}, "description": "Criteria (REPLACE when present)"},
-				"setCriteriaMet": map[string]any{"type": "integer", "description": "Check off the criterion at this 0-based index"},
+				"setCriteriaMet": map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"index": map[string]any{"type": "integer", "description": "0-based criterion index"},
+						"met":   map[string]any{"type": "boolean", "description": "The flag to write (default true — the legacy bare-integer form)"},
+					},
+					"required":    []string{"index"},
+					"description": "{index, met} — check off OR uncheck the criterion (the legacy bare integer = check-off); refused alongside acceptanceCriteria",
+				},
 			}, "required": []string{"taskId"}},
 		},
 		{
@@ -330,7 +355,7 @@ func mcpToolCatalog() []mcpTool {
 			InputSchema: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
-					"include_archived": map[string]any{"type": "boolean", "description": "true = archived sessions are included (the pre-#1735 behavior). Default false = archived sessions are EXCLUDED — they are read-only history, not ambient noise; the filter only applies while the archived set is fresh (~15s), so during a platform outage it degrades to the unfiltered list, never a failed tool"},
+					"include_archived": map[string]any{"type": "boolean", "description": "true = archived sessions are included (the pre-#1735 behavior). Default false = archived sessions are EXCLUDED — they are read-only history, not ambient noise; the filter only applies while the archived set is fresh (~15s), so during a platform outage it degrades to the unfiltered list (every row then carries archived_set_stale:true — known-unfiltered, never a failed tool), never a silent gap"},
 				},
 			},
 		},
@@ -542,7 +567,7 @@ func mcpToolCatalog() []mcpTool {
 			// surfaces, and the claim token (charter envelope) is the
 			// in-flight guard on every stage/lease write.
 			Name:        "board_read",
-			Description: "Read ONE Task Board task — your claimed task's full worker view: the charter (description + acceptance criteria), stage, blocked-by dependencies with their stages, attempts, and your lease (claim state, expiry). Address it by shortId (a word-phrase id like tsk-crimson-finch-blooms from your charter envelope, #1831; legacy random tsk-XXXXXXXX ids still resolve, deprecated) or taskId (UUID); resolution is case-insensitive, and a near-miss id returns 404 with did-you-mean suggestions (verify the id and retry once). No claim token is needed — a read is not an in-flight write. Use it to re-ground yourself on the task's current truth: after a 409 claim_token (your claim lapsed or the task moved — re-read before doing anything else), before reporting throttle or moving stage (stage and criteria may have changed), or whenever your charter's snapshot might be stale. The board's list/search/health projections are not on this tool yet.",
+			Description: "Read ONE Task Board task — your claimed task's full worker view: the charter (description + acceptance criteria), stage, blocked-by dependencies with their stages, attempts, and your lease (claim state, expiry). Address it by shortId (a word-phrase id like tsk-crimson-finch-blooms from your charter envelope, #1831; legacy random tsk-XXXXXXXX ids still resolve, deprecated) or taskId (UUID); resolution is case-insensitive, and a near-miss id returns 404 with did-you-mean suggestions (verify the id and retry once). No claim token is needed — a read is not an in-flight write. Use it to re-ground yourself on the task's current truth: after a 409 claim_token (your claim lapsed or the task moved — re-read before doing anything else), before reporting throttle or moving stage (stage and criteria may have changed), or whenever your charter's snapshot might be stale. The board's list/health overview projections live on the manager tools board_list/board_health (#1837).",
 			InputSchema: map[string]any{"type": "object", "properties": map[string]any{
 				"shortId": map[string]any{"type": "string", "description": "The task's short id (word-phrase, tsk-crimson-finch-blooms, from your charter envelope); case-insensitive"},
 				"taskId":  map[string]any{"type": "string", "description": "The task's UUID (alternative to shortId; taskId wins when both are given)"},
@@ -603,7 +628,7 @@ func mcpToolCatalog() []mcpTool {
 		},
 		{
 			Name:        "session_metadata",
-			Description: "Read-only vitals for sessions in this workspace: per-session message count, how full the context window is (tokens used vs the model's limit), total token usage, age, model, busy flag, archive status — plus the workspace ID and agent version. SCOPE (breaking change): an explicit session_id returns that one session (an archived session still resolves — the listing filter below never blocks single-ID lookups); with NO session_id the default is YOUR CURRENT SESSION ONLY (the platform injects your session ID automatically); pass all_sessions:true to list EVERY NON-ARCHIVED session's metadata (the old every-session behavior is include_archived:true). Use when deciding whether to compact (context fill high), whether to spawn a parallel session (who is busy with what), before long work that might exhaust context, or when the user asks how big/old/costly a session is. Sessions with archived:true are read-only for the user (chat sends rejected; history viewable) — pair with session_archive/unarchive. Output is aggregate metadata only — read message CONTENT with session_read.",
+			Description: "Read-only vitals for sessions in this workspace: per-session message count, how full the context window is (tokens used vs the model's limit), total token usage, age, model, busy flag, archive status — plus the workspace ID and agent version. SCOPE (breaking change): an explicit session_id returns that one session (an archived session still resolves — the listing filter below never blocks single-ID lookups); with NO session_id the default is YOUR CURRENT SESSION ONLY (the platform injects your session ID automatically); pass all_sessions:true to list EVERY NON-ARCHIVED session's metadata (the old every-session behavior is include_archived:true). Use when deciding whether to compact (context fill high), whether to spawn a parallel session (who is busy with what), before long work that might exhaust context, or when the user asks how big/old/costly a session is. Sessions with archived:true are read-only for the user (chat sends rejected; history viewable) — pair with session_archive/unarchive. A top-level archived_set_stale:true means the archive annotations could not prove freshness (~15s platform cache degraded) — treat archive flags in that result as possibly stale. Output is aggregate metadata only — read message CONTENT with session_read.",
 			InputSchema: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -616,7 +641,7 @@ func mcpToolCatalog() []mcpTool {
 		},
 		{
 			Name:        "session_archive",
-			Description: "Archive (archived:true) or unarchive (archived:false) a session in this workspace — a PLATFORM-level marker, reversible, never destructive. What archiving does: the session becomes READ-ONLY for the user (their chat sends to it are rejected with a clear 'archived' error; its history stays fully viewable in the UI's Archived group; in-pod agent traffic is NOT blocked). What it does NOT do: delete anything, touch the session's history or files, or stop a running turn. Use when the user asks to tidy up, shelve, or retire a finished session ('archive that old chat'), or to move YOUR OWN finished work out of the way (a completed peer session you created). Unarchiving (archived:false) restores chat instantly. NOT for deleting — delete_session is the destructive tool; archive first when in doubt. The session_id comes from session_list / session_metadata.",
+			Description: "Archive (archived:true) or unarchive (archived:false) a session in this workspace — a PLATFORM-level marker, reversible, never destructive. What archiving does: the session becomes READ-ONLY for the user (their chat sends to it are rejected with a clear 'archived' error; its history stays fully viewable in the UI's Archived group; in-pod agent traffic is NOT blocked). What it does NOT do: delete anything, touch the session's history or files, or stop a running turn. Use when the user asks to tidy up, shelve, or retire a finished session ('archive that old chat'), or to move YOUR OWN finished work out of the way (a completed peer session you created). Unarchiving (archived:false) restores chat instantly. The success reply carries archived_visibility: verified (a post-write read of the archived set confirmed the transition — this pod's listings reflect it immediately) or unverified (the confirmation could not be read or disagreed; the state still holds, but listings may lag up to ~15s — do NOT re-archive on unverified, check with session_metadata instead). NOT for deleting — delete_session is the destructive tool; archive first when in doubt. The session_id comes from session_list / session_metadata.",
 			InputSchema: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -913,6 +938,7 @@ func callMCPTool(ctx context.Context, password, name string, args map[string]any
 		"trigger_rotate_webhook_secret",
 		"workflow_list", "workflow_create", "workflow_update", "workflow_delete", "workflow_run", "workflow_runs",
 		"board_read", "board_heartbeat", "board_report_throttle", "board_move_stage",
+		"board_list", "board_health",
 		"board_create_project", "board_update_project",
 		"board_project_archive", "board_project_unarchive", "board_project_pause", "board_project_resume",
 		"board_create_epic", "board_update_epic",
@@ -1039,7 +1065,20 @@ func mcpSessionList(ctx context.Context, password string, includeArchived bool) 
 	// re-served byte-exact, never rewritten).
 	filtered := string(body)
 	if !includeArchived {
-		filtered = filterArchivedFromSessionList(ctx, body)
+		// #1879: the degrade must never be silent. The filter returns
+		// the freshness verdict of the ONE cache capture that built the
+		// output — when that capture was degraded the listing is
+		// deliberately unfiltered and every row is stamped so the
+		// caller knows archived entries may be present (a separate
+		// second read for the stamp decision would race a concurrent
+		// cache refresh and ship an unstamped unfiltered list — review
+		// r1 finding). include_archived:true listings are unfiltered BY
+		// REQUEST and take no stamp.
+		var filterFresh bool
+		filtered, filterFresh = filterArchivedFromSessionList(ctx, body)
+		if !filterFresh {
+			filtered = stampArchivedSetStale([]byte(filtered))
+		}
 	}
 	// #1756 §1: the listing's identifier IS the phrase — each row's
 	// id value flips to the replica-known phrase. Rows without a

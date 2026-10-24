@@ -685,6 +685,11 @@ func podPlatformClient() (*opencode.Client, string, string, error) {
 // history stays viewable, and unarchiving restores chat instantly.
 // In-pod peer sends are NOT blocked (enforcement is proxy-side by the
 // owner's ruling) — the marker is for the USER's session list.
+// #1879: the success reply carries archived_visibility — "verified"
+// when the post-write confirmation read of the archived set agrees
+// (and the pod's cache is refreshed: this pod's listings converge
+// immediately), "unverified" when the read failed or disagreed (the
+// state still holds; listings may lag up to one cache window).
 func mcpSessionArchive(ctx context.Context, password, sessionID string, archived bool) (string, error) {
 	sessionID = strings.TrimSpace(sessionID)
 	if sessionID == "" {
@@ -715,14 +720,27 @@ func mcpSessionArchive(ctx context.Context, password, sessionID string, archived
 		}
 		return "", fmt.Errorf("failed to archive session: %w", err)
 	}
+	// #1879: the write landed — now prove it is VISIBLE. A confirmation
+	// read of the archived set (bypassing the ~15s throttle) both (a)
+	// refreshes this pod's shared cache so the pod's own listings
+	// converge immediately instead of after the TTL window, and (b)
+	// lets the tool report verified/unverified. A failed or
+	// disagreeing read never fails the tool (the platform write is the
+	// state truth) and never fabricates cache freshness.
+	confirmed := forceArchivedSetRefresh(ctx)
+	visibility := "unverified"
+	if confirmed != nil && confirmed[sessionID] == archived {
+		visibility = "verified"
+	}
 	status := "archived"
 	if !archived {
 		status = "unarchived"
 	}
 	id, idDegraded := emitIDFields(sessionID)
 	res := map[string]string{
-		"status":     status,
-		"session_id": id,
+		"status":              status,
+		"session_id":          id,
+		"archived_visibility": visibility,
 	}
 	if idDegraded {
 		res["session_id_deprecated"] = "true"
@@ -863,6 +881,78 @@ func filterableArchivedSet() map[string]bool {
 	return archivedSetCacheVal
 }
 
+// forceArchivedSetRefresh fetches the archived set UNGATED — no TTL, no
+// throttle (#1879: the post-archive confirmation read must observe the
+// write immediately). On success the shared cache is updated (val,
+// throttle, and the freshness watermark) so this pod's listings and
+// annotations converge without waiting out the window. On ANY failure
+// it returns nil and leaves the cache untouched — a failed
+// confirmation must never fabricate freshness (the filter would then
+// trust a set it never saw).
+func forceArchivedSetRefresh(ctx context.Context) map[string]bool {
+	fetched := fetchArchivedSessionSet(ctx)
+	if fetched == nil {
+		return nil
+	}
+	archivedSetCacheMu.Lock()
+	archivedSetCacheVal = fetched
+	archivedSetCacheAt = time.Now()
+	archivedSetCacheFetchedAt = time.Now()
+	archivedSetCacheMu.Unlock()
+	return fetched
+}
+
+// stampArchivedSetStale marks every row of a DEGRADED default listing
+// with `"archived_set_stale":true` (#1879): the unfiltered degrade is
+// correct (a stale set must not keep hiding rows, #1735 r1 f1) but it
+// must never be SILENT — the incident's orchestrator re-archived
+// already-archived sessions because the listing looked authoritative.
+// Same splice discipline as the filter: each element's original bytes
+// are preserved (no re-marshal — json.Marshal would compact and
+// HTML-escape titles containing &<>; unknown fields survive) and the
+// marker is inserted before the closing brace. On ANY parse failure
+// the original body is returned unmarked.
+func stampArchivedSetStale(body []byte) string {
+	var elems []json.RawMessage
+	if err := json.Unmarshal(body, &elems); err != nil {
+		return string(body)
+	}
+	if elems == nil {
+		// A JSON null body unmarshals into a nil slice without error —
+		// byte-identity still holds (null is never rewritten to [])
+		// (review r1 nit).
+		return string(body)
+	}
+	out := make([]byte, 0, len(body)+len(elems)*len(`,"archived_set_stale":true`))
+	out = append(out, '[')
+	for i, e := range elems {
+		if i > 0 {
+			out = append(out, ',')
+		}
+		out = append(out, stampElemArchivedStale(e)...)
+	}
+	out = append(out, ']')
+	return string(out)
+}
+
+// stampElemArchivedStale appends the marker field to one raw JSON
+// object element. Non-object elements pass through untouched; an empty
+// object becomes just the marker.
+func stampElemArchivedStale(e json.RawMessage) []byte {
+	trimmed := bytes.TrimRight(e, " \t\r\n")
+	if len(trimmed) == 0 || trimmed[len(trimmed)-1] != '}' {
+		return e
+	}
+	inner := trimmed[:len(trimmed)-1]
+	if bytes.Equal(bytes.TrimSpace(inner), []byte("{")) {
+		return []byte(`{"archived_set_stale":true}`)
+	}
+	res := make([]byte, 0, len(inner)+len(`,"archived_set_stale":true`)+1)
+	res = append(res, inner...)
+	res = append(res, `,"archived_set_stale":true`...)
+	return append(res, '}')
+}
+
 // fetchArchivedSessionSet pulls the archived IDs from the platform's
 // pod-identity endpoint. Nil on ANY failure (degrade silently — an
 // unreachable platform must not break metadata, and fetch errors must
@@ -896,15 +986,30 @@ func fetchArchivedSessionSet(ctx context.Context) map[string]bool {
 // posture as the metadata annotation (#1627 §4): the platform fact
 // must never fail the tool, and an empty/stale archived set
 // short-circuits untouched.
-func filterArchivedFromSessionList(ctx context.Context, body []byte) string {
+//
+// #1879 single-capture contract: the second return reports whether the
+// set that BUILT this output was provably fresh (the filter ran) or
+// degraded (the output is the UNFILTERED list — the caller must stamp
+// it). The decision rides the ONE filterableArchivedSet() read inside
+// this function, never a second read afterwards: a concurrent cache
+// refresh (a sibling session_archive's force-refresh, or the throttled
+// background refresh) between two reads could flip nil→fresh in the
+// window and an unfiltered listing would ship UNSTAMPED — the exact
+// silent degrade #1879 exists to prevent (review r1 finding).
+func filterArchivedFromSessionList(ctx context.Context, body []byte) (string, bool) {
 	archivedSessionSet(ctx) // shared-cache refresh/throttle (annotation source)
 	archivedSet := filterableArchivedSet()
+	if archivedSet == nil {
+		// Degraded: no provably-fresh set — the documented degrade is
+		// the unfiltered list (#1735 r1 f1); the caller stamps it.
+		return string(body), false
+	}
 	if len(archivedSet) == 0 {
-		return string(body)
+		return string(body), true
 	}
 	var elems []json.RawMessage
 	if err := json.Unmarshal(body, &elems); err != nil {
-		return string(body)
+		return string(body), true
 	}
 	out := make([]byte, 0, len(body))
 	out = append(out, '[')
@@ -925,10 +1030,10 @@ func filterArchivedFromSessionList(ctx context.Context, body []byte) string {
 		wrote++
 	}
 	if dropped == 0 {
-		return string(body)
+		return string(body), true
 	}
 	out = append(out, ']')
-	return string(out)
+	return string(out), true
 }
 
 // mcpSessionMetadata aggregates read-only workspace + session vitals:
@@ -1017,6 +1122,11 @@ func mcpSessionMetadata(ctx context.Context, password, sessionID, injectedSessio
 		return "", fmt.Errorf("failed to read session statuses: %w", err)
 	}
 	archivedSet := archivedSessionSet(ctx)
+	// #1879: one capture, two uses — the aggregate's freshness gate and
+	// the top-level staleness marker must describe the SAME set the
+	// rows below are annotated from (a per-row re-read could race a
+	// background refresh and lie about the shape just served).
+	freshArchivedSet := filterableArchivedSet()
 
 	match := func(s opencode.SessionSummary) bool {
 		if scope != "" {
@@ -1026,7 +1136,7 @@ func mcpSessionMetadata(ctx context.Context, password, sessionID, injectedSessio
 		// include_archived is the explicit opt-in. Single-ID scopes
 		// never reach this branch. The filter set is freshness-gated —
 		// a stale set (platform outage past the TTL) no-ops (r1 f1).
-		return includeArchived || !filterableArchivedSet()[s.ID]
+		return includeArchived || !freshArchivedSet[s.ID]
 	}
 	type sessionMeta struct {
 		ID string `json:"session_id"`
@@ -1107,11 +1217,20 @@ func mcpSessionMetadata(ctx context.Context, password, sessionID, injectedSessio
 	if len(sessions) > 0 {
 		version = sessions[0].Version
 	}
-	out, _ := json.Marshal(map[string]any{
+	outFields := map[string]any{
 		"workspace_id":  os.Getenv("WORKSPACE_ID"),
 		"agent_version": version,
 		"sessions":      metas,
-	})
+	}
+	// #1879: the archived annotations (and, on the aggregate, the
+	// archived filter) ride a ~15s pod cache of index-only state. When
+	// the last successful fetch is beyond the window the result is
+	// still served (never a failed tool) but marked: callers comparing
+	// archive state across surfaces deserve to know it may be stale.
+	if freshArchivedSet == nil {
+		outFields["archived_set_stale"] = true
+	}
+	out, _ := json.Marshal(outFields)
 	return string(out), nil
 }
 
@@ -1436,7 +1555,15 @@ func mcpSendMessage(ctx context.Context, password, sessionID, message, injectedS
 
 	// Stamp the origin sentinel (idempotent: a payload that already
 	// carries a leading sentinel from a prior hop is stripped first).
-	composed, err := agentmessage.Compose(message, agentmessage.Origin{FromSession: origin, Mode: mode})
+	// #1919: the sentinel's fromSession is AGENT- and USER-facing (the
+	// recipient's transcript, the frontend origin badge) — it emits the
+	// PHRASE when the replica knows it, exactly like every other id
+	// emission in this result (#1756 §1); the raw harness id survives
+	// only in the degraded cold-replica window, where it is still the
+	// caller's only addressable form. Validation above stays canonical;
+	// a phrase-valued fromSession remains a valid reply address
+	// (resolveSessionRef accepts short ids).
+	composed, err := agentmessage.Compose(message, agentmessage.Origin{FromSession: emitID(origin), Mode: mode})
 	if err != nil {
 		return "", fmt.Errorf("failed to stamp message origin: %w", err)
 	}
@@ -1689,6 +1816,8 @@ func mcpAutomation(ctx context.Context, password, name string, body map[string]a
 	// session-gated (user-collaborator sessions only — spawned workers
 	// hold no manager grant; the fail-closed injection check is the
 	// first tier, the engine's live-assignee belt the second).
+	// #1837 P2a: board_list/board_health join the manager set (the
+	// workspace-scoped overview reads).
 	case "board_create_project", "board_update_project",
 		"board_project_archive", "board_project_unarchive", "board_project_pause", "board_project_resume",
 		"board_create_epic", "board_update_epic",
@@ -1698,7 +1827,8 @@ func mcpAutomation(ctx context.Context, password, name string, body map[string]a
 		"board_add_dependency", "board_remove_dependency",
 		"board_delete_task", "board_pause_task", "board_resume_task",
 		"board_rearm_task",
-		"board_import_plan":
+		"board_import_plan",
+		"board_list", "board_health":
 		res, err = dispatchBoardManagerTool(ctx, client, password, name, body, saToken, workspaceID)
 	default:
 		return "", fmt.Errorf("unknown automation tool: %s", name)

@@ -65,13 +65,12 @@ type workflowExecuteResponse struct {
 	// leak is real and must stay discoverable). Older API servers
 	// ignore it; older agentd simply never sets it.
 	SessionID string `json:"sessionId,omitempty"`
-	// DeletedSessionID reports which session an ephemeral teardown
-	// DELETED (#1882) — the id the engine needs to run the platform
-	// delete effects (tombstone, session_index row removal, SSE
-	// session.status:deleted). Mutually exclusive with SessionID by
-	// construction: the deleted session no longer exists, so the
-	// #1470 field stays omitted exactly as before. Older API servers
-	// ignore it.
+	// DeletedSessionID names the ephemeral session agentd itself
+	// deleted (#1882) — disjoint from SessionID by the existence
+	// contract: this id does NOT exist when the node finishes. The
+	// engine propagates the delete platform-side (tombstone + index
+	// row + deleted broadcast); without it the carrier's index row
+	// outlives the carrier as a sidebar ghost.
 	DeletedSessionID string `json:"deletedSessionId,omitempty"`
 }
 
@@ -81,8 +80,8 @@ type workflowExecuteError struct {
 	// SessionID carries the surviving session of a FAILED agent turn
 	// (#1470) — same existence contract as the success envelope.
 	SessionID string `json:"sessionId,omitempty"`
-	// DeletedSessionID reports the session the failure leg's ephemeral
-	// teardown deleted (#1882) — same contract as the success envelope.
+	// DeletedSessionID: the ephemeral the failure path tore down
+	// (#1882) — same contract as the success envelope's field.
 	DeletedSessionID string `json:"deletedSessionId,omitempty"`
 }
 
@@ -123,6 +122,15 @@ var registry = newNodeExecRegistry()
 // design). extraAuth carries additional ACCEPTED credentials (the
 // agentdPassword in sidecar mode; D6.1 mixed-generation window).
 func workflowExecuteHandler(workspacePassword string, extraAuth ...string) http.HandlerFunc {
+	return workflowExecuteHandlerForward(nil, workspacePassword, extraAuth...)
+}
+
+// workflowExecuteHandlerForward is workflowExecuteHandler with the #1878
+// script forwarder: in sidecar mode (fwd != nil) script nodes execute in
+// the WORKSPACE container via the control socket; nil runs them
+// in-process (single-container mode — the mux is already in the
+// workspace container there).
+func workflowExecuteHandlerForward(fwd scriptExecForwarder, workspacePassword string, extraAuth ...string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if !checkBasicAuthAny(r, append([]string{workspacePassword}, extraAuth...)...) {
 			rejectUnauthorized(w)
@@ -163,7 +171,7 @@ func workflowExecuteHandler(workspacePassword string, extraAuth ...string) http.
 
 		switch req.NodeType {
 		case "script":
-			execScriptNode(ctx, w, &req)
+			execScriptNode(ctx, w, &req, fwd)
 		case "http":
 			execHTTPNode(ctx, w, &req)
 		case "condition":
@@ -218,7 +226,7 @@ func workflowDeleteSessionHandler(workspacePassword string, extraAuth ...string)
 	}
 }
 
-func execScriptNode(ctx context.Context, w http.ResponseWriter, req *workflowExecuteRequest) {
+func execScriptNode(ctx context.Context, w http.ResponseWriter, req *workflowExecuteRequest, fwd scriptExecForwarder) {
 	var data wf.ScriptNodeData
 	if err := json.Unmarshal(req.Spec, &data); err != nil {
 		writeWorkflowError(w, http.StatusBadRequest, "invalid_node_data", fmt.Sprintf("cannot parse script spec: %v", err))
@@ -234,20 +242,76 @@ func execScriptNode(ctx context.Context, w http.ResponseWriter, req *workflowExe
 	}
 
 	lang := scriptwrap.Language(data.Language)
-	// #1455: probe Execute's prerequisites (writable temp dir,
-	// interpreter on PATH) before running. In sidecar mode agentd
-	// serves this mux from the FROM-scratch sidecar — no /tmp, no
-	// toolchains — and the raw failure is an incidental
-	// "create temp dir: stat ..." script_failed. The named code makes
-	// the environment contract loud and keeps the failure
-	// deterministic for the engine (outside the retry class by
-	// construction: an environment does not heal in 2s).
-	if envErr := scriptwrap.EnvCheck(lang); envErr != nil {
-		writeWorkflowError(w, http.StatusOK, "script_env_unavailable",
-			fmt.Sprintf("script node execution environment unavailable in this container: %v. In sidecar mode (agentdSidecar.enabled) agentd serves workflow nodes from a scratch container without /tmp or interpreters — script nodes require the workspace container environment (epic-64 script contract; #1455). On a single-container pod this instead indicates a broken TMPDIR/PATH in the workspace container.", envErr))
+
+	// #1878: in sidecar mode the script executes in the WORKSPACE
+	// container (the session environment) — this mux serves from the
+	// FROM-scratch uid-2000 sidecar (no /tmp, no interpreters, no gh,
+	// read-only /workspace), so the handler forwards over the
+	// Appendix-A control socket to the supervisor, which runs it with
+	// the opencode spawn env. Failures ride the closed enum loudly.
+	if fwd != nil {
+		timeoutMS := int64(scriptExecDefaultTimeout / time.Millisecond)
+		if dl, ok := ctx.Deadline(); ok {
+			timeoutMS = time.Until(dl).Milliseconds()
+		}
+		params := map[string]any{
+			"language":   data.Language,
+			"handler":    data.Handler,
+			"timeout_ms": timeoutMS,
+		}
+		if len(req.Input) > 0 {
+			params["input"] = json.RawMessage(req.Input)
+		}
+		outcome, werr := fwd(ctx, params)
+		if werr != nil {
+			switch werr.Code {
+			case scriptExecErrTimeout:
+				writeWorkflowError(w, http.StatusGatewayTimeout, "script_timeout", werr.Message)
+			case scriptExecErrEnvUnavailable:
+				writeWorkflowError(w, http.StatusOK, "script_env_unavailable", werr.Message)
+			case scriptExecErrTransport:
+				writeWorkflowError(w, http.StatusOK, "script_env_unavailable",
+					fmt.Sprintf("cannot reach the workspace-container supervisor over the control socket (sidecar mode, #1878): %s — script nodes execute in the workspace container; the supervisor may be restarting", werr.Message))
+			case scriptExecErrBadRequest:
+				// Behavior parity with the LOCAL path: deterministic
+				// validation failures (unsupported language et al.)
+				// surface as script_failed there (scriptwrap's
+				// "unsupported language" error text) — the forwarded
+				// bad_request maps to the SAME envelope code, message
+				// verbatim.
+				writeWorkflowError(w, http.StatusOK, "script_failed", werr.Message)
+			default:
+				writeWorkflowError(w, http.StatusOK, "script_failed", werr.Message)
+			}
+			return
+		}
+		var result map[string]any
+		if err := json.Unmarshal([]byte(outcome.Output), &result); err != nil {
+			writeWorkflowError(w, http.StatusOK, "script_output_invalid", fmt.Sprintf("handler returned non-object JSON: %s", outcome.Output))
+			return
+		}
+		writeWorkflowSuccess(w, result)
 		return
 	}
-	output, stderr, exitCode, err := scriptwrap.Execute(ctx, lang, data.Handler, input)
+
+	// #1455: probe Execute's prerequisites (writable temp dir,
+	// interpreter on PATH) before running. Post-#1878 this local leg is
+	// the SINGLE-CONTAINER path (sidecar mode forwards above): a failure
+	// here means the workspace container's own TMPDIR/PATH is broken.
+	// The named code keeps the failure loud and deterministic for the
+	// engine (outside the retry class by construction: an environment
+	// does not heal in 2s).
+	if envErr := scriptwrap.EnvCheck(lang); envErr != nil {
+		writeWorkflowError(w, http.StatusOK, "script_env_unavailable",
+			fmt.Sprintf("script node execution environment unavailable in this container: %v. In sidecar mode (agentdSidecar.enabled) script nodes are forwarded to the workspace container's supervisor over the control socket (#1878), so reaching this local check means single-container mode with a broken TMPDIR/PATH in the workspace container (epic-64 script contract; #1455, #1878).", envErr))
+		return
+	}
+	// #1878: even locally (single-container mode), the script child runs
+	// in the SESSION environment — the opencode spawn construction
+	// (secrets-env sourced, redact PATH prepend) — not agentd's own
+	// process env: "the script should be executed in the same
+	// environment that the sessions run."
+	output, stderr, exitCode, err := scriptwrap.ExecuteWithEnv(ctx, lang, data.Handler, input, opencodeBaseEnv())
 	if err != nil {
 		if ctx.Err() != nil {
 			writeWorkflowError(w, http.StatusGatewayTimeout, "script_timeout", "script execution timed out or was canceled")
@@ -493,15 +557,19 @@ func execAgentNode(ctx context.Context, password string, w http.ResponseWriter, 
 	deletedSessionID := ""
 	failAgentNode := func(status int, code, detail string) {
 		surviving := sessionID
+		deleted := ""
 		if createdEphemeral && sessionMode == "ephemeral" {
 			dctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
 			defer cancel() //nolint:gocritic // defer-in-closure: fires when the handler returns
 			if deleteOpencodeSession(dctx, password, sessionID) {
 				surviving = ""
-				deletedSessionID = sessionID
+				deleted = sessionID
 			}
 		}
-		writeWorkflowErrorSession(w, status, code, detail, surviving, deletedSessionID)
+		writeWorkflowErrorEnvelope(w, status, workflowExecuteError{
+			ErrorCode: code, Detail: detail,
+			SessionID: surviving, DeletedSessionID: deleted,
+		})
 	}
 
 	// #1327: the agent POST carries the execution-derived dedupe key.
@@ -587,12 +655,12 @@ func execAgentNode(ctx context.Context, password string, w http.ResponseWriter, 
 		result["response"] = parsed
 	}
 
+	// #1882: the success leg's ephemeral teardown reports the deleted
+	// id via the shared outer variable (failAgentNode paths return
+	// before reaching here, so the reset is unambiguous).
+	deletedSessionID = ""
 	if createdEphemeral && sessionMode == "ephemeral" {
 		if deleteOpencodeSession(ctx, password, sessionID) {
-			// #1882: report which session died so the engine runs the
-			// platform delete effects (the ghost-row mint the live
-			// event bridge performed during the carrier's turn is
-			// undone). SessionID itself stays "" (#1470).
 			deletedSessionID = sessionID
 			sessionID = ""
 			result["session_deleted"] = true
@@ -676,6 +744,9 @@ func writeWorkflowSuccess(w http.ResponseWriter, output any, branch ...string) {
 	writeWorkflowSuccessResponse(w, output, resp)
 }
 
+// writeWorkflowSuccessResponse writes the raw success envelope — the
+// #1882 success legs build it directly (session survival + the
+// reported teardown id are disjoint envelope fields).
 // writeWorkflowSuccessSession writes the success envelope with the
 // node's surviving session identity (#1470); an empty sessionID renders
 // identically to the session-less success writer (omitempty). The
@@ -699,13 +770,22 @@ func writeWorkflowError(w http.ResponseWriter, status int, code, detail string) 
 
 // writeWorkflowErrorSession writes the error envelope with the session
 // that survived a failed agent turn (#1470); an empty sessionID renders
+// writeWorkflowErrorSession writes the error envelope with the session
+// that survived a failed agent turn (#1470); an empty sessionID renders
 // identically to the session-less writers (omitempty). The #1882
 // deletedSessionID rides alongside when the failure leg's ephemeral
 // teardown deleted the carrier.
 func writeWorkflowErrorSession(w http.ResponseWriter, status int, code, detail, sessionID, deletedSessionID string) {
+	writeWorkflowErrorEnvelope(w, status, workflowExecuteError{ErrorCode: code, Detail: detail, SessionID: sessionID, DeletedSessionID: deletedSessionID})
+}
+
+// writeWorkflowErrorEnvelope writes the raw error envelope (#1882: the
+// failure leg reports the ephemeral it tore down alongside the
+// survivor — disjoint fields, the existence contract holds).
+func writeWorkflowErrorEnvelope(w http.ResponseWriter, status int, e workflowExecuteError) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(workflowExecuteError{ErrorCode: code, Detail: detail, SessionID: sessionID, DeletedSessionID: deletedSessionID})
+	_ = json.NewEncoder(w).Encode(e)
 }
 
 func loadSecretsEnv() (map[string]string, error) {
@@ -824,6 +904,9 @@ func parseCreatedSessionID(r io.Reader) (string, error) {
 // outcome (transport error, opencode 5xx) means the session must be
 // treated as still alive. Callers that must report the REALITY of a
 // surviving session use the return; fire-and-forget callers may ignore it.
+// #1882: a confirmed delete also invalidates the pod-side short-id
+// replica — a dead session's phrase must stop resolving (the
+// delete-invalidates-the-replica seam; see forget).
 func deleteOpencodeSession(ctx context.Context, password, sessionID string) bool {
 	req, err := http.NewRequestWithContext(ctx, "DELETE", //nolint:gosec // G704: local-only, sessionID from opencode
 		fmt.Sprintf("%s/session/%s", getAgentAddr(), sessionID), nil)
@@ -838,5 +921,9 @@ func deleteOpencodeSession(ctx context.Context, password, sessionID string) bool
 		return false
 	}
 	defer func() { _ = resp.Body.Close() }()
-	return (resp.StatusCode >= 200 && resp.StatusCode < 300) || resp.StatusCode == http.StatusNotFound
+	gone := (resp.StatusCode >= 200 && resp.StatusCode < 300) || resp.StatusCode == http.StatusNotFound
+	if gone {
+		currentSessionShortIDs().forget(sessionID)
+	}
+	return gone
 }

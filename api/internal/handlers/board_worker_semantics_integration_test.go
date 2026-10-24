@@ -375,6 +375,9 @@ func TestIntegrationBoardWorkerSemantics(t *testing.T) {
 			Suggestions []string `json:"suggestions"`
 		}
 		require.NoError(t, json.Unmarshal(w.Body.Bytes(), &miss))
+		// #1864 review round 3 (pre-existing flake): an in-scope phrase id
+		// can land within the did-you-mean bound — the perimeter guarantee
+		// is that the FOREIGN id itself never appears (main's form).
 		assert.NotContains(t, miss.Suggestions, shortID,
 			"no cross-tenant did-you-mean: the scoped resolution cannot see the foreign row")
 

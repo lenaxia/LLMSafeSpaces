@@ -535,13 +535,80 @@ func TestStreamUserEvents_BusySnapshot_SessionListFailure_NotAuthoritative(t *te
 // X6 (#1848 r1): the on-demand trigger coalesces — a second request
 // while a flight is running joins it (one statusz fetch), never spawns
 // a concurrent flight for the same workspace.
+//
+// De-flake (the #39914818351 CI red, "got 2"): "nearly simultaneously"
+// is not the contract. The guard (busyFlightsInFlight,
+// proxy_busy_snapshot.go) coalesces only requests whose guard runs
+// WHILE a flight is live; the old body fired two naked POSTs and hoped
+// both guards landed inside the first flight's sub-millisecond window
+// (the statusz stub answers instantly). Under CI load (-short +
+// coverage, 25 parallel packages) the second POST's dial+handler
+// latency exceeded that window; the second trigger then LEGITIMATELY
+// started its own flight (no flight was running — the first had
+// completed and published its markers), the monotonic fetch counter
+// read 2, and assert.Eventually(==1) could never recover (2.01s red).
+// Not a product race: LoadOrStore is an atomic CAS.
+//
+// The body below ESTABLISHES the "while a flight is running"
+// precondition deterministically instead of hoping for it: the stub
+// parks the FIRST authority fetch; the second trigger fires only after
+// that fetch is provably parked (and the first accepted), so its guard
+// runs strictly inside the first flight's live window — the map entry
+// cannot be gone yet (Delete runs only after the fetch returns) and
+// the guard MUST coalesce. The second trigger's 202 proves its guard
+// ran; a second authority fetch — flagged stub-side, whenever it lands
+// while the stub lives — or a pre-release snapshot_complete both prove
+// a non-coalesced second flight. (A fetch that has not begun by
+// cleanup time is the one microscopic, disclosed escape window; every
+// fetch that HAS begun is on the counter at stub-handler entry.)
+//
+// Deterministic reds under the causal mutations: a neutered guard
+// (always spawn) and an early Delete (key released before the flight
+// runs) both make the second trigger — arriving strictly inside the
+// window — spawn its own flight: fetch #2 trips the stub's t.Errorf
+// (and the parked-phase count assert).
+//
+// Follow-up hardening (#1907 r2): (a) release is closed idempotently
+// in a defer — failure paths that fire while flight 1 is parked must
+// not strand the harness's stub-Close cleanup for the full go-test
+// timeout; (b) the pre-release drain also counts snapshot_begin — a
+// second flight's begin is published in-process BEFORE its fetch, so
+// begins > 1 catches a begin-only mutant the complete-only drain never
+// sees.
 func TestRequestSessionStatusSnapshot_Coalesces(t *testing.T) {
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	// Failure-path hardening: if any require/fatal below fires while
+	// flight 1 is parked mid-fetch (trigger-2 assert, drain verdict,
+	// or the fetch-park wait itself), the harness's
+	// t.Cleanup(stub srv.Close) — which waits for outstanding requests
+	// — would block forever on the parked fetch, hanging the package
+	// until go test's 10m timeout. A DEFER runs before every t.Cleanup
+	// (cleanups run after the test function's defers, LIFO within each
+	// regime), so idempotently closing release here makes park-release
+	// strictly precede the stub Close on every exit path; the happy
+	// path closes it inline first and the once makes that final.
+	defer releaseOnce.Do(func() { close(release) })
+	firstFetch := make(chan struct{})
 	var fetches int32
 	hs := newBusySnapHarness(t, "user-co", func(w http.ResponseWriter, r *http.Request) {
-		atomic.AddInt32(&fetches, 1)
+		if n := atomic.AddInt32(&fetches, 1); n == 1 {
+			close(firstFetch)
+			<-release // hold the first authority fetch open
+		} else {
+			// A second fetch is the non-coalescing regression itself —
+			// flagged from the stub so it cannot slip past any wait.
+			t.Errorf("authority fetch #%d: two triggers with the first flight parked must coalesce to one authority fetch", n)
+		}
 		w.Header().Set("Content-Type", "application/json")
 		fmt.Fprint(w, busyStatuszBody())
 	}, nil)
+
+	// A subscriber makes the flight's markers observable: the
+	// pre-release drain below needs the stream, not the POST responses.
+	sub, err := hs.broker.SubscribeUser("user-co")
+	require.NoError(t, err)
+	defer hs.broker.UnsubscribeUser("user-co", sub)
 
 	proxy := hs.router.Group("/api/v1/workspaces/:id")
 	proxy.POST("/sessions/status-snapshot", hs.handler.RequestSessionStatusSnapshot)
@@ -549,24 +616,92 @@ func TestRequestSessionStatusSnapshot_Coalesces(t *testing.T) {
 	srv := httptest.NewServer(hs.router)
 	defer srv.Close()
 
-	// Fire two triggers nearly simultaneously.
-	var wg sync.WaitGroup
-	for i := 0; i < 2; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			resp, err := http.Post(srv.URL+"/api/v1/workspaces/"+busySnapWS+"/sessions/status-snapshot", "", nil)
-			if err == nil {
-				_ = resp.Body.Close()
-			}
-		}()
-	}
-	wg.Wait()
+	// Post-settle verdict, run after the test body returns. It does NOT
+	// rely on server-drain ordering: the fetch counter increments at
+	// stub-handler entry (the first statement of the statusz handler),
+	// so any fetch that has begun is already counted here, and any
+	// second fetch has already tripped the stub's t.Errorf. In the
+	// happy path no second fetch can exist past the flight's completion
+	// — both triggers coalesced and no further triggers remain. The one
+	// escape window (a fetch that has not yet begun by cleanup time) is
+	// the disclosed microscopic residual, not something a Close order
+	// would close.
+	t.Cleanup(func() {
+		assert.Equal(t, int32(1), atomic.LoadInt32(&fetches),
+			"final verdict: exactly one authority fetch must serve both triggers (got %d)", atomic.LoadInt32(&fetches))
+	})
 
-	// Both flights complete; exactly ONE statusz fetch served them.
-	assert.Eventually(t, func() bool {
-		return atomic.LoadInt32(&fetches) == 1
-	}, 2*time.Second, 20*time.Millisecond, "concurrent triggers must coalesce to one authority fetch (got %d)", atomic.LoadInt32(&fetches))
+	client := &http.Client{Timeout: 5 * time.Second}
+	postTrigger := func() bool {
+		resp, err := client.Post(srv.URL+"/api/v1/workspaces/"+busySnapWS+"/sessions/status-snapshot", "", nil)
+		if err != nil {
+			return false
+		}
+		defer resp.Body.Close()
+		return resp.StatusCode == http.StatusAccepted
+	}
+
+	// Trigger 1: accepted, then wait until its flight's authority fetch
+	// is parked mid-flight — the coalescing window is now provably open
+	// and will stay open until release.
+	require.True(t, postTrigger(), "trigger 1 must be accepted (202)")
+	select {
+	case <-firstFetch:
+	case <-time.After(3 * time.Second):
+		t.Fatalf("flight 1 never reached its authority fetch (fetches=%d)", atomic.LoadInt32(&fetches))
+	}
+
+	// Trigger 2 — strictly inside the open window: the first flight is
+	// parked mid-fetch, so its map entry is necessarily present (Delete
+	// runs only after the fetch returns). The guard MUST coalesce: the
+	// 202 proves the guard ran, and the fetch count must still be 1.
+	require.True(t, postTrigger(), "trigger 2 must be accepted (202)")
+	require.Equal(t, int32(1), atomic.LoadInt32(&fetches),
+		"trigger 2 ran while flight 1 was parked mid-fetch and must coalesce to one authority fetch (got %d)", atomic.LoadInt32(&fetches))
+
+	// No snapshot_complete can exist before release: the only flight is
+	// parked mid-fetch. One arriving now proves a second flight ran.
+	// The begin count narrows the same verdict: a second flight's begin
+	// is published IN-PROCESS before its authority fetch (emit:
+	// cursor read → begin → fetch), so begins > 1 catches a second,
+	// non-coalesced flight even in the window where its fetch has not
+	// yet reached the stub — a mutant the complete-only drain is blind
+	// to.
+	begins := 0
+	for drained := false; !drained; {
+		select {
+		case evt := <-sub.Ch:
+			require.NotEqual(t, "session.status.snapshot_complete", evt.Type,
+				"snapshot_complete before the parked flight's fetch was released proves a second, non-coalesced flight ran (fetches=%d)", atomic.LoadInt32(&fetches))
+			if evt.Type == "session.status.snapshot_begin" {
+				begins++
+			}
+		default:
+			drained = true
+		}
+	}
+	require.Equal(t, 1, begins,
+		"exactly one snapshot_begin may exist while the only flight is parked mid-fetch (got %d — a second begin is a second, non-coalesced flight)", begins)
+
+	releaseOnce.Do(func() { close(release) })
+
+	// The coalesced flight completes after release. Seeing its
+	// snapshot_complete is the happy-path end state: both triggers
+	// coalesced, so no further flight — and no further authority fetch
+	// — can exist from here on; the cleanup verdict re-checks the
+	// count after the body returns (the counter increments at stub
+	// entry, so nothing in flight slips past it uncounted).
+	deadline := time.After(3 * time.Second)
+	for {
+		select {
+		case evt := <-sub.Ch:
+			if evt.Type == "session.status.snapshot_complete" {
+				return
+			}
+		case <-deadline:
+			t.Fatalf("the coalesced flight never completed after release (fetches=%d)", atomic.LoadInt32(&fetches))
+		}
+	}
 }
 
 // Y1 (#1848 r2 finding 2): a subscriber connecting while an on-demand

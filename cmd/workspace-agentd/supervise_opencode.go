@@ -231,6 +231,13 @@ func newSupervisorControlServer(addr string, adapter *managedProcAdapter, upload
 		return nil, derr
 	}
 	srv.diskRecover = diskRecover
+	// #1878: the supervisor is the workspace-container half of script
+	// execution — sidecar script dispatches land here and run with the
+	// session spawn env (opencodeBaseEnv + the live spawn delta), so
+	// script children see exactly what opencode tool children see.
+	srv.scriptExec = newScriptExecEngine(func() []string {
+		return parentPlusDelta(opencodeBaseEnv(), adapter.snapshotDelta())
+	})
 	// #1808: the supervisor also owns the fs-audit engine (the RW PVC
 	// view — the sidecar forwards fs_audit over this socket).
 	srv.fsAudit = newFsAuditEngine()

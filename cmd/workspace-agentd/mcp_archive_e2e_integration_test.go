@@ -293,11 +293,36 @@ func TestOriginE2E1627_DeleteOwnSessionRefused(t *testing.T) {
 func TestOriginE2E1627_SessionArchiveReachesPlatform(t *testing.T) {
 	var mu sync.Mutex
 	var gotPath, gotBody string
+	var archivedIDs []string
 	platform := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/internal/v1/session-archived" {
+			// #1879: the post-write confirmation read — echo the id the
+			// archive write carried, so the tool's verified verdict has
+			// a fresh set to agree with.
+			mu.Lock()
+			ids := archivedIDs
+			mu.Unlock()
+			body, err := json.Marshal(map[string]any{"archived": ids})
+			if err != nil {
+				body = []byte(`{"archived":[]}`)
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write(body)
+			return
+		}
 		buf := make([]byte, r.ContentLength)
 		_, _ = r.Body.Read(buf)
 		mu.Lock()
 		gotPath, gotBody = r.URL.Path, string(buf)
+		var req struct {
+			SessionID string `json:"sessionID"`
+			Archived  *bool  `json:"archived"`
+		}
+		_ = json.Unmarshal(buf, &req)
+		archivedIDs = nil
+		if req.Archived != nil && *req.Archived {
+			archivedIDs = []string{req.SessionID}
+		}
 		mu.Unlock()
 		w.WriteHeader(http.StatusNoContent)
 	}))
@@ -331,6 +356,8 @@ func TestOriginE2E1627_SessionArchiveReachesPlatform(t *testing.T) {
 	require.NoError(t, json.Unmarshal([]byte((*toolResults)[0]), &result))
 	assert.Equal(t, "archived", result["status"])
 	assert.Equal(t, targetID, result["session_id"])
+	assert.Equal(t, "verified", result["archived_visibility"],
+		"#1879: the confirmation read agrees with the write — the verdict surfaces through the real dispatch chain")
 
 	mu.Lock()
 	defer mu.Unlock()

@@ -811,10 +811,29 @@ func (h *ProxyHandler) HardDeleteSession(ctx context.Context, workspaceID, sessi
 // deletes) ride this same sequence — pre-#1882 only the user route
 // propagated, so routine fires minted ghost sidebar rows that lingered
 // until clicked.
+// ApplySessionDeleteEffects is the #1882 alias main shipped for the
+// same teardown (1764a1a9 lineage); the union keeps one sequence —
+// PropagateSessionDeleted below — and this name delegating to it, so
+// either wiring (main's DeleteEffects or the union's SessionDelete)
+// lands on the identical code path.
 func (h *ProxyHandler) ApplySessionDeleteEffects(ctx context.Context, workspaceID, sessionID string) {
 	h.recordActivityIfTracked(workspaceID)
+	h.PropagateSessionDeleted(ctx, workspaceID, sessionID)
+}
 
-	// Post-delete side effects run after a successful adapter delete.
+// PropagateSessionDeleted is the #1882 convergence seam: EVERY
+// confirmed session delete — this handler's own, the engine's
+// authorized deletes, agentd-reported ephemeral teardowns — runs this
+// same platform-side teardown. Three effects, in a fixed order:
+// (1) the wsstate tombstone FIRST (a late pod event racing the row
+// removal must find the tombstone set, or the phrase-bearing upsert
+// re-births the row — #1881 made every row-creating upsert mint);
+// (2) the session_index row removal (the sidebar's only source);
+// (3) the session.status:deleted broadcast tail (active-session and
+// parents caches, then the phrase-keyed event on workspace + user
+// streams). The pod-side short-id replica invalidation is agentd's
+// own on its delete legs — the fourth part of the convergence.
+func (h *ProxyHandler) PropagateSessionDeleted(ctx context.Context, workspaceID, sessionID string) {
 	//nolint:contextcheck // tombstone must survive client disconnect
 	h.state().MarkSessionDeleted(context.Background(), workspaceID, sessionID)
 
@@ -873,6 +892,19 @@ func (h *ProxyHandler) removeActiveSessionEvents(parent context.Context, workspa
 // tombstones to a shared key so the suppression is cluster-wide.
 func (h *ProxyHandler) isSessionDeleted(workspaceID, sessionID string) bool {
 	return h.state().IsSessionDeleted(context.Background(), workspaceID, sessionID)
+}
+
+// DeletedSessionChecker exposes the handler's tombstone consult for the
+// session-index drainer (#1901 item c): the drainer runs in the
+// sessionindex service, which must not import the handler — the
+// returned closure resolves the LIVE state store per call, so it always
+// matches the store the delete routes tombstone through (in-memory
+// same-replica, or the Redis-backed cluster tombstone with its
+// fail-closed outage policy).
+func (h *ProxyHandler) DeletedSessionChecker() func(ctx context.Context, workspaceID, sessionID string) bool {
+	return func(ctx context.Context, workspaceID, sessionID string) bool {
+		return h.state().IsSessionDeleted(ctx, workspaceID, sessionID)
+	}
 }
 
 // RenameSessionInAgent sends a title update to the opencode agent running on

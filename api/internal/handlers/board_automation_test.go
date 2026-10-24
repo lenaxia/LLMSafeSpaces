@@ -103,6 +103,8 @@ func newBoardAutomationRouterWithManager(t *testing.T, svc *fakeBoardService, mg
 	r := gin.New()
 	b := r.Group("/internal/v1/automation/board")
 	b.GET("/tasks/:id", h.BoardTaskGet)
+	b.GET("/projects/:id/tasks", h.BoardManagerListTasks)
+	b.GET("/health", h.BoardManagerHealth)
 	b.POST("/tasks/heartbeat", h.BoardHeartbeat)
 	b.POST("/tasks/throttle", h.BoardReportThrottle)
 	b.POST("/tasks/move-stage", h.BoardMoveStage)

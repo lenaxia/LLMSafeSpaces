@@ -122,6 +122,11 @@ func dispatchBoardManagerTool(ctx context.Context, client *opencode.Client, pass
 	wire := boardWireBody(args)
 
 	switch name {
+	case "board_list":
+		return client.BoardManagerListTasks(ctx, saToken, workspaceID, sessionID,
+			boardRefArg(args, "projectId"), boardRefArg(args, "stage"), boardRefArg(args, "failed"))
+	case "board_health":
+		return client.BoardManagerHealth(ctx, saToken, workspaceID, sessionID)
 	case "board_create_project":
 		return client.BoardCreateProject(ctx, saToken, workspaceID, sessionID, wire)
 	case "board_update_project":

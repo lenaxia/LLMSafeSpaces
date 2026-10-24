@@ -1452,3 +1452,57 @@ func (s *StoreIntegrationSuite) TestUpdateTrigger_WorkflowFK_ForeignTargetSuccee
 	assert.Equal(s.T(), foreignID, *got.WorkflowID,
 		"cross-owner wiring persists silently — the handler-level owner-scoped check (#1519) is the only guard")
 }
+
+// TestSessionOrigins_KindDiscriminatesCarrierMarks (#1901 item a):
+// kind round-trips through RecordSessionOrigin (write + upsert), and
+// ListCarrierOriginMarks returns ONLY carrier-class ids — the
+// preserved session's mark (kind='session') is invisible to the reap
+// bypass at the SQL layer, and a zero-value Kind (legacy caller)
+// normalizes to 'session' (fail-safe: never reap-admitted).
+func (s *StoreIntegrationSuite) TestSessionOrigins_KindDiscriminatesCarrierMarks() {
+	ctx := context.Background()
+	now := time.Now().UTC()
+	wsID := s.newWorkspaceID()
+
+	record := func(sessionID, kind string) {
+		s.T().Helper()
+		require.NoError(s.T(), s.store.RecordSessionOrigin(ctx, &SessionOriginRow{
+			SessionID:   sessionID,
+			WorkspaceID: wsID,
+			Origin:      "routine",
+			Kind:        kind,
+			Title:       "t",
+			CreatedAt:   now,
+		}))
+	}
+
+	record("ses_int_carrier", "carrier")
+	record("ses_int_preserved", "session")
+	record("ses_int_legacy", "") // zero value → normalized 'session'
+
+	// Kind round-trips through the listing.
+	origins, err := s.store.ListSessionOrigins(ctx, wsID)
+	require.NoError(s.T(), err)
+	kinds := map[string]string{}
+	for _, o := range origins {
+		kinds[o.SessionID] = o.Kind
+	}
+	assert.Equal(s.T(), "carrier", kinds["ses_int_carrier"])
+	assert.Equal(s.T(), "session", kinds["ses_int_preserved"])
+	assert.Equal(s.T(), "session", kinds["ses_int_legacy"],
+		"a zero-value Kind must normalize to the fail-safe 'session' verdict")
+
+	// The carrier-marks lookup admits ONLY the carrier.
+	marks, err := s.store.ListCarrierOriginMarks(ctx, wsID)
+	require.NoError(s.T(), err)
+	assert.Equal(s.T(), map[string]bool{"ses_int_carrier": true}, marks,
+		"preserved/legacy marks must be invisible to the reap bypass (#1901 b)")
+
+	// The upsert leg re-classifies an existing row's kind (a re-driven
+	// fire re-marking its session cannot leave a stale verdict).
+	record("ses_int_carrier", "session")
+	marks, err = s.store.ListCarrierOriginMarks(ctx, wsID)
+	require.NoError(s.T(), err)
+	assert.NotContains(s.T(), marks, "ses_int_carrier",
+		"the conflict leg must update kind — a stale carrier verdict must not survive a re-mark")
+}

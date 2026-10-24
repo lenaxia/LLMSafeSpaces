@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -39,6 +40,29 @@ type mockStore struct {
 	runUpdates    map[string]int
 	wfPolicies    map[string]string
 	runWorkspaces map[string]string
+	// triggers serves the #1834 reconciler disabled-trigger gate's
+	// GetTriggerByID; nil map = no trigger row found (ErrNotFound).
+	triggers map[string]*wf.TriggerRow
+	// runErrCodes/runErrMsgs capture UpdateWorkflowRunStatus's error
+	// envelope so the #1834 pin can assert the named cancel reason.
+	runErrCodes map[string]string
+	runErrMsgs  map[string]string
+	// fireStatuses/fireResults capture UpdateTriggerFireResult writes
+	// (the #1834 audit-mirror assertion).
+	fireStatuses map[string]string
+	fireResults  map[string]json.RawMessage
+	// sessionOrigins/originWrites/originDeletes mirror the scheduler
+	// mock's #1882/#1901 origin recording on the reconciler side
+	// (#1915: the DAG legs' kind=carrier marks are only observable in
+	// the write history — they are cleaned post-effects).
+	sessionOrigins map[string]*wf.SessionOriginRow
+	originWrites   []*wf.SessionOriginRow
+	originDeletes  []string
+	// failOriginDeletes, when set, makes DeleteSessionOrigin fail —
+	// the #1915 mid-outage survive pin (the same DB outage that fails
+	// the effects' index writes fails the mark clean; the mark must
+	// survive for the #1901 reap net).
+	failOriginDeletes bool
 }
 
 func newMockStore() *mockStore {
@@ -48,7 +72,49 @@ func newMockStore() *mockStore {
 		runUpdates:    make(map[string]int),
 		wfPolicies:    make(map[string]string),
 		runWorkspaces: make(map[string]string),
+		triggers:      make(map[string]*wf.TriggerRow),
+		runErrCodes:   make(map[string]string),
+		runErrMsgs:    make(map[string]string),
+		fireStatuses:  make(map[string]string),
+		fireResults:   make(map[string]json.RawMessage),
 	}
+}
+
+// RecordSessionOrigin mirrors the scheduler mock's recording (#1915:
+// the reconciler store seam gains the origin pair).
+func (m *mockStore) RecordSessionOrigin(_ context.Context, row *wf.SessionOriginRow) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.sessionOrigins == nil {
+		m.sessionOrigins = make(map[string]*wf.SessionOriginRow)
+	}
+	m.sessionOrigins[row.SessionID] = row
+	m.originWrites = append(m.originWrites, row)
+	return nil
+}
+
+// DeleteSessionOrigin records the #1915 carrier-mark cleanup calls;
+// failOriginDeletes simulates the shared DB outage without which the
+// mark would not survive for the reap net.
+func (m *mockStore) DeleteSessionOrigin(_ context.Context, sessionID string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.originDeletes = append(m.originDeletes, sessionID)
+	if m.failOriginDeletes {
+		return errors.New("origin delete failed (simulated outage)")
+	}
+	delete(m.sessionOrigins, sessionID)
+	return nil
+}
+
+// carrierMarked reports whether a kind=carrier mark is currently
+// recorded for the session — the #1901 discriminator's data
+// (ListCarrierOriginMarks' shape) for the ordering probes.
+func (m *mockStore) carrierMarked(sessionID string) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	row, ok := m.sessionOrigins[sessionID]
+	return ok && row.Kind == types.SessionOriginKindCarrier
 }
 
 func (m *mockStore) ClaimQueuedRuns(_ context.Context, _ int) ([]*wf.WorkflowRunRow, error) {
@@ -59,11 +125,37 @@ func (m *mockStore) ClaimQueuedRuns(_ context.Context, _ int) ([]*wf.WorkflowRun
 	return runs, nil
 }
 
-func (m *mockStore) UpdateWorkflowRunStatus(_ context.Context, runID, status string, _ *string, _ json.RawMessage, _ json.RawMessage) error {
+func (m *mockStore) UpdateWorkflowRunStatus(_ context.Context, runID, status string, errorCode *string, errMsg json.RawMessage, _ json.RawMessage) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.statuses[runID] = status
 	m.runUpdates[runID]++
+	if errorCode != nil {
+		m.runErrCodes[runID] = *errorCode
+	}
+	if errMsg != nil {
+		m.runErrMsgs[runID] = string(errMsg)
+	}
+	return nil
+}
+
+// GetTriggerByID serves the #1834 reconciler gate; store parity: a
+// missing row is wf.ErrNotFound (which the gate treats as "not a
+// disable verdict" and executes the run — today's behavior).
+func (m *mockStore) GetTriggerByID(_ context.Context, triggerID string) (*wf.TriggerRow, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if t, ok := m.triggers[triggerID]; ok {
+		return t, nil
+	}
+	return nil, wf.ErrNotFound
+}
+
+func (m *mockStore) UpdateTriggerFireResult(_ context.Context, fireID string, result json.RawMessage, status string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.fireStatuses[fireID] = status
+	m.fireResults[fireID] = result
 	return nil
 }
 
@@ -115,10 +207,6 @@ func (m *mockStore) GetRecentRoutineResults(_ context.Context, _ string, _ int) 
 	return nil, nil
 }
 
-func (m *mockStore) UpdateTriggerFireResult(_ context.Context, _ string, _ json.RawMessage, _ string) error {
-	return nil
-}
-
 func (m *mockStore) addRun(id, workflowID, workspaceID string, spec json.RawMessage, input json.RawMessage, triggerID string) *wf.WorkflowRunRow {
 	run := &wf.WorkflowRunRow{
 		ID: id, WorkflowID: workflowID, WorkspaceID: workspaceID,
@@ -132,17 +220,22 @@ func (m *mockStore) addRun(id, workflowID, workspaceID string, spec json.RawMess
 }
 
 type mockAgentd struct {
-	outputs   map[string]json.RawMessage
-	branches  map[string]string
-	errors    map[string]error
-	errCodes  map[string]string
-	sentSpecs map[string]json.RawMessage
+	outputs  map[string]json.RawMessage
+	branches map[string]string
+	errors   map[string]error
+	errCodes map[string]string
+	// errDetails overrides the canned "simulated error" envelope detail
+	// for a node — the #1834 outage shape needs the REAL classifier
+	// string ("opencode returned 500") to exercise the retryable leg.
+	errDetails map[string]string
+	sentSpecs  map[string]json.RawMessage
 	// sessionIDs stamps the #1470 first-class envelope field onto the
 	// response for the given node (empty map = field never set, the
 	// old-agentd shape).
 	sessionIDs map[string]string
-	// deletedSessionIDs stamps the #1882 deletedSessionId envelope
-	// field (empty map = field never set).
+	// deletedSessionIDs stamps the #1882 agentd-teardown field onto
+	// the response for the given node — the ephemeral agentd deleted
+	// (empty map = field never set).
 	deletedSessionIDs map[string]string
 	// calls records every Execute's node id in dispatch order — the
 	// spawn-count evidence for the #1812 no-LLM-call pins.
@@ -155,6 +248,7 @@ func newMockAgentd() *mockAgentd {
 		branches:          make(map[string]string),
 		errors:            make(map[string]error),
 		errCodes:          make(map[string]string),
+		errDetails:        make(map[string]string),
 		sentSpecs:         make(map[string]json.RawMessage),
 		sessionIDs:        make(map[string]string),
 		deletedSessionIDs: make(map[string]string),
@@ -177,12 +271,15 @@ func (m *mockAgentd) Execute(_ context.Context, _, _ string, req *NodeExecReques
 	if code, ok := m.errCodes[req.NodeID]; ok {
 		resp.ErrorCode = code
 		resp.Detail = "simulated error"
+		if d, ok := m.errDetails[req.NodeID]; ok {
+			resp.Detail = d
+		}
 	}
 	if sid, ok := m.sessionIDs[req.NodeID]; ok {
 		resp.SessionID = sid
 	}
-	if sid, ok := m.deletedSessionIDs[req.NodeID]; ok {
-		resp.DeletedSessionID = sid
+	if did, ok := m.deletedSessionIDs[req.NodeID]; ok {
+		resp.DeletedSessionID = did
 	}
 	if br, ok := m.branches[req.NodeID]; ok {
 		resp.Branch = br
@@ -488,10 +585,19 @@ type mockSchedulerStore struct {
 	getTriggerByIDErr error
 	getWorkflowErr    error
 	sessionOrigins    map[string]*wf.SessionOriginRow
+	// originWrites records every RecordSessionOrigin call in order
+	// (#1901: carrier marks are cleaned post-effects; their Kind is
+	// only observable in the write history).
+	originWrites []*wf.SessionOriginRow
 	// originDeletes records DeleteSessionOrigin calls (#1882 carrier
 	// mark cleanup).
-	originDeletes   []string
-	overridePending []*wf.TriggerFireRow
+	originDeletes []string
+	// failOriginDeletes, when set, makes DeleteSessionOrigin fail —
+	// the #1915 mid-outage survive pin (the DB outage that failed the
+	// effects' index writes fails the mark clean too; the mark must
+	// survive for the #1901 reap net to admit).
+	failOriginDeletes bool
+	overridePending   []*wf.TriggerFireRow
 }
 
 func newMockSchedulerStore() *mockSchedulerStore {
@@ -669,6 +775,9 @@ func (m *mockSchedulerStore) RecordSessionOrigin(_ context.Context, row *wf.Sess
 		m.sessionOrigins = make(map[string]*wf.SessionOriginRow)
 	}
 	m.sessionOrigins[row.SessionID] = row
+	// #1901: keep the full write history — carrier marks are cleaned
+	// post-effects, so their Kind is only observable here.
+	m.originWrites = append(m.originWrites, row)
 	return nil
 }
 
@@ -680,8 +789,21 @@ func (m *mockSchedulerStore) DeleteSessionOrigin(_ context.Context, sessionID st
 		m.originDeletes = make([]string, 0)
 	}
 	m.originDeletes = append(m.originDeletes, sessionID)
+	if m.failOriginDeletes {
+		return errors.New("origin delete failed (simulated outage)")
+	}
 	delete(m.sessionOrigins, sessionID)
 	return nil
+}
+
+// carrierMarked reports whether a kind=carrier mark is currently
+// recorded for the session — the #1901 discriminator's data
+// (ListCarrierOriginMarks' shape) for the #1915 ordering probes.
+func (m *mockSchedulerStore) carrierMarked(sessionID string) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	row, ok := m.sessionOrigins[sessionID]
+	return ok && row.Kind == types.SessionOriginKindCarrier
 }
 
 func makeDueTrigger(id, wfID, wsID string) *wf.TriggerRow {
@@ -2418,4 +2540,113 @@ func TestExecuteWithRetry_ScriptEnvUnavailableNotRetried(t *testing.T) {
 	resp, _ := executeWithRetry(context.Background(), ex, "ws", "ip", &NodeExecRequest{}, nil, nil)
 	assert.Equal(t, 1, ex.calls, "script_env_unavailable must not retry")
 	assert.Equal(t, "script_env_unavailable", resp.ErrorCode)
+}
+
+// --- #1878: script-only fires are sessionless (no carrier churn) ---
+
+// #1878 (via #1882's trace): a trigger with a ScriptPath and NO prompt
+// is script-only — the pre-script leg runs for its side effects, which
+// IS the delivery. The #1812 early-return tests ScriptLanguage only,
+// so this shape fell through to the agent leg with an EMPTY prompt:
+// agentd minted an ephemeral carrier session per fire (the ~75
+// ghost-sessions/hour churn #1882 measured) for a fire that has no LLM
+// work. The sessionless contract: script-only fires dispatch the script
+// node and NEVER the agent node.
+func TestExecuteRoutine_ScriptPathOnlyEmptyPrompt_NeverDispatchesAgentLeg(t *testing.T) {
+	store := newMockSchedulerStore()
+	agentd := newMockAgentd()
+	agentd.outputs["routine-script"] = json.RawMessage(`{"exitCode":0,"stdout":"","stderr":""}`)
+	wsID := "ws-1"
+	trigger := &wf.TriggerRow{
+		ID: "trig-1878-sp", WorkspaceID: &wsID,
+		ScriptPath: "/tmp/opencode/probe.sh", Prompt: "",
+		CaptureMode: types.CaptureErrorsOnly, PreserveSession: types.PreserveNever,
+	}
+	fire := &wf.TriggerFireRow{ID: "fire-1878-sp", TriggerID: "trig-1878-sp", InputEnvelope: json.RawMessage(`{}`)}
+	sched := &Scheduler{Store: store, Activator: &mockActivator{}, AgentdClient: agentd, Logger: noopLogger{}}
+	sched.executeRoutine(context.Background(), noopLogger{}, trigger, fire)
+
+	assert.Equal(t, "delivered", store.statuses["fire-1878-sp"],
+		"script-only fire delivers on the script leg's side effects")
+	assert.Contains(t, agentd.callNodeIDs(), "routine-script",
+		"the pre-script leg must dispatch")
+	assert.NotContains(t, agentd.callNodeIDs(), "routine-agent",
+		"a script-only fire must NEVER reach the agent leg — that mints the ephemeral carrier session (#1878/#1882)")
+}
+
+// #1878 review F1: a script-only fire whose pre-script leg FAILS must
+// fail LOUD — the HTTP-200 error envelope (scriptResp.ErrorCode) is a
+// leg failure, not a nil-error success. The #1878 early-return would
+// otherwise stamp delivered + reset the failure counter, laundering
+// the failure out of auto-disable accounting (the silent-delivered
+// class, pre-script edition).
+func TestExecuteRoutine_ScriptPathOnlyFailingScript_FailsLoud(t *testing.T) {
+	store := newMockSchedulerStore()
+	agentd := newMockAgentd()
+	agentd.errCodes["routine-script"] = "script_failed"
+	agentd.outputs["routine-script"] = nil
+	wsID := "ws-1"
+	trigger := &wf.TriggerRow{
+		ID: "trig-1878-sp-fail", WorkspaceID: &wsID,
+		ScriptPath: "/tmp/opencode/probe.sh", Prompt: "",
+		CaptureMode: types.CaptureErrorsOnly, PreserveSession: types.PreserveNever,
+	}
+	fire := &wf.TriggerFireRow{ID: "fire-1878-sp-fail", TriggerID: "trig-1878-sp-fail", InputEnvelope: json.RawMessage(`{}`)}
+	sched := &Scheduler{Store: store, Activator: &mockActivator{}, AgentdClient: agentd, Logger: noopLogger{}}
+	sched.executeRoutine(context.Background(), noopLogger{}, trigger, fire)
+
+	assert.Equal(t, "failed", store.statuses["fire-1878-sp-fail"],
+		"a failing pre-script must fail the fire — never delivered")
+	assert.Contains(t, agentd.callNodeIDs(), "routine-script")
+	assert.NotContains(t, agentd.callNodeIDs(), "routine-agent",
+		"a failed script-only fire still never reaches the agent leg")
+	assert.Equal(t, 1, store.triggerFail["trig-1878-sp-fail"],
+		"the failure must count toward auto-disable (not laundered by a counter reset)")
+}
+
+// #1878 review r2 F-A/F-C: the pre-script failure arm is LOUD (an
+// error log line, the gate leg's fail-closed discipline) and its audit
+// write MERGES — a gate that OPENED keeps its audited outcome alongside
+// the script error (UpdateTriggerFireAction REPLACES; the arm carries
+// both keys).
+func TestExecuteRoutine_PreScriptFailure_LoudAndGatePreserved(t *testing.T) {
+	var errs []string
+	logger := &errorOnlyLogger{errs: &errs}
+
+	store := newMockSchedulerStore()
+	agentd := newMockAgentd()
+	agentd.errCodes["routine-gate"] = "" // gate succeeds below via outputs
+	agentd.outputs["routine-gate"] = json.RawMessage(`{"proceed":true,"vars":{"topic":"t"}}`)
+	agentd.errCodes["routine-script"] = "script_failed"
+	wsID := "ws-1"
+	trigger := &wf.TriggerRow{
+		ID: "trig-1878-r2", WorkspaceID: &wsID,
+		ScriptLanguage: "python", ScriptHandler: "def handler(input):\n    return {\"proceed\": True, \"vars\": {\"topic\": \"t\"}}",
+		ScriptPath: "/tmp/opencode/probe.sh", Prompt: "",
+		CaptureMode: types.CaptureErrorsOnly, PreserveSession: types.PreserveNever,
+	}
+	fire := &wf.TriggerFireRow{ID: "fire-1878-r2", TriggerID: "trig-1878-r2", InputEnvelope: json.RawMessage(`{}`)}
+	sched := &Scheduler{Store: store, Activator: &mockActivator{}, AgentdClient: agentd, Logger: logger}
+	sched.executeRoutine(context.Background(), logger, trigger, fire)
+
+	assert.Equal(t, "failed", store.statuses["fire-1878-r2"])
+	assert.NotContains(t, agentd.callNodeIDs(), "routine-agent")
+
+	// F-A: the failure leaves a log line (not only a DB row).
+	assert.NotEmpty(t, errs, "a failed pre-script fire must log an error line (fail-loud contract)")
+	found := false
+	for _, e := range errs {
+		if strings.Contains(e, "pre-script failed") {
+			found = true
+		}
+	}
+	assert.True(t, found, "the failure log must name the pre-script failure, got %v", errs)
+
+	// F-C: the audit carries BOTH the open gate's outcome and the
+	// script error (REPLACE must not clobber the gate payload).
+	action := string(store.actions["fire-1878-r2"])
+	assert.Contains(t, action, `"gate"`, "the open gate's audited outcome must survive the pre-script failure")
+	assert.Contains(t, action, `"proceed":true`)
+	assert.Contains(t, action, `"script"`)
+	assert.Contains(t, action, "script failed: script_failed", "the script cause rides actionResult.script.error")
 }

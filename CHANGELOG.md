@@ -6,7 +6,43 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [0.41.0] - 2026-10-23
+
+### Added — board dispatch durability + stage-machine hardening (the #1832 lane)
+
+- **Board re-arm + stillborn guard** (#1869, #1870, feat/board-rearm /
+  feat/board-stillborn-evidence): the reconciler re-arms reclaimed claims
+  immediately and records stillborn evidence for zero-message spawn
+  failures, so a dead spawn no longer burns a full lease window invisibly.
+- **Platform-derived liveness** (#1862, the #1847 ruling): LLM heartbeats
+  retired as the primary lease-liveness mechanism; liveness reads
+  platform-observed session activity.
+- **Board reads criteria** (#1864) and **board tool hardening** (#1863):
+  criteria surface on board reads; manager-tool guardrails tightened.
+
+### Fixed
+
+- **#1878** — trigger inline scripts + workflow script nodes execute in the
+  session environment (sidecar lacked /tmp, interpreters, gh) (#1885).
+- **#1886** — sidebar row cap must not evict live unarchived sessions
+  (#1902); deterministic ordering keeps NULL-recency dispatch rows visible.
+- **#1882** — delete propagation (#1887).
+- **#1842** — upload stream flake: product-race vs test-flake stop-rule
+  resolved, race suite de-flaked (#1888).
+- **#1844** — run watchdog + secrets dispatch re-register (#1874, #1876,
+  #1894).
+- **#1846** — chat textbox up-arrow recall no longer fires mid-text (#1875).
+- **#1850** — create_session workers keep their minted phrase ids —
+  mint-in-create-transaction, DB-column persistence (#1881).
+- **#1884** — usage stream resync (#1899).
+- **#1832** — cascade integration (#1893).
+- **#1860** — e2e harness hygiene: lifecycle error coverage + dead route
+  purge (#1903).
+- **#1756** — retro completion r4: 7th surface + record corrections (#1900).
+- **#1856** — ai-workflows v0.2.24 reapply (#1896).
+
 ## [Unreleased]
+<<<<<<< HEAD
 
 ### Added — Task Board: atomic-create seed validation (#1849 items 1+6)
 
@@ -27,6 +63,159 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   first, the seed contract second — a corrupted OR seedless create
   never stores. agentd's board_create_task description teaches the
   contract (Layer 2).
+=======
+### Fixed — Automation: auto-disable disarms webhook triggers; the routine path's circuit breaker stops wedged-outage hammering (#1834)
+
+### Fixed — Session-ID emission: the agent-message sentinel carries the phrase, never the raw harness id (#1919)
+
+- **The delivered `agent-message-v1` sentinel's `fromSession` emits the
+  platform 3-word phrase** when the agentd short-id replica knows the
+  mapping — the last un-migrated id emission in the injected-origin
+  flow. The send_message result fields already phrase-emitted
+  (#1756/#1806); the sentinel still carried the resolved canonical
+  `ses_…` into the recipient's transcript and the frontend origin
+  badge regardless of replica warmth. Validation (by-ID probes),
+  the self-send guard, and the #1530 recovery comparisons stay
+  canonical; a phrase-valued `fromSession` remains a valid reply
+  address (resolution accepts short ids). The raw form survives only
+  the degraded cold-replica window, flagged by the result's
+  `origin_deprecated` — the #1756 §1 contract every other emission
+  already follows. The origin plugin's wire attestation
+  (`lsp_injected_session`) keeps the canonical form per the #1920
+  ruling (agentd-internal, never model-visible).
+- **Audit**: the accompanying sweep classified every raw-ID surface —
+  SSE/REST/MCP emissions clean (phrase edge + additive internal ids +
+  deprecated flags); board surfaces (`Task.assignee_session`,
+  `board_events.actor.session_id`) leak raw and are filed as #1922
+  (fix carries design choices); `X-Session-Ref-Resolved` and the
+  engine↔agentd envelopes are by-design canonical.
+
+- **A disabled trigger's webhook deliveries are absorbed, never
+  executed.** The cron claim already filtered `enabled=false`, but the
+  webhook receiver minted executing fires for disabled triggers
+  regardless — so auto-disable (the `consecutiveFailures` /
+  `autoDisableAfter` circuit) was decorative on the webhook route.
+  During the 2026-10-21 routine-path outage (01:20–22:54Z, the
+  headless opencode invocation surface wedged post-OOM across
+  workspaces), an auto-disabled trigger (pr-monitor-sweep: ~30 failed
+  fires, `cf=0` under the pre-#1878 accounting) kept dispatching the
+  wedged path on every signed delivery — the platform's own breaker
+  could not stop the bleeding it exists to stop. The receiver now
+  checks `trigger.Enabled` after HMAC/skew/dedup (auth-first: no
+  unauthenticated oracle for trigger state) and records a
+  self-explaining `skipped` fire (`{"reason":"trigger_disabled"}`) with
+  a 202 — a non-2xx would make GitHub-style senders retry-storm a
+  trigger the platform just disarmed.
+- **The pending-fire drain skips disabled triggers too** — a fire
+  minted before the disable (a delivery racing the auto-disable, or
+  pre-fix residue) no longer rides `processPendingRoutineFire` into
+  the agent leg. The gate-closed discipline applies: absorbing is not
+  failing, so no failure accounting, no counter movement.
+- **The workflow shape's residue is gated at run execution** — a run
+  minted before the disable claims into the Reconciler, which now
+  re-checks the owning trigger and CANCELS the run (named reason
+  `trigger_disabled`, before workspace activation — the expensive leg)
+  with the audit mirrored onto the run's fire row. A trigger row that
+  cannot be confirmed disabled (store fetch error, trigger gone) is
+  not a disable verdict: the run executes as before.
+- **Re-enable-while-pending semantics (stated per review):** a
+  delivery absorbed while the trigger was disabled — at the receiver
+  gate, or as a pending fire skipped at the drain — is consumed, never
+  replayed after a later re-enable. Stale deliveries executing late
+  would be worse; owners re-arming a trigger send a fresh delivery.
+- **The outage's error shape is pinned fail-loud**: a retry-exhausted
+  `script_failed` / `"opencode returned 500"` envelope (every attempt,
+  the exact 15–25s class the investigation recorded) fails the fire,
+  carries the code+detail verbatim into the audit, and counts toward
+  auto-disable exactly once — the #1441/#1878 accounting family,
+  extended to the retry-exhausted agent-leg shape.
+### Fixed — Longhorn RecurringJob snapshot cron invalid day-of-week; deploy-tree cron validity guard (#1905, cross-repo)
+
+- **The `default-snapshot` RecurringJob's cron `0 1 * * 8` is corrected
+  to `0 1 * * *` (daily 01:00)** in lenaxia/talos-ops-prod
+  (`kubernetes/apps/storage/longhorn/app/recurring-jobs.yaml`,
+  PR talos-ops-prod#2795). Day-of-week 8 is outside the valid 0-7
+  range — `8` being the missed-Shift form of `*` (Shift+8) — so
+  Longhorn's robfig parser rejected the job and scheduled snapshots
+  never ran as declared. The daily cadence matches the job's own
+  `dailySnapshot` label (sibling convention: `0 0 * * 1` ↔
+  `weeklyBackup`); intent verification posted to the issue. Owner
+  ruling: the Longhorn recurring-jobs/backup posture is intentionally
+  dormant (prod backups run on Kopia via the kyverno
+  snapshot-cronjob-controller path) — this is latent correctness of
+  the declared manifest, no re-enable.
+- **A red-first deploy-tree cron validity guard** now parses every
+  literal cron expression under the ops repo's `kubernetes/` tree
+  (`cron:`/`schedule:` string fields) against a 5-field validator with
+  standard ranges (minute 0-59, hour 0-23, dom 1-31, month 1-12, dow
+  0-7) — the same class as the platform trigger validator. Six-field
+  CloudNative-PG schedules validate seconds 0-59 plus the standard
+  five; `@`-shorthands form-checked; sops ciphertext and `${...}`
+  templates excluded; unparseable files frozen behind an explicit
+  allowlist; walker-regression pins (harvest floor + longhorn
+  coverage) prevent vacuous passes. Red pin `733bce3d` (guard alone:
+  1 failed, 55 passed — failing exactly on the dow 8), green
+  `6d9a5aa3` (56 passed).
+### Fixed — carrier-reap follow-ons: kind discriminator, drain tombstone visibility, restart posture (#1901)
+
+- **The #1882 carrier reap bypass now admits ONLY platform-deleted
+  carriers.** The blanket "any `session_origins` mark admits a
+  history-bearing row past the reap guard" verdict could not tell an
+  ephemeral carrier (reap-admissible: its absence from the harness is
+  platform policy) from a PRESERVED session's persistent mark
+  (`preserveSession: always` / `on_failure`-failed) — a harness store
+  reset would have reaped the preserved session's history row, the
+  exact `kept_for_operator` scenario for it. Migration 000046 adds
+  `session_origins.kind` (`'carrier' | 'session'`, DEFAULT `'session'`
+  — the fail-safe backfill: stale pre-migration carrier marks stop
+  being reaped rather than risk wrong deletion); the engine records
+  the session's fate at mark time (`propagateCarrierDelete` →
+  carrier, `recordRoutineSessionArtifacts` → session) and the store's
+  carrier-marks lookup feeds both reap paths (reconcile plan +
+  read-path) — preserved marks are unreachable at the guard.
+- **The session-index drainer no longer re-mints deleted sessions'
+  rows.** A queued message-count event whose session was deleted
+  between enqueue and drain previously applied unconditionally: the
+  phrase-bearing INSERT leg birthed a fresh visible ghost row
+  (`message_count ≥ 1` → reaped never — the #1882 harm at drain-race
+  rate). The drain now consults the wsstate tombstone (both legs —
+  live and shutdown flush; nil-unwired keeps pre-fix semantics) and
+  drops tombstoned events as a queryable
+  `session_index_events_total{outcome="drain_skip_tombstoned"}`
+  outcome; the consult inherits the Redis store's fail-closed outage
+  posture (an outage suppresses re-mints rather than minting).
+- **Restart posture pinned.** API restarts wipe the in-memory
+  tombstones and the known-registered LRU; a late pod event can
+  re-mint a dead carrier's row (accepted per the store's design). The
+  durable `kind='carrier'` mark survives the restart and the reconcile
+  reaps the re-born row — the converging backstop, now pinned.
+
+### Fixed — session_index.message_count drift to 0 on live sessions: listing serve-through, loud skips, and rebuild rotation (#1880)
+
+- **The sidebar's session list now serves the HARNESS-walked message
+  count for the drift class** (board/dispatch-spawned sessions whose
+  message stream never traverses the API proxy — `message_count = 0`
+  with a full harness history, the 10-row live evidence). The listing
+  route walks the count BY ID (immune to the #1452 list-visibility
+  gap), serves it on the wire in place, and persists it through the
+  rebuild seam — converging across listing polls (budget 3/request,
+  never-walked-first rotation, 5-minute unchanged-row cooldown); a
+  failed walk serves the index value and re-arms (no tracker entry),
+  a failed persist still serves the truth and retries. Reaching every
+  row is unconditional: #1886's uncapped `ListSessionIndex` removed
+  the 100-row page cut that previously hid NULL-`last_message_at`
+  rows past the budget.
+- **Every rebuild skip is now attributable.** `count_pass_ran` (the
+  denominator — its absence under sidebar traffic means the pass is
+  never scheduled, the issue's third skip class),
+  `count_skip_not_present` (list-invisible count-zero rows, the #1452
+  gap), `count_skip_pass_no_list` (harness list failure), walk
+  failures Debug→Warn with row identity, and the rebuild rotation:
+  the pass window advances `(passIndex × K) mod N` per 30s cadence
+  bucket, repairing the stationarity defect where the same first-K
+  NULL rows were re-walked every pass while the starved tail never
+  converged.
+>>>>>>> origin/main
 
 ### Added — zero-fill corruption: detection, push guard, and flush belt (#1808)
 
@@ -238,6 +427,53 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   rows for the window's duration. The id_deprecated marker remains
   only for legacy rows and the degraded emission window.
 
+### Fixed — Trigger inline scripts + workflow script nodes execute in the workspace container (#1878)
+
+- **Scripts run in the environment the sessions run in (owner ruling,
+  2026-10-23).** Both trigger inline scripts (the `script` gate and the
+  legacy `script_path` pre-script) and workflow script nodes executed
+  inside agentd's own process — in sidecar mode
+  (`controller.agentdSidecar.enabled`) the FROM-scratch uid-2000
+  container with no `/tmp`, no interpreters, no `gh`, and a read-only
+  `/workspace`: workflow nodes failed `script_env_unavailable` and the
+  deployed trigger path failed SILENTLY (probe fire `delivered` in
+  0.77s, sentinel never created). Script execution now runs in the
+  WORKSPACE container in both topologies: single-container executes
+  in-process; sidecar mode forwards the handler over the design-0051
+  control socket (`script_exec` method — the `upload_apply`/
+  `disk_recover` long-held pattern) to the workspace-container
+  supervisor, which runs it via `scriptwrap` with the opencode spawn
+  environment (`opencodeBaseEnv()` — secrets-env sourced, redact PATH
+  prepend — plus the live spawn delta), so interpreters, mise shims,
+  `gh`, the credential belt, and `GH_TOKEN` resolve exactly as they do
+  for session tool children. `scriptwrap` gains `ExecuteWithEnv` (env-
+  explicit exec); the local EnvCheck text now names the single-container
+  cause.
+- **Script-only fires never mint a carrier session.** The #1812
+  sessionless early-return tested `ScriptLanguage` only, so a
+  `script_path`-only trigger with an empty prompt fell through to the
+  agent leg with an empty prompt — one ephemeral carrier session per
+  fire (the ~75 ghost-sessions/hour churn #1882 measured). The
+  condition now covers every script-bearing, prompt-less shape.
+- **Failures are loud in every topology.** The `script_exec` closed
+  error enum (`bad_request`, `script_env_unavailable`, `script_failed`,
+  `script_timeout`) maps onto the workflow error envelope with
+  fidelity (`bad_request` folds into `script_failed` — the local path's
+  deterministic-validation outcome, behavior parity); a dead
+  supervisor surfaces `script_env_unavailable` naming the control
+  socket; the #1812 gate carries script errors into the fire audit's
+  `actionResult.gate.error` — never a silent `delivered`. The legacy
+  pre-script leg was ErrorCode-blind (HTTP-200 error envelopes read as
+  success); it now fails the fire LOUD (error log + accounting), and
+  records the cause in `actionResult.script.error` without clobbering
+  an open gate's audited outcome (review F1/F-A/F-C — without this, a
+  failed `script_path`-only trigger laundered to `delivered` + a
+  failure-counter reset).
+- The #1455/#1812 nightly e2e contracts flip from "sidecar fails loud
+  with `script_env_unavailable`" to "the script executes in BOTH
+  modes" (marker + in-workspace side effect asserted). The execution
+  environment contract is documented in `docs/api/mcp.md`.
+
 ### Fixed — Provisioned SSH keys: the delivery writer validates + repairs the trailing-space corruption class (#1793)
 
 - **SSH git operations no longer die on formatting-corrupt stored
@@ -400,6 +636,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   event (the tsk-zbdeufiw class: subject merged, review stranded —
   the pending_input column is the owner-visible surface instead of an
   invisible in_review rot).
+
+### Added — Task Board: agent overview reads + setCriteriaMet safety (issue #1837 P2)
+
+- **`board_list` + `board_health` on the agent manager surface**: one
+  project's every task in a single call (stage, claim/assignee, lease
+  expiry, paused, blocked, attempts, cooldown columns) with the derived
+  READY set (backlog + unblocked + unpaused + not cooling), and the
+  workspace's board health snapshot (active leases with expiry,
+  cooldowns, pending origins, reclaims, per-project slots). New
+  manager seam routes `GET /internal/v1/automation/board/projects/:id/tasks`
+  and `GET /internal/v1/automation/board/health` — manager-gated
+  (session identity + worker refusal), workspace-scoped (a foreign
+  workspace's project is a plain 404).
+- **`setCriteriaMet` is `{index, met}`**: check off AND uncheck (the
+  legacy bare-integer form still decodes as `{index, met:true}` wire
+  compat). Combined use with an `acceptanceCriteria` replace is
+  refused ("send one or the other"); out-of-bounds indices are loud
+  errors (both were silent before); a CREATE payload carrying
+  setCriteriaMet is refused loudly on every surface (never silently
+  dropped); create/update responses echo the mutated criterion
+  (`mutated_criterion`: index, met, text). All three surfaces (REST,
+  external MCP, agent seam) share the service semantics.
+- **board_list never carries live claim tokens** (ruling, #1864
+  review): the bulk projection renders assignee + lease columns only —
+  the claim token stays on the per-task read where the claimant's own
+  flow needs it.
 
 ### Added — Task Board: emission-corruption defenses + file-backed long fields (issue #1837 P1)
 
@@ -866,32 +1128,86 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   call, so long-lived claims stay bounded). OpenAPI schemas and the
   frontend client ship with it.
 ### Added — Task Board: kebab menus + delete flows (#1832 item 3)
-- **Kebab menus at all three board levels.** Each project swimlane
-  header, epic band header, and task card carries a kebab menu
-  (distinct a11y labels; triggers stopPropagation — a kebab click
-  never toggles band selection nor opens the task editor).
-- **Task delete modal with the 'reconnect dependents to upstream'
-  checkbox** (#1747's optional flag): dependents are surfaced
-  pre-flight from the read model; unchecked (default) they are simply
-  unblocked (each gets an `unblocked_by_delete` audit event), checked
-  they inherit the deleted task's direct upstream edges (deduplicated,
-  cycle-guarded server-side). Both semantics are pinned at the wire in
-  e2e (`?reconnect=true` presence/absence exact-matched) and in
-  component tests (API-client args asserted). The delete result
-  surfaces as a page notice (orphans listed / `orphan→upstream` pairs).
-- **Epic delete surfaces in-flight workers with refuse/force-confirm
-  matching the API**: the modal lists the epic's in-flight claims
-  (in_progress + assignee, live read model) and its honest cascade
-  count; the first attempt never sends force — the engine's 409
-  `epic_state` renders inside the modal, and only that real refusal
-  reveals the acknowledge-gated "Force delete" (force deletes, then
-  aborts each in-flight worker post-commit).
-- **Project kebab is archive/unarchive ONLY** (#1747: project delete
-  is eliminated) — the menu structurally offers exactly one lifecycle
-  item; the absence of any delete item is pinned in both test layers.
-- This lane's e2e runs at **E2E_PORT=18521** (registry discipline:
-  18517/18519 claimed by sibling lanes; nightly PORTFWD 18083–18093
-  untouched).
+
+### Fixed — CI flake: TestRequestSessionStatusSnapshot_Coalesces coalescing precondition now established, not hoped for (issue #1907)
+
+- **The `-short`+coverage-suite flake (run 39914818351, "got 2")** was a
+  test-design flaw, not a product race: the on-demand snapshot
+  trigger's coalescing guard (`busyFlightsInFlight`, an atomic CAS)
+  coalesces a second request only **while a flight is running** for
+  that workspace — after a flight completes, a new trigger legitimately
+  starts a new flight. The old test fired two POSTs "nearly
+  simultaneously" and hoped both guards landed inside the first
+  flight's sub-millisecond window (the statusz stub answers instantly);
+  under CI load the second POST's dial+handler latency exceeded that
+  window, the second trigger legitimately spawned its own flight, and
+  the monotonic fetch counter read 2 with `assert.Eventually(==1)`
+  unable to ever recover (the 2.01 s signature).
+- **The rewrite parks the first authority fetch in the stub and fires
+  the second trigger only once that fetch is provably mid-flight** —
+  the map entry cannot be gone yet (Delete runs only after the fetch
+  returns), so the second guard MUST coalesce. Four independent nets
+  assert it: the parked-phase fetch count, a stub-side flag on any
+  second fetch whenever it lands, a pre-release `snapshot_complete`
+  drain (impossible while the only flight is parked), and a
+  post-settle cleanup verdict. Mutation-verified red-first at 613238f3
+  under BOTH causal classes — a neutered guard and an early Delete
+  (the steady-state analogue of what CI load did transiently) — each
+  deterministic 3/3 under `-race`. No production code changed; no
+  sleeps/retries/skips added.
+- Companion verification (no diff): the #1842 upload-stream fix
+  (2a300c9d) re-verified on current main — `-race -count=50` green and
+  its mutation recipe (threshold → `cap1MiB`) re-confirmed to redden
+  both streaming tests deterministically.
+- Follow-up hardening of the coalesce pin (lane-1907, PR #1916): (a)
+  the parked fetch's release is closed idempotently in a `defer` — a
+  require/fatal firing while flight 1 is parked (trigger-2 assert,
+  drain verdict, or the park wait itself) otherwise strands the
+  harness's stub-server `Close` cleanup until go test's 10-minute
+  timeout (proven: injected early-fatal on the merged body panics
+  `test timed out after 20s`; hardened body fails cleanly in 0.01 s);
+  (b) the pre-release drain now also counts `snapshot_begin` — a
+  second flight's begin is published in-process BEFORE its authority
+  fetch, so `begins > 1` catches a begin-only mutant flight the
+  complete-only drain never sees. Both causal mutations re-verified
+  red 3/3 under `-race` on the hardened body (neutered guard; early
+  `Delete`), 0.01 s exits; still no production changes and no
+  sleeps/retries/skips.
+### Fixed — reap-net coverage gap: engine-authorized and DAG-leg carrier deletes origin-mark before effects (#1915)
+
+- **Every effects-bearing session delete the engine authorizes or
+  observes now runs the mark→effects→clean discipline** previously
+  unique to the Scheduler's `propagateCarrierDelete` (#1882/#1901).
+  Pre-#1915, two leg families ran the platform delete effects with NO
+  origin mark: `deleteSessionAuthorized` (the caller-neutral core
+  behind the routine PreserveOnFailure-success cleanup, the
+  retry-intermediate cleanup, and the DAG reconciler's node-retry
+  cleanup) and the DAG reconciler's `propagateDeletedSession` (both
+  envelope legs — errorCode and delivered). The effects' error return
+  is void, so when the effects' session_index writes failed (or the
+  effects tail died mid-sequence) the ghost row carried **no carrier
+  mark**: the #1901 reap bypass (`ListCarrierOriginMarks` —
+  kind='carrier' rows only) could not admit it, and a history-bearing
+  kept_for_operator ghost survived until operator review — a
+  self-heal coverage gap, not a wrong-reap risk (these are
+  policy-deleted sessions, never preserved ones).
+- **`ReconcilerStore` gains the origin seam** (`RecordSessionOrigin` /
+  `DeleteSessionOrigin` — the structural cause was their absence from
+  the reconciler's store interface); the concrete store already
+  implemented both, so no store-package change. The authorized-delete
+  core takes a deliberately NARROW `SessionOriginStore` (the two
+  origin verbs, not a full store interface) so the caller-neutral
+  dependency stays minimal; nil degrades to the pre-#1915 unmarked
+  behavior for unwired/embedded engines.
+- **Fail-safe semantics, mirroring the carrier tail:** the kind=
+  'carrier' mark is best-effort BEFORE the effects (a failed mark
+  logs; the effects still run — only the reconcile self-heal
+  degrades), and the clean after is best-effort too — when the same
+  DB outage that failed the effects' index writes fails the mark
+  clean, the mark SURVIVES as the reap bypass's admission data
+  (pinned). The #1901 item-b invariant is untouched: a refused delete
+  (the session survived) writes no carrier mark, and preserved
+  sessions' kind='session' verdicts stay invisible to the bypass.
 ## [0.40.1] - 2026-10-21
 
 ### Fixed — v0.40.0 regression: user-stream session events carry the phrase id (#1817, #1821 piece 1)

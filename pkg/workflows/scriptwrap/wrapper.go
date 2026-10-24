@@ -77,9 +77,10 @@ func EnvCheck(language Language) error {
 }
 
 // Execute runs the handler in the given language with the JSON-marshaled input
-// on stdin and returns the wrapper's stdout. The caller is responsible for
-// validating that stdout is a JSON object (dict) — Execute does not enforce
-// dict returns; a handler returning a string, number, or array will succeed.
+// on stdin and returns the wrapper's stdout, with the child inheriting the
+// CALLER's process environment. See ExecuteWithEnv for the env-explicit form
+// (#1878: script children must run in the session environment, not agentd's
+// process env).
 //
 // On non-zero exit, returns the captured stderr and exitCode alongside err.
 // On context cancellation, the child process is killed (SIGKILL via
@@ -87,6 +88,16 @@ func EnvCheck(language Language) error {
 // is killed; grandchildren spawned by the handler (subprocess.Popen,
 // child_process.spawn) may leak. v2 may add process-group killing.
 func Execute(ctx context.Context, language Language, handlerSource string, input any) (output json.RawMessage, stderr string, exitCode int, err error) {
+	return ExecuteWithEnv(ctx, language, handlerSource, input, nil)
+}
+
+// ExecuteWithEnv is Execute with an explicit child environment: env == nil
+// inherits the caller's process env (Execute's behavior); a non-nil env is
+// applied verbatim (cmd.Env semantics — no inheritance). The #1878 script
+// contract passes the session spawn environment here so a script child sees
+// exactly what an opencode tool child sees (secrets-env sourced, PATH with
+// the toolchain shims).
+func ExecuteWithEnv(ctx context.Context, language Language, handlerSource string, input any, env []string) (output json.RawMessage, stderr string, exitCode int, err error) {
 	inputJSON, err := json.Marshal(input)
 	if err != nil {
 		return nil, "", -1, fmt.Errorf("marshal input: %w", err)
@@ -126,6 +137,9 @@ func Execute(ctx context.Context, language Language, handlerSource string, input
 	//nolint:gosec // G204: command is one of two fixed strings (python3/node), not user input. Handler source is user-authored by design (script nodes); confinement is the workspace sandbox (design D2).
 	cmd := exec.CommandContext(ctx, command, wrapperFile)
 	cmd.Dir = tmpDir
+	if env != nil {
+		cmd.Env = env
+	}
 	cmd.Stdin = bytes.NewReader(inputJSON)
 	var stdout, stderrBuf bytes.Buffer
 	cmd.Stdout = &stdout

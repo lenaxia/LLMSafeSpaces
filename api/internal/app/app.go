@@ -694,10 +694,9 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 			// scheduler's authorized-delete wiring (password + default
 			// mux port; the honest 204/502 route).
 			PasswordProvider: proxyHandler,
-			// #1882 delete propagation: the node-retry cleanup and DAG
-			// ephemeral teardowns run the same effect sequence as the
-			// user proxy route (tombstone + index cleanup + SSE).
-			DeleteEffects: proxyHandler,
+			// #1882: a confirmed node-retry delete propagates the
+			// platform-side teardown (tombstone + index row + SSE).
+			SessionDelete: proxyHandler,
 		}
 		wfScheduler = &apiwf.Scheduler{
 			Store: wfStore,
@@ -712,16 +711,24 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 			// session_index at fire completion — the routine path never
 			// rides the adapter routes that otherwise populate it.
 			SessionIndex: sessionIndexSvc,
-			// #1882 delete propagation: the ephemeral carrier teardown
-			// and the authorized deletes run the same effect sequence
-			// as the user proxy route — ghost rows die with the delete.
-			DeleteEffects: proxyHandler,
+			// #1882: every session delete the engine authorizes or
+			// observes (agentd-reported ephemeral teardowns) converges
+			// on the user route's teardown — no more ghost rows.
+			SessionDelete: proxyHandler,
 		}
-		// #1882 carrier reap bypass: the #1340 reconcile reaps
-		// session_origins-marked routine carriers absent at the harness
-		// even when they carry history (the DefaultReapGuard history
-		// exception does not apply to platform carriers).
+		// #1901 carrier reap bypass (discriminated): the #1340 reconcile
+		// reaps CARRIER-class origin-marked routine carriers
+		// (kind='carrier' — platform-deleted ephemerals) absent at the
+		// harness even when they carry history; preserved sessions'
+		// marks never reach the guard (item b).
 		proxyHandler.SetSessionOriginLister(newSessionOriginLister(wfStore))
+		// #1901 item (c) drain-time tombstone visibility: a queued
+		// RecordMessage event whose session was deleted between enqueue
+		// and drain must be dropped, not applied — the upsert's INSERT
+		// leg would re-mint a fresh visible ghost row (#1882 class).
+		// Wired through the handler so the consult resolves the same
+		// state store the delete routes tombstone through.
+		sessionIndexSvc.SetDeletedSessionChecker(sessionindex.DeletedSessionChecker(proxyHandler.DeletedSessionChecker()))
 		// Wire pod-IP resolver so resync notifies can reach in-pod agentd.
 		// Without this the SecretsHandler returns 503 for every reload
 		// request and the SetBindings auto-notify silently no-ops; see
@@ -2322,8 +2329,10 @@ func newWorkflowAgentdExecutor(pw apiinterfaces.WorkspacePasswordProvider) *apiw
 	return &apiwf.HTTPAgentExecutor{Port: 4097, PasswordProvider: pw}
 }
 
-// wfSessionOriginLister adapts the workflows store's ListSessionOrigins
-// to the proxy handler's #1882 carrier-mark lookup (sessionID → origin).
+// wfSessionOriginLister adapts the workflows store's
+// ListCarrierOriginMarks to the proxy handler's #1901 carrier-mark
+// lookup (carrier-class ids only — the kind discriminator lives in the
+// store's SQL).
 type wfSessionOriginLister struct {
 	store *workflows.Store
 }
@@ -2332,16 +2341,8 @@ func newSessionOriginLister(store *workflows.Store) handlers.SessionOriginLister
 	return &wfSessionOriginLister{store: store}
 }
 
-func (l *wfSessionOriginLister) ListSessionOrigins(ctx context.Context, workspaceID string) (map[string]string, error) {
-	rows, err := l.store.ListSessionOrigins(ctx, workspaceID)
-	if err != nil {
-		return nil, err
-	}
-	marks := make(map[string]string, len(rows))
-	for _, row := range rows {
-		marks[row.SessionID] = row.Origin
-	}
-	return marks, nil
+func (l *wfSessionOriginLister) ListCarrierOriginMarks(ctx context.Context, workspaceID string) (map[string]bool, error) {
+	return l.store.ListCarrierOriginMarks(ctx, workspaceID)
 }
 
 func (c *appWorkspaceCreator) CreateWorkspace(ctx context.Context, workflowID, ownerType, ownerID string) (string, error) {
