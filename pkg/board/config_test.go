@@ -215,9 +215,9 @@ func TestBoardConfigOverrideWireShape(t *testing.T) {
 	require.NoError(t, err)
 	assert.JSONEq(t, `{"reviewColumn":"auto"}`, string(b))
 
-	eff, err := json.Marshal(BoardConfig{ReviewColumn: "manual", AutoAssignReviewer: false, DefaultWorkerSlots: 2})
+	eff, err := json.Marshal(BoardConfig{ReviewColumn: "manual", AutoAssignReviewer: false, DefaultWorkerSlots: 2, StagePersonas: map[string]PersonaConfig{}})
 	require.NoError(t, err)
-	assert.JSONEq(t, `{"reviewColumn":"manual","autoAssignReviewer":false,"defaultWorkerSlots":2}`, string(eff))
+	assert.JSONEq(t, `{"reviewColumn":"manual","autoAssignReviewer":false,"defaultWorkerSlots":2,"stagePersonas":{}}`, string(eff))
 }
 
 // TestBoardConfigOverrideRowsRoundTrip pins the storage encoding seam:
@@ -256,7 +256,7 @@ func rowsMap(rows []configRow) map[string]json.RawMessage {
 // key here + its validation + a struct field).
 func TestBoardConfigKnownKeys(t *testing.T) {
 	keys := BoardConfigKeys()
-	assert.ElementsMatch(t, []string{"reviewColumn", "autoAssignReviewer", "defaultWorkerSlots"}, keys)
+	assert.ElementsMatch(t, []string{"reviewColumn", "autoAssignReviewer", "defaultWorkerSlots", "stagePersonas"}, keys)
 	for _, k := range keys {
 		assert.False(t, strings.Contains(k, " "), "config keys are camelCase wire names")
 	}
