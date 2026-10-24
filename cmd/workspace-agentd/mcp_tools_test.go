@@ -2085,6 +2085,130 @@ func marshalParams(t *testing.T, m map[string]any) json.RawMessage {
 	return b
 }
 
+// --- argStr/argBool presence semantics + empty-destination precedence --
+
+// The legacy snake alias resolves ONLY when the camel key is absent
+// (presence semantics, r2 review finding 2): an explicitly-empty
+// camel value is authoritative and must refuse — never silently fall
+// through to the alias (the silent-precedence class).
+func TestArgStrPresenceSemantics(t *testing.T) {
+	// camel present + empty -> authoritative empty, no fallback
+	assert.Equal(t, "", argStr(map[string]any{"sessionId": "", "session_id": "ses-real"}, "sessionId"))
+	// camel present + valued -> wins
+	assert.Equal(t, "ses-a", argStr(map[string]any{"sessionId": "ses-a", "session_id": "ses-b"}, "sessionId"))
+	// camel absent -> alias resolves
+	assert.Equal(t, "ses-b", argStr(map[string]any{"session_id": "ses-b"}, "sessionId"))
+	// camel present with WRONG TYPE -> falls through to the alias
+	assert.Equal(t, "ses-b", argStr(map[string]any{"sessionId": 42, "session_id": "ses-b"}, "sessionId"))
+	// neither -> ""
+	assert.Equal(t, "", argStr(map[string]any{}, "sessionId"))
+}
+
+func TestArgBoolPresenceSemantics(t *testing.T) {
+	v, ok := argBool(map[string]any{"includeArchived": false, "include_archived": true}, "includeArchived")
+	assert.True(t, ok)
+	assert.False(t, v, "explicit camel false wins over the alias")
+	v, ok = argBool(map[string]any{"include_archived": true}, "includeArchived")
+	assert.True(t, ok)
+	assert.True(t, v, "alias resolves on camel absence")
+	_, ok = argBool(map[string]any{}, "includeArchived")
+	assert.False(t, ok)
+}
+
+// Handler level: {"destination":"", "session_id":X} refuses — the
+// empty destination is present-and-authoritative, never an alias
+// fall-through (r2 review finding 2's dispatch shape).
+func TestMCPSendMessage_EmptyDestinationRefuses_HandlerLevel(t *testing.T) {
+	f := newFakeAgent()
+	target := f.newSession("target")
+	caller := f.newSession("caller")
+	withAgentServer(t, f.handler(t))
+
+	req := mcpRequest{JSONRPC: "2.0", ID: 1, Method: "tools/call",
+		Params: marshalParams(t, map[string]any{
+			"name": "send_message",
+			"arguments": map[string]any{
+				"destination":          "", // present and empty — authoritative
+				"session_id":           target,
+				"message":              "must not deliver",
+				"lsp_injected_session": caller,
+			},
+		})}
+	body, _ := json.Marshal(req)
+	w := httptest.NewRecorder()
+	r := mcpAuthedRequest(body)
+	mcpHandler(mcpTestPassword)(w, r)
+
+	var resp struct {
+		Result struct {
+			Content []struct {
+				Text string `json:"text"`
+			} `json:"content"`
+		} `json:"result"`
+	}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+	require.NotEmpty(t, resp.Result.Content)
+	assert.Contains(t, resp.Result.Content[0].Text, "destination is required",
+		"the empty destination refuses loudly instead of falling through to the alias")
+	assert.Empty(t, f.msgArrived, "nothing may deliver")
+}
+
+// --- description spellings conformance (r2 review: prevents the whole
+// stale-teaching repeat class — the PR's own red pin at
+// mcp_server_test.go:909 was exactly this failure mode) ---
+//
+// Model-facing tool/property descriptions must not teach REMOVED or
+// RENAMED input spellings. Result-field names that remain snake on
+// the wire (e.g. a returned session_id) are out of scope here.
+func TestMCPCatalogDescriptionsTeachNoRemovedSpellings(t *testing.T) {
+	req := mcpRequest{JSONRPC: "2.0", ID: 1, Method: "tools/list"}
+	body, _ := json.Marshal(req)
+	w := httptest.NewRecorder()
+	r := mcpAuthedRequest(body)
+	mcpHandler(mcpTestPassword)(w, r)
+
+	var resp struct {
+		Result struct {
+			Tools []struct {
+				Name        string `json:"name"`
+				Description string `json:"description"`
+				InputSchema struct {
+					Properties map[string]struct {
+						Description string `json:"description"`
+					} `json:"properties"`
+				} `json:"inputSchema"`
+			} `json:"tools"`
+		} `json:"result"`
+	}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+	banned := []string{
+		"from_session_id",      // removed (#1849) — never taught
+		"include_archived",     // renamed includeArchived
+		"all_sessions",         // renamed allSessions
+		"description_file",     // renamed descriptionFile
+		"outcome_file",         // renamed outcomeFile
+		"pass session_id",      // param renamed destination/sessionId
+		"Omit session_id",      // compact's former teaching
+		"The session_id comes", // session_archive/delete_session former teaching
+	}
+	for _, tool := range resp.Result.Tools {
+		texts := append([]string{tool.Description},
+			func() []string {
+				var ds []string
+				for _, p := range tool.InputSchema.Properties {
+					ds = append(ds, p.Description)
+				}
+				return ds
+			}()...)
+		for _, text := range texts {
+			for _, b := range banned {
+				assert.NotContains(t, text, b,
+					"%s: description teaches removed/renamed spelling %q — stale-shape precedent", tool.Name, b)
+			}
+		}
+	}
+}
+
 // --- catalog casing + annotations invariants (#1849 best-practices pass) --
 
 // TestMCPCatalogNoSnakeCaseProperties: one camelCase catalog. The
@@ -2196,7 +2320,9 @@ func TestMCPCatalogAnnotations(t *testing.T) {
 		assert.True(t, *a.IdempotentHint, "%s duplicate edges are no-ops — idempotentHint:true", n)
 	}
 	for n, row := range byName {
-		if row.Annotations != nil && row.Annotations.OpenWorldHint != nil {
+		if row.Annotations != nil {
+			require.NotNil(t, row.Annotations.OpenWorldHint,
+				"%s: annotated tools must declare openWorldHint explicitly (no open-world interaction — false)", n)
 			assert.False(t, *row.Annotations.OpenWorldHint, "%s: no open-world interaction — openWorldHint must be false", n)
 		}
 	}

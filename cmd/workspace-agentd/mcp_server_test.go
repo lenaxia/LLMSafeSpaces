@@ -906,7 +906,7 @@ func TestMCPHandler_ToolDescriptionGuidance(t *testing.T) {
 		for _, want := range []string{
 			"breaking change",                          // the default flip is named as such
 			"YOUR CURRENT SESSION ONLY",                // the new default
-			"all_sessions:true",                        // the old behavior's explicit path
+			"allSessions:true",                        // the old behavior's explicit path
 			"archived:true are read-only for the user", // archive-status semantics in listings
 		} {
 			assert.Contains(t, d, want)
@@ -922,7 +922,7 @@ func TestMCPHandler_ToolDescriptionGuidance(t *testing.T) {
 		require.True(t, ok, "session_list in tools/list")
 		assert.Contains(t, d, "NON-ARCHIVED sessions by default")
 		sd, ok := schemaDescs["session_list/includeArchived"]
-		require.True(t, ok, "session_list/include_archived schema description present")
+		require.True(t, ok, "session_list/includeArchived schema description present")
 		for _, want := range []string{
 			"archived_set_stale:true", // the per-row stale marker is named
 			"known-unfiltered",        // the degrade's meaning is stated

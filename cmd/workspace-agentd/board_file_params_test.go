@@ -225,6 +225,14 @@ func TestBoardFileParams_BothSpellingsRefused(t *testing.T) {
 func TestBoardFileParams_BareUnderscoreFileKeyRefused(t *testing.T) {
 	err := resolveBoardFileArgs(map[string]any{"_file": "/tmp/x.md"}, "")
 	require.Error(t, err, "a bare _file key on a no-file tool is a caller mistake, refused loudly")
+	// Message-bearing: the refusal must come from the FOREIGN-KEY
+	// check ("not admitted"), not incidentally from a missing file —
+	// mutation-verified in review r2 that an error-only pin stays
+	// green when the sentinel is removed.
+	assert.Contains(t, err.Error(), "not admitted")
+	// And the args map is untouched — nothing silently resolved.
+	assert.NotContains(t, map[string]any{"_file": "/tmp/x.md"}, "",
+		"no silent resolution into the empty-field key")
 }
 
 func TestBoardFileParams_EchoDiffPassesThroughVerbatim(t *testing.T) {

@@ -29,7 +29,12 @@ import (
 // id-taking surface accepts phrases).
 func boardManagerSession(ctx context.Context, password, name string, body map[string]any) (string, error) {
 	injected, _ := body["lsp_injected_session"].(string)
+	// sessionId is canonical; session_id is its one-release legacy
+	// alias (same presence-policy as the session tools).
 	declared, _ := body["sessionId"].(string)
+	if _, present := body["sessionId"]; !present {
+		declared, _ = body["session_id"].(string)
+	}
 	sid := strings.TrimSpace(injected)
 	if sid == "" {
 		sid = strings.TrimSpace(declared)
@@ -81,7 +86,10 @@ func boardBoolArg(args map[string]any, key string) bool {
 func boardWireBody(args map[string]any) []byte {
 	clean := make(map[string]any, len(args))
 	for k, v := range args {
-		if k == "lsp_injected_session" || k == "sessionId" {
+		// Strip BOTH identity spellings (camelCase canonical + the
+		// one-release snake alias) — neither the injected stamp nor a
+		// caller-echoed identity key ever rides the platform wire.
+		if k == "lsp_injected_session" || k == "sessionId" || k == "session_id" {
 			continue
 		}
 		clean[k] = v

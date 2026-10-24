@@ -10,7 +10,8 @@ package main
 // REAL agentd MCP handler over the REAL seam loopback — no stub MCP, no
 // fake agent. The freeze pin (pkg/agent/opencode) proves the plugin's
 // injection reaches a stub; this test proves the whole production chain:
-// model tool call → plugin injects from_session_id → mcpHandler
+// model tool call → plugin injects lsp_injected_session (#1849: the
+// sole origin source — from_session_id is removed) → mcpHandler
 // validates by-ID and composes the sentinel → the delivered message
 // lands in the TARGET session's transcript carrying the CALLER's
 // origin, and the tool result echoes it.

@@ -677,7 +677,7 @@ func mcpToolCatalog() []mcpTool {
 		},
 		{
 			Name:        "session_archive",
-			Description: "Archive (archived:true) or unarchive (archived:false) a session in this workspace — a PLATFORM-level marker, reversible, never destructive. What archiving does: the session becomes READ-ONLY for the user (their chat sends to it are rejected with a clear 'archived' error; its history stays fully viewable in the UI's Archived group; in-pod agent traffic is NOT blocked). What it does NOT do: delete anything, touch the session's history or files, or stop a running turn. Use when the user asks to tidy up, shelve, or retire a finished session ('archive that old chat'), or to move YOUR OWN finished work out of the way (a completed peer session you created). Unarchiving (archived:false) restores chat instantly. The success reply carries archived_visibility: verified (a post-write read of the archived set confirmed the transition — this pod's listings reflect it immediately) or unverified (the confirmation could not be read or disagreed; the state still holds, but listings may lag up to ~15s — do NOT re-archive on unverified, check with session_metadata instead). NOT for deleting — delete_session is the destructive tool; archive first when in doubt. The session_id comes from session_list / session_metadata.",
+			Description: "Archive (archived:true) or unarchive (archived:false) a session in this workspace — a PLATFORM-level marker, reversible, never destructive. What archiving does: the session becomes READ-ONLY for the user (their chat sends to it are rejected with a clear 'archived' error; its history stays fully viewable in the UI's Archived group; in-pod agent traffic is NOT blocked). What it does NOT do: delete anything, touch the session's history or files, or stop a running turn. Use when the user asks to tidy up, shelve, or retire a finished session ('archive that old chat'), or to move YOUR OWN finished work out of the way (a completed peer session you created). Unarchiving (archived:false) restores chat instantly. The success reply carries archived_visibility: verified (a post-write read of the archived set confirmed the transition — this pod's listings reflect it immediately) or unverified (the confirmation could not be read or disagreed; the state still holds, but listings may lag up to ~15s — do NOT re-archive on unverified, check with session_metadata instead). NOT for deleting — delete_session is the destructive tool; archive first when in doubt. The sessionId comes from session_list / session_metadata.",
 			InputSchema: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -690,7 +690,7 @@ func mcpToolCatalog() []mcpTool {
 		{
 			Name:        "delete_session",
 			Annotations: annot(false, true, false),
-			Description: "PERMANENTLY delete a session from this workspace — HARD DELETE, no undo: the session's transcript disappears from BOTH the platform's index AND the agent's store in this workspace. This is not archive (session_archive is the reversible read-only marker); this is destruction. Use ONLY when the user explicitly asks to delete a session and its history ('delete that chat', 'get rid of it'), or to clean up an empty/accidental session YOU created (a leftover carrier or probe). Always prefer archiving when the user's intent is ambiguous — deletion cannot be undone. Refuses to delete YOUR OWN current session (identified by the platform's injection, or — on pods without the plugin — as the single busy session; its turn — this tool call — is still running; finish the turn and let the user or a peer delete it). The session_id comes from session_list / session_metadata.",
+			Description: "PERMANENTLY delete a session from this workspace — HARD DELETE, no undo: the session's transcript disappears from BOTH the platform's index AND the agent's store in this workspace. This is not archive (session_archive is the reversible read-only marker); this is destruction. Use ONLY when the user explicitly asks to delete a session and its history ('delete that chat', 'get rid of it'), or to clean up an empty/accidental session YOU created (a leftover carrier or probe). Always prefer archiving when the user's intent is ambiguous — deletion cannot be undone. Refuses to delete YOUR OWN current session (identified by the platform's injection, or — on pods without the plugin — as the single busy session; its turn — this tool call — is still running; finish the turn and let the user or a peer delete it). The sessionId comes from session_list / session_metadata.",
 			InputSchema: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -701,7 +701,7 @@ func mcpToolCatalog() []mcpTool {
 		},
 		{
 			Name:        "compact",
-			Description: "Compact a session's history — the model summarizes the conversation and the summary replaces it in the context window, freeing context without losing the thread. Omit session_id to target the single currently-running session (usually your own — find IDs with session_metadata otherwise). Compaction preserves file changes and tool history on disk; only the in-context view shrinks. If the target is busy (your own session always is while a tool runs), the compaction is SCHEDULED and runs exactly when the current turn ends — plan around the context only being freed from your NEXT turn. Optional model overrides the summarizing model (default: the session's current model).",
+			Description: "Compact a session's history — the model summarizes the conversation and the summary replaces it in the context window, freeing context without losing the thread. Omit sessionId to target the single currently-running session (usually your own — find IDs with session_metadata otherwise). Compaction preserves file changes and tool history on disk; only the in-context view shrinks. If the target is busy (your own session always is while a tool runs), the compaction is SCHEDULED and runs exactly when the current turn ends — plan around the context only being freed from your NEXT turn. Optional model overrides the summarizing model (default: the session's current model).",
 			InputSchema: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -1009,10 +1009,13 @@ func callMCPTool(ctx context.Context, password, name string, args map[string]any
 		return mcpCreateSession(ctx, password, prompt, title)
 	case "send_message":
 		// destination is canonical; session_id is its one-release
-		// legacy alias (the argStr helper cannot derive it — the rename
-		// is not a case fold — so the fallback is explicit).
+		// legacy alias. PRESENCE semantics (argStr's contract): the
+		// alias resolves only when destination is ABSENT — an explicit
+		// empty destination never falls through to the alias (the
+		// silent-precedence class the round-1 review killed for file
+		// params).
 		sessionID := argStr(args, "destination")
-		if sessionID == "" {
+		if _, present := args["destination"]; !present {
 			sessionID, _ = args["session_id"].(string)
 		}
 		message, _ := args["message"].(string)

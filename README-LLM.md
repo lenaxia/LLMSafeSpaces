@@ -1270,7 +1270,7 @@ SUCCESS CRITERIA:
 Peer messages delivered through `llmsafespaces_send_message` arrive prefixed with an HTML-comment sentinel that survives the chat transcript:
 
 ```
-<!-- lsp:agent-message-v1 {"fromSession":"ses_…","mode":"self-declared"} -->
+<!-- lsp:agent-message-v1 {"fromSession":"ses_…","mode":"injected"} -->
 ```
 
 A future session reading a transcript sees exactly this shape ahead of peer text. Contract points:
