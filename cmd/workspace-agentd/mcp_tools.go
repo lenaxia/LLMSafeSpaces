@@ -1554,7 +1554,15 @@ func mcpSendMessage(ctx context.Context, password, sessionID, message, injectedS
 
 	// Stamp the origin sentinel (idempotent: a payload that already
 	// carries a leading sentinel from a prior hop is stripped first).
-	composed, err := agentmessage.Compose(message, agentmessage.Origin{FromSession: origin, Mode: mode})
+	// #1919: the sentinel's fromSession is AGENT- and USER-facing (the
+	// recipient's transcript, the frontend origin badge) — it emits the
+	// PHRASE when the replica knows it, exactly like every other id
+	// emission in this result (#1756 §1); the raw harness id survives
+	// only in the degraded cold-replica window, where it is still the
+	// caller's only addressable form. Validation above stays canonical;
+	// a phrase-valued fromSession remains a valid reply address
+	// (resolveSessionRef accepts short ids).
+	composed, err := agentmessage.Compose(message, agentmessage.Origin{FromSession: emitID(origin), Mode: mode})
 	if err != nil {
 		return "", fmt.Errorf("failed to stamp message origin: %w", err)
 	}

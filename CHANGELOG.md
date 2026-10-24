@@ -44,6 +44,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 ### Fixed — Automation: auto-disable disarms webhook triggers; the routine path's circuit breaker stops wedged-outage hammering (#1834)
 
+### Fixed — Session-ID emission: the agent-message sentinel carries the phrase, never the raw harness id (#1919)
+
+- **The delivered `agent-message-v1` sentinel's `fromSession` emits the
+  platform 3-word phrase** when the agentd short-id replica knows the
+  mapping — the last un-migrated id emission in the injected-origin
+  flow. The send_message result fields already phrase-emitted
+  (#1756/#1806); the sentinel still carried the resolved canonical
+  `ses_…` into the recipient's transcript and the frontend origin
+  badge regardless of replica warmth. Validation (by-ID probes),
+  the self-send guard, and the #1530 recovery comparisons stay
+  canonical; a phrase-valued `fromSession` remains a valid reply
+  address (resolution accepts short ids). The raw form survives only
+  the degraded cold-replica window, flagged by the result's
+  `origin_deprecated` — the #1756 §1 contract every other emission
+  already follows. The origin plugin's wire attestation
+  (`lsp_injected_session`) keeps the canonical form per the #1920
+  ruling (agentd-internal, never model-visible).
+- **Audit**: the accompanying sweep classified every raw-ID surface —
+  SSE/REST/MCP emissions clean (phrase edge + additive internal ids +
+  deprecated flags); board surfaces (`Task.assignee_session`,
+  `board_events.actor.session_id`) leak raw and are filed as #1922
+  (fix carries design choices); `X-Session-Ref-Resolved` and the
+  engine↔agentd envelopes are by-design canonical.
+
 - **A disabled trigger's webhook deliveries are absorbed, never
   executed.** The cron claim already filtered `enabled=false`, but the
   webhook receiver minted executing fires for disabled triggers
