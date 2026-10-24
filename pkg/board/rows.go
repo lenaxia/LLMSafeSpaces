@@ -107,12 +107,19 @@ type Task struct {
 	FailureCount      int        `json:"failure_count"`
 	LastFailureAt     *time.Time `json:"last_failure_at,omitempty"`
 	AssigneeSession   string     `json:"assignee_session,omitempty"`
-	ClaimToken        string     `json:"claim_token,omitempty"`
-	LeaseExpiresAt    *time.Time `json:"lease_expires_at,omitempty"`
-	LastProgressAt    *time.Time `json:"last_progress_at,omitempty"`
-	Attempts          int        `json:"attempts"`
-	ClaimIncremented  bool       `json:"claim_incremented_attempts"`
-	CooldownUntil     *time.Time `json:"cooldown_until,omitempty"`
+	// AssigneeSessionDeprecated marks a read whose assignee could not be
+	// resolved to the #1756 phrase (#1922): the value above is the raw
+	// harness id (the design-0066 cold window — the registration seam has
+	// not observed the session yet), flagged per the #1817/#1821 SSE
+	// precedent. Set at the read edge ONLY; the stored row stays
+	// canonical (bounce/reconciler/messenger consumers keep raw).
+	AssigneeSessionDeprecated bool       `json:"assignee_session_deprecated,omitempty"`
+	ClaimToken                string     `json:"claim_token,omitempty"`
+	LeaseExpiresAt            *time.Time `json:"lease_expires_at,omitempty"`
+	LastProgressAt            *time.Time `json:"last_progress_at,omitempty"`
+	Attempts                  int        `json:"attempts"`
+	ClaimIncremented          bool       `json:"claim_incremented_attempts"`
+	CooldownUntil             *time.Time `json:"cooldown_until,omitempty"`
 	// WaitingOn (derived, informational): "concurrency_limit" when the
 	// row is ready but the per-user or per-instance concurrent-claim cap
 	// is saturated (#1747 round 3 — over-cap is never an error; the row
@@ -190,12 +197,15 @@ type SearchResult struct {
 
 // HealthLease is one in-flight claim on the health panel (§4.8).
 type HealthLease struct {
-	TaskID          string    `json:"task_id"`
-	ShortID         string    `json:"short_id"`
-	Title           string    `json:"title"`
-	ProjectID       string    `json:"project_id"`
-	AssigneeSession string    `json:"assignee_session,omitempty"`
-	LeaseExpiresAt  time.Time `json:"lease_expires_at"`
+	TaskID          string `json:"task_id"`
+	ShortID         string `json:"short_id"`
+	Title           string `json:"title"`
+	ProjectID       string `json:"project_id"`
+	AssigneeSession string `json:"assignee_session,omitempty"`
+	// AssigneeSessionDeprecated: the cold-window degrade flag — see
+	// Task.AssigneeSessionDeprecated (#1922).
+	AssigneeSessionDeprecated bool      `json:"assignee_session_deprecated,omitempty"`
+	LeaseExpiresAt            time.Time `json:"lease_expires_at"`
 }
 
 // HealthTaskCooldown is one throttled task's cooldown (§4.4 throttle path).

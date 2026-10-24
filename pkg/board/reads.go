@@ -20,12 +20,15 @@ import (
 
 // GetTask resolves a task (case-insensitive short ID or UUID) and
 // attaches the derived informational fields (waiting_on, backpressure).
+// The assignee session id is translated to the #1756 phrase at this
+// read edge (#1922) — raw + assignee_session_deprecated when cold.
 func (s *Service) GetTask(ctx context.Context, taskID, shortIDOrID string) (*Task, error) {
 	t, err := s.store.resolveTask(ctx, s.q(), "", pick(taskID, shortIDOrID))
 	if err != nil {
 		return nil, err
 	}
 	s.decorateTask(ctx, t, nil)
+	s.translateTaskReads(ctx, t)
 	return t, nil
 }
 
@@ -55,11 +58,21 @@ func (s *Service) ListTasks(ctx context.Context, projectID string, stage, failed
 	// decoration inputs.
 	var proj *Project
 	var out []Task
+	var scanned []*Task
 	for rows.Next() {
 		t, err := scanTask(rowScan{rows})
 		if err != nil {
 			return nil, err
 		}
+		scanned = append(scanned, t)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	// #1922: one bounded translation pass for the whole batch (the
+	// public read edge — canonical rows above stay untouched).
+	s.translateTaskReads(ctx, scanned...)
+	for _, t := range scanned {
 		if proj == nil || proj.ID != t.ProjectID {
 			p, perr := s.store.resolveProject(ctx, s.q(), "", t.ProjectID)
 			if perr != nil {
@@ -71,7 +84,7 @@ func (s *Service) ListTasks(ctx context.Context, projectID string, stage, failed
 		s.decorateTask(ctx, t, proj)
 		out = append(out, *t)
 	}
-	return out, rows.Err()
+	return out, nil
 }
 
 // GetEpic resolves an epic with derived progress + the backpressure note.
@@ -170,6 +183,11 @@ func (s *Service) TaskEvents(ctx context.Context, taskID, shortIDOrID string, li
 	for i, e := range newestFirst {
 		out[len(newestFirst)-1-i] = e
 	}
+	// #1922: board_events.actor is append-only — the session id is
+	// translated at READ time only (phrase when known; raw + the #1821
+	// session_id_deprecated flag when cold). The stored rows stay
+	// byte-identical.
+	s.translateEventActors(ctx, t.ProjectID, out)
 	return out, nil
 }
 
@@ -302,15 +320,21 @@ func (s *Service) SearchTasks(ctx context.Context, userID, q string, filters Sea
 	}
 	defer rows.Close()
 	res := &SearchResult{Results: []Task{}, Suggestions: []string{}}
+	var scanned []*Task
 	for rows.Next() {
 		t, err := scanTask(rowScan{rows})
 		if err != nil {
 			return nil, err
 		}
-		res.Results = append(res.Results, *t)
+		scanned = append(scanned, t)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
+	}
+	// #1922: the search projection rides the same read-edge translation.
+	s.translateTaskReads(ctx, scanned...)
+	for _, t := range scanned {
+		res.Results = append(res.Results, *t)
 	}
 	if len(res.Results) > 0 {
 		return res, nil
@@ -377,7 +401,8 @@ func (s *Service) BoardHealth(ctx context.Context, userID string) (*Health, erro
 
 func (s *Service) healthActiveLeases(ctx context.Context, userID string, h *Health) error {
 	rows, err := s.q().Query(ctx, `
-		SELECT t.id, t.short_id, t.title, t.project_id, coalesce(t.assignee_session, ''), t.lease_expires_at
+		SELECT t.id, t.short_id, t.title, t.project_id, coalesce(t.assignee_session, ''), t.lease_expires_at,
+		       coalesce(p.target_workspace_id::text, '')
 		FROM tasks t JOIN projects p ON p.id = t.project_id
 		WHERE p.user_id = $1 AND t.stage = 'in_progress' AND t.lease_expires_at IS NOT NULL
 		ORDER BY t.lease_expires_at`, userID)
@@ -385,14 +410,23 @@ func (s *Service) healthActiveLeases(ctx context.Context, userID string, h *Heal
 		return err
 	}
 	defer rows.Close()
+	wsByProject := map[string]string{}
 	for rows.Next() {
 		var l HealthLease
-		if err := rows.Scan(&l.TaskID, &l.ShortID, &l.Title, &l.ProjectID, &l.AssigneeSession, &l.LeaseExpiresAt); err != nil {
+		var ws string
+		if err := rows.Scan(&l.TaskID, &l.ShortID, &l.Title, &l.ProjectID, &l.AssigneeSession, &l.LeaseExpiresAt, &ws); err != nil {
 			return err
 		}
+		wsByProject[l.ProjectID] = ws
 		h.ActiveLeases = append(h.ActiveLeases, l)
 	}
-	return rows.Err()
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	// #1922: phrase-translate the lease assignees at the read edge
+	// (one bounded consult per DISTINCT target workspace).
+	s.translateHealthLeases(ctx, h.ActiveLeases, func(projectID string) string { return wsByProject[projectID] })
+	return nil
 }
 
 func (s *Service) healthCooldowns(ctx context.Context, userID string, h *Health) error {
@@ -577,6 +611,9 @@ func (s *Service) BoardHealthInWorkspace(ctx context.Context, workspaceID string
 		return nil, err
 	}
 	rows.Close()
+	// #1922: the workspace-scoped health rides the same read-edge
+	// phrase translation (the caller's workspace resolves every lease).
+	s.translateHealthLeases(ctx, h.ActiveLeases, func(string) string { return workspaceID })
 
 	crows, err := s.q().Query(ctx, `
 		SELECT t.id, t.short_id, t.project_id, t.cooldown_until

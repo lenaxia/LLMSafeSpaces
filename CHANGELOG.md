@@ -44,6 +44,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 ### Fixed — Automation: auto-disable disarms webhook triggers; the routine path's circuit breaker stops wedged-outage hammering (#1834)
 
+### Fixed — Board reads: assignee/actor session ids emit the phrase at the read edge, never the raw harness id (#1922)
+
+- **Task Board public reads translate `assignee_session` and
+  `board_events.actor.session_id` to the #1756 session phrase at the
+  platform service read edge** (#1922, the #1919 Part-2 audit's filing):
+  task drawer/read/list/search, health leases (both perimeters), the
+  agent-surface projections (`board_list`/`board_health`/worker
+  `board_read` — the manager MCP pass-through rides the same seam),
+  stage-move/verdict/pause/resume/update echoes, the task audit timeline
+  (`GET /me/tasks/:id/events`), and the SSE `board.event` actor. Stored
+  rows stay canonical forever — `scanTask` and the internal consumers
+  (bounce aborter, reconciler, stillborn guard, halt/resume messenger)
+  keep the raw harness id; `board_events.actor` rows are never rewritten
+  (read-time translation on the response copy only).
+- **Degraded posture follows the #1817/#1821 SSE precedent**: phrase
+  when the `session_index` knows the session (project target workspace,
+  bounded ≤1 consult per distinct workspace); the raw id + additive
+  `assignee_session_deprecated` flag while the design-0066 registration
+  seam has not yet observed the session (never worse); the actor's flag
+  is `session_id_deprecated` in `markDeprecatedSessionID`'s exact shape.
+  No `internal_assignee_session` — no consumer demonstrated correlation
+  need.
+
 ### Fixed — Session-ID emission: the agent-message sentinel carries the phrase, never the raw harness id (#1919)
 
 - **The delivered `agent-message-v1` sentinel's `fromSession` emits the

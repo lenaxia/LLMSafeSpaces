@@ -834,10 +834,15 @@ func (s *Service) UpdateTask(ctx context.Context, actor Actor, taskID, shortIDOr
 		return nil, err
 	}
 	_ = dup
-	return s.store.resolveTask(ctx, s.q(), p.ID, t.ID)
+	// #1922: the write echo rides the read-edge phrase translation (the
+	// canonical row committed; the response copy translates).
+	out, err := s.store.resolveTask(ctx, s.q(), p.ID, t.ID)
+	if err != nil {
+		return nil, err
+	}
+	s.translateTaskReads(ctx, out)
+	return out, nil
 }
-
-// --- Dependencies (rulings R3/R4: the ONLY blocking mechanism) -------------------
 
 // AddDependency adds a structural edge. The DB trigger enforces
 // same-project / no-self / acyclic (full DFS); violations map to 409 +
@@ -1068,6 +1073,9 @@ func (s *Service) GetTaskInWorkspace(ctx context.Context, workspaceID, taskID, s
 		return nil, err
 	}
 	s.decorateTask(ctx, t, nil)
+	// #1922: the worker's board_read rides the same phrase translation
+	// as every other public read.
+	s.translateTaskReads(ctx, t)
 	return t, nil
 }
 

@@ -14,6 +14,7 @@ package handlers
 
 import (
 	"context"
+	"encoding/json"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -121,5 +122,33 @@ func (h *ProxyHandler) boardEventDeliver(pool *pgxpool.Pool, log warnLogger, evt
 			"projectID", evt.ProjectID, "error", err.Error())
 		return
 	}
+	// #1922: the actor's session id is phrase-translated at EMISSION (the
+	// #1817/#1821 SSE-precedent edge class — the frame is user/agent-
+	// readable even though the frontend does not render the actor today).
+	// The stored board_events row is never rewritten; the degraded shape
+	// is markDeprecatedSessionID's (raw + session_id_deprecated flag).
+	evt.Actor = h.translateBoardActorPhrase(pool, workspaceID, evt.Actor)
 	h.publishBoardFanout(owner, workspaceID, evt)
+}
+
+// translateBoardActorPhrase is the SSE leg's bounded consult: parse the
+// actor blob, resolve its (single) session id against the project's
+// target workspace, translate. Failures degrade raw (TranslateActor-
+// SessionPhrase never breaks a read).
+func (h *ProxyHandler) translateBoardActorPhrase(pool *pgxpool.Pool, workspaceID string, actor []byte) []byte {
+	if len(actor) == 0 || workspaceID == "" {
+		return actor
+	}
+	var m map[string]any
+	if err := json.Unmarshal(actor, &m); err != nil || m == nil {
+		return actor
+	}
+	sid, _ := m["session_id"].(string)
+	if sid == "" {
+		return actor // user/system actors on session-less surfaces
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	phrases := board.LookupSessionPhrases(ctx, pool, workspaceID, []string{sid})
+	return board.TranslateActorSessionPhrase(actor, phrases)
 }

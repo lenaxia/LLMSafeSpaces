@@ -177,6 +177,7 @@ func (s *Service) RecordVerdict(ctx context.Context, actor Actor, taskID, shortI
 					if err != nil {
 						return nil, &original, err
 					}
+					s.translateTaskReads(ctx, out)
 					return out, &original, nil
 				}
 			}
@@ -193,6 +194,8 @@ func (s *Service) RecordVerdict(ctx context.Context, actor Actor, taskID, shortI
 	if err != nil {
 		return nil, &v, err
 	}
+	// #1922: the verdict echo rides the read-edge phrase translation.
+	s.translateTaskReads(ctx, out)
 	return out, &v, nil
 }
 
