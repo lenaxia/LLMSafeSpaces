@@ -6,6 +6,7 @@ package board
 import (
 	"context"
 	"encoding/json"
+	"log/slog"
 	"strconv"
 	"time"
 
@@ -65,14 +66,20 @@ var DefaultReviewerPersona = PersonaConfig{
 }
 
 // personaForStage resolves the effective persona for one stage: an
-// explicit stagePersonas entry wins; the legacy auto-review
-// composition renders the default reviewer persona for in_review
-// (existing stored configs keep their meaning — auto-review on IS
-// in_review having a reviewer persona via the generic config); every
-// other shape returns nil (today's behavior, byte-identical).
+// explicit stagePersonas key (set at ANY merged tier — even an empty
+// {}, the opt-out) OWNS the stage mapping and suppresses the legacy
+// fallthrough entirely; only with NO explicit key anywhere does the
+// legacy auto-review composition render the default reviewer persona
+// for in_review (existing stored configs keep their meaning —
+// auto-review on IS in_review having a reviewer persona via the
+// generic config). Every other shape returns nil (today's behavior,
+// byte-identical).
 func personaForStage(eff BoardConfig, stage string) *PersonaConfig {
-	if p, ok := eff.StagePersonas[stage]; ok {
-		return &p
+	if eff.StagePersonasSet {
+		if p, ok := eff.StagePersonas[stage]; ok {
+			return &p
+		}
+		return nil // the explicit map owns the stages it lists — and the ones it doesn't
 	}
 	if stage == StageInReview && eff.ReviewColumn == ReviewColumnAuto && eff.AutoAssignReviewer {
 		p := DefaultReviewerPersona
@@ -82,11 +89,15 @@ func personaForStage(eff BoardConfig, stage string) *PersonaConfig {
 }
 
 // stagePersona resolves the effective persona for one stage of ONE
-// project (config read failures degrade to no-persona — the transition
-// still lands; the reconciler's re-arm re-reads and heals).
+// project. Config-read failures degrade to no-persona WITH a warn
+// line (the observability parity the absorbed maybeAutoAssignReview
+// had) — the transition still lands; the reconciler's re-arm
+// re-reads and heals.
 func (s *Service) stagePersona(ctx context.Context, p *Project, stage string) *PersonaConfig {
 	eff, err := s.effectiveConfigForProject(ctx, p)
 	if err != nil {
+		slog.WarnContext(ctx, "board: stage-persona config read failed — degrading to no persona",
+			"task_project", p.ShortID, "stage", stage, "err", err.Error())
 		return nil
 	}
 	return personaForStage(eff, stage)
@@ -123,11 +134,11 @@ func (s *Service) personaClaimMintTx(ctx context.Context, tx pgx.Tx, taskID, sta
 }
 
 // personaClaimEventTx records the mint's audit event (action
-// persona_claim) with a per-episode deterministic-ish id: unique per
-// mint (the mint's own nanosecond), inert on an in-transaction replay
-// (the whole transaction — mint and event — is atomic; a retried
-// transaction mints a fresh token AND a fresh id together).
-func personaClaimEventTx(ctx context.Context, tx pgx.Tx, projectID, taskID, stage string, persona *PersonaConfig, origin string, attempts int) error {
+// persona_claim, id unique per mint episode — the mint's own
+// nanosecond; a retried transaction mints a fresh token AND a fresh
+// id together) and returns it for post-commit SSE publication (the
+// caller rides the nudge's events or commitPublishing's pending).
+func personaClaimEventTx(ctx context.Context, tx pgx.Tx, projectID, taskID, stage string, persona *PersonaConfig, origin string, attempts int) (Event, error) {
 	actor := Actor{Kind: ActorSystem, Surface: "engine"}
 	if origin == "reconciler" {
 		actor.Surface = SurfaceReconciler
@@ -137,8 +148,7 @@ func personaClaimEventTx(ctx context.Context, tx pgx.Tx, projectID, taskID, stag
 	if persona != nil {
 		payload["persona"] = persona.Name
 	}
-	_, err := recordEventTx(ctx, tx, projectID, id, "persona_claim", "task", taskID, actor, payload)
-	return err
+	return recordEventTx(ctx, tx, projectID, id, "persona_claim", "task", taskID, actor, payload)
 }
 
 // personaRearmCandidatesSQL is the re-arm pass's cheap prefilter:
