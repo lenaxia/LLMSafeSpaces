@@ -152,6 +152,9 @@ describe("BoardPage #1832 — swimlane creation buttons + epic bands", () => {
     const title = await screen.findByTestId("task-title");
     expect(screen.getByText("in E2")).toBeInTheDocument();
     fireEvent.change(title, { target: { value: "Scoped task" } });
+    fireEvent.change(screen.getByTestId("task-description"), { target: { value: "seeded charter" } });
+    fireEvent.change(screen.getByTestId("new-criterion"), { target: { value: "c1" } });
+    fireEvent.click(screen.getByLabelText("Add criterion"));
     fireEvent.click(screen.getByTestId("task-save"));
 
     await waitFor(() => expect(mockCreateTask).toHaveBeenCalledWith("epic-uuid-2", expect.objectContaining({ title: "Scoped task" })));
@@ -171,6 +174,9 @@ describe("BoardPage #1832 — swimlane creation buttons + epic bands", () => {
     const title = await screen.findByTestId("task-title");
     expect(screen.getByText("in E2")).toBeInTheDocument();
     fireEvent.change(title, { target: { value: "Picked task" } });
+    fireEvent.change(screen.getByTestId("task-description"), { target: { value: "seeded charter" } });
+    fireEvent.change(screen.getByTestId("new-criterion"), { target: { value: "c1" } });
+    fireEvent.click(screen.getByLabelText("Add criterion"));
     fireEvent.click(screen.getByTestId("task-save"));
     await waitFor(() => expect(mockCreateTask).toHaveBeenCalledWith("epic-uuid-2", expect.objectContaining({ title: "Picked task" })));
   });
@@ -251,6 +257,9 @@ describe("BoardPage #1832 r2 — server epics, unhappy paths, reversion guards",
     const title = await screen.findByTestId("task-title");
     expect(screen.getByText("in Quiet epic")).toBeInTheDocument();
     fireEvent.change(title, { target: { value: "First task" } });
+    fireEvent.change(screen.getByTestId("task-description"), { target: { value: "seeded charter" } });
+    fireEvent.change(screen.getByTestId("new-criterion"), { target: { value: "c1" } });
+    fireEvent.click(screen.getByLabelText("Add criterion"));
     fireEvent.click(screen.getByTestId("task-save"));
     await waitFor(() => expect(mockCreateTask).toHaveBeenCalledWith("epic-uuid-zero", expect.objectContaining({ title: "First task" })));
   });
@@ -338,6 +347,9 @@ describe("BoardPage #1832 r2 — server epics, unhappy paths, reversion guards",
     fireEvent.click(screen.getByTestId("new-task-prj-aaaa1111"));
     const title = await screen.findByTestId("task-title");
     fireEvent.change(title, { target: { value: "Doomed task" } });
+    fireEvent.change(screen.getByTestId("task-description"), { target: { value: "seeded charter" } });
+    fireEvent.change(screen.getByTestId("new-criterion"), { target: { value: "c1" } });
+    fireEvent.click(screen.getByLabelText("Add criterion"));
     fireEvent.click(screen.getByTestId("task-save"));
 
     await screen.findByText(/criteria required/);
@@ -459,6 +471,9 @@ describe("BoardPage #1832 r3 — server truth supersedes session-known epics", (
     const taskTitle = await screen.findByTestId("task-title");
     expect(screen.getByText("in Live epic")).toBeInTheDocument();
     fireEvent.change(taskTitle, { target: { value: "First" } });
+    fireEvent.change(screen.getByTestId("task-description"), { target: { value: "seeded charter" } });
+    fireEvent.change(screen.getByTestId("new-criterion"), { target: { value: "c1" } });
+    fireEvent.click(screen.getByLabelText("Add criterion"));
     fireEvent.click(screen.getByTestId("task-save"));
     await waitFor(() => expect(mockCreateTask).toHaveBeenCalled());
 
@@ -493,6 +508,9 @@ describe("BoardPage #1832 r3 — server truth supersedes session-known epics", (
     fireEvent.click(screen.getByTestId("new-task-prj-aaaa1111"));
     const t = await screen.findByTestId("task-title");
     fireEvent.change(t, { target: { value: "Trigger" } });
+    fireEvent.change(screen.getByTestId("task-description"), { target: { value: "seeded charter" } });
+    fireEvent.change(screen.getByTestId("new-criterion"), { target: { value: "c1" } });
+    fireEvent.click(screen.getByLabelText("Add criterion"));
     fireEvent.click(screen.getByTestId("task-save"));
     await waitFor(() => expect(mockCreateTask).toHaveBeenCalled());
 

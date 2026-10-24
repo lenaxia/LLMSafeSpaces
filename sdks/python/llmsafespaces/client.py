@@ -196,21 +196,20 @@ class _BoardAPI:
         epic_id: str,
         *,
         title: str,
-        description: str = "",
+        description: str,
         tags: list[str] | None = None,
-        acceptance_criteria: list[dict[str, Any]] | None = None,
+        acceptance_criteria: list[dict[str, Any]],
         depends_on: list[str] | None = None,
         request_id: str = "",
     ) -> dict[str, Any]:
-        body: dict[str, Any] = {"title": title}
-        if description:
-            body["description"] = description
+        # #1849: description (the worker charter) and >=1 acceptance
+        # criterion are REQUIRED at create — the engine refuses a
+        # seedless create; the signature advertises the real contract.
+        body: dict[str, Any] = {"title": title, "description": description, "acceptanceCriteria": acceptance_criteria}
         if depends_on is not None:
             body["dependsOn"] = depends_on
         if tags is not None:
             body["tags"] = tags
-        if acceptance_criteria is not None:
-            body["acceptanceCriteria"] = acceptance_criteria
         if request_id:
             body["requestId"] = request_id
         return self._c._request("POST", f"/me/epics/{epic_id}/tasks", json=body)

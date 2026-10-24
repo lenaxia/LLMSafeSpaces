@@ -43,7 +43,9 @@ func (s *Service) PauseTask(ctx context.Context, actor Actor, taskID, shortIDOrI
 		return nil, &GuardError{Code: GuardPaused, Detail: "terminal rows refuse pause (done is immutable)"}
 	}
 	if t.Paused {
-		return t, nil // idempotent
+		// Idempotent: the echo still rides the read-edge translation.
+		s.translateTaskReads(ctx, t)
+		return t, nil
 	}
 	ew := &eventWriter{svc: s, projectID: p.ID, requestID: requestID, action: "pause_task", itemKind: "task", itemID: t.ID, actor: actor}
 	_, dup, err := ew.run(ctx, func(tx pgx.Tx) (map[string]any, error) {
@@ -68,6 +70,8 @@ func (s *Service) PauseTask(ctx context.Context, actor Actor, taskID, shortIDOrI
 		return nil, err
 	}
 	s.decorateTask(ctx, out, p)
+	// #1922: the pause echo rides the read-edge phrase translation.
+	s.translateTaskReads(ctx, out)
 	return out, nil
 }
 
@@ -104,6 +108,8 @@ func (s *Service) ResumeTask(ctx context.Context, actor Actor, taskID, shortIDOr
 		return nil, err
 	}
 	s.decorateTask(ctx, out, p)
+	// #1922: the resume echo rides the read-edge phrase translation.
+	s.translateTaskReads(ctx, out)
 	return out, nil
 }
 

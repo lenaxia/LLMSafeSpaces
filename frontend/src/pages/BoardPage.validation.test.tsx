@@ -202,6 +202,7 @@ describe("BoardPage — OR4 pr:N tag validation (create/edit surfaces)", () => {
     fireEvent.click(screen.getByTestId("drawer-new-task"));
     const title = await screen.findByTestId("task-title");
     fireEvent.change(title, { target: { value: "Fresh task" } });
+    fireEvent.change(screen.getByTestId("task-description"), { target: { value: "seeded charter (#1849: required at create)" } });
     fireEvent.change(screen.getByTestId("new-criterion"), { target: { value: "criterion one" } });
     fireEvent.click(screen.getByLabelText("Add criterion"));
     fireEvent.click(screen.getByTestId("task-save"));

@@ -174,8 +174,12 @@ var boardCreateEpicTool = mcp.NewTool("board_create_epic",
 )
 
 var boardCreateTaskTool = mcp.NewTool("board_create_task",
-	mcp.WithDescription("Create a backlog task in an epic. The description (markdown) seeds the worker "+
-		"charter; acceptance criteria define Done (ALL met + evidence_url — ruling R2). Tags may carry "+
+	mcp.WithDescription("Create a backlog task in an epic. ATOMIC-CREATE CONTRACT (#1849): a non-empty "+
+		"description (the worker's charter) AND at least one acceptance criterion are REQUIRED — a create "+
+		"missing either, or whose title/description/criterion is ENTIRELY a placeholder-class token "+
+		"(placeholder, todo, tbd, asdf, qwerty…), is rejected outright; re-compose (prose that merely "+
+		"mentions a token is fine). The description (markdown) seeds the worker charter; criteria define "+
+		"Done (ALL met + evidence_url — ruling R2). Tags may carry "+
 		"the explicit pr:N anchor (owner ruling OR4 — pattern ^pr:[1-9][0-9]*$, the only PR-drift form "+
 		"the reconciler consumes; malformed anchors are inert tags, never guessed) and the delegated-review "+
 		"anchor review-of:<subject-short-id> (#1832 — a review task whose subject's done transition settles it: "+
@@ -183,7 +187,7 @@ var boardCreateTaskTool = mcp.NewTool("board_create_task",
 		"prerequisite edges in the same write (#1747)."),
 	mcp.WithString("epic_id", mcp.Required(), mcp.Description("Epic short id, phrase form (epc-meek-gondola-waits; legacy epc-XXXXXXXX still resolves, deprecated)")),
 	mcp.WithString("title", mcp.Required(), mcp.Description("Task title")),
-	mcp.WithString("description", mcp.Description("Markdown; seeds the fresh worker's charter (R9)")),
+	mcp.WithString("description", mcp.Required(), mcp.Description("REQUIRED at create (#1849): markdown; seeds the fresh worker's charter (R9)")),
 	mcp.WithArray("tags", mcp.WithStringItems(), mcp.Description("Tags (may include one pr:N anchor; the full set — project/epic updates rewrite tags wholesale)")),
 	mcp.WithArray("acceptance_criteria",
 		mcp.Items(map[string]any{
@@ -194,7 +198,8 @@ var boardCreateTaskTool = mcp.NewTool("board_create_task",
 			},
 			"required": []string{"text"},
 		}),
-		mcp.Description("Checkable criteria [{text, met}] — Done = ALL met + evidence")),
+		mcp.Required(),
+		mcp.Description("REQUIRED at create (#1849): checkable criteria [{text, met}] — Done = ALL met + evidence")),
 	mcp.WithArray("depends_on", mcp.WithStringItems(),
 		mcp.Description("Prerequisite task short ids — edges added in the same transaction (#1747)")),
 	mcp.WithString("request_id", mcp.Description("Idempotency key (one per logical operation)")),
@@ -373,9 +378,9 @@ var boardImportPlanTool = mcp.NewTool("board_import_plan",
 				"acceptance_criteria": map[string]any{"type": "array"},
 				"depends_on":          map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
 			},
-			"required": []string{"key", "title"},
+			"required": []string{"key", "title", "description", "acceptance_criteria"},
 		}),
-		mcp.Description("Plan nodes: [{key, title, description, tags, acceptance_criteria, depends_on:[keys]}]")),
+		mcp.Description("Plan nodes (#1849: a non-empty description and >=1 acceptance criterion per node are REQUIRED — the dry-run refuses seedless nodes): [{key, title, description, tags, acceptance_criteria, depends_on:[keys]}]")),
 	mcp.WithString("request_id", mcp.Description("Idempotency key (one per logical operation)")),
 )
 
@@ -933,8 +938,26 @@ func (h *handlers) boardImportPlan(ctx context.Context, req mcp.CallToolRequest)
 					}
 				}
 			}
+			if arr, ok := m["acceptance_criteria"].([]any); ok {
+				for _, v := range arr {
+					if cm, ok := v.(map[string]any); ok {
+						c := BoardCriterion{}
+						c.Text, _ = cm["text"].(string)
+						if b, ok := cm["met"].(bool); ok {
+							c.Met = b
+						}
+						t.AcceptanceCriteria = append(t.AcceptanceCriteria, c)
+					}
+				}
+			}
 			if t.Key == "" || t.Title == "" {
 				return mcp.NewToolResultError("every plan task needs key and title"), nil
+			}
+			// #1849: the seed contract rides plan nodes — teach it at the
+			// same tier the schema does (the service refuses seedless
+			// nodes at dry-run; this front-runs the burned round-trip).
+			if t.Description == "" || len(t.AcceptanceCriteria) == 0 {
+				return mcp.NewToolResultError("every plan task needs a description (the worker's charter) and at least one acceptance criterion (#1849) — the dry-run refuses seedless nodes"), nil
 			}
 			body.Tasks = append(body.Tasks, t)
 		}

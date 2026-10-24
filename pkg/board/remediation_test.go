@@ -351,7 +351,7 @@ func (s *BoardSuite) TestKill_EventDrivenDispatchDrive() {
 	// creates"); the predicates resolve claimability — in a still-draft
 	// epic the drive is an inert no-op.
 	_, err := driven.CreateTask(context.Background(), s.owner(), e.ID, "",
-		board.TaskInput{Title: "draft-no-drive-yet"}, "")
+		board.TaskInput{Title: "draft-no-drive-yet", Description: "seeded charter", AcceptanceCriteria: []board.AcceptanceCriterion{{Text: "c1"}}}, "")
 	s.Require().NoError(err)
 	select {
 	case pid := <-driveCh:

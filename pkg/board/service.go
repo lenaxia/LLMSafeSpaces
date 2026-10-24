@@ -721,6 +721,12 @@ func (s *Service) CreateTask(ctx context.Context, actor Actor, epicID, shortIDOr
 	if err := ValidateTaskInput(in); err != nil {
 		return nil, err
 	}
+	// #1849 items 1+6: the atomic-create seed contract — a charter,
+	// criteria, and no placeholder-class tokens (UPDATE is exempt:
+	// patches clear fields deliberately).
+	if err := validateTaskSeed(in); err != nil {
+		return nil, err
+	}
 	// #1747 DAG blast-radius bound: nodes per epic.
 	var nodes int
 	if err := s.q().QueryRow(ctx, `SELECT count(*) FROM tasks WHERE epic_id=$1`, e.ID).Scan(&nodes); err != nil {
@@ -768,11 +774,22 @@ func (s *Service) CreateTask(ctx context.Context, actor Actor, epicID, shortIDOr
 	// project's epics gate it; the drive's predicates resolve the rest).
 	s.pokeDrive(p.ID)
 	// On replay the outcome's id is the ORIGINAL task: resolve from the
-	// recorded outcome (200-with-original).
-	if oid, _ := outcome["id"].(string); oid != "" {
-		return s.store.resolveTask(ctx, s.q(), p.ID, oid)
+	// recorded outcome (200-with-original). The resolved row is the
+	// original's CURRENT state — claimed+stamped since, possibly — so
+	// the echo rides the #1922 read-edge translation like every other
+	// task-bearing response (review round 2, finding 1).
+	resolveEcho := func(id string) (*Task, error) {
+		out, err := s.store.resolveTask(ctx, s.q(), p.ID, id)
+		if err != nil {
+			return nil, err
+		}
+		s.translateTaskReads(ctx, out)
+		return out, nil
 	}
-	return s.store.resolveTask(ctx, s.q(), p.ID, taskID)
+	if oid, _ := outcome["id"].(string); oid != "" {
+		return resolveEcho(oid)
+	}
+	return resolveEcho(taskID)
 }
 
 // UpdateTask patches fields; criteria check-off rides here (the
@@ -834,10 +851,15 @@ func (s *Service) UpdateTask(ctx context.Context, actor Actor, taskID, shortIDOr
 		return nil, err
 	}
 	_ = dup
-	return s.store.resolveTask(ctx, s.q(), p.ID, t.ID)
+	// #1922: the write echo rides the read-edge phrase translation (the
+	// canonical row committed; the response copy translates).
+	out, err := s.store.resolveTask(ctx, s.q(), p.ID, t.ID)
+	if err != nil {
+		return nil, err
+	}
+	s.translateTaskReads(ctx, out)
+	return out, nil
 }
-
-// --- Dependencies (rulings R3/R4: the ONLY blocking mechanism) -------------------
 
 // AddDependency adds a structural edge. The DB trigger enforces
 // same-project / no-self / acyclic (full DFS); violations map to 409 +
@@ -1068,6 +1090,9 @@ func (s *Service) GetTaskInWorkspace(ctx context.Context, workspaceID, taskID, s
 		return nil, err
 	}
 	s.decorateTask(ctx, t, nil)
+	// #1922: the worker's board_read rides the same phrase translation
+	// as every other public read.
+	s.translateTaskReads(ctx, t)
 	return t, nil
 }
 

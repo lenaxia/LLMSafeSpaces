@@ -14,6 +14,7 @@ package handlers
 
 import (
 	"context"
+	"encoding/json"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -121,5 +122,42 @@ func (h *ProxyHandler) boardEventDeliver(pool *pgxpool.Pool, log warnLogger, evt
 			"projectID", evt.ProjectID, "error", err.Error())
 		return
 	}
+	// #1922: the actor's session id AND the payload's embedded task
+	// snapshots (delete/cascade snapshotOf rows carry assignee_session)
+	// are phrase-translated at EMISSION (the #1817/#1821 SSE-precedent
+	// edge class — the frame is user/agent-readable even though the
+	// frontend renders neither leg today). The stored board_events row
+	// is never rewritten; the degraded shapes are markDeprecatedSession-
+	// ID's (raw + session_id_deprecated) and its task-field twin
+	// (raw + assignee_session_deprecated).
+	evt.Actor, evt.Payload = h.translateBoardEventIDs(pool, workspaceID, evt.Actor, evt.Payload)
 	h.publishBoardFanout(owner, workspaceID, evt)
+}
+
+// translateBoardEventIDs is the SSE leg's bounded consult: parse the
+// actor blob and the payload's assignee keys, resolve them against the
+// project's target workspace in ONE session_index consult, translate
+// both. Failures degrade raw (the translators never break a read).
+func (h *ProxyHandler) translateBoardEventIDs(pool *pgxpool.Pool, workspaceID string, actor, payload []byte) ([]byte, []byte) {
+	if workspaceID == "" {
+		return actor, payload
+	}
+	ids := make([]string, 0, 2)
+	if len(actor) > 0 {
+		var m map[string]any
+		if err := json.Unmarshal(actor, &m); err == nil && m != nil {
+			if v, _ := m["session_id"].(string); v != "" {
+				ids = append(ids, v)
+			}
+		}
+	}
+	ids = append(ids, board.PayloadAssigneeIDs(payload)...)
+	if len(ids) == 0 {
+		return actor, payload
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	phrases := board.LookupSessionPhrases(ctx, pool, workspaceID, ids)
+	return board.TranslateActorSessionPhrase(actor, phrases),
+		board.TranslatePayloadAssignees(payload, phrases)
 }

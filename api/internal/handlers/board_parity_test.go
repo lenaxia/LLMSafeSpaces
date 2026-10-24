@@ -831,7 +831,7 @@ func boardParityExtToolArgs(action string) (string, map[string]any, bool) {
 	case "import_plan":
 		return "board_import_plan", map[string]any{
 			"project_id": "prj-aaaa1111", "epic_title": "E",
-			"tasks": []map[string]any{{"key": "a", "title": "A"}, {"key": "b", "title": "B", "depends_on": []string{"a"}}}}, true
+			"tasks": []map[string]any{{"key": "a", "title": "A", "description": "seeded charter", "acceptance_criteria": []map[string]any{{"text": "c", "met": false}}}, {"key": "b", "title": "B", "description": "seeded charter", "acceptance_criteria": []map[string]any{{"text": "c", "met": false}}, "depends_on": []string{"a"}}}}, true
 	case "board_read_project_get":
 		return "board_get", map[string]any{"item_id": "prj-aaaa1111"}, true
 	default:

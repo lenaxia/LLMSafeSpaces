@@ -145,7 +145,7 @@ func TestIntegrationBoardManagerSemantics(t *testing.T) {
 	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &epic))
 
 	w = call(http.MethodPost, "/internal/v1/automation/board/epics/"+epic.ID+"/tasks",
-		fmt.Sprintf(`{"workspaceID":%q,"sessionId":%q,"title":"T1","description":"charter"}`, wsPod, sess))
+		fmt.Sprintf(`{"workspaceID":%q,"sessionId":%q,"title":"T1","description":"charter","acceptanceCriteria":[{"text":"c1","met":false}]}`, wsPod, sess))
 	require.Equal(t, http.StatusCreated, w.Code, w.Body.String())
 	var task board.Task
 	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &task))

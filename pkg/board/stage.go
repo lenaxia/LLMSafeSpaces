@@ -90,6 +90,8 @@ func (s *Service) MoveStage(ctx context.Context, actor Actor, taskID, shortIDOrI
 	if err != nil {
 		return nil, err
 	}
+	// #1922: the stage-move echo rides the read-edge phrase translation.
+	s.translateTaskReads(ctx, out)
 	return out, nil
 }
 
@@ -523,7 +525,13 @@ func (s *Service) ReportThrottle(ctx context.Context, actor Actor, taskID, short
 		return nil, err
 	}
 	_ = dup
-	return s.store.resolveTask(ctx, s.q(), p.ID, t.ID)
+	out, err := s.store.resolveTask(ctx, s.q(), p.ID, t.ID)
+	if err != nil {
+		return nil, err
+	}
+	// #1922: the throttle echo rides the read-edge phrase translation.
+	s.translateTaskReads(ctx, out)
+	return out, nil
 }
 
 // resolveTaskForActor resolves a task through the actor's scope: the
