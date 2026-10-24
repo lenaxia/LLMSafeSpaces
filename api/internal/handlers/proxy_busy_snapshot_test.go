@@ -567,8 +567,28 @@ func TestStreamUserEvents_BusySnapshot_SessionListFailure_NotAuthoritative(t *te
 // runs) both make the second trigger — arriving strictly inside the
 // window — spawn its own flight: fetch #2 trips the stub's t.Errorf
 // (and the parked-phase count assert).
+//
+// Follow-up hardening (#1907 r2): (a) release is closed idempotently
+// in a defer — failure paths that fire while flight 1 is parked must
+// not strand the harness's stub-Close cleanup for the full go-test
+// timeout; (b) the pre-release drain also counts snapshot_begin — a
+// second flight's begin is published in-process BEFORE its fetch, so
+// begins > 1 catches a begin-only mutant the complete-only drain never
+// sees.
 func TestRequestSessionStatusSnapshot_Coalesces(t *testing.T) {
 	release := make(chan struct{})
+	var releaseOnce sync.Once
+	// Failure-path hardening: if any require/fatal below fires while
+	// flight 1 is parked mid-fetch (trigger-2 assert, drain verdict,
+	// or the fetch-park wait itself), the harness's
+	// t.Cleanup(stub srv.Close) — which waits for outstanding requests
+	// — would block forever on the parked fetch, hanging the package
+	// until go test's 10m timeout. A DEFER runs before every t.Cleanup
+	// (cleanups run after the test function's defers, LIFO within each
+	// regime), so idempotently closing release here makes park-release
+	// strictly precede the stub Close on every exit path; the happy
+	// path closes it inline first and the once makes that final.
+	defer releaseOnce.Do(func() { close(release) })
 	firstFetch := make(chan struct{})
 	var fetches int32
 	hs := newBusySnapHarness(t, "user-co", func(w http.ResponseWriter, r *http.Request) {
@@ -641,17 +661,29 @@ func TestRequestSessionStatusSnapshot_Coalesces(t *testing.T) {
 
 	// No snapshot_complete can exist before release: the only flight is
 	// parked mid-fetch. One arriving now proves a second flight ran.
+	// The begin count narrows the same verdict: a second flight's begin
+	// is published IN-PROCESS before its authority fetch (emit:
+	// cursor read → begin → fetch), so begins > 1 catches a second,
+	// non-coalesced flight even in the window where its fetch has not
+	// yet reached the stub — a mutant the complete-only drain is blind
+	// to.
+	begins := 0
 	for drained := false; !drained; {
 		select {
 		case evt := <-sub.Ch:
 			require.NotEqual(t, "session.status.snapshot_complete", evt.Type,
 				"snapshot_complete before the parked flight's fetch was released proves a second, non-coalesced flight ran (fetches=%d)", atomic.LoadInt32(&fetches))
+			if evt.Type == "session.status.snapshot_begin" {
+				begins++
+			}
 		default:
 			drained = true
 		}
 	}
+	require.Equal(t, 1, begins,
+		"exactly one snapshot_begin may exist while the only flight is parked mid-fetch (got %d — a second begin is a second, non-coalesced flight)", begins)
 
-	close(release)
+	releaseOnce.Do(func() { close(release) })
 
 	// The coalesced flight completes after release. Seeing its
 	// snapshot_complete is the happy-path end state: both triggers
