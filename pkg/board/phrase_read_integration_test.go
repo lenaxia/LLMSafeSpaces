@@ -267,3 +267,93 @@ func (s *BoardSuite) TestReads_ActorSessionPhrase() {
 		t1.ID, warmRaw, coldRaw).Scan(&storedCount))
 	assert.EqualValues(s.T(), 2, storedCount, "the stored board_events.actor rows keep the canonical harness ids")
 }
+
+// TestReads_ReplayEchoPhraseTranslation pins the round-2 findings: a
+// replayed requestId renders the ORIGINAL task's CURRENT row — claimed
+// and spawn-stamped since — so the replay echo (CreateTask's outcome-id
+// path, RearmTask's tail reload) must translate exactly like a fresh
+// read. Born-RED on 850475f7 (both echoes served the raw id unflagged).
+func (s *BoardSuite) TestReads_ReplayEchoPhraseTranslation() {
+	ctx := context.Background()
+	ws := s.seedWorkspace()
+	p := s.seedProject(ws, 2)
+	e := s.seedEpic(p, board.EpicActive)
+	s.seedPhraseRowCleanup(ws)
+
+	// --- CreateTask replay: original outcome's id → current row -----
+	const createReq = "fix-1922-replay-create"
+	in := board.TaskInput{Title: "replay create pin", Tags: []string{},
+		AcceptanceCriteria: []board.AcceptanceCriterion{{Text: "c1", Met: true}}}
+	created, err := s.svc.CreateTask(ctx, s.owner(), e.ID, "", in, createReq)
+	require.NoError(s.T(), err)
+
+	claim, err := s.svc.ClaimNext(ctx, "replay-worker", ws)
+	require.NoError(s.T(), err)
+	require.Equal(s.T(), created.ID, claim.TaskID, "the created task is the claim candidate")
+	raw := "ses_" + uuid.NewString()
+	_, err = s.pool.Exec(ctx, `UPDATE tasks SET assignee_session=$1 WHERE id=$2`, raw, created.ID)
+	require.NoError(s.T(), err)
+	s.seedPhraseRow(ws, raw, "amber-falcon-glides")
+
+	echo, err := s.svc.CreateTask(ctx, s.owner(), e.ID, "", in, createReq)
+	require.NoError(s.T(), err, "the replay renders 200-with-original, never an error")
+	assert.Equal(s.T(), created.ID, echo.ID, "the replay resolves the ORIGINAL task's row")
+	assert.Equal(s.T(), "amber-falcon-glides", echo.AssigneeSession,
+		"the replay echo translates the (now claimed+stamped) original row")
+	assert.Empty(s.T(), deprecatedFlag(s, echo), "warm row — no deprecation flag")
+
+	// --- RearmTask replay: tail reload of the re-claimed row ---------
+	t2 := s.seedTask(e, "rearm replay pin", nil, true)
+	_, err = s.pool.Exec(ctx,
+		`UPDATE tasks SET stage='pending_input', pending_origin='escalated' WHERE id=$1`, t2.ID)
+	require.NoError(s.T(), err)
+	const rearmReq = "fix-1922-replay-rearm"
+	_, err = s.svc.RearmTask(ctx, s.owner(), t2.ID, "", rearmReq)
+	require.NoError(s.T(), err)
+
+	c2 := s.claimOrFail(ws)
+	require.Equal(s.T(), t2.ID, c2.TaskID, "the re-pooled task is the next candidate")
+	raw2 := "ses_" + uuid.NewString()
+	_, err = s.pool.Exec(ctx, `UPDATE tasks SET assignee_session=$1 WHERE id=$2`, raw2, t2.ID)
+	require.NoError(s.T(), err)
+	s.seedPhraseRow(ws, raw2, "brave-osprey-lands")
+
+	echo2, err := s.svc.RearmTask(ctx, s.owner(), t2.ID, "", rearmReq)
+	require.NoError(s.T(), err)
+	assert.Equal(s.T(), "brave-osprey-lands", echo2.AssigneeSession,
+		"the rearm replay echo translates the re-claimed row's current state")
+	assert.Empty(s.T(), deprecatedFlag(s, echo2))
+}
+
+// TestReads_TaskStartEchoPhrase pins the TaskStart echo's embedded task
+// row: the copy resolves AFTER the spawn launch, so a (sync- or
+// fast-async) spawner's stamp is already on the row — the echo must
+// translate it. Born-RED on 850475f7 (the sync-spawn path determin-
+// istically exposed the raw stamp). The Claim.Assignee field itself is
+// the documented probabilistic window (see the PR body).
+func (s *BoardSuite) TestReads_TaskStartEchoPhrase() {
+	ctx := context.Background()
+	ws := s.seedWorkspace()
+	p := s.seedProject(ws, 2)
+	e := s.seedEpic(p, board.EpicActive)
+	t1 := s.seedTask(e, "task start echo pin", nil, true)
+	s.seedPhraseRowCleanup(ws)
+
+	// The suite's fake spawner returns "sess-" + ShortID — warm it
+	// BEFORE the start so the stamp resolves to a phrase.
+	spawnID := "sess-" + t1.ShortID
+	s.seedPhraseRow(ws, spawnID, "quiet-harbor-drifts")
+
+	c, err := s.svc.TaskStart(ctx, s.owner(), t1.ID, "", "")
+	require.NoError(s.T(), err)
+	require.False(s.T(), c.Escalated)
+	require.NotNil(s.T(), c.Task, "the grant embeds the task row")
+	assert.Equal(s.T(), "quiet-harbor-drifts", c.Task.AssigneeSession,
+		"the TaskStart echo's task copy carries the phrase")
+	assert.Empty(s.T(), deprecatedFlag(s, c.Task))
+
+	// Storage stays canonical.
+	stored := s.rawTask(t1.ID)
+	require.NotNil(s.T(), stored.Assignee)
+	assert.Equal(s.T(), spawnID, *stored.Assignee, "the stored stamp stays canonical")
+}
