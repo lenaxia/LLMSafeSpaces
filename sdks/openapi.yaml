@@ -12725,7 +12725,7 @@ components:
         present. Rendered for the acting user's board-wide defaults
         and as the per-project effective row (user defaults overlaid
         with the project's overrides, merged at read time).
-      required: [reviewColumn, autoAssignReviewer, defaultWorkerSlots]
+      required: [reviewColumn, autoAssignReviewer, defaultWorkerSlots, stagePersonas, stagePersonasSet]
       properties:
         reviewColumn:
           type: string
@@ -12740,6 +12740,51 @@ components:
           type: integer
           minimum: 1
           description: Default worker slots for new projects (the platform default is 2)
+        stagePersonasSet:
+          type: boolean
+          description: |
+            Whether stagePersonas was EXPLICITLY set at any merged tier
+            (even an empty {} — the opt-out). The REPLACE-tier
+            carry-through rule: a client saving other keys carries the
+            stored map back only when this is true — sending {} when
+            nothing was stored would materialize an opt-out row and
+            suppress the default reviewer persona; omitting the key
+            when something WAS stored would delete it. Render-only (a
+            PUT carrying this key rejects as unknown).
+        stagePersonas:
+          type: object
+          additionalProperties: false
+          description: |
+            Stage-persona claim-then-spawn (owner directive
+            2026-10-24): stage → persona. Entering a stage listed
+            here claims the row (lease + claim token) and spawns a
+            fresh session chartered as the persona. Empty by default
+            (the mechanism is opt-in; the legacy reviewColumn=auto +
+            autoAssignReviewer=true composition renders the default
+            reviewer persona for in_review).
+          properties:
+            in_progress:
+              $ref: "#/components/schemas/BoardPersonaConfig"
+            in_review:
+              $ref: "#/components/schemas/BoardPersonaConfig"
+    BoardPersonaConfig:
+      type: object
+      description: |
+        One stage's configured agent persona — a name plus optional
+        charter instructions. Unknown stages and unknown fields reject
+        (400); a persona is configurable only on stages a live claim
+        can exist in (in_progress, in_review).
+      required: [name]
+      properties:
+        name:
+          type: string
+          maxLength: 64
+          description: The persona's name (arbitrary — rendered in the spawned charter and audit events)
+        instructions:
+          type: string
+          maxLength: 4096
+          description: Optional charter preamble rendered verbatim in the persona worker's charter
+      additionalProperties: false
     BoardConfigOverride:
       type: object
       description: |
@@ -12752,6 +12797,9 @@ components:
         defaultWorkerSlots is user-level (PUT /me/board/config); the
         project surface uses BoardConfigOverrideProject, which omits
         it (a project's worker slots are fixed at create).
+        stagePersonas merges per-KEY: a set object replaces the
+        inherited map wholesale (an explicitly empty {} object is the
+        opt-out — no personas for this tier).
       properties:
         reviewColumn:
           type: string
@@ -12761,6 +12809,14 @@ components:
         defaultWorkerSlots:
           type: integer
           minimum: 1
+        stagePersonas:
+          type: object
+          additionalProperties: false
+          properties:
+            in_progress:
+              $ref: "#/components/schemas/BoardPersonaConfig"
+            in_review:
+              $ref: "#/components/schemas/BoardPersonaConfig"
       additionalProperties: false
     BoardConfigOverrideProject:
       type: object
@@ -12772,13 +12828,23 @@ components:
         project-level keys ONLY: defaultWorkerSlots is deliberately
         ABSENT — it is a user-level key (PUT /me/board/config); a
         project's worker slots are fixed at create, and the service
-        rejects the key here with 400 invalid_input.
+        rejects the key here with 400 invalid_input. stagePersonas IS
+        project-level (the composition lever: a project override
+        replaces the inherited persona map; {} disables it).
       properties:
         reviewColumn:
           type: string
           enum: [off, manual, auto]
         autoAssignReviewer:
           type: boolean
+        stagePersonas:
+          type: object
+          additionalProperties: false
+          properties:
+            in_progress:
+              $ref: "#/components/schemas/BoardPersonaConfig"
+            in_review:
+              $ref: "#/components/schemas/BoardPersonaConfig"
       additionalProperties: false
     BoardProjectConfig:
       type: object

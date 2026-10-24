@@ -43,6 +43,14 @@ export function BoardConfigTab() {
         reviewColumn: body.reviewColumn,
         autoAssignReviewer: body.autoAssignReviewer,
         defaultWorkerSlots: body.defaultWorkerSlots,
+        // The user PUT is REPLACE-semantics (absent key = revert to the
+        // code default). Carry the loaded map back ONLY when it is an
+        // EXPLICIT set (stagePersonasSet): sending {} when nothing was
+        // stored would MATERIALIZE an opt-out row and silently suppress
+        // the flipped default's reviewer persona for every inheriting
+        // project; sending nothing when something WAS stored would
+        // delete it (the round-1 wipe). Set-ness is the only safe rule.
+        ...(body.stagePersonasSet ? { stagePersonas: body.stagePersonas ?? {} } : {}),
       }),
     onSuccess: () => {
       setGlobalError(null);
@@ -181,9 +189,16 @@ function ProjectRow(props: {
     autoAssignReviewer: pc.overrides.autoAssignReviewer === undefined ? "" : pc.overrides.autoAssignReviewer ? "on" : "off",
   };
   const dirty = props.draft !== undefined;
+  // The project PUT is REPLACE-semantics server-side (absent keys are
+  // DELETED, not preserved): a save of the toggles must carry the
+  // project's stored stagePersonas override back verbatim or saving
+  // reviewColumn would silently wipe configured personas (the
+  // blocking round-1 review finding). Absent stays absent (inherit).
+  const storedPersonas = pc.overrides.stagePersonas;
   const body: ProjectBoardConfigOverrideInput = {
     ...(d.reviewColumn !== "" ? { reviewColumn: d.reviewColumn } : {}),
     ...(d.autoAssignReviewer !== "" ? { autoAssignReviewer: d.autoAssignReviewer === "on" } : {}),
+    ...(storedPersonas !== undefined ? { stagePersonas: storedPersonas } : {}),
   };
   const prov = (o: { k: string; v: boolean }) => (
     <span

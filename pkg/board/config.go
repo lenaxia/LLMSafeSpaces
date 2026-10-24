@@ -36,6 +36,7 @@ package board
 // error, never a silently ignored value.
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -47,6 +48,7 @@ const (
 	ConfigKeyReviewColumn       = "reviewColumn"
 	ConfigKeyAutoAssignReviewer = "autoAssignReviewer"
 	ConfigKeyDefaultWorkerSlots = "defaultWorkerSlots"
+	ConfigKeyStagePersonas      = "stagePersonas"
 )
 
 // ReviewColumn values: whether the review column shows at all and who
@@ -67,12 +69,61 @@ const (
 // the Go constant.
 const DefaultBoardWorkerSlots = 2
 
+// PersonaNameMax and PersonaInstructionsMax bound one persona config's
+// text fields (the #1837 P1b discipline: caps on every stored text
+// field). The name rides log lines and event payloads; the
+// instructions ride the spawned charter verbatim.
+const (
+	PersonaNameMax         = 64
+	PersonaInstructionsMax = 4096
+)
+
+// PersonaConfig is ONE stage's configured agent persona (the
+// stage-persona claim-then-spawn mechanism): when a task ENTERS a
+// stage carrying one, the engine claims the row (existing lease +
+// claim-token semantics) and spawns a fresh session whose charter
+// renders this persona. Stage-generic by construction — any persona
+// name, any persona-bearing stage; nothing is hardwired to a
+// particular persona or stage.
+type PersonaConfig struct {
+	Name string `json:"name"`
+	// Instructions is the persona's charter preamble (optional: an
+	// explicit persona config may rely on the generic scaffold alone).
+	Instructions string `json:"instructions,omitempty"`
+}
+
+// personaEligibleStages lists the stages a persona can be configured
+// for: exactly the stages a LIVE CLAIM can exist in (a persona worker
+// holds a lease + claim token). in_progress (the worker grant / bounce
+// re-claim) and in_review (the persona claim minted on entry). backlog
+// is the claim pool itself, done is terminal (RC5), and pending_input
+// retains the suspended worker's token with human-only exits — a
+// persona key on those would render an "effective" config the engine
+// never honors, the defaultWorkerSlots-at-project-tier shape, and is
+// rejected instead (fail-closed vocabulary).
+var personaEligibleStages = map[string]bool{
+	StageInProgress: true,
+	StageInReview:   true,
+}
+
 // BoardConfig is the effective merged configuration row (every key
 // always present on the wire).
 type BoardConfig struct {
-	ReviewColumn       string `json:"reviewColumn"`
-	AutoAssignReviewer bool   `json:"autoAssignReviewer"`
-	DefaultWorkerSlots int    `json:"defaultWorkerSlots"`
+	ReviewColumn       string                   `json:"reviewColumn"`
+	AutoAssignReviewer bool                     `json:"autoAssignReviewer"`
+	DefaultWorkerSlots int                      `json:"defaultWorkerSlots"`
+	StagePersonas      map[string]PersonaConfig `json:"stagePersonas"`
+	// StagePersonasSet reports whether an explicit stagePersonas key
+	// was set at ANY merged tier (even an empty {} — the opt-out).
+	// It governs the legacy-composition fallthrough: an explicit key
+	// OWNS the stage mapping, so {} disables even the legacy
+	// reviewColumn=auto + autoAssignReviewer reviewer persona (the
+	// opt-out the defaults flip needs). On the wire it is the
+	// SET-NESS surface: a REPLACE-tier client (the Settings tab)
+	// carries the stored map back ONLY when set — an unset key sent
+	// as {} would materialize an explicit opt-out and silently
+	// suppress the flipped floor for every inheriting project.
+	StagePersonasSet bool `json:"stagePersonasSet"`
 }
 
 // BoardConfigOverride is a PARTIAL config: nil fields are unset and
@@ -82,6 +133,15 @@ type BoardConfigOverride struct {
 	ReviewColumn       *string `json:"reviewColumn,omitempty"`
 	AutoAssignReviewer *bool   `json:"autoAssignReviewer,omitempty"`
 	DefaultWorkerSlots *int    `json:"defaultWorkerSlots,omitempty"`
+	// StagePersonas is one key whose value is an object (stage →
+	// persona). Merge semantics are per-KEY like every other key: a set
+	// stagePersonas object REPLACES the inherited map wholesale (an
+	// absent key inherits; an explicitly empty object {} is the OPT-OUT
+	// — it owns the stage mapping outright and disables even the legacy
+	// auto-review composition's default reviewer persona for that
+	// tier). This is the composition lever: a project override {}
+	// disables an inherited reviewer persona however it was configured.
+	StagePersonas *map[string]PersonaConfig `json:"stagePersonas,omitempty"`
 }
 
 // ProjectBoardConfig renders one project's config surfaces in a single
@@ -94,26 +154,33 @@ type ProjectBoardConfig struct {
 
 // DefaultBoardConfig returns the code defaults (owner ruling
 // 2026-10-24 — "flip defaults for review to on"): auto review column
-// with auto reviewer assignment, worker slots 2. A stored explicit
-// opt-out at either tier (user defaults, project overrides) still wins
-// at the read-time merge — the flip changes only the inheritance floor.
+// with auto reviewer assignment, worker slots 2, no stage personas. A
+// stored explicit opt-out at either tier (user defaults, project
+// overrides — including an explicit stagePersonas key, which owns the
+// stage mapping outright) still wins at the read-time merge — the
+// flip changes only the inheritance floor. With the flip, the DEFAULT
+// effective config renders the reviewer persona for in_review through
+// the stage-persona mechanism's legacy-composition arm (auto-review
+// on IS in_review having a reviewer persona via the generic config).
 func DefaultBoardConfig() BoardConfig {
 	return BoardConfig{
 		ReviewColumn:       ReviewColumnAuto,
 		AutoAssignReviewer: true,
 		DefaultWorkerSlots: DefaultBoardWorkerSlots,
+		StagePersonas:      map[string]PersonaConfig{},
 	}
 }
 
 // BoardConfigKeys lists the known config keys (grow the vocabulary =
 // add a key here, a struct field, and its validation).
 func BoardConfigKeys() []string {
-	return []string{ConfigKeyReviewColumn, ConfigKeyAutoAssignReviewer, ConfigKeyDefaultWorkerSlots}
+	return []string{ConfigKeyReviewColumn, ConfigKeyAutoAssignReviewer, ConfigKeyDefaultWorkerSlots, ConfigKeyStagePersonas}
 }
 
 // MergeBoardConfig overlays a partial override onto a base at read
 // time: a set key wins, an unset (nil) key inherits the base value.
-// nil/empty overlays render the base verbatim.
+// nil/empty overlays render the base verbatim. stagePersonas replaces
+// wholesale when set (per-KEY semantics — see BoardConfigOverride).
 func MergeBoardConfig(base BoardConfig, o *BoardConfigOverride) BoardConfig {
 	out := base
 	if o == nil {
@@ -127,6 +194,14 @@ func MergeBoardConfig(base BoardConfig, o *BoardConfigOverride) BoardConfig {
 	}
 	if o.DefaultWorkerSlots != nil {
 		out.DefaultWorkerSlots = *o.DefaultWorkerSlots
+	}
+	if o.StagePersonas != nil {
+		m := make(map[string]PersonaConfig, len(*o.StagePersonas))
+		for k, v := range *o.StagePersonas {
+			m[k] = v
+		}
+		out.StagePersonas = m
+		out.StagePersonasSet = true
 	}
 	return out
 }
@@ -169,9 +244,55 @@ func ValidateBoardConfigKey(key string, raw json.RawMessage) error {
 			return &GuardError{Code: GuardInput, Detail: fmt.Sprintf("%s must be an integer > 0 (got %d)", key, v)}
 		}
 		return nil
+	case ConfigKeyStagePersonas:
+		if _, err := decodePersonaMap(raw); err != nil {
+			return &GuardError{Code: GuardInput, Detail: fmt.Sprintf("%s: %s", key, err.Error())}
+		}
+		return nil
 	default:
-		return &GuardError{Code: GuardInput, Detail: fmt.Sprintf("unknown config key %q (known: reviewColumn, autoAssignReviewer, defaultWorkerSlots)", key)}
+		return &GuardError{Code: GuardInput, Detail: fmt.Sprintf("unknown config key %q (known: reviewColumn, autoAssignReviewer, defaultWorkerSlots, stagePersonas)", key)}
 	}
+}
+
+// decodePersonaMap decodes + validates the stagePersonas value: a JSON
+// object stage → {name, instructions?}. Every stage key must be
+// persona-eligible (a stage a live claim can exist in), every persona
+// name non-empty and bounded, instructions bounded, and no unknown
+// fields inside a persona object (the strict-vocabulary discipline at
+// the nested level; DisallowUnknownFields — an accidental
+// "instructions"-typo must never ride silently into storage).
+func decodePersonaMap(raw json.RawMessage) (map[string]PersonaConfig, error) {
+	var m map[string]json.RawMessage
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	if err := dec.Decode(&m); err != nil {
+		return nil, fmt.Errorf("must be an object mapping stage → {name, instructions?}, got %s", string(raw))
+	}
+	out := make(map[string]PersonaConfig, len(m))
+	for stage, praw := range m {
+		if !personaEligibleStages[stage] {
+			return nil, fmt.Errorf("stage %q cannot hold a persona (persona-eligible stages: in_progress, in_review — backlog is the claim pool, done is terminal, pending_input keeps its suspended worker)", stage)
+		}
+		if string(praw) == "null" {
+			return nil, fmt.Errorf("stage %q must not map to null — omit the stage key to inherit", stage)
+		}
+		var p PersonaConfig
+		pdec := json.NewDecoder(bytes.NewReader(praw))
+		pdec.DisallowUnknownFields()
+		if err := pdec.Decode(&p); err != nil {
+			return nil, fmt.Errorf("stage %q persona must be an object {name, instructions?}: %v", stage, err)
+		}
+		if p.Name == "" {
+			return nil, fmt.Errorf("stage %q persona requires a non-empty name", stage)
+		}
+		if len(p.Name) > PersonaNameMax {
+			return nil, fmt.Errorf("stage %q persona name exceeds %d characters", stage, PersonaNameMax)
+		}
+		if len(p.Instructions) > PersonaInstructionsMax {
+			return nil, fmt.Errorf("stage %q persona instructions exceed %d characters", stage, PersonaInstructionsMax)
+		}
+		out[stage] = p
+	}
+	return out, nil
 }
 
 // DecodeBoardConfigOverride turns a raw key/value map (adapter body or
@@ -197,6 +318,12 @@ func DecodeBoardConfigOverride(m map[string]json.RawMessage) (*BoardConfigOverri
 			var v int
 			_ = json.Unmarshal(raw, &v)
 			out.DefaultWorkerSlots = &v
+		case ConfigKeyStagePersonas:
+			m, err := decodePersonaMap(raw)
+			if err != nil {
+				return nil, &GuardError{Code: GuardInput, Detail: fmt.Sprintf("%s: %s", key, err.Error())}
+			}
+			out.StagePersonas = &m
 		}
 	}
 	return out, nil
@@ -221,6 +348,11 @@ func ValidateBoardConfigOverride(o *BoardConfigOverride) error {
 	}
 	if o.DefaultWorkerSlots != nil {
 		if err := ValidateBoardConfigKey(ConfigKeyDefaultWorkerSlots, mustMarshalJSON(*o.DefaultWorkerSlots)); err != nil {
+			return err
+		}
+	}
+	if o.StagePersonas != nil {
+		if err := ValidateBoardConfigKey(ConfigKeyStagePersonas, mustMarshalJSON(*o.StagePersonas)); err != nil {
 			return err
 		}
 	}
@@ -285,6 +417,9 @@ func (o *BoardConfigOverride) rows() []configRow {
 	}
 	if o.DefaultWorkerSlots != nil {
 		out = append(out, configRow{Key: ConfigKeyDefaultWorkerSlots, Value: mustMarshalJSON(*o.DefaultWorkerSlots)})
+	}
+	if o.StagePersonas != nil {
+		out = append(out, configRow{Key: ConfigKeyStagePersonas, Value: mustMarshalJSON(*o.StagePersonas)})
 	}
 	return out
 }

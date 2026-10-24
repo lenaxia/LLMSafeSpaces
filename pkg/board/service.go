@@ -69,16 +69,15 @@ func WithPendingInputSource(src PendingInputSource) Option {
 // adapter. Safe for concurrent use (pgxpool arbitrates; Postgres is the
 // only scheduler state).
 type Service struct {
-	store          *Store
-	cfg            EngineConfig
-	failpoint      Failpoint
-	spawner        WorkerSpawner
-	reviewAssigner ReviewAssigner
-	asyncSpawn     bool
-	driveQueue     chan<- string
-	aborter        WorkerAborter
-	drift          PRDriftSource
-	pending        PendingInputSource
+	store      *Store
+	cfg        EngineConfig
+	failpoint  Failpoint
+	spawner    WorkerSpawner
+	asyncSpawn bool
+	driveQueue chan<- string
+	aborter    WorkerAborter
+	drift      PRDriftSource
+	pending    PendingInputSource
 	// turnEvidence is the #1832 WS4 stillborn guard's source: a
 	// session's actual message/output count. Nil = the guard is inert
 	// (today's timestamp-rule semantics).

@@ -29,6 +29,14 @@ const PC_B: ProjectBoardConfig = {
   overrides: {},
   effective: USER,
 };
+// Round-1 review finding: a project carrying a STORED stagePersonas
+// override — a Settings save of the OTHER keys must carry it back
+// verbatim (the server PUT is REPLACE: absent keys are deletes).
+const PC_PERSONAS: ProjectBoardConfig = {
+  project_id: "prj-cccc3333",
+  overrides: { stagePersonas: { in_review: { name: "auditor", instructions: "Verify." } } },
+  effective: { ...USER, stagePersonas: { in_review: { name: "auditor", instructions: "Verify." } } },
+};
 
 function renderTab() {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -47,9 +55,10 @@ beforeEach(() => {
   vi.mocked(boardApi.listProjects).mockResolvedValue([
     { id: "p1", short_id: "prj-aaaa1111", name: "Apollo", status: "active", tags: [], created_at: "", updated_at: "", worker_slots: 2, target_workspace_id: "ws-1" },
     { id: "p2", short_id: "prj-bbbb2222", name: "Borealis", status: "active", tags: [], created_at: "", updated_at: "", worker_slots: 2, target_workspace_id: "ws-1" },
+    { id: "p3", short_id: "prj-cccc3333", name: "Cerberus", status: "active", tags: [], created_at: "", updated_at: "", worker_slots: 2, target_workspace_id: "ws-1" },
   ] as never);
   vi.mocked(boardApi.getProjectBoardConfig).mockImplementation(async (id: string) =>
-    id === "prj-aaaa1111" ? PC_A : PC_B,
+    id === "prj-aaaa1111" ? PC_A : id === "prj-cccc3333" ? PC_PERSONAS : PC_B,
   );
   vi.mocked(boardApi.setUserBoardConfig).mockResolvedValue(USER);
   vi.mocked(boardApi.setProjectBoardConfig).mockImplementation(async (id: string) => (id === "prj-aaaa1111" ? PC_A : PC_B));
@@ -71,7 +80,27 @@ describe("BoardConfigTab — #1832 item 6 (2/2)", () => {
     await user.click(screen.getByTestId("cfg-save-global"));
     await waitFor(() => expect(boardApi.setUserBoardConfig).toHaveBeenCalled());
     const body = vi.mocked(boardApi.setUserBoardConfig).mock.calls[0]![0];
-    expect(body).toEqual({ reviewColumn: "manual", autoAssignReviewer: false, defaultWorkerSlots: 3 });
+    // Round-2 pin: nothing stored, stagePersonasSet falsy → the save
+  // MUST NOT materialize a stagePersonas key ({} would become an
+  // explicit opt-out row and silently suppress the flipped default).
+  expect(body).toEqual({ reviewColumn: "manual", autoAssignReviewer: false, defaultWorkerSlots: 3 });
+  });
+
+  it("round-2 pin: an explicitly-SET stagePersonas map is carried back verbatim (REPLACE never wipes it)", async () => {
+    const user = userEvent.setup();
+    vi.mocked(boardApi.getUserBoardConfig).mockResolvedValue({
+      ...USER,
+      stagePersonas: { in_review: { name: "auditor", instructions: "Verify." } },
+      stagePersonasSet: true,
+    });
+    renderTab();
+    await screen.findByTestId("cfg-save-global");
+    const slots = screen.getByTestId("cfg-defaultWorkerSlots");
+    await user.type(slots.querySelector("input")!, "4");
+    await user.click(screen.getByTestId("cfg-save-global"));
+    await waitFor(() => expect(boardApi.setUserBoardConfig).toHaveBeenCalled());
+    const body = vi.mocked(boardApi.setUserBoardConfig).mock.calls[0]![0];
+    expect(body.stagePersonas).toEqual({ in_review: { name: "auditor", instructions: "Verify." } });
   });
 
   it("client validation mirrors the server: slots < 1 blocks the send (no PUT fires)", async () => {
@@ -105,6 +134,24 @@ describe("BoardConfigTab — #1832 item 6 (2/2)", () => {
     expect(id).toBe("prj-bbbb2222");
     expect(Object.keys(body)).toEqual(["autoAssignReviewer"]);
     expect((body as { autoAssignReviewer?: boolean }).autoAssignReviewer).toBe(true);
+  });
+
+  it("round-1 pin: saving a project's OTHER keys carries the stored stagePersonas override back verbatim (REPLACE never silently wipes personas)", async () => {
+    const user = userEvent.setup();
+    renderTab();
+    const sel = await screen.findByTestId("cfg-ov-prj-cccc3333-reviewColumn");
+    await user.click(sel);
+    await user.click(await screen.findByRole("option", { name: "manual" }));
+    await user.click(screen.getByTestId("cfg-save-prj-cccc3333"));
+    await waitFor(() => expect(boardApi.setProjectBoardConfig).toHaveBeenCalled());
+    const [id, body] = vi.mocked(boardApi.setProjectBoardConfig).mock.calls[0]!;
+    expect(id).toBe("prj-cccc3333");
+    expect((body as { reviewColumn?: string }).reviewColumn).toBe("manual");
+    expect((body as { stagePersonas?: unknown }).stagePersonas).toEqual({
+      in_review: { name: "auditor", instructions: "Verify." },
+    });
+    // The toggles-only save carries personas verbatim; nothing else rides.
+    expect(Object.keys(body).sort()).toEqual(["reviewColumn", "stagePersonas"]);
   });
 
   it("Inherit-everything sends {} (full inheritance)", async () => {

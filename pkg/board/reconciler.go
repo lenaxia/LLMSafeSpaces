@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strconv"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -42,6 +43,8 @@ const sweepScope = "default"
 const (
 	fpRC1Pre       = "rc1.pre"
 	fpRC1Post      = "rc1.post"
+	fpPersonaPre   = "persona.pre"
+	fpPersonaPost  = "persona.post"
 	fpDispatchPre  = "dispatch.pre"
 	fpPendingPre   = "pending.pre"
 	fpRC2Pre       = "rc2.pre"
@@ -100,6 +103,24 @@ func (r *Reconciler) Sweep(ctx context.Context) (SweepResult, error) {
 	res.Reclaims = reclaims
 	if err := s.failAt(ctx, fpRC1Post); err != nil {
 		return res, err
+	}
+
+	// --- stage-persona claim reclaims (in_review lapse + re-arm) --------
+	if err := s.failAt(ctx, fpPersonaPre); err != nil {
+		return res, err
+	}
+	personaOut, err := s.rc1PersonaClaims(ctx)
+	if err != nil {
+		return res, err
+	}
+	res.PersonaReclaims = personaOut.applied
+	if err := s.failAt(ctx, fpPersonaPost); err != nil {
+		return res, err
+	}
+	// Post-commit (r1-C5): the re-arm mints committed above — the
+	// fresh persona workers spawn only now.
+	for _, n := range personaOut.spawns {
+		n.fire(ctx, s)
 	}
 
 	// --- pending-input coupling (worker origin) ------------------------
@@ -296,6 +317,242 @@ func (s *Service) rc1Reclaims(ctx context.Context) (int, error) {
 		return 0, err
 	}
 	return applied, nil
+}
+
+// personaReclaimEvents + spawn nudges are the stage-persona claim
+// lifecycle's sweep outputs (collected inside the RC1 transaction,
+// published/spawned post-commit).
+type personaReclaim struct {
+	spawns  []nudge
+	applied int
+}
+
+// rc1PersonaClaims converges stage-persona claims outside in_progress
+// (in_review today — the only other stage a live claim exists in):
+//
+// (a) LAPSE pass — in_review rows holding an EXPIRED persona lease.
+//
+//	With the stage's persona still configured: #1813 accounting
+//	(consecutive failure count + doubling backoff cooldown), the
+//	dead claim cleared, a deterministic reclaim event. With the
+//	persona config REMOVED mid-flight: the row converges to today's
+//	unclaimed in_review shape (token+lease cleared, no accounting —
+//	the mechanism left, not the worker).
+//
+// (b) RE-ARM pass — unclaimed in_review rows past their cooldown with
+//
+//	a persona configured: a fresh re-claim-class mint + post-commit
+//	spawn of a FRESH persona worker (the dead-persona-worker
+//	lease-lapse → fresh-reclaim path). A failure_count at the
+//	attempts cap escalates to pending_input/escalated instead (the
+//	human-only exit — a dead-persona loop never spins unbounded;
+//	attempts themselves are never incremented by persona mints).
+//
+// Runs in its OWN transaction after rc1Reclaims (a fault at either
+// failpoint aborts only its phase; the next sweep converges).
+func (s *Service) rc1PersonaClaims(ctx context.Context) (personaReclaim, error) {
+	var out personaReclaim
+	sys := Actor{Kind: ActorSystem, Surface: SurfaceReconciler}
+
+	// --- (a) lapse pass ---------------------------------------------------
+	rows, err := s.q().Query(ctx, `
+		SELECT t.id, t.project_id, COALESCE(t.lease_expires_at::text, 'null'), t.failure_count
+		FROM tasks t
+		WHERE t.stage='in_review' AND t.lease_expires_at IS NOT NULL AND t.lease_expires_at < now()`)
+	if err != nil {
+		return out, err
+	}
+	type lapseVictim struct {
+		id, project, episode string
+		failures             int32
+	}
+	var lapses []lapseVictim
+	for rows.Next() {
+		var v lapseVictim
+		if err := rows.Scan(&v.id, &v.project, &v.episode, &v.failures); err != nil {
+			rows.Close()
+			return out, err
+		}
+		lapses = append(lapses, v)
+	}
+	rows.Close()
+
+	for _, v := range lapses {
+		var persona *PersonaConfig
+		if p := s.projectFor(ctx, v.project); p != nil {
+			persona = s.stagePersona(ctx, p, StageInReview)
+		}
+		tx, err := s.store.pool.Begin(ctx)
+		if err != nil {
+			return out, err
+		}
+		if persona == nil {
+			// Config removed mid-flight: converge to today's unclaimed
+			// in_review shape (no accounting, no transition).
+			tag, err := tx.Exec(ctx, `
+				UPDATE tasks SET claim_token=NULL, lease_expires_at=NULL
+				WHERE id=$1 AND stage='in_review' AND lease_expires_at < now()`, v.id)
+			if err != nil {
+				_ = tx.Rollback(ctx)
+				return out, err
+			}
+			if tag.RowsAffected() == 0 {
+				_ = tx.Rollback(ctx)
+				continue // raced a concurrent writer: converged by them
+			}
+			evt, err := recordEventTx(ctx, tx, v.project, "reconciler:reclaim:"+v.id+":"+v.episode,
+				"reclaim", "task", v.id, sys,
+				map[string]any{"task_id": v.id, "stage": StageInReview, "persona_cleared": true})
+			if err != nil {
+				_ = tx.Rollback(ctx)
+				return out, err
+			}
+			if err := s.commitPublishing(ctx, tx, evt); err != nil {
+				return out, err
+			}
+			out.applied++
+			continue
+		}
+		// #1813: the persona lease lapse IS the attempt failure — mark
+		// it, count it CONSECUTIVELY, park behind doubling backoff
+		// (the re-arm pass below honors the cooldown; auto-return, never
+		// a stage change — the review work is done, only the reviewer
+		// died).
+		tag, err := tx.Exec(ctx, `
+			UPDATE tasks SET claim_token=NULL, lease_expires_at=NULL,
+				last_attempt_failed=true, failure_count=failure_count+1, last_failure_at=now(),
+				cooldown_until=now()+make_interval(secs=>$2::float8)
+			WHERE id=$1 AND stage='in_review' AND lease_expires_at < now()`,
+			v.id, s.cfg.failureBackoff(int(v.failures)+1).Seconds())
+		if err != nil {
+			_ = tx.Rollback(ctx)
+			return out, err
+		}
+		if tag.RowsAffected() == 0 {
+			_ = tx.Rollback(ctx)
+			continue
+		}
+		evt, err := recordEventTx(ctx, tx, v.project, "reconciler:reclaim:"+v.id+":"+v.episode,
+			"reclaim", "task", v.id, sys,
+			map[string]any{"task_id": v.id, "stage": StageInReview, "persona": persona.Name,
+				"failure_count": v.failures + 1, "last_attempt_failed": true, "last_failure_at": time.Now().UTC()})
+		if err != nil {
+			_ = tx.Rollback(ctx)
+			return out, err
+		}
+		if err := s.commitPublishing(ctx, tx, evt); err != nil {
+			return out, err
+		}
+		out.applied++
+	}
+
+	// --- (b) re-arm pass --------------------------------------------------
+	// personaRearmCandidatesSQL (persona.go — the ownership-adjacent
+	// seam) selects unclaimed, cooldown-expired, NOT-paused rows with
+	// NO config prefilter: under the flipped floor the persona fires
+	// with zero stored rows, so any EXISTS gate would exclude the
+	// shipped default posture (round-2 review, blocking). Go's
+	// stagePersona resolution is the sole authority; a candidate with
+	// no resolved persona is skipped without a write. A paused
+	// escalated row waits for resume to converge (pause gates claims;
+	// pending_input entry while paused is legal either way).
+	rows, err = s.q().Query(ctx, personaRearmCandidatesSQL)
+	if err != nil {
+		return out, err
+	}
+	type rearmCandidate struct {
+		id, project string
+		failures    int32
+	}
+	var candidates []rearmCandidate
+	for rows.Next() {
+		var v rearmCandidate
+		if err := rows.Scan(&v.id, &v.project, &v.failures); err != nil {
+			rows.Close()
+			return out, err
+		}
+		candidates = append(candidates, v)
+	}
+	rows.Close()
+
+	for _, v := range candidates {
+		p := s.projectFor(ctx, v.project)
+		if p == nil {
+			continue
+		}
+		persona := s.stagePersona(ctx, p, StageInReview)
+		if persona == nil {
+			continue
+		}
+		tx, err := s.store.pool.Begin(ctx)
+		if err != nil {
+			return out, err
+		}
+		// Claim-time escalation (the AttemptsCap discipline): a persona
+		// row whose consecutive failures reached the cap escalates to
+		// pending_input — the human-only exit arbitrates the loop.
+		if int(v.failures) >= s.cfg.AttemptsCap {
+			tag, err := tx.Exec(ctx, `
+				UPDATE tasks SET stage='pending_input', stage_entered_at=now(), pending_origin='escalated',
+					cooldown_until=NULL
+				WHERE id=$1 AND stage='in_review' AND claim_token IS NULL`, v.id)
+			if err != nil {
+				_ = tx.Rollback(ctx)
+				return out, err
+			}
+			if tag.RowsAffected() == 0 {
+				_ = tx.Rollback(ctx)
+				continue
+			}
+			if err := writeTransition(ctx, txQ{tx}, v.id, StageInReview, StagePendingInput, "", sys); err != nil {
+				_ = tx.Rollback(ctx)
+				return out, err
+			}
+			// Episode-unique id (nanos): failure_count resets on the
+			// human re-arm (rearm.go) — an id keyed on the count would
+			// collide across escalation episodes and silently drop the
+			// audit event (ON CONFLICT DO NOTHING).
+			evt, err := recordEventTx(ctx, tx, v.project, "reconciler:escalate:"+v.id+":"+strconv.FormatInt(time.Now().UnixNano(), 10),
+				"escalate", "task", v.id, sys,
+				map[string]any{"task_id": v.id, "stage": StageInReview, "persona": persona.Name,
+					"failure_count": v.failures, "exhausted": true})
+			if err != nil {
+				_ = tx.Rollback(ctx)
+				return out, err
+			}
+			if err := s.commitPublishing(ctx, tx, evt); err != nil {
+				return out, err
+			}
+			out.applied++
+			continue
+		}
+		token := uuidNew()
+		tag, err := tx.Exec(ctx, `
+			UPDATE tasks SET `+personaClaimSQL+`
+			WHERE id=$1 AND stage='in_review' AND claim_token IS NULL AND NOT paused
+			  AND (cooldown_until IS NULL OR cooldown_until < now())`,
+			v.id, token, s.cfg.LeaseDuration.Seconds())
+		if err != nil {
+			_ = tx.Rollback(ctx)
+			return out, err
+		}
+		if tag.RowsAffected() == 0 {
+			_ = tx.Rollback(ctx)
+			continue // raced (cooldown/re-arm elsewhere): converged
+		}
+		evt, err := personaClaimEventTx(ctx, tx, v.project, v.id, StageInReview, persona, "reconciler", int(v.failures))
+		if err != nil {
+			_ = tx.Rollback(ctx)
+			return out, err
+		}
+		if err := s.commitPublishing(ctx, tx, evt); err != nil {
+			return out, err
+		}
+		// Post-commit spawn (r1-C5): the fresh persona worker's charter
+		// carries the minted token; spawnFor re-resolves the persona.
+		out.spawns = append(out.spawns, nudge{taskID: v.id, token: token, spawn: true})
+	}
+	return out, nil
 }
 
 // dispatchDrive feeds claimable work to fresh workers via the engine
@@ -787,10 +1044,11 @@ func (r *Reconciler) Start(ctx context.Context) error {
 					"error", err.Error())
 				continue
 			}
-			if res.Reclaims+res.DriftDone+res.DriftReview+res.DriftReentry+res.DepRepairs+
+			if res.Reclaims+res.PersonaReclaims+res.DriftDone+res.DriftReview+res.DriftReentry+res.DepRepairs+
 				res.PendingStaged+res.Resumes+res.EpicCompletions > 0 {
 				slog.InfoContext(ctx, "board: reconciler sweep",
-					"reclaims", res.Reclaims, "drift_done", res.DriftDone, "drift_review", res.DriftReview,
+					"reclaims", res.Reclaims, "persona_reclaims", res.PersonaReclaims,
+					"drift_done", res.DriftDone, "drift_review", res.DriftReview,
 					"drift_reentry", res.DriftReentry, "dep_repairs", res.DepRepairs,
 					"pending_staged", res.PendingStaged,
 					"resumes", res.Resumes, "epic_completions", res.EpicCompletions)

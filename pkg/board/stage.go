@@ -54,10 +54,20 @@ func (s *Service) MoveStage(ctx context.Context, actor Actor, taskID, shortIDOrI
 	if err := requireOwner(actor, p.UserID); err != nil {
 		return nil, err
 	}
+	// Stage-persona claim-then-spawn (owner directive 2026-10-24):
+	// resolve the TARGET stage's persona before the transition — an
+	// entry into a persona-bearing stage mints the persona claim inside
+	// the same transaction (claim-before-spawn; the spawn itself rides
+	// the post-commit nudge, r1-C5). nil persona = today's behavior,
+	// byte-identically.
+	var entryPersona *PersonaConfig
+	if toStage == StageInReview {
+		entryPersona = s.stagePersona(ctx, p, StageInReview)
+	}
 	ew := &eventWriter{svc: s, projectID: p.ID, requestID: requestID, action: "move_stage", itemKind: "task", itemID: t.ID, actor: actor}
 	var pendingNudge nudge
 	_, dup, err := ew.run(ctx, func(tx pgx.Tx) (map[string]any, error) {
-		res, n, err := s.moveStageTx(ctx, tx, actor, t.ID, toStage, evidenceURL)
+		res, n, err := s.moveStageTx(ctx, tx, actor, t.ID, toStage, evidenceURL, entryPersona)
 		pendingNudge = n
 		if err != nil {
 			return nil, err
@@ -75,15 +85,6 @@ func (s *Service) MoveStage(ctx context.Context, actor Actor, taskID, shortIDOrI
 	// cooldown expires (the sweep observes the expiry).
 	if toStage == StageDone {
 		s.pokeDrive(p.ID)
-	}
-	// #1832 item 5 (2/2): →in_review consults the effective config —
-	// reviewColumn=auto AND autoAssignReviewer dispatches a reviewer
-	// directly (never queued behind the worker FIFO). manual/off keep
-	// today's behavior exactly. A REPLAYED move (duplicate requestID,
-	// 200-with-original) does NOT re-dispatch — the original invocation's
-	// reviewer is already in flight.
-	if toStage == StageInReview && dup == nil {
-		s.maybeAutoAssignReview(ctx, p, t)
 	}
 	_ = dup // 200-with-original: the reloaded row IS the original outcome
 	out, err := s.store.resolveTask(ctx, s.q(), p.ID, t.ID)
@@ -104,8 +105,11 @@ func structMap(r moveStageResult) map[string]any {
 
 // moveStageTx performs one guarded transition inside tx. The row is
 // locked and re-read (server arbitration): a raced write sees the fresh
-// stage and fails cleanly.
-func (s *Service) moveStageTx(ctx context.Context, tx pgx.Tx, actor Actor, taskID, toStage, evidenceURL string) (moveStageResult, nudge, error) {
+// stage and fails cleanly. entryPersona is the target stage's resolved
+// persona for a persona-bearing ENTRY (→in_review today); non-nil, the
+// transition mints the persona claim in the same statement set and the
+// returned nudge spawns the persona worker post-commit.
+func (s *Service) moveStageTx(ctx context.Context, tx pgx.Tx, actor Actor, taskID, toStage, evidenceURL string, entryPersona *PersonaConfig) (moveStageResult, nudge, error) {
 	cur, err := s.store.taskForUpdate(ctx, tx, taskID)
 	if err != nil {
 		return moveStageResult{}, nudge{}, err
@@ -166,8 +170,37 @@ func (s *Service) moveStageTx(ctx context.Context, tx pgx.Tx, actor Actor, taskI
 		// The identity is retained (the bounce/RC2 consumer, §4.1).
 		// #1813: a completed turn is SUCCESS — the failure overlay and
 		// its consecutive count reset here.
-		resulting, err = s.updateStageTx(ctx, tx, taskID, from, toStage,
-			`claim_token=NULL, lease_expires_at=NULL, claim_incremented_attempts=false`+reset_overlay, evidenceURL, actor)
+		//
+		// Stage-persona claim-then-spawn: with a persona configured for
+		// in_review the ENTRY mints the persona claim (fresh token +
+		// lease for the reviewer-class worker — one lease, one token,
+		// the same guarded spawn-stamp as every claim) in the SAME
+		// transaction, and the nudge spawns post-commit. No persona:
+		// today's shape exactly (token+lease cleared, nothing spawned).
+		if entryPersona != nil {
+			// Same forward-exit statement as the no-persona shape (the
+			// implementer's token+lease end here; identity retained),
+			// then the persona mint layers the reviewer-class claim on
+			// top — one transaction, claim-before-spawn.
+			resulting, err = s.updateStageTx(ctx, tx, taskID, from, toStage,
+				`claim_token=NULL, lease_expires_at=NULL, claim_incremented_attempts=false`+reset_overlay, evidenceURL, actor)
+			if err == nil {
+				var token string
+				token, err = s.personaClaimMintTx(ctx, tx, taskID, StageInReview)
+				if err == nil {
+					var evt Event
+					evt, err = personaClaimEventTx(ctx, tx, cur.ProjectID, taskID, StageInReview, entryPersona, "engine", cur.Attempts)
+					if err == nil {
+						// The mint's event rides the nudge for post-commit
+						// SSE publication (§4.6 persist-then-publish).
+						postNudge = nudge{taskID: taskID, token: token, spawn: true, events: []Event{evt}}
+					}
+				}
+			}
+		} else {
+			resulting, err = s.updateStageTx(ctx, tx, taskID, from, toStage,
+				`claim_token=NULL, lease_expires_at=NULL, claim_incremented_attempts=false`+reset_overlay, evidenceURL, actor)
+		}
 
 	case from == StageInProgress && toStage == StageDone:
 		if err := s.doneGuard(cur, evidenceURL); err != nil {
@@ -412,7 +445,13 @@ func (s *Service) Heartbeat(ctx context.Context, actor Actor, taskID, shortIDOrI
 	if err != nil {
 		return HeartbeatResult{}, err
 	}
-	if t.Stage != StageInProgress || actor.ClaimToken == "" || actor.ClaimToken != t.ClaimToken {
+	// A live claim exists in in_progress (the worker grant/re-claim)
+	// and in in_review (the stage-persona claim — a persona worker
+	// holds the same token+lease and renews under the same evidence
+	// rule). An UNCLAIMED in_review row has a NULL token and rejects
+	// (empty token never matches) — today's semantics, unchanged.
+	claimStage := t.Stage == StageInProgress || (t.Stage == StageInReview && t.ClaimToken != "")
+	if !claimStage || actor.ClaimToken == "" || actor.ClaimToken != t.ClaimToken {
 		return HeartbeatResult{}, &GuardError{Code: GuardClaimToken, Detail: "heartbeat requires a live claim (stage + token)"}
 	}
 	serverNow := time.Now().UTC()
@@ -424,7 +463,6 @@ func (s *Service) Heartbeat(ctx context.Context, actor Actor, taskID, shortIDOrI
 	case observedProgressAt.After(serverNow):
 		observedProgressAt = serverNow // clamp: THIS stamp stores server-clock — the future direction never stores a client stamp (past-skewed stamps store verbatim)
 	}
-	// Evidence gate: extend only when the watermark moved past the stored
 	// Evidence gate: extend only when the watermark moved past the stored
 	// progress watermark. A stored watermark ahead of the server clock is
 	// pre-fix poison (the C1 lockout) and reads as stale — never as
@@ -456,7 +494,7 @@ func (s *Service) Heartbeat(ctx context.Context, actor Actor, taskID, shortIDOrI
 	if extends {
 		if err := s.q().QueryRow(ctx, `
 			UPDATE tasks SET last_progress_at=$2, lease_expires_at=now()+make_interval(secs=>$3::float8)
-			WHERE id=$1 AND stage='in_progress' AND claim_token=$4
+			WHERE id=$1 AND stage IN ('in_progress','in_review') AND claim_token=$4
 			RETURNING lease_expires_at`,
 			t.ID, observedProgressAt, s.cfg.LeaseDuration.Seconds(), actor.ClaimToken).Scan(&lease); err != nil {
 			return HeartbeatResult{}, err

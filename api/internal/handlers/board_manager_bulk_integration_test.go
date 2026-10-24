@@ -52,7 +52,8 @@ func TestIntegrationBoardManagerMoveStageBulk(t *testing.T) {
 
 	ctx := context.Background()
 	_, err = pool.Exec(ctx, `
-		TRUNCATE TABLE board_events, board_transitions, board_dependencies, board_sweeps, tasks, epics, projects
+		TRUNCATE TABLE board_events, board_transitions, board_dependencies, board_sweeps, tasks, epics, projects,
+			board_config_defaults, board_project_config_overrides
 		CASCADE
 	`)
 	require.NoError(t, err)
@@ -60,6 +61,16 @@ func TestIntegrationBoardManagerMoveStageBulk(t *testing.T) {
 		INSERT INTO users (id, username, email, password_hash, active, role)
 		VALUES ('user-7', 'user-7', 'board1836@example.com', 'hash', true, 'user')
 		ON CONFLICT (id) DO NOTHING
+	`)
+	require.NoError(t, err)
+	// Stage-persona isolation (the #1939 flipped floor + the stage-
+	// persona mechanism fire the reviewer persona on every un-
+	// configured ->in_review): this suite pins bulk-manager semantics,
+	// so seed the user-level explicit {} opt-out.
+	_, err = pool.Exec(ctx, `
+		INSERT INTO board_config_defaults (user_id, key, value)
+		VALUES ('user-7', 'stagePersonas', '{}'::jsonb)
+		ON CONFLICT (user_id, key) DO NOTHING
 	`)
 	require.NoError(t, err)
 	for _, ws := range []string{wsPod, wsForeign} {

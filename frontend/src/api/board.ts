@@ -230,10 +230,24 @@ export function newBoardRequestId(): string {
 
 // --- #1832 item 6: board config shapes (mirror pkg/board/config.go) ------------
 
+/** One stage's configured agent persona (stage-persona
+ * claim-then-spawn; instructions are an optional charter preamble). */
+export type BoardPersonaConfig = {
+  name: string;
+  instructions?: string;
+};
+
 export type BoardConfig = {
   reviewColumn: string; // "off" | "manual" | "auto"
   autoAssignReviewer: boolean;
   defaultWorkerSlots: number;
+  /** Stage → persona. Merges per-KEY: a set object replaces the
+   * inherited map wholesale; {} is the explicit opt-out. */
+  stagePersonas?: Record<string, BoardPersonaConfig>;
+  /** Whether stagePersonas was EXPLICITLY set at any merged tier —
+   * the REPLACE-tier carry-through rule (never materialize {} when
+   * nothing was stored; never delete a stored map). */
+  stagePersonasSet?: boolean;
 };
 
 /** Partial config — absent keys inherit; never null on the wire. */
@@ -241,6 +255,7 @@ export type BoardConfigOverride = {
   reviewColumn?: string;
   autoAssignReviewer?: boolean;
   defaultWorkerSlots?: number;
+  stagePersonas?: Record<string, BoardPersonaConfig>;
 };
 
 /** The project tier's override input: defaultWorkerSlots is a
@@ -249,6 +264,7 @@ export type BoardConfigOverride = {
 export type ProjectBoardConfigOverrideInput = {
   reviewColumn?: string;
   autoAssignReviewer?: boolean;
+  stagePersonas?: Record<string, BoardPersonaConfig>;
 };
 
 export type ProjectBoardConfig = {

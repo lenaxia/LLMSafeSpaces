@@ -175,6 +175,15 @@ type Claim struct {
 	// order — the charter envelope embeds them for the next claimant
 	// after a fail-bounce (iteration history, never a failure count).
 	VerdictChain []Verdict `json:"verdictChain,omitempty"`
+	// Persona (stage-persona claim-then-spawn, owner directive
+	// 2026-10-24): the configured agent persona this claim's spawned
+	// session is chartered as. nil = the default worker charter
+	// (byte-identical to today's spawn).
+	Persona *PersonaConfig `json:"persona,omitempty"`
+	// Stage is the stage this claim lives in (the persona resolution
+	// key and the guarded spawn-stamp's stage predicate). Empty = the
+	// worker-grant default (in_progress).
+	Stage string `json:"stage,omitempty"`
 }
 
 // SearchFilters scopes a board search (design §4.8's search box: project
@@ -268,6 +277,7 @@ type HeartbeatResult struct {
 type SweepResult struct {
 	Dispatched      int `json:"dispatched"`       // §4.4 sweep-backstop drive
 	Reclaims        int `json:"reclaims"`         // RC1
+	PersonaReclaims int `json:"persona_reclaims"` // stage-persona claim lapses/re-arms/escalations (in_review)
 	DriftDone       int `json:"drift_done"`       // RC2 merged, criteria met
 	DriftReview     int `json:"drift_review"`     // RC2 merged, criteria unmet
 	DriftReentry    int `json:"drift_reentry"`    // RC2 closed-unmerged → in_progress

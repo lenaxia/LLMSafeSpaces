@@ -1601,14 +1601,15 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 					&apiwf.HTTPAgentExecutor{Port: 4097, PasswordProvider: proxyHandler},
 				)),
 				board.WithAsyncSpawn(),
-				// #1832 item 5 (2/2): config-gated review auto-assign —
-				// a dedicated reviewer session dispatched directly when a
-				// task enters in_review under reviewColumn=auto +
-				// autoAssignReviewer=true (manual/off unchanged).
-				board.WithReviewAssigner(newReviewAssigner(
-					&apiwf.K8sWorkspaceActivator{K8sClient: k8sClient, Namespace: cfg.Kubernetes.Namespace},
-					&apiwf.HTTPAgentExecutor{Port: 4097, PasswordProvider: proxyHandler},
-				)),
+				// Stage-persona claim-then-spawn (owner directive
+				// 2026-10-24): the ONE generalized mechanism absorbed the
+				// dormant parallel auto-review assignment path (#1832
+				// item 5's ReviewAssigner) — a persona-bearing stage
+				// entry claims the row (lease + claim token) and spawns
+				// through the SAME worker spawner above; the reviewer
+				// persona rides the legacy reviewColumn=auto +
+				// autoAssignReviewer composition or the stagePersonas
+				// config key.
 				// #1747: the worker-directive seams — delete's in-flight
 				// abort + pause-must-pause halt/resume delivery, both on
 				// the pkg/agent adapter's session routes (no new
