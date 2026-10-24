@@ -43,6 +43,10 @@ export function BoardConfigTab() {
         reviewColumn: body.reviewColumn,
         autoAssignReviewer: body.autoAssignReviewer,
         defaultWorkerSlots: body.defaultWorkerSlots,
+        // The user PUT is REPLACE-semantics (absent key = revert to the
+        // code default): carry the loaded stagePersonas back verbatim
+        // or saving the tab would silently clear configured personas.
+        stagePersonas: body.stagePersonas ?? {},
       }),
     onSuccess: () => {
       setGlobalError(null);

@@ -73,7 +73,6 @@ type Service struct {
 	cfg            EngineConfig
 	failpoint      Failpoint
 	spawner        WorkerSpawner
-	reviewAssigner ReviewAssigner
 	asyncSpawn     bool
 	driveQueue     chan<- string
 	aborter        WorkerAborter
