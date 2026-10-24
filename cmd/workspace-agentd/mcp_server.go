@@ -340,6 +340,18 @@ func boardManagerTools() []mcpTool {
 			}, "required": []string{"taskIds", "toStage"}},
 		},
 		{
+			// #1836 sibling: the bulk delete — board_delete_task's batch
+			// twin (delete IS a manager action; only claim/create are
+			// owner-only, so unlike the bulk claim this form lives here).
+			Name:        "board_delete_tasks",
+			Description: "Bulk delete (#1836): the delete_task(s) batch — up to 50 destructive removals in ONE call, ONE shared reconnect flag. Each item is one full board_delete_task (its own snapshot-bearing audit event, orphan events + is_blocked rederive, post-commit worker abort for an in-flight row). Response is a per-item result array [{id, status: done|failed, orphaned_dependents?, reconnected?, error?}] — partial failures are reported per item, never all-or-nothing; one malformed id sinks only its own item. Idempotent retry for a destructive variant: re-submitting the batch is safe, and a miss, a foreign row, and an already-deleted row all render the SAME not_found item (absence is the done state — rendering it done would fabricate outcomes for foreign probes and leak foreign existence; never a conflict). Canonical use: cleanup sweeps after re-planning. Manager tool (user-collaborator sessions only).",
+			InputSchema: map[string]any{"type": "object", "properties": map[string]any{
+				"taskIds":   map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Task short ids (phrase form preferred; legacy forms and UUIDs resolve) — 1 to 50 items"},
+				"reconnect": map[string]any{"type": "boolean", "description": "The ONE shared reconnect flag: orphans of every deleted item inherit that item's direct upstream edges (deduplicated, cycle-guarded) — default off"},
+				"requestId": map[string]any{"type": "string", "description": "Idempotency key: ONE per logical batch, reused across retries of the same batch — reusing a batch's key for a DIFFERENT batch replays the first batch's recorded outcomes (stale done items)"},
+			}, "required": []string{"taskIds"}},
+		},
+		{
 			Name:        "board_import_plan",
 			Description: "Materialize an ENTIRE plan atomically (#1747): one epic + its tasks + dependency edges from a single payload, all-or-nothing. ALWAYS dry-run first (dryRun=true): the response renders the graph, warnings, and the initial ready set — show it to the user as the plan-approval moment; write only after approval. Tasks address each other by payload key. Nodes-per-epic and edges-per-node caps apply. Manager tool (user-collaborator sessions only).",
 			InputSchema: json.RawMessage(`{"properties":{"projectId":{"description":"Project short id (prj-… or UUID)","type":"string"},"epicTitle":{"description":"The created epic's title","type":"string"},"dryRun":{"description":"Validate + render only — nothing is written (the plan-approval moment)","type":"boolean"},"outcome":{"description":"The epic's outcome (steering wheel)","type":"string"},"tasks":{"description":"Plan nodes (#1849 atomic-create: a non-empty description and >=1 acceptance criterion per node are REQUIRED — the dry-run refuses seedless nodes; dependsOn names other KEYS in this payload)","items":{"properties":{"key":{"type":"string"},"title":{"type":"string"},"tags":{"items":{"type":"string"},"type":"array"},"dependsOn":{"items":{"type":"string"},"type":"array"},"acceptanceCriteria":{"type":"array"},"description":{"type":"string"}},"required":["key","title","description","acceptanceCriteria"],"type":"object"},"type":"array"}},"required":["projectId","epicTitle"],"type":"object"}`),
@@ -1066,6 +1078,7 @@ func callMCPTool(ctx context.Context, password, name string, args map[string]any
 		"board_add_dependency", "board_remove_dependency",
 		"board_delete_task", "board_pause_task", "board_resume_task", "board_rearm_task",
 		"board_move_stage_bulk",
+		"board_delete_tasks",
 		"board_import_plan":
 		// #1701: the board worker tools ride the same automation seam
 		// (pod SA token, verbatim passthrough, platform-validated).

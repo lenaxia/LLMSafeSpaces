@@ -5410,6 +5410,49 @@ paths:
           $ref: "#/components/responses/BoardNotFound"
         "409":
           $ref: "#/components/responses/BoardConflict"
+  /me/tasks/bulk-delete:
+    post:
+      tags: [board]
+      summary: "Bulk delete (#1836) - the delete_task(s) batch, per-item results"
+      description: |
+        The bulk form of delete-task: up to 50 destructive removals in
+        one call with ONE shared reconnect flag. Each item is ONE
+        full single-task delete - its own transaction, its own
+        delete_task audit event (with the full final-state snapshot),
+        its own orphan events + is_blocked rederive, and its own
+        post-commit worker abort for an in-flight row. The response is
+        a per-item result array - partial failures are reported per
+        item, never all-or-nothing; a done item echoes the single
+        form's orphaned_dependents (and reconnected pairs under
+        reconnect=true). Idempotent retry for a destructive variant:
+        re-submitting the batch is safe - a miss, a foreign row, and
+        an already-deleted row all render the SAME not_found item
+        (absence = miss = foreign - never disclosed, never a
+        conflict). The batch is capped at 50 items (a larger batch is
+        a 400, nothing processed).
+      operationId: deleteBoardTasksBulk
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/BoardBulkDeleteRequest"
+      responses:
+        "200":
+          description: The per-item result array (partial failures included)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BoardBulkResults"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/BoardNotFound"
+        "409":
+          $ref: "#/components/responses/BoardConflict"
   /me/tasks/{id}/pause:
     post:
       tags: [board]
@@ -13735,5 +13778,21 @@ components:
         evidenceUrl:
           type: string
           description: Artifact link applied to every item's transition (required when toStage is done)
+        requestId:
+          $ref: "#/components/schemas/BoardRequestId"
+    BoardBulkDeleteRequest:
+      type: object
+      required: [taskIds]
+      properties:
+        taskIds:
+          type: array
+          items:
+            type: string
+          minItems: 1
+          maxItems: 50
+          description: Task refs (phrase short ids preferred; legacy forms and UUIDs resolve)
+        reconnect:
+          type: boolean
+          description: The ONE shared reconnect flag - orphans of every deleted item inherit that item's direct upstream edges (deduplicated, cycle-guarded); default off
         requestId:
           $ref: "#/components/schemas/BoardRequestId"

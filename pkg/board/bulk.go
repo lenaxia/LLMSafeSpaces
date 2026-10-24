@@ -3,14 +3,16 @@
 
 package board
 
-// bulk.go — #1836's bulk claim/complete variants at the engine seam:
-// BulkTaskStart (the manual claim batch) and BulkMoveStage (the stage
-// batch — completing review sets is the lived pain). Each item is ONE
-// delegation to the single-task seam (TaskStart / MoveStage): every
-// landed item keeps its own transaction, its own board_events audit
-// row, its own board_transitions row, its own spawn/directive
-// side effects — the batch adds ONLY the per-item result envelope,
-// never a second write path.
+// bulk.go — #1836's bulk variants at the engine seam:
+// BulkTaskStart (the manual claim batch), BulkMoveStage (the stage
+// batch — completing review sets is the lived pain), and
+// BulkDeleteTasks (the delete_task(s) batch — the cleanup sweep).
+// Each item is ONE delegation to the single-task seam (TaskStart /
+// MoveStage / DeleteTask): every landed item keeps its own
+// transaction, its own board_events audit row, its own
+// board_transitions row, its own spawn/directive side effects — the
+// batch adds ONLY the per-item result envelope, never a second write
+// path.
 //
 // Contract (issue #1836):
 //   - Response = per-item result array {id, status: done|failed,
@@ -66,12 +68,17 @@ type BulkItemError struct {
 // caller's id verbatim (phrase, legacy, or UUID — self-identifying);
 // Escalated carries the claim variant's attempts-cap escalation (the
 // single-task Claim.Escalated flag — surfaced, never conflated with
-// failure); Error is present exactly on failed items.
+// failure); Orphaned/Reconnected echo the delete variant's affected-
+// party facts (the single form's DeleteResult fields — the sweep
+// caller sees who was unblocked without an events round-trip);
+// Error is present exactly on failed items.
 type BulkItemResult struct {
-	Ref       string         `json:"id"`
-	Status    string         `json:"status"`
-	Escalated bool           `json:"escalated,omitempty"`
-	Error     *BulkItemError `json:"error,omitempty"`
+	Ref         string         `json:"id"`
+	Status      string         `json:"status"`
+	Escalated   bool           `json:"escalated,omitempty"`
+	Orphaned    []string       `json:"orphaned_dependents,omitempty"`
+	Reconnected []string       `json:"reconnected,omitempty"`
+	Error       *BulkItemError `json:"error,omitempty"`
 }
 
 // bulkValidateBatch is the shared batch-level guard: presence and cap
@@ -231,3 +238,47 @@ func (s *Service) bulkMoveStageOne(ctx context.Context, actor Actor, ref, toStag
 // board.go — StageInVocabulary/StageVocabulary — shared with the
 // adapters' presence checks; per-item from-stage enumeration stays
 // the stage machine's.)
+
+// BulkDeleteTasks is the bulk delete (#1836's delete_task(s) batch):
+// each item is ONE full single-task DeleteTask — its own transaction,
+// its own delete_task audit event (with the full final-state
+// snapshot), its own orphan events + is_blocked rederive, its own
+// post-commit worker abort for an in-flight row. ONE shared reconnect
+// flag across the batch (per-item flags would be N single calls).
+//
+// The delete-variant's idempotent-retry rendering (documented delta
+// from the claim/move variants): a destructive item's "already-done"
+// state is row ABSENCE, indistinguishable from a miss and from a
+// foreign row — all three render the SAME bare not_found item
+// (absence ≡ miss ≡ foreign, the never-disclose triple-equality).
+// Rendering absence as done would fabricate an outcome for a foreign
+// probe AND disclose foreign-row existence (an existing-but-foreign
+// row returning not_found while an absent row returned done). The
+// re-submit is SAFE — no batch error, no second write, no second
+// audit row, no second abort — which is contract 2's substance for a
+// destructive variant.
+func (s *Service) BulkDeleteTasks(ctx context.Context, actor Actor, refs []string, reconnect bool, requestID string) ([]BulkItemResult, error) {
+	if err := bulkValidateBatch(refs); err != nil {
+		return nil, err
+	}
+	out := make([]BulkItemResult, 0, len(refs))
+	for _, ref := range refs {
+		out = append(out, s.bulkDeleteOne(ctx, actor, ref, reconnect, requestID))
+	}
+	return out, nil
+}
+
+func (s *Service) bulkDeleteOne(ctx context.Context, actor Actor, ref string, reconnect bool, requestID string) BulkItemResult {
+	if _, ok := s.bulkResolveItem(ctx, actor, ref); !ok {
+		// Miss ≡ foreign ≡ absent (a prior submission of this batch
+		// already landed): the same bare not_found item — never
+		// disclosed, never a conflict, no write.
+		return bulkFailedItem(ref, &NotFoundError{Item: "task", Identifier: ref})
+	}
+	out, err := s.DeleteTask(ctx, actor, "", ref, reconnect, bulkItemRequestID(requestID, ref))
+	if err != nil {
+		return bulkFailedItem(ref, err)
+	}
+	return BulkItemResult{Ref: ref, Status: BulkDone,
+		Orphaned: out.OrphanedDependents, Reconnected: out.Reconnected}
+}

@@ -96,3 +96,47 @@ func TestBoardTools_BulkRequiredArgs(t *testing.T) {
 
 // callBoardTool's bulk dispatch arms live in the shared switch
 // (board_tools_test.go); the Registration pin there carries the set.
+
+// #1836 sibling: the bulk delete tool. The allow arm rides the REST
+// bulk-delete route with the ONE shared reconnect flag; the refusals
+// (missing/empty/over-cap/malformed entries) front-run any wire call.
+func TestBoardTools_BulkDeleteAllowArm(t *testing.T) {
+	m := &MockAPIClient{}
+	m.On("BoardDeleteTasksBulk", mock.Anything, []string{"tsk-aaaa1111", "tsk-bbbb2222"}, true, "br-del-1").
+		Return(`{"results":[{"id":"tsk-aaaa1111","status":"done","orphaned_dependents":["tsk-orph"]}],"count":1}`, nil)
+	h := &handlers{client: m, timeout: 0}
+	res, err := callBoardTool(t, h, "board_delete_tasks",
+		map[string]any{"task_ids": []any{"tsk-aaaa1111", "tsk-bbbb2222"}, "reconnect": true, "request_id": "br-del-1"})
+	require.NoError(t, err)
+	require.NotNil(t, res)
+	assert.False(t, res.IsError, boardResultText(res))
+	m.AssertExpectations(t)
+}
+
+func TestBoardTools_BulkDeleteRequiredArgs(t *testing.T) {
+	var many []any
+	for i := 0; i < board.BulkMaxItems+1; i++ {
+		many = append(many, fmt.Sprintf("tsk-filler-%02d", i))
+	}
+	cases := []struct {
+		name string
+		args map[string]any
+	}{
+		{"delete_no_ids", map[string]any{}},
+		{"delete_empty_ids", map[string]any{"task_ids": []any{}}},
+		{"delete_over_cap", map[string]any{"task_ids": many}},
+		{"delete_bad_entry", map[string]any{"task_ids": []any{"tsk-aaaa1111", 7}}},
+		{"delete_empty_entry", map[string]any{"task_ids": []any{"tsk-aaaa1111", ""}}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			m := &MockAPIClient{} // no expectations: any wire call is a failure
+			h := &handlers{client: m, timeout: 0}
+			res, err := callBoardTool(t, h, "board_delete_tasks", tc.args)
+			require.NoError(t, err)
+			require.NotNil(t, res)
+			assert.True(t, res.IsError, "%s: the doomed call refuses at the tool tier", tc.name)
+			m.AssertNotCalled(t, "BoardDeleteTasksBulk", mock.Anything, mock.Anything, mock.Anything, mock.Anything)
+		})
+	}
+}

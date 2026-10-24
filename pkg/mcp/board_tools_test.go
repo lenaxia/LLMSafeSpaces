@@ -56,7 +56,7 @@ var boardToolNames = []string{
 	"board_record_verdict", "board_task_verdicts",
 	"board_create_project", "board_create_epic", "board_create_task",
 	"board_update_item", "board_move_stage", "board_start_task",
-	"board_start_tasks", "board_move_stage_bulk",
+	"board_start_tasks", "board_move_stage_bulk", "board_delete_tasks",
 	"board_epic_activate", "board_epic_pause", "board_epic_archive", "board_epic_unarchive",
 	"board_project_archive", "board_project_unarchive",
 	"board_project_pause", "board_project_resume",
@@ -634,6 +634,8 @@ func callBoardTool(t *testing.T, h *handlers, name string, args map[string]any) 
 		return h.boardStartTask(ctx, makeReq(name, args))
 	case "board_start_tasks":
 		return h.boardStartTasks(ctx, makeReq(name, args))
+	case "board_delete_tasks":
+		return h.boardDeleteTasks(ctx, makeReq(name, args))
 	case "board_move_stage_bulk":
 		return h.boardMoveStageBulk(ctx, makeReq(name, args))
 	case "board_epic_activate":

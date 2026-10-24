@@ -67,6 +67,9 @@ func TestMCPBoard_RegistryShape(t *testing.T) {
 		// #1836: the bulk complete (the bulk claim follows task_start's
 		// owner-surface-only boundary and is deliberately absent).
 		"board_move_stage_bulk",
+		// #1836 sibling: the bulk delete (delete_task's batch form —
+		// delete IS a manager action; only claim/create are owner-only).
+		"board_delete_tasks",
 	}
 	require.Len(t, board, len(want), "exactly the worker + #1747 manager board tools; got %v", board)
 	for _, name := range want {
@@ -414,6 +417,30 @@ func TestMCPBoard_ManagerWireContract(t *testing.T) {
 		var wire map[string]json.RawMessage
 		require.NoError(t, json.Unmarshal([]byte(rec.body), &wire))
 		assert.JSONEq(t, `true`, string(wire["dryRun"]))
+	})
+
+	t.Run("board_delete_tasks wire (#1836 sibling)", func(t *testing.T) {
+		api, rec := newAutomationAPI(t, 200, `{"results":[{"id":"tsk-cccc3333","status":"done","orphaned_dependents":["tsk-eeee5555"]}],"count":1}`)
+		setupRenameWorkspaceEnv(t, api)
+
+		out, err := mcpAutomation(context.Background(), mcpTestPassword, "board_delete_tasks", map[string]any{
+			"taskIds": []any{"tsk-cccc3333", "tsk-dddd4444"}, "reconnect": true,
+			"requestId":            "bulk-del-1",
+			"lsp_injected_session": "ses-1"})
+		require.NoError(t, err)
+		assert.Contains(t, out, "tsk-cccc3333")
+		assert.Equal(t, http.MethodPost, rec.method)
+		assert.Equal(t, "/internal/v1/automation/board/tasks/delete-bulk", rec.path)
+
+		var wire map[string]json.RawMessage
+		require.NoError(t, json.Unmarshal([]byte(rec.body), &wire))
+		assert.JSONEq(t, `["tsk-cccc3333","tsk-dddd4444"]`, string(wire["taskIds"]),
+			"the batch array reaches the wire verbatim")
+		assert.JSONEq(t, `true`, string(wire["reconnect"]),
+			"the ONE shared reconnect flag reaches the wire")
+		assert.JSONEq(t, `"bulk-del-1"`, string(wire["requestId"]))
+		assert.JSONEq(t, `"ses-1"`, string(wire["sessionId"]),
+			"the injected session identity rides the wire (audit attribution + the seam belt)")
 	})
 
 	t.Run("board_move_stage_bulk wire (#1836)", func(t *testing.T) {

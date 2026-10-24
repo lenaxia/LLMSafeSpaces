@@ -62,6 +62,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `TestReview_ExplicitOptOutSurvivesDefaultFlip`).
 - OpenAPI `BoardConfig` documents the new defaults; the Settings
   pre-data display fallbacks match the new floor.
+### Added — board bulk delete variant (#1836, partial)
+
+- **Bulk task delete with per-item result arrays** (#1836's
+  delete_task(s) batch — the issue's first-listed board sibling):
+  `BulkDeleteTasks` at the engine seam (each item ONE full
+  single-task DeleteTask — its own transaction, snapshot-bearing
+  audit event, orphan events + `is_blocked` rederive, post-commit
+  worker abort; ONE shared `reconnect` flag), rendered on REST
+  (`POST /api/v1/me/tasks/bulk-delete`), the agentd manager surface
+  (`board_delete_tasks` — delete IS a manager action; only
+  claim/create carry the owner-only boundary), and the external
+  platform MCP (`board_delete_tasks`). Delete-variant retry
+  semantics: absence ≡ miss ≡ foreign — all three render the same
+  bare `not_found` item (never disclosed, never a conflict on
+  re-submit); done items echo `orphaned_dependents`/`reconnected`.
+
 ### Added — board bulk claim/complete variants (#1836)
 
 - **Bulk task claim/complete with per-item result arrays** (#1836):
