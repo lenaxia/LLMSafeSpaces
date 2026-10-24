@@ -919,8 +919,26 @@ func (h *handlers) boardImportPlan(ctx context.Context, req mcp.CallToolRequest)
 					}
 				}
 			}
+			if arr, ok := m["acceptance_criteria"].([]any); ok {
+				for _, v := range arr {
+					if cm, ok := v.(map[string]any); ok {
+						c := BoardCriterion{}
+						c.Text, _ = cm["text"].(string)
+						if b, ok := cm["met"].(bool); ok {
+							c.Met = b
+						}
+						t.AcceptanceCriteria = append(t.AcceptanceCriteria, c)
+					}
+				}
+			}
 			if t.Key == "" || t.Title == "" {
 				return mcp.NewToolResultError("every plan task needs key and title"), nil
+			}
+			// #1849: the seed contract rides plan nodes — teach it at the
+			// same tier the schema does (the service refuses seedless
+			// nodes at dry-run; this front-runs the burned round-trip).
+			if t.Description == "" || len(t.AcceptanceCriteria) == 0 {
+				return mcp.NewToolResultError("every plan task needs a description (the worker's charter) and at least one acceptance criterion (#1849) — the dry-run refuses seedless nodes"), nil
 			}
 			body.Tasks = append(body.Tasks, t)
 		}

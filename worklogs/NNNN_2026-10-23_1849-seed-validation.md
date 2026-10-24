@@ -2,7 +2,7 @@
 
 **Date:** 2026-10-23
 **Session:** level-canal-indicates (lane-1837 follow-up)
-**Status:** in review (PR #1904)
+**Status:** In Progress
 
 ## Objective
 Implement #1849 items 1+6 per the orchestrator adjudication (comment
@@ -57,8 +57,9 @@ item 2 already subsumed by #1864.
 pkg/board/seed_validation{,_test,_integration_test}.go;
 pkg/board/{service,plan}.go; cmd/workspace-agentd/{mcp_server,
 mcp_tools,board_manager_e2e_integration_test}.go; pkg/mcp/board_tools.
-go; api/internal/handlers/{board.go,board_worker_semantics_integration
-_test.go,board_manager_semantics_integration_test.go}; frontend TaskDialog
+go; api/internal/handlers/{board_worker_semantics_integration_test.go,
+board_manager_semantics_integration_test.go,
+board_sse_live_integration_test.go}; frontend TaskDialog
 + board validation/swimlane tests + tests/e2e/board.spec.ts;
 sdks/{openapi.yaml,go,python,typescript,canary/go,canary/python,
 canary/typescript,tests/contract}; docs/api/mcp.md; CHANGELOG.md.

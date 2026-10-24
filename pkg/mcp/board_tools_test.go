@@ -328,11 +328,11 @@ func boardAllowCases() []boardToolCase {
 		{
 			name: "board_import_plan", tool: "board_import_plan",
 			args: map[string]any{"project_id": "prj-aaaa1111", "epic_title": "E", "dry_run": true,
-				"tasks": []any{map[string]any{"key": "a", "title": "A"}}},
+				"tasks": []any{map[string]any{"key": "a", "title": "A", "description": "seeded charter", "acceptance_criteria": []any{map[string]any{"text": "c", "met": false}}}}},
 			mock: func(m *MockAPIClient) {
 				m.On("BoardImportPlan", mock.Anything, "prj-aaaa1111", BoardPlanBody{
 					EpicTitle: "E", DryRun: true,
-					Tasks: []BoardPlanTaskBody{{Key: "a", Title: "A"}},
+					Tasks: []BoardPlanTaskBody{{Key: "a", Title: "A", Description: "seeded charter", AcceptanceCriteria: []BoardCriterion{{Text: "c", Met: false}}}},
 				}).Return(`{"dry_run":true}`, nil)
 			},
 		},
