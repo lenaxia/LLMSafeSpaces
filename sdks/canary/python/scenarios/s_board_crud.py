@@ -97,6 +97,7 @@ def run(r: Runner, cfg: Config) -> None:
             lambda: c.board.create_task(
                 epic_sid,
                 title="Task A",
+                description="seeded charter (#1849: required at create)",
                 tags=["pr:1234"],
                 acceptance_criteria=[{"text": "c1", "met": True}, {"text": "c2", "met": False}],
             ),
@@ -110,7 +111,7 @@ def run(r: Runner, cfg: Config) -> None:
         task_a_sid = task_a["short_id"]
 
         ok, task_b = r.assert_no_error(
-            lambda: c.board.create_task(epic_sid, title="Task B"), "create-task-b: no error"
+            lambda: c.board.create_task(epic_sid, title="Task B", description="seeded charter", acceptance_criteria=[{"text": "c", "met": False}]), "create-task-b: no error"
         )
         if not ok or not task_b:
             return

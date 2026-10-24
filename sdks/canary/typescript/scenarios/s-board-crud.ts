@@ -73,6 +73,7 @@ async function run(r: Runner, cfg: Config): Promise<void> {
       () =>
         c.board.createTask(epicSid, {
           title: 'Task A',
+          description: 'seeded charter (#1849: required at create)',
           tags: ['pr:1234'],
           acceptanceCriteria: [
             { text: 'c1', met: true },
@@ -87,7 +88,7 @@ async function run(r: Runner, cfg: Config): Promise<void> {
     const taskASid = taskA.short_id;
 
     const [tbOk, taskB] = await r.assertNoError(
-      () => c.board.createTask(epicSid, { title: 'Task B' }),
+      () => c.board.createTask(epicSid, { title: 'Task B', description: 'seeded charter', acceptanceCriteria: [{ text: 'c', met: false }] }),
       'create-task-b: no error',
     );
     if (!tbOk || !taskB) return;
