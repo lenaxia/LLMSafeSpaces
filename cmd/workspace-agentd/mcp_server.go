@@ -1011,11 +1011,13 @@ func callMCPTool(ctx context.Context, password, name string, args map[string]any
 		return mcpCreateSession(ctx, password, prompt, title)
 	case "send_message":
 		// destination is canonical; session_id is its one-release
-		// legacy alias. PRESENCE semantics (argStr's contract): the
-		// alias resolves only when destination is ABSENT (or present
-		// with a wrong type) — an explicit empty destination never
-		// falls through to the alias (the silent-precedence class the
-		// round-1 review killed for file params).
+		// legacy alias, gated STRICTLY on destination's ABSENCE (the
+		// rename is not a case fold, so argStr's wrong-type case
+		// cannot reach the alias here): an explicitly-present
+		// destination — empty string or mistyped — is authoritative
+		// and refuses loudly, never falling through (the
+		// silent-precedence class the round-1 review killed for file
+		// params).
 		sessionID := argStr(args, "destination")
 		if _, present := args["destination"]; !present {
 			sessionID, _ = args["session_id"].(string)

@@ -2117,8 +2117,43 @@ func TestArgBoolPresenceSemantics(t *testing.T) {
 
 // Handler level: {"destination":"", "session_id":X} refuses — the
 // empty destination is present-and-authoritative, never an alias
-// fall-through (r2 review finding 2's dispatch shape).
+// fall-through (r2 review finding 2's dispatch shape). The MISTYPED
+// corner refuses identically (r5/r6 review: the destination alias is
+// absence-gated only — argStr's wrong-type case cannot reach it).
 func TestMCPSendMessage_EmptyDestinationRefuses_HandlerLevel(t *testing.T) {
+	t.Run("mistyped destination refuses identically", func(t *testing.T) {
+		f := newFakeAgent()
+		target := f.newSession("target")
+		caller := f.newSession("caller")
+		withAgentServer(t, f.handler(t))
+
+		req := mcpRequest{JSONRPC: "2.0", ID: 1, Method: "tools/call",
+			Params: marshalParams(t, map[string]any{
+				"name": "send_message",
+				"arguments": map[string]any{
+					"destination":          42, // present, mistyped — authoritative
+					"session_id":           target,
+					"message":              "must not deliver",
+					"lsp_injected_session": caller,
+				},
+			})}
+		body, _ := json.Marshal(req)
+		w := httptest.NewRecorder()
+		r := mcpAuthedRequest(body)
+		mcpHandler(mcpTestPassword)(w, r)
+
+		var resp struct {
+			Result struct {
+				Content []struct {
+					Text string `json:"text"`
+				} `json:"content"`
+			} `json:"result"`
+		}
+		require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+		require.NotEmpty(t, resp.Result.Content)
+		assert.Contains(t, resp.Result.Content[0].Text, "destination is required")
+		assert.Empty(t, f.msgArrived, "nothing may deliver")
+	})
 	f := newFakeAgent()
 	target := f.newSession("target")
 	caller := f.newSession("caller")

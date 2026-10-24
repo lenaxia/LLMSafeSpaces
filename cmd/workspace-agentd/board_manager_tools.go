@@ -30,7 +30,9 @@ import (
 func boardManagerSession(ctx context.Context, password, name string, body map[string]any) (string, error) {
 	injected, _ := body["lsp_injected_session"].(string)
 	// sessionId is canonical; session_id is its one-release legacy
-	// alias (same presence-policy as the session tools).
+	// alias, gated on sessionId's ABSENCE — narrower than argStr's
+	// wrong-type case: a present-but-mistyped sessionId refuses
+	// (fail-closed) rather than consulting the alias.
 	declared, _ := body["sessionId"].(string)
 	if _, present := body["sessionId"]; !present {
 		declared, _ = body["session_id"].(string)

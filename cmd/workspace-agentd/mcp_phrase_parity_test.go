@@ -321,8 +321,23 @@ func TestMCPEnvelope_BoardIdentityAliasStrippedAndResolved(t *testing.T) {
 }
 
 // Presence policy on the identity alias: an explicitly-present camel
-// sessionId wins; the snake alias never overrides it.
+// sessionId wins; the snake alias never overrides it; and a
+// present-but-MISTYPED sessionId refuses fail-closed instead of
+// consulting the alias (r5/r6 review corner: the board gate is
+// absence-only, narrower than argStr's wrong-type case).
 func TestBoardManagerIdentity_CamelPresenceWins(t *testing.T) {
+	t.Run("mistyped camel refuses, never consults the alias", func(t *testing.T) {
+		f := newFakeAgent()
+		s1 := f.newSession("board-camel")
+		s2 := f.newSession("board-snake")
+		withAgentServer(t, f.handler(t))
+
+		_, err := boardManagerSession(context.Background(), mcpTestPassword, "board_create_project",
+			map[string]any{"sessionId": 42, "session_id": s2})
+		require.Error(t, err, "a mistyped sessionId is present-and-authoritative — fail closed, no alias")
+		assert.NotContains(t, err.Error(), s2, "the alias must not leak into the failure")
+		_ = s1
+	})
 	f := newFakeAgent()
 	s1 := f.newSession("board-camel")
 	s2 := f.newSession("board-snake")
