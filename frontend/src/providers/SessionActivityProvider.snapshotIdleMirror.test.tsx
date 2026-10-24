@@ -291,4 +291,77 @@ describe("SessionActivityProvider — snapshot-commit idle cache mirror (#1883)"
     expect(screen.getByTestId("busy").textContent).toBe("yes");
     expect(rowStatus(qc)).toBe("active");
   });
+
+  it("M5 an older overlapping busy flight completing after a newer idle answer must not flip the row back (reverse race, r2)", async () => {
+    vi.useFakeTimers();
+
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const first = mount(qc);
+    await settle(1_000);
+
+    stream.push(`id: 5\ndata: {"event_id":5,"type":"session.status","workspace_id":"ws-1","session_id":"phrase-one","status":"busy"}\n\n`);
+    await settle(1_000);
+    expect(screen.getByTestId("busy").textContent).toBe("yes");
+    expect(rowStatus(qc)).toBe("active");
+
+    await advanceHealthy(stream, 105_000);
+    expect(mockRequestStatusSnapshot.mock.calls.length).toBe(1);
+
+    // The NEWER authority answer is idle (cursor 50): the badge clears
+    // and the row flips "idle". An OLDER overlapping busy flight
+    // (cursor 21, out-of-order delivery) then completes in the same
+    // batch — its latch is correctly skipped by the watermark, and the
+    // busy mirror must not flip the row back to "active" either: the
+    // stale-"active" row is the remount re-freeze vector this PR
+    // exists to close (the mirror pair must not contradict the newest
+    // answer in EITHER direction).
+    pushFlight(stream, { begin: 40, snap: 49, complete: 50 }, [{ session_id: "phrase-one", derived_busy: false }], 50, "f-new-idle");
+    pushFlight(stream, { begin: 20, snap: 21, complete: 22 }, [{ session_id: "phrase-one", derived_busy: true }], 21, "f-old-busy");
+    await advanceHealthy(stream, 3_000);
+    await settle(100);
+
+    expect(screen.getByTestId("busy").textContent).toBe("no");
+    expect(rowStatus(qc)).toBe("idle");
+
+    // The user-visible consequence: a remount must not re-latch the
+    // badge from the row (no stale "active" to latch from).
+    first.unmount();
+    const second = mount(qc);
+    await settle(1_500);
+    expect(second.getByTestId("busy").textContent).toBe("no");
+    expect(rowStatus(qc)).toBe("idle");
+  });
+
+  it("M6 a busy flight raced by a newer idle delta mid-flight must not re-flip the row to active (delta race, r2)", async () => {
+    vi.useFakeTimers();
+
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const first = mount(qc);
+    await settle(1_000);
+
+    stream.push(`id: 5\ndata: {"event_id":5,"type":"session.status","workspace_id":"ws-1","session_id":"phrase-one","status":"busy"}\n\n`);
+    await settle(1_000);
+    expect(screen.getByTestId("busy").textContent).toBe("yes");
+    expect(rowStatus(qc)).toBe("active");
+
+    await advanceHealthy(stream, 105_000);
+    expect(mockRequestStatusSnapshot.mock.calls.length).toBe(1);
+
+    // The flight's stale busy row (cursor 50) races a NEWER idle delta
+    // (id 60) delivered mid-flight: the delta clears the badge and
+    // flips the row "idle" first; the commit's latch is skipped by the
+    // watermark and the busy mirror must not flip the row back to
+    // "active" over the delta's answer.
+    stream.push(`id: 40\ndata: {"event_id":40,"type":"session.status.snapshot_begin","workspace_id":"ws-1","snapshot_id":"f-busy"}\n\n`);
+    stream.push(`id: 49\ndata: {"event_id":49,"type":"session.status.snapshot","workspace_id":"ws-1","snapshot_id":"f-busy","data":{"cursor":50,"sessions":[{"session_id":"phrase-one","derived_busy":true}]}}\n\n`);
+    stream.push(`id: 60\ndata: {"event_id":60,"type":"session.status","workspace_id":"ws-1","session_id":"phrase-one","status":"idle"}\n\n`);
+    stream.push(`id: 50\ndata: {"event_id":50,"type":"session.status.snapshot_complete","workspace_id":"ws-1","snapshot_id":"f-busy","snapshot_ok":true}\n\n`);
+    await advanceHealthy(stream, 3_000);
+    await settle(100);
+
+    expect(screen.getByTestId("busy").textContent).toBe("no");
+    expect(rowStatus(qc)).toBe("idle");
+
+    first.unmount();
+  });
 });

@@ -1367,13 +1367,22 @@ export function SessionActivityProvider({ children }: { children: ReactNode }) {
 
         // Mirror the busy latch's cache flip so sidebar rows read
         // active for snapshot-busy sessions until the next refetch.
+        // #1883 r2: the SAME per-session watermark guard the idle
+        // mirror and the busy-row latch apply — an older overlapping
+        // busy flight (or a busy flight raced by a newer idle delta)
+        // must not flip the row over the newer authority answer; an
+        // unguarded flip re-freezes the badge on remount via seedBusy's
+        // add-only latch (the mirror pair must not contradict the
+        // newest answer in EITHER direction).
         const sessionsKey = ["sessions", wsId];
         const existingCache = queryClient.getQueryData(sessionsKey);
         if (existingCache && busyRowIds.size > 0) {
           queryClient.setQueryData(sessionsKey, (old: unknown) => {
             if (!Array.isArray(old)) return old;
             return old.map((s: Record<string, unknown>) =>
-              busyRowIds.has(String(s.id)) ? { ...s, status: "active" } : s
+              busyRowIds.has(String(s.id)) && (sessionLastDeltaIDRef.current.get(String(s.id)) ?? 0) <= cursor
+                ? { ...s, status: "active" }
+                : s
             );
           });
         }

@@ -30,7 +30,7 @@ The issue's other two evidence links are already dispositioned: `/sessions` list
 
 The provider mirrors busy transitions onto the react-query sessions cache (the busy delta stamps the row `status:"active"`, the idle delta stamps it back `"idle"`), and the #1848 snapshot commit mirrors the **busy direction only** (`busyRowIds` → `"active"`). When the lease's authoritative flight answers **idle** for a session whose idle delta was lost — the exact #1883 incident shape — the commit clears the provider's busy map (the dot clears) but leaves the cached row at the stale `"active"`.
 
-That stale projection is a re-freeze vector: `seedBusy`'s **mount-time pass is add-only** (`SessionActivityProvider.tsx:673`), and its gate/birth guards pass trivially on a fresh provider instance (`wipeAt=0`, fresh refs). Any provider remount that keeps the QueryClient (route-level remount, error-boundary recovery) re-latches the cleared badge from the stale row **before** the invalidation refetch can correct it — and the add-only gate then ignores the fresh idle rows the refetch brings back. The frozen indicator *returns* after the authority already healed it: a cached projection silently diverging from harness truth, the same family as #1879/#1880.
+That stale projection is a re-freeze vector: `seedBusy`'s **mount-time pass is add-only** (the gate at `SessionActivityProvider.tsx:494-496`, the busy-row latch at `:556-563`, the mount call at `:679`), and its gate/birth guards pass trivially on a fresh provider instance (`wipeAt=0`, fresh refs). Any provider remount that keeps the QueryClient (route-level remount, error-boundary recovery) re-latches the cleared badge from the stale row **before** the invalidation refetch can correct it — and the add-only gate then ignores the fresh idle rows the refetch brings back. The frozen indicator *returns* after the authority already healed it: a cached projection silently diverging from harness truth, the same family as #1879/#1880.
 
 ## Fix (frontend-only, provider)
 
@@ -40,20 +40,30 @@ That stale projection is a re-freeze vector: `seedBusy`'s **mount-time pass is a
 
 Documented choice: **provider-side fix, no backend change** — the backend already sends everything needed (the flight's rows carry every session's answer); the defect was the client dropping the idle half of the answer on the floor at the mirror. The `api/internal/handlers` busy-snapshot code is LANDED stable base per the fleet agreement — untouched.
 
+## Review r2 (CHANGES_REQUESTED → remediated)
+
+One convergent blocker from two independent adversarial passes: the **busy mirror** — the idle mirror's twin in the same commit block — flipped rows to `"active"` unconditionally (pre-existing on main, but this PR's subject). Two demonstrated sequences re-introduced the exact re-freeze: (i) a newer idle delta (id 60) racing a busy flight's commit mid-flight — latch correctly skipped, row flipped back over the delta's answer; (ii) an older overlapping busy flight (cursor 21) completing after a newer idle flight (cursor 50) — row flipped `"active"`, and seedBusy's add-only mount latch re-badged on remount.
+
+**Fix**: the busy mirror now carries the same `≤ cursor` per-session watermark guard as its idle twin and the busy-row latch (both consult the dispatch-synchronous pre-stamps from r1). **Pins**: M5 (older-busy-after-newer-idle flight race + remount no-re-latch) and M6 (busy flight raced by newer idle delta mid-flight). Mutation-verified on the final code: busy-mirror guard removed → **M5+M6 red**; restored → 6/6 green.
+
+Worklog staleness fixed in this revision: the test file now has 6 tests (was reported as 3), the full-suite figure refreshed (2489/2489), and the seedBusy line citation corrected (gate `:494-496`/`:556-563`, mount call `:679`).
+
 ## Tests (red-first, `SessionActivityProvider.snapshotIdleMirror.test.tsx`)
 
 - **M1 (RED on HEAD, fails at `expected 'active' to be 'idle'`)**: latch busy → row `"active"`; lose the idle frame; lease expiry fires the one recheck; the flight answers idle; badge clears; PIN the cached row flips `"idle"`; then REMOUNT the provider on the same QueryClient and PIN the badge stays clear (on HEAD the stale row re-latches it).
 - **M2 (watermark guard)**: a newer same-session busy delta (id > cursor) racing mid-flight keeps both the badge and the row `"active"` — the idle mirror must not invert fresher evidence.
 - **M3 (degraded no-flip invariant)**: a harness-keyed `session_id_deprecated` idle row flips no phrase-keyed row. Non-discriminating by construction — it pins the invariant, not the staging guard.
 - **M4 (r1, out-of-order flights)**: a newer busy flight (cursor 50) then an older overlapping idle flight (cursor 21) completing in the same batch — badge stays yes, row stays `"active"` (pinned the reviewer's demonstrated race; RED until the dispatch-synchronous watermark pre-stamp).
+- **M5 (r2, reverse race)**: a newer idle flight (cursor 50) then an older overlapping busy flight (cursor 21) in the same batch — badge stays clear, row stays `"idle"`, and a remount does not re-latch. RED under busy-mirror-guard removal.
+- **M6 (r2, delta race)**: a busy flight's commit raced by a newer idle delta (id 60) mid-flight — row stays `"idle"`. RED under busy-mirror-guard removal.
 
-RED proof: `git stash` of the provider fix → M1 fails at the row assertion (the remount assertion sits behind it); fix restored → green (4/4 with M4 after r1).
+RED proof: `git stash` of the provider fix → M1 fails at the row assertion (the remount assertion sits behind it); fix restored → green (6/6 with M4-M6 after r1/r2).
 
 ## Test commands
 
-- `npx vitest run src/providers/SessionActivityProvider.snapshotIdleMirror.test.tsx` — 3/3 (RED pre-fix, GREEN post-fix)
-- `npx vitest run src/providers/ src/api/contract.test.ts` — 187/187
-- `npx vitest run` (full frontend) — **2486/2486**
+- `npx vitest run src/providers/SessionActivityProvider.snapshotIdleMirror.test.tsx` — 6/6 (M1 RED pre-fix on HEAD; M4 RED until the r1 pre-stamp; M5+M6 RED until the r2 busy-mirror guard)
+- `npx vitest run src/providers/ src/api/contract.test.ts` — 190/190
+- `npx vitest run` (full frontend) — **2489/2489**
 - `npm run typecheck` — clean; `npx eslint` on both touched files — clean
 - Go side untouched (`git diff --stat` is frontend-only); no backend test surface affected
 
@@ -76,10 +86,11 @@ Three findings, all accepted and fixed on this branch:
 - `wipeBusyForEventLoss` (reconnect/resync) intentionally does not mirror rows: the post-wipe REST re-seed refreshes them.
 - #1899's deferred usage-leg staleness watchdog (half-open TCP death) remains open as designed — the lease bounds the damage.
 
-## Mutation-verify suggestions (each EXECUTED on the final branch code — see "Review r1" for outcomes)
+## Mutation-verify suggestions (each EXECUTED on the final branch code — see "Review r1"/"Review r2" for outcomes)
 
-- Delete the dispatch-synchronous pre-stamp block → M4 must go red (flight-race guard).
-- Delete the mirror's watermark guard (flip unconditionally) → M2 + M4 must go red (both race directions).
-- Delete the idle mirror block → M1 must go red (the feature itself).
-- Flip the mirror's `<=` to `<` → M1 must go red (the equality arm the pre-stamp creates).
+- Delete the dispatch-synchronous pre-stamp block → M4 red (flight-race guard).
+- Delete the idle mirror's watermark guard (unconditional flip) → M2 + M4 red.
+- Delete the busy mirror's watermark guard (unconditional flip) → M5 + M6 red (r2).
+- Delete the idle mirror block → M1 red (the feature itself).
+- Flip the idle mirror's `<=` to `<` → M1 red on this head (the equality arm the pre-stamp creates).
 - The degraded staging guard has NO discriminating mutation by construction (id matching alone prevents the flip) — do not claim one.
