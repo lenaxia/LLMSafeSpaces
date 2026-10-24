@@ -97,3 +97,45 @@ re-verified post-fix via source revert (see PR body for the run).
 Zero behavior change (the phrase renders where the raw id rendered). Contract mirrors only:
 additive optional `assignee_session_deprecated` on BoardTask and `session_id_deprecated` on the
 audit-event actor (frontend/src/api/board.ts).
+
+## Review round 2 (CHANGES_REQUESTED @850475f7 — findings 1-4 + minors + unit tier)
+
+All four findings fixed; round-2 pins born-RED on 850475f7 (commit 39b357be), green on the fix:
+
+- **F1 CreateTask replay echo** (service.go CreateTask tail): the replay resolves the ORIGINAL
+  task's CURRENT row — claimed+stamped since the original create — and served raw unflagged. Both
+  outcome-id and fresh returns now ride the read-edge translation (`resolveEcho` tail helper).
+- **F2 RearmTask replay echo** (rearm.go tail): same hole plus the pokeDrive→re-claim race
+  window; tail reload translates.
+- **F3 SSE payload leg**: delete/cascade events embed `snapshotOf(t)` (full row incl.
+  `assignee_session`) in the payload — `boardEventDeliver` now translates the payload snapshots
+  AND the actor in ONE bounded consult (`PayloadAssigneeIDs` / `TranslatePayloadAssignees` in
+  pkg/board; degraded snapshot = raw + `assignee_session_deprecated` sibling flag). REST delete
+  replays verified NOT exposed: DeleteTask discards the duplicate and returns its own
+  DeleteResult struct (no snapshot rides any REST response — the payload leg is SSE-only).
+- **F4 TaskStart/Claim echo**: the task copy (`c.Task`, resolved AFTER the spawn launch — the
+  probabilistic fast-spawner window) now translates at both tails (grant + escalated).
+  `claim.Assignee` remains untranslated BY DESIGN: spawnSync writes it on its own goroutine,
+  unsynchronized vs the handler's marshal — a PRE-EXISTING race; reading it in the translate
+  pass would add new racy code. Precise window: a sync-mode (tests) or fast-async spawner that
+  stamps between the handler's marshal... no — precisely: the raw id can appear in
+  `claim.assignee` only when the spawn goroutine's stamp lands BEFORE the handler marshals the
+  response; the embedded `claim.task.assignee_session` (the reliable carrier) is translated.
+- **Minors**: `rows.Err()` logged (never silent) in `LookupSessionPhrases` and the
+  projects-batch scan; `translateEventActors` logs only real resolve errors (the workspace-less
+  project degrades through the empty phrase map without a log).
+- **Unit tier** (`phrase_read_unit_test.go`, package-board convention): TranslateActorSessionPhrase
+  branch table (malformed/session-less/already-phrase passthroughs, warm, cold flag),
+  LookupSessionPhrases failing-fake → nil + empty-input short-circuits, flagUntranslated
+  resolve-failure flags, PayloadAssigneeIDs extraction (nested, phrase-skip),
+  TranslatePayloadAssignees (byte-identical no-op, warm phrase, cold sibling flag).
+- **New integration pins**: TestReads_ReplayEchoPhraseTranslation (create + rearm replay legs),
+  TestReads_TaskStartEchoPhrase (sync-spawn window, deterministic), 
+  TestIntegrationBoardSSELiveProjectionPayloadPhrase (warm + cold delete-snapshot legs) — all
+  born-RED on 850475f7 (raw served), mutation-verified via fix-file revert (stash) → red,
+  restore → green.
+
+Scratch-DB note: TestMintUniqueOwnerWideLadder seeds a FIXED workspace uuid with a bare INSERT
+(fresh-DB-per-run assumption); a second full-suite run against the same scratch DB collides —
+clean the workspaces table between full runs locally (CI is unaffected: fresh migrated DB per
+job).

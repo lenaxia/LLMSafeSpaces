@@ -66,6 +66,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   is `session_id_deprecated` in `markDeprecatedSessionID`'s exact shape.
   No `internal_assignee_session` — no consumer demonstrated correlation
   need.
+- **Review round 2 closings**: requestId-replay echoes (CreateTask's
+  outcome-id path, RearmTask's tail reload) and the TaskStart echo's
+  embedded task copy translate identically; the SSE `board.event`
+  payload leg (delete/cascade task snapshots) translates alongside the
+  actor in one bounded consult.
 
 ### Fixed — Session-ID emission: the agent-message sentinel carries the phrase, never the raw harness id (#1919)
 

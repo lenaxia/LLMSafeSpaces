@@ -63,6 +63,12 @@ func LookupSessionPhrases(ctx context.Context, q PhraseQueryer, workspaceID stri
 			out[sid] = phrase
 		}
 	}
+	if err := rows.Err(); err != nil {
+		// Truncated consult: what landed is used (safe direction — the
+		// missed sessions degrade raw+flagged), but never silently.
+		slog.WarnContext(ctx, "board: phrase lookup truncated — missed sessions degrade raw+flagged",
+			"workspaceID", workspaceID, "err", err.Error())
+	}
 	return out
 }
 
@@ -94,6 +100,81 @@ func TranslateActorSessionPhrase(raw []byte, phrases map[string]string) []byte {
 	out, err := json.Marshal(m)
 	if err != nil {
 		return raw
+	}
+	return out
+}
+
+// PayloadAssigneeIDs extracts the raw harness session ids found under
+// assignee_session keys in a board event payload (delete/cascade task
+// snapshots embed the full row). Bounded by the payload's size; used to
+// key ONE phrase consult at the SSE emission edge.
+func PayloadAssigneeIDs(payload []byte) []string {
+	var root any
+	if err := json.Unmarshal(payload, &root); err != nil {
+		return nil
+	}
+	var out []string
+	var walk func(v any)
+	walk = func(v any) {
+		switch n := v.(type) {
+		case map[string]any:
+			if sid, ok := n["assignee_session"].(string); ok && sid != "" && !shortid.IsShortIDForm(sid) {
+				out = append(out, sid)
+			}
+			for _, child := range n {
+				walk(child)
+			}
+		case []any:
+			for _, child := range n {
+				walk(child)
+			}
+		}
+	}
+	walk(root)
+	return out
+}
+
+// TranslatePayloadAssignees rewrites every assignee_session value in a
+// board event payload (task snapshots) to its phrase form at EMISSION —
+// the in-memory frame copy only; the stored payload stays canonical.
+// Degraded shape: raw passes through with an assignee_session_deprecated
+// sibling flag (the #1817/#1821 precedent's never-worse rule). Payloads
+// without translatable ids return byte-identical.
+func TranslatePayloadAssignees(payload []byte, phrases map[string]string) []byte {
+	if len(payload) == 0 || len(PayloadAssigneeIDs(payload)) == 0 {
+		return payload
+	}
+	var root any
+	if err := json.Unmarshal(payload, &root); err != nil {
+		return payload
+	}
+	var walk func(v any) any
+	walk = func(v any) any {
+		switch n := v.(type) {
+		case map[string]any:
+			if sid, ok := n["assignee_session"].(string); ok && sid != "" && !shortid.IsShortIDForm(sid) {
+				if phrase, known := phrases[sid]; known && phrase != "" {
+					n["assignee_session"] = phrase
+					delete(n, "assignee_session_deprecated")
+				} else {
+					n["assignee_session_deprecated"] = true
+				}
+			}
+			for k, child := range n {
+				n[k] = walk(child)
+			}
+			return n
+		case []any:
+			for i, child := range n {
+				n[i] = walk(child)
+			}
+			return n
+		}
+		return v
+	}
+	out, err := json.Marshal(walk(root))
+	if err != nil {
+		return payload
 	}
 	return out
 }
@@ -132,6 +213,11 @@ func (s *Service) translateTaskReads(ctx context.Context, tasks ...*Task) {
 		if err := rows.Scan(&pid, &ws); err == nil {
 			wsByProject[pid] = ws
 		}
+	}
+	if err := rows.Err(); err != nil {
+		// Truncated project resolve: the missed projects degrade
+		// raw+flagged (safe direction) — logged, never silent.
+		slog.WarnContext(ctx, "board: read-edge workspace resolve truncated — missed tasks degrade raw+flagged", "err", err.Error())
 	}
 	rows.Close()
 
@@ -253,9 +339,13 @@ func (s *Service) translateEventActors(ctx context.Context, projectID string, ev
 	var ws string
 	if err := s.q().QueryRow(ctx,
 		`SELECT coalesce(target_workspace_id::text,'') FROM projects WHERE id=$1::uuid`, projectID).
-		Scan(&ws); err != nil || ws == "" {
-		slog.WarnContext(ctx, "board: events workspace resolve failed — actors degrade raw+flagged", "err", err)
+		Scan(&ws); err != nil {
+		slog.WarnContext(ctx, "board: events workspace resolve failed — actors degrade raw+flagged",
+			"projectID", projectID, "err", err.Error())
 	}
+	// ws == "" (workspace-less project): no consult possible — the
+	// actors degrade raw+flagged through the empty phrase map; not an
+	// error condition, nothing to log.
 	keys := make([]string, 0, len(sessions))
 	for sid := range sessions {
 		keys = append(keys, sid)

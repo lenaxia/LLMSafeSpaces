@@ -122,33 +122,42 @@ func (h *ProxyHandler) boardEventDeliver(pool *pgxpool.Pool, log warnLogger, evt
 			"projectID", evt.ProjectID, "error", err.Error())
 		return
 	}
-	// #1922: the actor's session id is phrase-translated at EMISSION (the
-	// #1817/#1821 SSE-precedent edge class — the frame is user/agent-
-	// readable even though the frontend does not render the actor today).
-	// The stored board_events row is never rewritten; the degraded shape
-	// is markDeprecatedSessionID's (raw + session_id_deprecated flag).
-	evt.Actor = h.translateBoardActorPhrase(pool, workspaceID, evt.Actor)
+	// #1922: the actor's session id AND the payload's embedded task
+	// snapshots (delete/cascade snapshotOf rows carry assignee_session)
+	// are phrase-translated at EMISSION (the #1817/#1821 SSE-precedent
+	// edge class — the frame is user/agent-readable even though the
+	// frontend renders neither leg today). The stored board_events row
+	// is never rewritten; the degraded shapes are markDeprecatedSession-
+	// ID's (raw + session_id_deprecated) and its task-field twin
+	// (raw + assignee_session_deprecated).
+	evt.Actor, evt.Payload = h.translateBoardEventIDs(pool, workspaceID, evt.Actor, evt.Payload)
 	h.publishBoardFanout(owner, workspaceID, evt)
 }
 
-// translateBoardActorPhrase is the SSE leg's bounded consult: parse the
-// actor blob, resolve its (single) session id against the project's
-// target workspace, translate. Failures degrade raw (TranslateActor-
-// SessionPhrase never breaks a read).
-func (h *ProxyHandler) translateBoardActorPhrase(pool *pgxpool.Pool, workspaceID string, actor []byte) []byte {
-	if len(actor) == 0 || workspaceID == "" {
-		return actor
+// translateBoardEventIDs is the SSE leg's bounded consult: parse the
+// actor blob and the payload's assignee keys, resolve them against the
+// project's target workspace in ONE session_index consult, translate
+// both. Failures degrade raw (the translators never break a read).
+func (h *ProxyHandler) translateBoardEventIDs(pool *pgxpool.Pool, workspaceID string, actor, payload []byte) ([]byte, []byte) {
+	if workspaceID == "" {
+		return actor, payload
 	}
-	var m map[string]any
-	if err := json.Unmarshal(actor, &m); err != nil || m == nil {
-		return actor
+	ids := make([]string, 0, 2)
+	if len(actor) > 0 {
+		var m map[string]any
+		if err := json.Unmarshal(actor, &m); err == nil && m != nil {
+			if v, _ := m["session_id"].(string); v != "" {
+				ids = append(ids, v)
+			}
+		}
 	}
-	sid, _ := m["session_id"].(string)
-	if sid == "" {
-		return actor // user/system actors on session-less surfaces
+	ids = append(ids, board.PayloadAssigneeIDs(payload)...)
+	if len(ids) == 0 {
+		return actor, payload
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	phrases := board.LookupSessionPhrases(ctx, pool, workspaceID, []string{sid})
-	return board.TranslateActorSessionPhrase(actor, phrases)
+	phrases := board.LookupSessionPhrases(ctx, pool, workspaceID, ids)
+	return board.TranslateActorSessionPhrase(actor, phrases),
+		board.TranslatePayloadAssignees(payload, phrases)
 }
