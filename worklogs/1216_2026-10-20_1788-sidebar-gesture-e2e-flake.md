@@ -58,4 +58,4 @@
 ## Files Modified
 
 - frontend/tests/e2e/sidebar-gesture.spec.ts — originally +25/−4 (test-only); since the r11 union-merge, byte-identical to main's `dc7aefd0` (zero spec diff vs main)
-- worklogs/NNNN_2026-10-20_1788-sidebar-gesture-e2e-flake.md — this worklog
+- worklogs/1216_2026-10-20_1788-sidebar-gesture-e2e-flake.md — this worklog
