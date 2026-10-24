@@ -216,6 +216,38 @@ func (h *WebhookReceiverHandler) HandleWebhook(c *gin.Context) {
 	}
 	envelopeJSON, _ := json.Marshal(envelope)
 
+	// 6b. #1834: a DISABLED trigger absorbs the delivery without
+	// executing. The cron claim already filters enabled=false, but this
+	// receiver minted executing fires for disabled triggers — so
+	// auto-disable (the consecutiveFailures circuit) was decorative on
+	// the webhook route: during the 2026-10-21 outage an auto-disabled
+	// trigger kept dispatching the wedged headless path on every signed
+	// delivery. The skip is recorded (self-explaining audit) and the
+	// sender still gets 202 — a non-2xx would make GitHub-style senders
+	// retry-storm a trigger the platform just disarmed. Auth-first
+	// ordering preserved: the check sits AFTER HMAC/skew/dedup, so no
+	// unauthenticated oracle for trigger state.
+	if !trigger.Enabled {
+		skipNow := time.Now().UTC()
+		// The skip row mirrors the trigger's target action_type so the
+		// audit reads true for either shape (run_workflow vs routine).
+		actionType := "routine"
+		if trigger.WorkflowID != nil && *trigger.WorkflowID != "" {
+			actionType = "run_workflow"
+		}
+		skipPayload, _ := json.Marshal(map[string]string{
+			"reason": "trigger_disabled",
+			"hint":   "auto-disabled after consecutive failures or disabled by the owner",
+		})
+		_ = h.store.CreateTriggerFire(c.Request.Context(), &wf.TriggerFireRow{
+			ID: uuid.New().String(), TriggerID: trigger.ID, SourceType: "webhook",
+			InputEnvelope: envelopeJSON, ActionType: actionType,
+			ActionResult: skipPayload, Status: "skipped", FiredAt: skipNow, CompletedAt: &skipNow,
+		})
+		c.JSON(http.StatusAccepted, gin.H{"status": "skipped"})
+		return
+	}
+
 	// 7. Fire the trigger target.
 	fireID := uuid.New().String()
 	now := time.Now().UTC()

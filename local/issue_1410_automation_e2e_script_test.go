@@ -110,6 +110,17 @@ func TestIssue1410E2EScript_RowsAndAssertions(t *testing.T) {
 		`"workspaceId":""`,                                             // the retarget patch spelled
 		`consecutiveFailures`,                                          // accounting asserted
 		`lost the tick race twice`,                                     // retry guard present
+		// R11 — auto-disable disarms the webhook route (#1834): the
+		// receiver gate (both target shapes) + the drain belt.
+		`R11a: disabled trigger's signed delivery answered 202 + skipped`,                   // receiver gate, routine shape
+		`R11a: skipped fire self-explains (trigger_disabled)`,                               // audit payload asserted
+		`R11a: disabled trigger never executed`,                                             // no failed/delivered fires
+		`R11a: absorbing a delivery is not a failure`,                                       // no accounting asserted
+		`R11b: disabled workflow trigger minted no run`,                                     // receiver gate, workflow shape
+		`R11c: pre-disable pending fire drained to skipped (trigger_disabled), unaccounted`, // drain belt
+		`'{"enabled":false}'`, // the disable patch spelled
+		`select(.status=="skipped" or .status=="failed" or .status=="delivered")`, // drain outcome poll
+		`R11c: lost the tick race twice`,                                          // retry guard present
 		// R8 — org-scope CRUD resolves the resource segment (#1449).
 		`ownerEmail:"e2e-automation@example.invalid"`, // org created; API-key user becomes admin
 		`R8a: org trigger GET resolves the trigger`,   // the shadowing 404'd here

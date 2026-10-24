@@ -42,6 +42,47 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **#1856** — ai-workflows v0.2.24 reapply (#1896).
 
 ## [Unreleased]
+### Fixed — Automation: auto-disable disarms webhook triggers; the routine path's circuit breaker stops wedged-outage hammering (#1834)
+
+- **A disabled trigger's webhook deliveries are absorbed, never
+  executed.** The cron claim already filtered `enabled=false`, but the
+  webhook receiver minted executing fires for disabled triggers
+  regardless — so auto-disable (the `consecutiveFailures` /
+  `autoDisableAfter` circuit) was decorative on the webhook route.
+  During the 2026-10-21 routine-path outage (01:20–22:54Z, the
+  headless opencode invocation surface wedged post-OOM across
+  workspaces), an auto-disabled trigger (pr-monitor-sweep: ~30 failed
+  fires, `cf=0` under the pre-#1878 accounting) kept dispatching the
+  wedged path on every signed delivery — the platform's own breaker
+  could not stop the bleeding it exists to stop. The receiver now
+  checks `trigger.Enabled` after HMAC/skew/dedup (auth-first: no
+  unauthenticated oracle for trigger state) and records a
+  self-explaining `skipped` fire (`{"reason":"trigger_disabled"}`) with
+  a 202 — a non-2xx would make GitHub-style senders retry-storm a
+  trigger the platform just disarmed.
+- **The pending-fire drain skips disabled triggers too** — a fire
+  minted before the disable (a delivery racing the auto-disable, or
+  pre-fix residue) no longer rides `processPendingRoutineFire` into
+  the agent leg. The gate-closed discipline applies: absorbing is not
+  failing, so no failure accounting, no counter movement.
+- **The workflow shape's residue is gated at run execution** — a run
+  minted before the disable claims into the Reconciler, which now
+  re-checks the owning trigger and CANCELS the run (named reason
+  `trigger_disabled`, before workspace activation — the expensive leg)
+  with the audit mirrored onto the run's fire row. A trigger row that
+  cannot be confirmed disabled (store fetch error, trigger gone) is
+  not a disable verdict: the run executes as before.
+- **Re-enable-while-pending semantics (stated per review):** a
+  delivery absorbed while the trigger was disabled — at the receiver
+  gate, or as a pending fire skipped at the drain — is consumed, never
+  replayed after a later re-enable. Stale deliveries executing late
+  would be worse; owners re-arming a trigger send a fresh delivery.
+- **The outage's error shape is pinned fail-loud**: a retry-exhausted
+  `script_failed` / `"opencode returned 500"` envelope (every attempt,
+  the exact 15–25s class the investigation recorded) fails the fire,
+  carries the code+detail verbatim into the audit, and counts toward
+  auto-disable exactly once — the #1441/#1878 accounting family,
+  extended to the retry-exhausted agent-leg shape.
 ### Fixed — Longhorn RecurringJob snapshot cron invalid day-of-week; deploy-tree cron validity guard (#1905, cross-repo)
 
 - **The `default-snapshot` RecurringJob's cron `0 1 * * 8` is corrected
