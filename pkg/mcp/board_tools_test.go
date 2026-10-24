@@ -48,13 +48,15 @@ import (
 )
 
 // boardToolNames is the exact external surface (design §4.3b + #1832
-// item 5's verdict pair + the item-4 timeline read): 27 tools.
+// item 5's verdict pair + the item-4 timeline read + #1836's bulk
+// claim/complete pair): 29 tools.
 var boardToolNames = []string{
 	"board_list_projects", "board_get", "board_read", "board_health",
 	"board_task_events",
 	"board_record_verdict", "board_task_verdicts",
 	"board_create_project", "board_create_epic", "board_create_task",
 	"board_update_item", "board_move_stage", "board_start_task",
+	"board_start_tasks", "board_move_stage_bulk",
 	"board_epic_activate", "board_epic_pause", "board_epic_archive", "board_epic_unarchive",
 	"board_project_archive", "board_project_unarchive",
 	"board_project_pause", "board_project_resume",
@@ -630,6 +632,10 @@ func callBoardTool(t *testing.T, h *handlers, name string, args map[string]any) 
 		return h.boardMoveStage(ctx, makeReq(name, args))
 	case "board_start_task":
 		return h.boardStartTask(ctx, makeReq(name, args))
+	case "board_start_tasks":
+		return h.boardStartTasks(ctx, makeReq(name, args))
+	case "board_move_stage_bulk":
+		return h.boardMoveStageBulk(ctx, makeReq(name, args))
 	case "board_epic_activate":
 		return h.boardEpicActivate(ctx, makeReq(name, args))
 	case "board_epic_pause":

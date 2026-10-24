@@ -64,6 +64,9 @@ func TestMCPBoard_RegistryShape(t *testing.T) {
 		"board_resume_task", "board_rearm_task", "board_import_plan",
 		// Manager reads (#1837 P2a): the orchestrator's overview.
 		"board_list", "board_health",
+		// #1836: the bulk complete (the bulk claim follows task_start's
+		// owner-surface-only boundary and is deliberately absent).
+		"board_move_stage_bulk",
 	}
 	require.Len(t, board, len(want), "exactly the worker + #1747 manager board tools; got %v", board)
 	for _, name := range want {
@@ -73,9 +76,11 @@ func TestMCPBoard_RegistryShape(t *testing.T) {
 	// The declared asymmetries, pinned as absences: claim_next is
 	// engine-internal (R9 — absent on ALL surfaces, permanently);
 	// task_start is dropped from agent surfaces (#1747 round 3);
-	// cancel is eliminated everywhere (#1747 round 3).
+	// cancel is eliminated everywhere (#1747 round 3). The bulk claim
+	// follows the same boundary (round-3 #2).
 	for _, forbidden := range []string{
 		"board_claim_next", "board_claim", "board_task_start", "board_start_task",
+		"board_start_tasks",
 		"board_cancel", "board_cancel_task", "board_cancel_epic", "board_reorder",
 	} {
 		assert.NotContains(t, board, forbidden, "engine/eliminated action %s must NOT be an agent tool (#1747)", forbidden)
@@ -409,6 +414,29 @@ func TestMCPBoard_ManagerWireContract(t *testing.T) {
 		var wire map[string]json.RawMessage
 		require.NoError(t, json.Unmarshal([]byte(rec.body), &wire))
 		assert.JSONEq(t, `true`, string(wire["dryRun"]))
+	})
+
+	t.Run("board_move_stage_bulk wire (#1836)", func(t *testing.T) {
+		api, rec := newAutomationAPI(t, 200, `{"results":[{"id":"tsk-cccc3333","status":"done"}],"count":1}`)
+		setupRenameWorkspaceEnv(t, api)
+
+		out, err := mcpAutomation(context.Background(), mcpTestPassword, "board_move_stage_bulk", map[string]any{
+			"taskIds": []any{"tsk-cccc3333", "tsk-dddd4444"}, "toStage": "done",
+			"evidenceUrl": "https://example/p", "requestId": "bulk-1",
+			"lsp_injected_session": "ses-1"})
+		require.NoError(t, err)
+		assert.Contains(t, out, "tsk-cccc3333")
+		assert.Equal(t, http.MethodPost, rec.method)
+		assert.Equal(t, "/internal/v1/automation/board/tasks/move-stage-bulk", rec.path)
+
+		var wire map[string]json.RawMessage
+		require.NoError(t, json.Unmarshal([]byte(rec.body), &wire))
+		assert.JSONEq(t, `["tsk-cccc3333","tsk-dddd4444"]`, string(wire["taskIds"]),
+			"the batch array reaches the wire verbatim")
+		assert.JSONEq(t, `"done"`, string(wire["toStage"]))
+		assert.JSONEq(t, `"https://example/p"`, string(wire["evidenceUrl"]))
+		assert.JSONEq(t, `"ses-1"`, string(wire["sessionId"]),
+			"the injected session identity rides the wire (audit attribution + the seam belt)")
 	})
 
 	t.Run("board_pause_task / board_pause_project wire", func(t *testing.T) {
