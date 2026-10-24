@@ -70,7 +70,8 @@ func TestIntegrationBoardWorkerSemantics(t *testing.T) {
 
 	ctx := context.Background()
 	_, err = pool.Exec(ctx, `
-		TRUNCATE TABLE board_events, board_transitions, board_dependencies, board_sweeps, tasks, epics, projects
+		TRUNCATE TABLE board_events, board_transitions, board_dependencies, board_sweeps, tasks, epics, projects,
+			board_config_defaults, board_project_config_overrides
 		CASCADE
 	`)
 	require.NoError(t, err)
@@ -80,6 +81,16 @@ func TestIntegrationBoardWorkerSemantics(t *testing.T) {
 		ON CONFLICT (id) DO NOTHING
 	`)
 	require.NoError(t, err, "users row must exist (FK target)")
+	// Stage-persona isolation (the #1939 flipped floor + the stage-
+	// persona mechanism fire the reviewer persona on every un-
+	// configured ->in_review): this suite pins WORKER token/bulk
+	// semantics, so seed the user-level explicit {} opt-out.
+	_, err = pool.Exec(ctx, `
+		INSERT INTO board_config_defaults (user_id, key, value)
+		VALUES ('user-7', 'stagePersonas', '{}'::jsonb)
+		ON CONFLICT (user_id, key) DO NOTHING
+	`)
+	require.NoError(t, err, "stage-personas opt-out seed")
 
 	cfg := board.EngineConfig{
 		AttemptsCap:     3,
