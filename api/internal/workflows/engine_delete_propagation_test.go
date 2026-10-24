@@ -601,3 +601,215 @@ func TestExecuteNode_DAGAgentEphemeral_PropagatesEffects(t *testing.T) {
 	require.Len(t, got, 1, "a DAG ephemeral carrier teardown must propagate effects")
 	require.Equal(t, sessionDeleteCall{workspaceID: "ws-1", sessionID: "ses_dag_eph"}, got[0])
 }
+
+// --- #1915 origin-marking pins (mark → effects → clean on the two
+// unmarked legs) ---
+
+// orderingProbePropagator records, at each PropagateSessionDeleted
+// call, whether the session's kind='carrier' origin mark was ALREADY
+// recorded — the #1915 ordering observable: the re-apability guarantee
+// is the mark BEFORE the effects (a mid-effects failure must find the
+// mark in place for the #1901 reap net's discriminator).
+type orderingProbePropagator struct {
+	mu     sync.Mutex
+	probe  func(sessionID string) bool
+	calls  []string
+	marked map[string]bool
+}
+
+func (p *orderingProbePropagator) PropagateSessionDeleted(_ context.Context, _, sessionID string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.calls = append(p.calls, sessionID)
+	if p.marked == nil {
+		p.marked = make(map[string]bool)
+	}
+	p.marked[sessionID] = p.probe != nil && p.probe(sessionID)
+}
+
+func (p *orderingProbePropagator) markedAtEffects(sessionID string) bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.marked[sessionID]
+}
+
+// TestExecuteRoutine_AuthorizedDelete_MarksCarrierOriginBeforeEffects:
+// the #1915 leg-1 pin (routine PreserveOnFailure-success cleanup →
+// deleteSessionAuthorized). A CONFIRMED agentd 204 must origin-mark
+// kind='carrier' BEFORE the effects run (the effects' own error return
+// is void — an index-write failure is only observable as the ghost row
+// surviving; the pre-effects mark is then the ONLY thing letting the
+// #1901 reap bypass admit it) and clean the mark after (origins must
+// not accumulate per fire).
+func TestExecuteRoutine_AuthorizedDelete_MarksCarrierOriginBeforeEffects(t *testing.T) {
+	port, deleted := newAuthorizedDeleteServer(t)
+	store := newMockSchedulerStore()
+	agentd := newMockAgentd()
+	agentd.outputs["routine-agent"] = json.RawMessage(`{"response":"ok","session_id":"ses_mark1"}`)
+	prop := &orderingProbePropagator{probe: store.carrierMarked}
+	wsID := "ws-1"
+	trigger := &wf.TriggerRow{ID: "trig-mk1", Name: "Watchdog", WorkspaceID: &wsID, Prompt: "test",
+		CaptureMode: types.CaptureFull, PreserveSession: types.PreserveOnFailure}
+	fire := &wf.TriggerFireRow{ID: "fire-mk1", TriggerID: "trig-mk1", InputEnvelope: json.RawMessage(`{}`)}
+	sched := &Scheduler{Store: store, Activator: &loopbackActivator{}, AgentdClient: agentd, Logger: noopLogger{},
+		PasswordProvider: &stubPasswordProvider{password: "pw"}, AgentdPort: port,
+		SessionDelete: prop}
+
+	sched.executeRoutine(context.Background(), noopLogger{}, trigger, fire)
+
+	require.Equal(t, "delivered", store.statuses["fire-mk1"])
+	require.Equal(t, []string{"ses_mark1"}, *deleted, "the pod-side delete is confirmed (204)")
+	require.Len(t, prop.calls, 1, "the effects ran exactly once")
+	require.True(t, prop.markedAtEffects("ses_mark1"),
+		"#1915: the kind=carrier origin mark must be recorded BEFORE the effects run — "+
+			"without it, a mid-effects failure leaves an UNMARKED ghost row the #1901 reap net "+
+			"cannot admit (ListCarrierOriginMarks empty; kept_for_operator forever)")
+	require.Equal(t, []string{"ses_mark1"}, store.originDeletes,
+		"the mark must be cleaned once the effects ran")
+	require.False(t, store.carrierMarked("ses_mark1"), "no origin row may survive the cleanup")
+}
+
+// TestExecuteNode_SupersededCleanup_MarksCarrierOriginBeforeEffects:
+// the #1915 leg-1 pin (DAG side): the reconciler's node-retry cleanup
+// rides the same caller-neutral deleteSessionAuthorized core and must
+// carry the same mark-before-effects / clean-after discipline.
+func TestExecuteNode_SupersededCleanup_MarksCarrierOriginBeforeEffects(t *testing.T) {
+	store, rec, cleaned := dagCleanupHarness(t, http.StatusNoContent)
+	prop := &orderingProbePropagator{probe: store.carrierMarked}
+	rec.SessionDelete = prop
+	rec.AgentdClient = &sequenceAgentd{steps: []seqStep{
+		{resp: &NodeExecResponse{ErrorCode: "script_failed", Detail: "opencode returned 500", SessionID: "ses_mark_mid"}},
+		{resp: &NodeExecResponse{Output: json.RawMessage(`{"ok":1}`), SessionID: "ses_mark_final"}},
+	}}
+	store.addRun("run-mk2", "wf-mk", "ws-1", dagAgentSpec("new", 2), json.RawMessage(`{}`), "")
+
+	runEngine(t, rec, store)
+
+	require.Equal(t, types.RunStatusSucceeded, store.statuses["run-mk2"])
+	require.Equal(t, []string{"ses_mark_mid"}, *cleaned, "the superseded attempt's delete is confirmed (204)")
+	require.True(t, prop.markedAtEffects("ses_mark_mid"),
+		"#1915: the DAG node-retry authorized delete must mark kind=carrier BEFORE effects")
+	require.Equal(t, []string{"ses_mark_mid"}, store.originDeletes,
+		"the DAG leg's mark must be cleaned once the effects ran")
+	require.False(t, store.carrierMarked("ses_mark_mid"), "no origin row may survive the cleanup")
+}
+
+// TestReconciler_DAGEnvelopeTeardown_MarksCarrierOriginBeforeEffects:
+// the #1915 leg-2 pin (propagateDeletedSession) — BOTH envelope legs.
+// An agentd-reported ephemeral teardown (deletedSessionId) runs the
+// effects directly; each leg must origin-mark kind='carrier' before
+// the effects and clean after, exactly like the routine path's
+// propagateCarrierDelete.
+func TestReconciler_DAGEnvelopeTeardown_MarksCarrierOriginBeforeEffects(t *testing.T) {
+	// Delivered leg — a successful node's torn-down carrier.
+	storeD, recD, _ := dagCleanupHarness(t, http.StatusNoContent)
+	propD := &orderingProbePropagator{probe: storeD.carrierMarked}
+	recD.SessionDelete = propD
+	recD.AgentdClient = &sequenceAgentd{steps: []seqStep{
+		{resp: &NodeExecResponse{Output: json.RawMessage(`{"ok":1}`), SessionID: "", DeletedSessionID: "ses_env_ok"}},
+	}}
+	storeD.addRun("run-mk3a", "wf-mk", "ws-1", dagAgentSpec("ephemeral", 1), json.RawMessage(`{}`), "")
+
+	runEngine(t, recD, storeD)
+
+	require.Equal(t, types.RunStatusSucceeded, storeD.statuses["run-mk3a"])
+	require.True(t, propD.markedAtEffects("ses_env_ok"),
+		"#1915: the DAG envelope delivered-leg teardown must mark kind=carrier BEFORE effects")
+	require.Equal(t, []string{"ses_env_ok"}, storeD.originDeletes)
+	require.False(t, storeD.carrierMarked("ses_env_ok"))
+
+	// ErrorCode leg — a FAILED node's torn-down carrier ghosts exactly
+	// like a delivered one's.
+	storeE, recE, _ := dagCleanupHarness(t, http.StatusNoContent)
+	propE := &orderingProbePropagator{probe: storeE.carrierMarked}
+	recE.SessionDelete = propE
+	recE.AgentdClient = &sequenceAgentd{steps: []seqStep{
+		{resp: &NodeExecResponse{ErrorCode: "script_failed", Detail: "opencode returned 500", DeletedSessionID: "ses_env_err"}},
+	}}
+	storeE.addRun("run-mk3b", "wf-mk", "ws-1", dagAgentSpec("ephemeral", 1), json.RawMessage(`{}`), "")
+
+	runEngine(t, recE, storeE)
+
+	require.Equal(t, types.RunStatusFailed, storeE.statuses["run-mk3b"])
+	require.True(t, propE.markedAtEffects("ses_env_err"),
+		"#1915: the DAG envelope errorCode-leg teardown must mark kind=carrier BEFORE effects")
+	require.Equal(t, []string{"ses_env_err"}, storeE.originDeletes)
+	require.False(t, storeE.carrierMarked("ses_env_err"))
+}
+
+// TestExecuteRoutine_AuthorizedDeleteMidOutage_MarkSurvivesForReap is
+// the #1915 discriminator-consequence pin: the harm window is a DB
+// outage that fails the effects' index writes (the ghost row survives)
+// AND the post-effects mark clean (same pool). In that window the
+// kind='carrier' mark must SURVIVE — it is exactly the data the #1901
+// reap bypass reads (ListCarrierOriginMarks → proxy_session_index.go
+// `marks[sessionID]`) to admit the history-bearing ghost as
+// reaped_carrier instead of holding it kept_for_operator. Pre-#1915 no
+// mark is ever written, so the same outage strands the ghost unmarked.
+func TestExecuteRoutine_AuthorizedDeleteMidOutage_MarkSurvivesForReap(t *testing.T) {
+	port, deleted := newAuthorizedDeleteServer(t)
+	store := newMockSchedulerStore()
+	store.failOriginDeletes = true // the clean fails: same outage as the effects' index writes
+	agentd := newMockAgentd()
+	agentd.outputs["routine-agent"] = json.RawMessage(`{"response":"ok","session_id":"ses_out1"}`)
+	prop := &orderingProbePropagator{probe: store.carrierMarked}
+	wsID := "ws-1"
+	trigger := &wf.TriggerRow{ID: "trig-out1", Name: "Watchdog", WorkspaceID: &wsID, Prompt: "test",
+		CaptureMode: types.CaptureFull, PreserveSession: types.PreserveOnFailure}
+	fire := &wf.TriggerFireRow{ID: "fire-out1", TriggerID: "trig-out1", InputEnvelope: json.RawMessage(`{}`)}
+	sched := &Scheduler{Store: store, Activator: &loopbackActivator{}, AgentdClient: agentd, Logger: noopLogger{},
+		PasswordProvider: &stubPasswordProvider{password: "pw"}, AgentdPort: port,
+		SessionDelete: prop}
+
+	sched.executeRoutine(context.Background(), noopLogger{}, trigger, fire)
+
+	require.Equal(t, "delivered", store.statuses["fire-out1"])
+	require.Equal(t, []string{"ses_out1"}, *deleted)
+	require.True(t, prop.markedAtEffects("ses_out1"),
+		"the mark must be in place before the effects (the outage window's only guarantee)")
+	require.Equal(t, []string{"ses_out1"}, store.originDeletes, "the clean ran (and failed — the outage)")
+	require.True(t, store.carrierMarked("ses_out1"),
+		"the kind=carrier mark must SURVIVE the failed clean — it is the reap bypass's only "+
+			"admission data; without it the ghost row is kept_for_operator until operator review")
+}
+
+// TestExecuteRoutine_AuthorizedDeleteFailed_NoOriginMark is the #1915
+// invariant pin: a delete the agentd route REFUSES (502 — the session
+// SURVIVED, #1470 reality contract) must write no origin mark and run
+// no effects — marks exist only for CONFIRMED platform deletes, never
+// for live sessions (the #1901 item-b direction: nothing may widen the
+// carrier class toward live/preserved sessions).
+func TestExecuteRoutine_AuthorizedDeleteFailed_NoOriginMark(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadGateway)
+	}))
+	defer srv.Close()
+	_, portStr, _ := strings.Cut(strings.TrimPrefix(srv.URL, "http://"), ":")
+	port, err := strconv.Atoi(portStr)
+	require.NoError(t, err)
+
+	store := newMockSchedulerStore()
+	agentd := newMockAgentd()
+	agentd.outputs["routine-agent"] = json.RawMessage(`{"response":"ok","session_id":"ses_ref1"}`)
+	prop := &orderingProbePropagator{probe: store.carrierMarked}
+	wsID := "ws-1"
+	trigger := &wf.TriggerRow{ID: "trig-ref1", Name: "Watchdog", WorkspaceID: &wsID, Prompt: "test",
+		CaptureMode: types.CaptureFull, PreserveSession: types.PreserveOnFailure}
+	fire := &wf.TriggerFireRow{ID: "fire-ref1", TriggerID: "trig-ref1", InputEnvelope: json.RawMessage(`{}`)}
+	sched := &Scheduler{Store: store, Activator: &loopbackActivator{}, AgentdClient: agentd, Logger: noopLogger{},
+		PasswordProvider: &stubPasswordProvider{password: "pw"}, AgentdPort: port,
+		SessionDelete: prop}
+
+	sched.executeRoutine(context.Background(), noopLogger{}, trigger, fire)
+
+	require.Equal(t, "delivered", store.statuses["fire-ref1"])
+	require.Empty(t, prop.calls, "a survived delete must not run effects")
+	require.False(t, store.carrierMarked("ses_ref1"),
+		"a survived delete must never write a carrier mark — the carrier class admits only "+
+			"CONFIRMED platform deletes (#1901 item-b direction)")
+	preserved, ok := store.sessionOrigins["ses_ref1"]
+	require.True(t, ok, "the survived session keeps its completion artifacts path")
+	require.Equal(t, types.SessionOriginKindSession, preserved.Kind,
+		"the failed-delete survivor's mark stays kind=session (never reap-admitted)")
+	require.Empty(t, store.originDeletes, "a preserved session's mark is never cleaned")
+}

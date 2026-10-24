@@ -66,6 +66,16 @@ type ReconcilerStore interface {
 	ResetTriggerFailures(ctx context.Context, triggerID string) error
 	GetWorkflowPolicy(ctx context.Context, workflowID string) (onMissing, ownerType, ownerID string, err error)
 	UpdateRunWorkspace(ctx context.Context, runID, workspaceID string) error
+	// RecordSessionOrigin/DeleteSessionOrigin are the #1915 origin-mark
+	// seam on the reconciler side: every effects-bearing delete the
+	// reconciler authorizes or observes (node-retry cleanup, envelope
+	// teardowns) marks kind='carrier' BEFORE the effects and cleans
+	// after — pre-#1915 these lived only on the Scheduler's store seam,
+	// so the DAG legs ran unmarked and a mid-effects failure left a
+	// ghost row the #1901 reap net could not admit. The concrete store
+	// already implements both (pkg/workflows store.go).
+	RecordSessionOrigin(ctx context.Context, row *wf.SessionOriginRow) error
+	DeleteSessionOrigin(ctx context.Context, sessionID string) error
 }
 
 // --- SchedulerStore interface ---
@@ -157,6 +167,21 @@ type NodeExecResponse struct {
 // pre-#1882 behavior).
 type SessionDeletePropagator interface {
 	PropagateSessionDeleted(ctx context.Context, workspaceID, sessionID string)
+}
+
+// SessionOriginStore is the #1915 narrow origin-mark seam the
+// authorized-delete core shares with the carrier tail: the kind=
+// 'carrier' mark is written BEFORE the delete effects run and cleaned
+// after — a mid-effects failure then leaves a re-apable mark (#1901's
+// discriminated reap net admits kind='carrier' rows only). Deliberately
+// just the two origin verbs (not the full store interfaces) so the
+// caller-neutral core's dependency stays minimal; satisfied
+// structurally by SchedulerStore, ReconcilerStore, and the concrete
+// store alike. Nil ⇒ marking skipped (unwired/embedded engines keep
+// the pre-#1915 behavior).
+type SessionOriginStore interface {
+	RecordSessionOrigin(ctx context.Context, row *wf.SessionOriginRow) error
+	DeleteSessionOrigin(ctx context.Context, sessionID string) error
 }
 
 // executeWithRetry runs an agentd node-execution with a bounded retry
@@ -598,7 +623,7 @@ func (r *Reconciler) executeNode(ctx context.Context, logger Logger, run *wf.Wor
 			// failed) is an orphan. Best-effort; failures log inside
 			// the delete path and the retry proceeds.
 			if resp != nil && resp.SessionID != "" && !pinnedSession && r.PasswordProvider != nil {
-				deleteSessionAuthorized(ctx, logger, r.PasswordProvider, r.SessionDelete, r.agentdPort(), run.WorkspaceID, podIP, resp.SessionID, deletePurposeNodeRetry)
+				deleteSessionAuthorized(ctx, logger, r.Store, r.PasswordProvider, r.SessionDelete, r.agentdPort(), run.WorkspaceID, podIP, resp.SessionID, deletePurposeNodeRetry)
 			}
 			select {
 			case <-time.After(time.Duration(attempt) * time.Second):
@@ -613,13 +638,41 @@ func (r *Reconciler) executeNode(ctx context.Context, logger Logger, run *wf.Wor
 // propagateDeletedSession runs the #1882 delete effects for a session
 // agentd reports as deleted by an ephemeral teardown (deletedSessionId
 // on the node envelope). No-op for nil propagator or an absent field —
-// including every response shape older agentd produces.
+// including every response shape older agentd produces. #1915: the
+// effects are wrapped in the same mark→effects→clean discipline the
+// Scheduler's carrier tail runs (propagateCarrierDelete) — kind=
+// 'carrier' origin mark BEFORE the effects (a mid-effects failure then
+// leaves a re-apable mark: the #1901 reap bypass admits kind='carrier'
+// rows only; unmarked, the history-bearing ghost stays
+// kept_for_operator), clean after (origin rows must not accumulate per
+// run). Best-effort: a failed mark logs and the effects still run; a
+// failed clean logs and the mark survives (fail-safe direction).
 func (r *Reconciler) propagateDeletedSession(ctx context.Context, logger Logger, workspaceID string, resp *NodeExecResponse) {
 	if resp == nil || resp.DeletedSessionID == "" || r.SessionDelete == nil {
 		return
 	}
+	if r.Store != nil {
+		if err := r.Store.RecordSessionOrigin(ctx, &wf.SessionOriginRow{
+			SessionID:   resp.DeletedSessionID,
+			WorkspaceID: workspaceID,
+			Origin:      types.SessionOriginWorkflow,
+			Kind:        types.SessionOriginKindCarrier,
+			Title:       "workflow ephemeral carrier",
+			CreatedAt:   time.Now().UTC(),
+		}); err != nil {
+			// The mark is belt-and-braces, not a precondition: the
+			// effects below still run; only the reconcile self-heal
+			// degrades (the pre-#1915 behavior).
+			logger.Error(err, "workflow: failed to mark ephemeral carrier origin", "workspaceID", workspaceID, "sessionId", resp.DeletedSessionID)
+		}
+	}
 	logger.Info("workflow: propagating ephemeral carrier delete", "workspaceID", workspaceID, "sessionId", resp.DeletedSessionID)
 	r.SessionDelete.PropagateSessionDeleted(ctx, workspaceID, resp.DeletedSessionID)
+	if r.Store != nil {
+		if err := r.Store.DeleteSessionOrigin(ctx, resp.DeletedSessionID); err != nil {
+			logger.Error(err, "workflow: failed to clean ephemeral carrier origin mark", "workspaceID", workspaceID, "sessionId", resp.DeletedSessionID)
+		}
+	}
 }
 
 // agentdPort returns the reconciler's configured override or the
@@ -1449,7 +1502,7 @@ func deleteRoutineSession(ctx context.Context, logger Logger, password, podIP st
 // A confirmed delete propagates platform-side (#1882) via the wired
 // SessionDeletePropagator — the same teardown the user-route delete runs.
 func (s *Scheduler) deleteRoutineSessionAuthorized(ctx context.Context, logger Logger, workspaceID, podIP, sessionID, purpose string) bool {
-	return deleteSessionAuthorized(ctx, logger, s.PasswordProvider, s.SessionDelete, s.agentdPort(), workspaceID, podIP, sessionID, purpose)
+	return deleteSessionAuthorized(ctx, logger, s.Store, s.PasswordProvider, s.SessionDelete, s.agentdPort(), workspaceID, podIP, sessionID, purpose)
 }
 
 // deleteSessionAuthorized is the caller-neutral authorized-delete core
@@ -1459,7 +1512,16 @@ func (s *Scheduler) deleteRoutineSessionAuthorized(ctx context.Context, logger L
 // the platform-side teardown (prop may be nil — unwired engines keep
 // the pre-#1882 pod-side-only behavior) — the carrier's session_index
 // row was minted during its life and no other route removes it.
-func deleteSessionAuthorized(ctx context.Context, logger Logger, pp apiinterfaces.WorkspacePasswordProvider, prop SessionDeletePropagator, port int, workspaceID, podIP, sessionID, purpose string) bool {
+// #1915: the confirmed delete origin-marks kind='carrier' BEFORE the
+// effects and cleans the mark after (origins may be nil — unwired
+// engines keep the pre-#1915 unmarked behavior): the effects' error
+// return is void, so an index-write failure is only observable as the
+// ghost row surviving — the pre-effects mark is then the ONLY data
+// letting the #1901 reap bypass admit it (kept_for_operator is the
+// unmarked fate). Fail-safe best-effort: a failed mark logs and the
+// effects still run; a failed clean logs and the mark survives (the
+// same DB outage that failed the effects' writes fails the clean too).
+func deleteSessionAuthorized(ctx context.Context, logger Logger, origins SessionOriginStore, pp apiinterfaces.WorkspacePasswordProvider, prop SessionDeletePropagator, port int, workspaceID, podIP, sessionID, purpose string) bool {
 	if pp == nil {
 		logger.Error(fmt.Errorf("no PasswordProvider configured"), "session delete: no password provider configured", "sessionId", sessionID, "purpose", purpose)
 		return false
@@ -1472,11 +1534,42 @@ func deleteSessionAuthorized(ctx context.Context, logger Logger, pp apiinterface
 	if !deleteRoutineSession(ctx, logger, password, podIP, port, sessionID, purpose) {
 		return false
 	}
+	if origins != nil {
+		if err := origins.RecordSessionOrigin(ctx, &wf.SessionOriginRow{
+			SessionID:   sessionID,
+			WorkspaceID: workspaceID,
+			Origin:      originForPurpose(purpose),
+			Kind:        types.SessionOriginKindCarrier,
+			Title:       purpose,
+			CreatedAt:   time.Now().UTC(),
+		}); err != nil {
+			// The mark is belt-and-braces, not a precondition: the
+			// effects below still run; only the reconcile self-heal
+			// degrades (the pre-#1915 behavior).
+			logger.Error(err, "session delete: failed to mark carrier origin", "sessionId", sessionID, "purpose", purpose)
+		}
+	}
 	if prop != nil {
 		//nolint:contextcheck // teardown must survive a dying fire context
 		prop.PropagateSessionDeleted(context.Background(), workspaceID, sessionID)
 	}
+	if origins != nil {
+		if err := origins.DeleteSessionOrigin(ctx, sessionID); err != nil {
+			logger.Error(err, "session delete: failed to clean carrier origin mark", "sessionId", sessionID, "purpose", purpose)
+		}
+	}
 	return true
+}
+
+// originForPurpose maps the authorized-delete's purpose label to the
+// honest origin value for the transient carrier mark (#1915): the two
+// routine cleanups are routine-sourced; the DAG node-retry cleanup is
+// workflow-sourced.
+func originForPurpose(purpose string) string {
+	if purpose == deletePurposeNodeRetry {
+		return types.SessionOriginWorkflow
+	}
+	return types.SessionOriginRoutine
 }
 
 // agentdPort returns the configured override or the production default.
