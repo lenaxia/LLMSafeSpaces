@@ -178,6 +178,55 @@ func TestBoardFileParams_NullAdmittedNeverReachesWire(t *testing.T) {
 	assert.NotContains(t, wire, "description_file", "a null mention is consumed — no file spelling reaches the wire")
 }
 
+// #1849 review r1: the legacy snake_case spelling must ALSO be
+// consumed — neither file spelling ever reaches the wire (null and
+// resolved-value paths), and the both-spellings ambiguity is refused.
+func TestBoardFileParams_LegacySpellingConsumed_PathAndNull(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "charter.md")
+	require.NoError(t, os.WriteFile(path, []byte("legacy charter"), 0o644))
+
+	// resolved-value path: legacy spelling loads the file, both keys gone
+	api, rec := newAutomationAPI(t, 200, `{"short_id":"tsk-n0000002"}`)
+	setupRenameWorkspaceEnv(t, api)
+	_, err := mcpAutomation(context.Background(), mcpTestPassword, "board_create_task", map[string]any{
+		"epicId": "epc-bbbb2222", "title": "T-legacy", "description_file": path,
+		"lsp_injected_session": "ses-1",
+	})
+	require.NoError(t, err)
+	var wire map[string]json.RawMessage
+	require.NoError(t, json.Unmarshal([]byte(rec.body), &wire))
+	assert.NotContains(t, wire, "description_file", "legacy spelling consumed — never forwarded")
+	assert.NotContains(t, wire, "descriptionFile", "canonical spelling absent — never forwarded")
+	assert.Contains(t, string(wire["description"]), "legacy charter", "content rides as the inline field")
+
+	// null path: a null legacy mention is consumed too
+	api2, rec2 := newAutomationAPI(t, 200, `{"short_id":"tsk-n0000003"}`)
+	setupRenameWorkspaceEnv(t, api2)
+	_, err = mcpAutomation(context.Background(), mcpTestPassword, "board_create_task", map[string]any{
+		"epicId": "epc-bbbb2222", "title": "T", "description_file": nil,
+		"lsp_injected_session": "ses-1",
+	})
+	require.NoError(t, err)
+	require.NoError(t, json.Unmarshal([]byte(rec2.body), &wire))
+	assert.NotContains(t, wire, "description_file", "null legacy mention consumed")
+}
+
+func TestBoardFileParams_BothSpellingsRefused(t *testing.T) {
+	args := map[string]any{"descriptionFile": "/a.md", "description_file": "/b.md"}
+	err := resolveBoardFileArgs(args, "description")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "two spellings")
+}
+
+// #1849 review r1 pin: on a no-file tool, EVERY file-suffixed key is
+// foreign — including the bare "_file" key the r1 draft accidentally
+// admitted via the legacy-alias exemption.
+func TestBoardFileParams_BareUnderscoreFileKeyRefused(t *testing.T) {
+	err := resolveBoardFileArgs(map[string]any{"_file": "/tmp/x.md"}, "")
+	require.Error(t, err, "a bare _file key on a no-file tool is a caller mistake, refused loudly")
+}
+
 func TestBoardFileParams_EchoDiffPassesThroughVerbatim(t *testing.T) {
 	// #1837 review round 2: content_echo_diff rides the platform body
 	// to the calling agent untouched (agentd re-models nothing).

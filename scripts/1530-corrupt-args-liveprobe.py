@@ -52,7 +52,7 @@ def note(ok, label):
     print(("PASS: " if ok else "FAIL: ") + label)
     passed, failed = passed + ok, failed + (not ok)
 
-base = {"message": "probe-1530 (no action needed)", "from_session_id": DECLARED}
+base = {"message": "probe-1530 (no action needed)", "lsp_injected_session": DECLARED}  # #1849: from_session_id is removed; emulate the origin plugin's injection stamp
 
 # v1 — the exact instance shape: escaped tail fragment inside the value,
 # VALID JSON (what the model actually emitted in the 13 misfires).

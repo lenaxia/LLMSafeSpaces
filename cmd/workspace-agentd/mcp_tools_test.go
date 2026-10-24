@@ -2000,6 +2000,43 @@ func bytesAllIndexes(haystack, needle []byte) []int {
 	}
 }
 
+// #1849 review r1: the legacy session_id spelling (destination's
+// one-release alias) must deliver at the HANDLER level — the alias is
+// what prior-call precedent in a live model's context emits during
+// transition.
+func TestMCPSendMessage_LegacySessionIdAliasDelivers_HandlerLevel(t *testing.T) {
+	f := newFakeAgent()
+	target := f.newSession("target")
+	caller := f.newSession("caller")
+	withAgentServer(t, f.handler(t))
+
+	req := mcpRequest{JSONRPC: "2.0", ID: 1, Method: "tools/call",
+		Params: marshalParams(t, map[string]any{
+			"name": "send_message",
+			"arguments": map[string]any{
+				"session_id":           target, // legacy spelling of destination
+				"message":              "alias hi",
+				"lsp_injected_session": caller,
+			},
+		})}
+	body, _ := json.Marshal(req)
+	w := httptest.NewRecorder()
+	r := mcpAuthedRequest(body)
+	mcpHandler(mcpTestPassword)(w, r)
+
+	var resp struct {
+		Result struct {
+			Content []struct {
+				Text string `json:"text"`
+			} `json:"content"`
+		} `json:"result"`
+	}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+	require.NotEmpty(t, resp.Result.Content)
+	assert.NotContains(t, resp.Result.Content[0].Text, "Error:", "legacy alias resolves and delivers")
+	require.Eventually(t, func() bool { return len(f.sentFor(target)) == 1 }, 5*time.Second, 50*time.Millisecond)
+}
+
 // --- structuredContent twin (#1849 best-practices pass, MCP 2026-07-28) --
 
 // send_message declares an outputSchema; a successful tools/call must
@@ -2117,27 +2154,23 @@ func TestMCPCatalogAnnotations(t *testing.T) {
 	r := mcpAuthedRequest(body)
 	mcpHandler(mcpTestPassword)(w, r)
 
+	type annFields struct {
+		ReadOnlyHint    *bool `json:"readOnlyHint"`
+		DestructiveHint *bool `json:"destructiveHint"`
+		IdempotentHint  *bool `json:"idempotentHint"`
+		OpenWorldHint   *bool `json:"openWorldHint"`
+	}
+	type toolRow struct {
+		Name        string     `json:"name"`
+		Annotations *annFields `json:"annotations"`
+	}
 	var resp struct {
 		Result struct {
-			Tools []struct {
-				Name        string `json:"name"`
-				Annotations *struct {
-					ReadOnlyHint    *bool `json:"readOnlyHint"`
-					DestructiveHint *bool `json:"destructiveHint"`
-					OpenWorldHint   *bool `json:"openWorldHint"`
-				} `json:"annotations"`
-			} `json:"tools"`
+			Tools []toolRow `json:"tools"`
 		} `json:"result"`
 	}
 	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
-	byName := map[string]*struct {
-		Name        string `json:"name"`
-		Annotations *struct {
-			ReadOnlyHint    *bool `json:"readOnlyHint"`
-			DestructiveHint *bool `json:"destructiveHint"`
-			OpenWorldHint   *bool `json:"openWorldHint"`
-		} `json:"annotations"`
-	}{}
+	byName := map[string]*toolRow{}
 	for i := range resp.Result.Tools {
 		byName[resp.Result.Tools[i].Name] = &resp.Result.Tools[i]
 	}
@@ -2152,6 +2185,20 @@ func TestMCPCatalogAnnotations(t *testing.T) {
 		require.NotNil(t, a, "%s must carry annotations", n)
 		require.NotNil(t, a.ReadOnlyHint, "%s readOnlyHint", n)
 		assert.True(t, *a.ReadOnlyHint, "%s is read-only — readOnlyHint:true", n)
+	}
+	// #1849 review r1: pin the idempotent pair and openWorldHint:false
+	// catalog-wide (every annotated tool operates on closed workspace
+	// state).
+	for _, n := range []string{"board_add_dependency", "board_remove_dependency"} {
+		a := byName[n].Annotations
+		require.NotNil(t, a, "%s must carry annotations", n)
+		require.NotNil(t, a.IdempotentHint, "%s idempotentHint", n)
+		assert.True(t, *a.IdempotentHint, "%s duplicate edges are no-ops — idempotentHint:true", n)
+	}
+	for n, row := range byName {
+		if row.Annotations != nil && row.Annotations.OpenWorldHint != nil {
+			assert.False(t, *row.Annotations.OpenWorldHint, "%s: no open-world interaction — openWorldHint must be false", n)
+		}
 	}
 }
 
