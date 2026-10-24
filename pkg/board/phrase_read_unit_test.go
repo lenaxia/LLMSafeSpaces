@@ -13,6 +13,7 @@ import (
 	"context"
 	"encoding/json"
 	"reflect"
+	"slices"
 	"testing"
 
 	"github.com/jackc/pgx/v5"
@@ -85,6 +86,7 @@ func TestPayloadAssigneeIDs(t *testing.T) {
 	payload := []byte(`{"snapshot":{"assignee_session":"ses_a","stage":"in_progress"},
 		"other":{"nested":[{"assignee_session":"ses_b"},{"assignee_session":"amber-falcon-glides"}]}}`)
 	got := PayloadAssigneeIDs(payload)
+	slices.Sort(got) // set semantics — the map-walk's visit order is not contractual (Go map iteration is randomized; only the collected set is)
 	want := []string{"ses_a", "ses_b"}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("got %v want %v (phrase-form values are skipped)", got, want)
