@@ -79,7 +79,7 @@ export function BoardConfigTab() {
               Review column
               <span data-testid="cfg-reviewColumn">
                 <Select
-                  value={g?.reviewColumn ?? "manual"}
+                  value={g?.reviewColumn ?? "auto"}
                   onValueChange={(v) => setGlobal({ ...(g as BoardConfig), reviewColumn: v })}
                   options={[...BOARD_REVIEW_COLUMNS]}
                 />
@@ -89,7 +89,7 @@ export function BoardConfigTab() {
               Auto-assign reviewer
               <span data-testid="cfg-autoAssignReviewer">
                 <Select
-                  value={g?.autoAssignReviewer ? "on" : "off"}
+                  value={(g?.autoAssignReviewer ?? true) ? "on" : "off"}
                   onValueChange={(v) => setGlobal({ ...(g as BoardConfig), autoAssignReviewer: v === "on" })}
                   options={["on", "off"]}
                 />

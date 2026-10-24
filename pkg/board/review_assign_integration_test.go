@@ -222,15 +222,17 @@ func (s *BoardSuite) TestReview_ExplicitOptOutSurvivesDefaultFlip() {
 		board.WithReviewAssigner(assigner.Assign),
 	)
 
-	// drive seeds one task in its own project, claims it, and moves it
-	// to in_review; returns whether the reviewer dispatched.
-	drive := func(name string) bool {
-		p := s.seedProject(ws, 2)
+	// drive seeds one more task in the GIVEN project, claims it, and
+	// moves it to in_review; returns whether the reviewer dispatched
+	// for THAT project (the claim is workspace-scoped, but the only
+	// claimable task is the one just seeded — earlier tasks are past
+	// backlog).
+	drive := func(p *board.Project, name string) bool {
 		e := s.seedEpic(p, board.EpicActive)
 		task := s.seedTask(e, name, nil, false)
 		c, err := svc.ClaimNext(ctx, "w-"+ws+"-"+name, ws)
 		s.Require().NoError(err)
-		s.Require().Equal(task.ID, c.TaskID, "one ready task at a time: the claim is deterministic")
+		s.Require().Equal(task.ID, c.TaskID, "one claimable task at a time: the claim is deterministic")
 		_, err = svc.MoveStage(ctx, s.agent(c.Assignee, c.ClaimToken), "", c.ShortID, board.StageInReview, "", "")
 		s.Require().NoError(err)
 		return s.countProjectEvents(p.ID, "review_assign") > 0
@@ -242,13 +244,13 @@ func (s *BoardSuite) TestReview_ExplicitOptOutSurvivesDefaultFlip() {
 	manual := board.ReviewColumnManual
 	_, err := svc.SetProjectBoardConfig(ctx, s.owner(), pOff.ID, "", &board.BoardConfigOverride{ReviewColumn: &manual})
 	s.Require().NoError(err)
-	s.False(drive("optout-proj-manual"), "explicit project reviewColumn=manual stays off after the default flip")
+	s.False(drive(pOff, "optout-proj-manual"), "explicit project reviewColumn=manual stays off after the default flip")
 
 	// Clearing the opt-out re-enables the flipped default (REPLACE
 	// semantics: absent = inherit, never sticky).
 	_, err = svc.SetProjectBoardConfig(ctx, s.owner(), pOff.ID, "", &board.BoardConfigOverride{})
 	s.Require().NoError(err)
-	s.True(drive("optout-proj-cleared"), "cleared override re-inherits the flipped on-default")
+	s.True(drive(pOff, "optout-proj-cleared"), "cleared override re-inherits the flipped on-default")
 
 	// Project tier, key 2: explicit autoAssignReviewer=false opts the
 	// project out even though reviewColumn re-inherits (now: auto).
@@ -256,17 +258,18 @@ func (s *BoardSuite) TestReview_ExplicitOptOutSurvivesDefaultFlip() {
 	noAssign := false
 	_, err = svc.SetProjectBoardConfig(ctx, s.owner(), pNoAssign.ID, "", &board.BoardConfigOverride{AutoAssignReviewer: &noAssign})
 	s.Require().NoError(err)
-	s.False(drive("optout-proj-noassign"), "explicit project autoAssignReviewer=false stays off after the default flip")
+	s.False(drive(pNoAssign, "optout-proj-noassign"), "explicit project autoAssignReviewer=false stays off after the default flip")
 
 	// User tier: explicit user-default reviewColumn=off opts EVERY
 	// inheriting project out; restoring it (replace with {}) re-enables.
+	pUser := s.seedProject(ws, 2)
 	off := board.ReviewColumnOff
 	_, err = svc.SetUserBoardConfig(ctx, s.owner(), &board.BoardConfigOverride{ReviewColumn: &off})
 	s.Require().NoError(err)
-	s.False(drive("optout-user-off"), "explicit user reviewColumn=off stays off after the default flip")
+	s.False(drive(pUser, "optout-user-off"), "explicit user reviewColumn=off stays off after the default flip")
 	_, err = svc.SetUserBoardConfig(ctx, s.owner(), &board.BoardConfigOverride{})
 	s.Require().NoError(err)
-	s.True(drive("optout-user-cleared"), "cleared user map re-inherits the flipped on-default")
+	s.True(drive(pUser, "optout-user-cleared"), "cleared user map re-inherits the flipped on-default")
 }
 
 func boolStr(b bool) string {

@@ -12652,10 +12652,12 @@ components:
         reviewColumn:
           type: string
           enum: [off, manual, auto]
-          description: Whether the review column shows and who drives it; auto stores the preference only (review automation is a separate slice)
+          default: auto
+          description: Whether the review column shows and who drives it; auto stores the preference only (review automation is a separate slice). Default auto (owner ruling 2026-10-24) — an explicit stored opt-out at either tier still wins.
         autoAssignReviewer:
           type: boolean
-          description: Whether in_review auto-assigns a review claim (config-gated behavior ships separately)
+          default: true
+          description: Whether in_review auto-assigns a review claim (config-gated behavior ships separately). Default true (owner ruling 2026-10-24) — an explicit stored opt-out at either tier still wins.
         defaultWorkerSlots:
           type: integer
           minimum: 1
