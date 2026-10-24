@@ -132,9 +132,9 @@ func TestIntegrationBoardSSELiveProjectionActorPhrase(t *testing.T) {
 		return board.Actor{Kind: board.ActorUser, UserID: "user-sse-phrase",
 			Surface: board.SurfaceAgentManager, WorkspaceID: wsID, SessionID: session}
 	}
-	warmTask, err := svc.CreateTask(ctx, mgr(warmRaw), e.ID, "", board.TaskInput{Title: "warm actor"}, "")
+	warmTask, err := svc.CreateTask(ctx, mgr(warmRaw), e.ID, "", board.TaskInput{Title: "warm actor", Description: "sse actor-phrase pin charter: reproduce then fix, per lane protocol.", AcceptanceCriteria: []board.AcceptanceCriterion{{Text: "c1"}}}, "")
 	require.NoError(t, err)
-	coldTask, err := svc.CreateTask(ctx, mgr(coldRaw), e.ID, "", board.TaskInput{Title: "cold actor"}, "")
+	coldTask, err := svc.CreateTask(ctx, mgr(coldRaw), e.ID, "", board.TaskInput{Title: "cold actor", Description: "sse actor-phrase pin charter: reproduce then fix, per lane protocol.", AcceptanceCriteria: []board.AcceptanceCriterion{{Text: "c1"}}}, "")
 	require.NoError(t, err)
 
 	actorOf := func(frame string) map[string]any {
@@ -260,7 +260,7 @@ func TestIntegrationBoardSSELiveProjectionPayloadPhrase(t *testing.T) {
 	// One WARM claimed task and one COLD claimed task, deleted in-flight:
 	// the delete_event payload's snapshot carries the assignee.
 	mkTask := func(title string) *board.Task {
-		tk, err := svc.CreateTask(ctx, owner, e.ID, "", board.TaskInput{Title: title}, "")
+		tk, err := svc.CreateTask(ctx, owner, e.ID, "", board.TaskInput{Title: title, Description: "sse payload-phrase pin charter: reproduce then fix, per lane protocol.", AcceptanceCriteria: []board.AcceptanceCriterion{{Text: "c1"}}}, "")
 		require.NoError(t, err)
 		return tk
 	}

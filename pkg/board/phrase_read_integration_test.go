@@ -282,7 +282,7 @@ func (s *BoardSuite) TestReads_ReplayEchoPhraseTranslation() {
 
 	// --- CreateTask replay: original outcome's id → current row -----
 	const createReq = "fix-1922-replay-create"
-	in := board.TaskInput{Title: "replay create pin", Tags: []string{},
+	in := board.TaskInput{Title: "replay create pin", Description: "replay-echo phrase pin charter: reproduce then fix, per lane protocol.", Tags: []string{},
 		AcceptanceCriteria: []board.AcceptanceCriterion{{Text: "c1", Met: true}}}
 	created, err := s.svc.CreateTask(ctx, s.owner(), e.ID, "", in, createReq)
 	require.NoError(s.T(), err)

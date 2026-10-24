@@ -42,6 +42,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **#1856** — ai-workflows v0.2.24 reapply (#1896).
 
 ## [Unreleased]
+### Fixed — Test hygiene: the #1922 phrase pins revived after the #1849 atomic-create contract (#1922 lane, validate-first)
+
+- **Three of the five #1930 raw-ID-leak pins were dead on main** (RED on
+  the Secrets Integration job at the #1933-merge push, run 40090453099):
+  #1904's atomic-create contract (description + ≥1 acceptance criterion
+  REQUIRED at create, #1849) landed after #1930 the same morning and its
+  "12 direct CreateTask sites" fixture sweep missed the four CreateTask
+  fixtures inside #1930's pin files — the guard rejects the seedless
+  fixtures before any phrase assertion runs, so the pins die at setup
+  and the #1922 leak guards stop executing. Fixtures repaired (charter
+  description + one criterion each, asserting nothing new): the
+  replay-echo pin (`pkg/board/phrase_read_integration_test.go`,
+  CI-visible red) and both SSE pins
+  (`api/internal/handlers/board_sse_phrase_integration_test.go` — its
+  CI step was skipped behind the board kill-test red, so latent).
+  Translation itself verified INTACT on main (all five pins pass once
+  fixtures satisfy the contract); mutation-verified the revived pins
+  still bite (replay-echo tail translation disabled → `amber-falcon-
+  glides` assertion red; SSE actor emission disabled → `amber-heron-
+  waits` assertion red). Test-only; no production changes.
+
 ### Fixed — Test hygiene: the usagestream resync/flight family no longer reddens on byte-identical content (#1927)
 
 - **Cross-test contamination through two package-global state cells
