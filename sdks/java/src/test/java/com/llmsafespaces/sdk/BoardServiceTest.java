@@ -169,7 +169,7 @@ class BoardServiceTest {
             var client = LLMSafeSpacesClient.builder("http://localhost:" + server.getAddress().getPort())
                     .apiKey("lsp_test").build();
             var task = client.board.createTask("epc-bbbb2222",
-                    Map.of("title", "T", "description", "seeded charter", "tags", List.of("pr:1234")));
+                    Map.of("title", "T", "description", "seeded charter", "tags", List.of("pr:1234"), "acceptanceCriteria", List.of(Map.of("text", "c", "met", false))));
             assertEquals("tsk-cccc3333", task.get("short_id"));
             @SuppressWarnings("unchecked")
             List<String> tags = (List<String>) task.get("tags");
