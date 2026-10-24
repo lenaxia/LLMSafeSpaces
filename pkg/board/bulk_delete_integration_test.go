@@ -177,17 +177,17 @@ func (s *BoardSuite) TestBulk_DeleteIdempotentResubmit() {
 	require.NoError(s.T(), err, "re-submitting the batch is safe — never an error")
 	byRef2 := bulkByID(s.T(), res2)
 
-	// Absence ≡ miss ≡ foreign: the previously-deleted item's error
-	// payload is BYTE-IDENTICAL to the never-existed ref's (same code,
-	// same detail — no way to tell "deleted earlier" from "never was",
-	// which is exactly the never-disclose property; the Ref field echoes
-	// each caller's ref verbatim by design, so the ITEMS differ there
-	// and only there).
+	// Absence ≡ miss ≡ foreign: every class renders EXACTLY what a
+	// NotFoundError for the caller's OWN ref renders — same code, same
+	// detail template with the caller's ref substituted (the detail is
+	// self-identifying, carrying zero class information: no way to tell
+	// "deleted earlier" from "never was" from "someone else's" — the
+	// never-disclose property; the Ref field echoes verbatim by design).
 	require.NotNil(s.T(), byRef2[a.ShortID].Error)
-	require.NotNil(s.T(), byRef2["tsk-nope-does-not-exist"].Error)
-	assert.Equal(s.T(), byRef2["tsk-nope-does-not-exist"].Error, byRef2[a.ShortID].Error,
-		"absence renders the exact error a miss renders")
 	assert.Equal(s.T(), board.BulkItemNotFound, byRef2[a.ShortID].Error.Code)
+	assert.Equal(s.T(), (&board.NotFoundError{Item: "task", Identifier: a.ShortID}).Error(),
+		byRef2[a.ShortID].Error.Detail,
+		"absence renders the exact error a miss for the same ref renders — no class distinction")
 	assert.Equal(s.T(), 2, s.countEvents("delete_task"), "no duplicate delete writes on re-submit")
 
 	// The failed subset alone, under a fresh key, is an ordinary batch.
@@ -271,10 +271,19 @@ func (s *BoardSuite) TestBulk_DeleteTripleEqualityNeverDisclose() {
 		assert.NotContains(s.T(), item.Error.Detail, "did you mean", "bare not_found — no suggestions on the bulk envelope")
 	}
 	// Refs echo verbatim (differ by construction); the never-disclose
-	// property lives in the error payload: byte-identical code + detail
-	// across absence, miss, and foreign.
-	assert.Equal(s.T(), res[1].Error, res[2].Error, "absence ≡ miss: byte-identical error payloads")
-	assert.Equal(s.T(), res[0].Error, res[1].Error, "foreign ≡ miss ≡ absence: byte-identical error payloads")
+	// property: each class's error renders EXACTLY what a NotFoundError
+	// for the caller's OWN ref renders — code equal, detail the same
+	// template with the caller's ref substituted. Zero class
+	// information: no "foreign", no "deleted", no owner identity, no
+	// did-you-mean — an observer holding only the response cannot tell
+	// the three classes apart.
+	refs := []string{foreign.ShortID, "tsk-nope-does-not-exist", doomed.ShortID}
+	for i, ref := range refs {
+		require.NotNil(s.T(), res[i].Error)
+		assert.Equal(s.T(), board.BulkItemNotFound, res[i].Error.Code)
+		assert.Equal(s.T(), (&board.NotFoundError{Item: "task", Identifier: ref}).Error(),
+			res[i].Error.Detail, "foreign ≡ miss ≡ absence: the same NotFoundError render per ref")
+	}
 	assert.False(s.T(), s.bulkDeleteGone(foreign.ID), "the foreign row is untouched")
 }
 
