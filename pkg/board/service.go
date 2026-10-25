@@ -230,6 +230,59 @@ func requireAgentWorkspaceTarget(actor Actor, targetWorkspaceID string) error {
 	return nil
 }
 
+// refuseTerminalEpicCreateTarget is the #1948 loud-refusal seam at
+// board_create_task's boundary: a task landed in a terminal epic looks
+// identical to a healthy backlog while the claim set silently starves
+// it (candidateSQL gates on e.status='active' — never surfaced at
+// create time; the issue's live evidence sat unfed for 20+ minutes).
+// Terminal means no path back into the claimable set without an
+// explicit lifecycle move: completed (reopen via epic_activate) or
+// archived (unarchive). Paused is NOT refused — pause is a scheduling
+// lever and resume re-feeds the rows (the trap a naive "not active →
+// refuse" guard falls into) — and draft is not (create-then-activate
+// is the documented flow).
+func refuseTerminalEpicCreateTarget(e *Epic) error {
+	return refuseTerminalEpicCreateStatus(e.ShortID, e.Status)
+}
+
+// refuseTerminalEpicCreateStatus is the same guard over freshly-read
+// status — the authoritative in-transaction re-check's form (r1: the
+// pre-write check is check-then-act; a concurrent epicCompletionCheck
+// or archive between the read and the commit must still refuse, the
+// TaskStart in-tx precedent).
+func refuseTerminalEpicCreateStatus(shortID, status string) error {
+	switch status {
+	case EpicCompleted:
+		return &GuardError{Code: GuardEpicState,
+			Detail: fmt.Sprintf("epic %s is completed — create refuses loud: the row would sit silently unfed outside the claimable set (#1948); reopen the epic first (epic_activate; completed→active)", shortID)}
+	case EpicArchived:
+		return &GuardError{Code: GuardEpicState,
+			Detail: fmt.Sprintf("epic %s is archived — create refuses loud: the row would sit silently unfed outside the claimable set (#1948); unarchive the epic first (unarchive restores active)", shortID)}
+	}
+	return nil
+}
+
+// refuseArchivedProjectCreateTarget is the project arm of the same
+// #1948 starvation shape: eligibleProjectsSQL gates on
+// p.status='active', so every row created under an archived project —
+// task, epic, OR import_plan's whole fresh epic — sits silently unfed
+// until an explicit unarchive (engine precedent: task_start's own
+// "terminal storage stays closed").
+func refuseArchivedProjectCreateTarget(p *Project) error {
+	return refuseArchivedProjectCreateStatus(p.ShortID, p.Status)
+}
+
+// refuseArchivedProjectCreateStatus is the in-transaction re-check's
+// form (r1: a concurrent ArchiveProject between the pre-write read and
+// the commit must still refuse).
+func refuseArchivedProjectCreateStatus(shortID, status string) error {
+	if status == ProjectArchived {
+		return &GuardError{Code: GuardProjectState,
+			Detail: fmt.Sprintf("project %s is archived — create refuses loud: the row would sit silently unfed outside the claimable set (#1948); unarchive the project first (unarchive restores active)", shortID)}
+	}
+	return nil
+}
+
 // taskForUpdate loads a task under row lock inside tx.
 func (st *Store) taskForUpdate(ctx context.Context, tx pgx.Tx, taskID string) (*Task, error) {
 	return scanTask(tx.QueryRow(ctx, `SELECT `+taskColumns+` FROM tasks t WHERE t.id=$1 FOR UPDATE`, taskID))
@@ -457,9 +510,32 @@ func (s *Service) CreateEpic(ctx context.Context, actor Actor, projectID, shortI
 	if err := ValidateEpicInput(in); err != nil {
 		return nil, err
 	}
+	// #1948 r2: the project arm covers this seam too — a draft epic
+	// minted into an archived project sits outside the claimable set
+	// with no signal (the last unguarded creation seam of this class).
+	replay, err := s.replayOf(ctx, p.ID, requestID, "create_epic")
+	if err != nil {
+		return nil, err
+	}
+	if replay == nil {
+		if err := refuseArchivedProjectCreateTarget(p); err != nil {
+			return nil, err
+		}
+	}
 	epicID := uuid.NewString()
 	ew := &eventWriter{svc: s, projectID: p.ID, requestID: requestID, action: "create_epic", itemKind: "epic", itemID: epicID, actor: actor}
 	outcome, dup, err := ew.run(ctx, func(tx pgx.Tx) (map[string]any, error) {
+		// r1 in-tx re-check (same discipline as CreateTask): a
+		// concurrent ArchiveProject serializes against the locked
+		// project row instead of slipping a starved epic through.
+		var projStatus string
+		if err := tx.QueryRow(ctx,
+			`SELECT status FROM projects WHERE id=$1 FOR UPDATE`, p.ID).Scan(&projStatus); err != nil {
+			return nil, err
+		}
+		if err := refuseArchivedProjectCreateStatus(p.ShortID, projStatus); err != nil {
+			return nil, err
+		}
 		shortID, err := mintUnique(ctx, txQ{tx}, "epics", PrefixEpic, taskMintOwnerScope, actor.UserID)
 		if err != nil {
 			return nil, err
@@ -713,6 +789,26 @@ func (s *Service) CreateTask(ctx context.Context, actor Actor, epicID, shortIDOr
 	if err := requireManagerAction(actor, p); err != nil {
 		return nil, err
 	}
+	// #1948: refuse loud before any write — a task created into a
+	// terminal epic (completed/archived) or an archived project sits
+	// permanently outside the claimable set with no error and no audit
+	// signal. Paused/draft targets stay green (scheduling lever /
+	// pre-activation). Replay-first (projectLifecycle's discipline): a
+	// requestId that already landed renders the original outcome — the
+	// state the original write left behind must not turn a replay into
+	// a guard error.
+	replay, err := s.replayOf(ctx, p.ID, requestID, "create_task")
+	if err != nil {
+		return nil, err
+	}
+	if replay == nil {
+		if err := refuseArchivedProjectCreateTarget(p); err != nil {
+			return nil, err
+		}
+		if err := refuseTerminalEpicCreateTarget(e); err != nil {
+			return nil, err
+		}
+	}
 	if in.Title == "" {
 		return nil, &GuardError{Code: "validation", Detail: "task title is required"}
 	}
@@ -743,6 +839,30 @@ func (s *Service) CreateTask(ctx context.Context, actor Actor, epicID, shortIDOr
 	taskID := uuid.NewString()
 	ew := &eventWriter{svc: s, projectID: p.ID, requestID: requestID, action: "create_task", itemKind: "task", itemID: taskID, actor: actor}
 	outcome, dup, err := ew.run(ctx, func(tx pgx.Tx) (map[string]any, error) {
+		// r1 (#1948 review): the pre-write guard is check-then-act —
+		// re-check under row locks INSIDE the write transaction so a
+		// concurrent epicCompletionCheck / archive / ArchiveProject
+		// serializes against this create (the TaskStart in-tx
+		// precedent). The failpoint between the two checks is the
+		// deterministic race seam the kill-pin arms.
+		if s.failpoint != nil {
+			if ferr := s.failpoint("create_task.recheck"); ferr != nil {
+				return nil, ferr
+			}
+		}
+		var epicStatus, projStatus string
+		if err := tx.QueryRow(ctx, `
+			SELECT e.status, p.status FROM epics e
+			JOIN projects p ON p.id = e.project_id
+			WHERE e.id = $1 FOR UPDATE OF e, p`, e.ID).Scan(&epicStatus, &projStatus); err != nil {
+			return nil, err
+		}
+		if err := refuseArchivedProjectCreateStatus(p.ShortID, projStatus); err != nil {
+			return nil, err
+		}
+		if err := refuseTerminalEpicCreateStatus(e.ShortID, epicStatus); err != nil {
+			return nil, err
+		}
 		shortID, err := mintUnique(ctx, txQ{tx}, "tasks", PrefixTask, taskMintOwnerScope, actor.UserID)
 		if err != nil {
 			return nil, err

@@ -299,6 +299,12 @@ func (s *BoardSuite) TestKill_IdempotentReplayConverges() {
 	p := s.seedProject(ws, 4)
 	e := s.seedEpic(p, board.EpicActive)
 	task := s.seedTask(e, "replay", nil, true)
+	// #1948 fixture note: "replay" reaching done would auto-complete
+	// this epic (epicCompletionCheck: ≥1 done, none non-done) and the
+	// later create_task replay would hit the terminal-epic guard — the
+	// exact starvation shape #1948 closed. A keeper backlog task holds
+	// the epic active so this pin stays about requestId idempotency.
+	s.seedTask(e, "keeper-open", nil, false)
 
 	// Park the task in a claimed in_progress state (the Done transition's
 	// legal source), then fault between effect and event write: the tx

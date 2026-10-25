@@ -31,6 +31,23 @@ func (s *Service) ImportPlan(ctx context.Context, actor Actor, projectID, shortI
 	if err := requireManagerAction(actor, p); err != nil {
 		return nil, err
 	}
+	// #1948: a terminal target fails the WHOLE transaction — the guard
+	// fires before any write, so nothing strands (all-or-nothing).
+	// import_plan mints a FRESH draft epic inside its one transaction,
+	// so the epic arm cannot fire here; the archived project is this
+	// seam's terminal target (the minted epic + every node would sit
+	// silently unfed outside the claimable set). Replay-first: a
+	// requestId that already landed renders the original outcome even
+	// after the project archived (projectLifecycle's discipline).
+	replay, err := s.replayOf(ctx, p.ID, requestID, "import_plan")
+	if err != nil {
+		return nil, err
+	}
+	if replay == nil {
+		if err := refuseArchivedProjectCreateTarget(p); err != nil {
+			return nil, err
+		}
+	}
 
 	validation := s.validatePlan(in)
 	if dryRun {
@@ -44,6 +61,26 @@ func (s *Service) ImportPlan(ctx context.Context, actor Actor, projectID, shortI
 	out := &ImportResult{DryRun: false, ProjectID: p.ID, TaskKeys: map[string]string{}, Warnings: validation.Warnings}
 	ew := &eventWriter{svc: s, projectID: p.ID, requestID: requestID, action: "import_plan", itemKind: "epic", itemID: epicID, actor: actor}
 	_, dup, err := ew.run(ctx, func(tx pgx.Tx) (map[string]any, error) {
+		// r1 (#1948 review): the pre-write guard is check-then-act —
+		// re-check the project status under its row lock INSIDE the
+		// write transaction (the TaskStart in-tx precedent), so a
+		// concurrent ArchiveProject either waits for this commit or
+		// aborts it — a mid-flight terminalization never strands nodes.
+		// The failpoint between the two checks is the deterministic
+		// race seam the kill-pin arms.
+		if s.failpoint != nil {
+			if ferr := s.failpoint("import_plan.recheck"); ferr != nil {
+				return nil, ferr
+			}
+		}
+		var projStatus string
+		if err := tx.QueryRow(ctx,
+			`SELECT status FROM projects WHERE id=$1 FOR UPDATE`, p.ID).Scan(&projStatus); err != nil {
+			return nil, err
+		}
+		if err := refuseArchivedProjectCreateStatus(p.ShortID, projStatus); err != nil {
+			return nil, err
+		}
 		shortID, err := mintUnique(ctx, txQ{tx}, "epics", PrefixEpic, taskMintOwnerScope, actor.UserID)
 		if err != nil {
 			return nil, err

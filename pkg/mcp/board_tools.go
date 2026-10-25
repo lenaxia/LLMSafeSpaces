@@ -165,7 +165,9 @@ var boardCreateProjectTool = mcp.NewTool("board_create_project",
 
 var boardCreateEpicTool = mcp.NewTool("board_create_epic",
 	mcp.WithDescription("Create a DRAFT epic in a project (ruling R2's default). Activate it to start "+
-		"feeding work to fresh workers; the outcome field is the human's steering wheel."),
+		"feeding work to fresh workers; the outcome field is the human's steering wheel. "+
+		"TERMINAL-TARGET GUARD (#1948): an ARCHIVED project refuses the create — the epic would "+
+		"sit silently unfed outside the claimable set; unarchive the project first."),
 	mcp.WithString("project_id", mcp.Required(), mcp.Description("Project short id, phrase form (prj-amber-lantern-ambles; legacy prj-XXXXXXXX still resolves, deprecated)")),
 	mcp.WithString("title", mcp.Required(), mcp.Description("Epic title")),
 	mcp.WithString("outcome", mcp.Description("What this epic exists to achieve (the steering wheel)")),
@@ -174,7 +176,11 @@ var boardCreateEpicTool = mcp.NewTool("board_create_epic",
 )
 
 var boardCreateTaskTool = mcp.NewTool("board_create_task",
-	mcp.WithDescription("Create a backlog task in an epic. ATOMIC-CREATE CONTRACT (#1849): a non-empty "+
+	mcp.WithDescription("Create a backlog task in an epic. TERMINAL-TARGET GUARD (#1948): creating into a "+
+		"completed or archived epic (or an archived project) is REFUSED loud — the row would sit silently "+
+		"unfed outside the claimable set; reopen (epic_activate) or unarchive first. Paused epics still "+
+		"accept creates (pause is a scheduling lever; resume re-feeds), as do draft ones (activate to feed). "+
+		"ATOMIC-CREATE CONTRACT (#1849): a non-empty "+
 		"description (the worker's charter) AND at least one acceptance criterion are REQUIRED — a create "+
 		"missing either, or whose title/description/criterion is ENTIRELY a placeholder-class token "+
 		"(placeholder, todo, tbd, asdf, qwerty…), is rejected outright; re-compose (prose that merely "+
@@ -409,7 +415,10 @@ var boardDeleteTool = mcp.NewTool("board_delete",
 
 var boardImportPlanTool = mcp.NewTool("board_import_plan",
 	mcp.WithDescription("Materialize an entire plan atomically (#1747): one epic + its tasks + dependency "+
-		"edges from a single payload, all-or-nothing. dry_run=true validates WITHOUT writing — the render "+
+		"edges from a single payload, all-or-nothing. TERMINAL-TARGET GUARD (#1948): an ARCHIVED project "+
+		"refuses the import whole — the fresh epic and every node would sit silently unfed outside the "+
+		"claimable set; unarchive first (the minted epic itself is always draft, never terminal). "+
+		"dry_run=true validates WITHOUT writing — the render "+
 		"(graph, warnings, initial ready set) is the user's plan-approval moment. Tasks address each other "+
 		"by payload key; edges live within the workspace."),
 	mcp.WithString("project_id", mcp.Required(), mcp.Description("Project short id, phrase form (prj-amber-lantern-ambles; legacy prj-XXXXXXXX still resolves, deprecated)")),
