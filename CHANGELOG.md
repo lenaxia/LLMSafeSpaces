@@ -66,9 +66,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   check refuses by name), and agentd's `board_update_task` dual-routes
   on claimToken presence (the #1832 WS2 shape). Task-worker
   self-certification REMAINS forbidden — the token-less manager shape
-  and an implementer's token-carrying call both keep the #1747 §5
-  refusal verbatim. The default reviewer persona's charter now teaches
-  the loop: verify → record flags → move done, zero manager touches.
+  keeps the tier-1 #1747 §5 refusal byte-identically, and an
+  implementer's token-carrying call refuses with the same error class
+  (`manager_surface`, the §5 sentence preserved verbatim in the new
+  engine refusal text). The default reviewer persona's charter now
+  teaches the loop: verify → record flags → move done, zero manager
+  touches.
 
 ### Added — board bulk delete variant (#1836, partial)
 

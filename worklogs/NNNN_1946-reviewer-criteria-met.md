@@ -22,7 +22,7 @@ Issue #1946 (live probe tsk-thematic-octave-tints, project fixes-verification-04
 | 1 | `api/migrations/000050_reviewer_criteria_met.{up,down}.sql` + helm mirror | `tasks.claim_persona text NULL` — the #1941 mint's provenance made durable. NULL on every ordinary claim; the ONLY in_review mint writes it. |
 | 2 | `pkg/board/persona.go` | `personaClaimSQL` stamps `claim_persona=$4` (the persona name); `personaClaimMintTx` takes it; both callers (stage entry, reconciler re-arm) pass it. |
 | 3 | `pkg/board/{stage,engine,rearm,reconciler,review}.go` | every non-persona mint and every token-clearing write sets `claim_persona=NULL` (worker grant, bounce re-claim, pending-input exit re-claim, throttle requeue, forward exits, lapse/re-arm/drift/review-settle clears) — the invariant: non-NULL ⟺ a persona episode's token holds the row. |
-| 4 | `pkg/board/criteria_met.go` (new) | `Service.SetCriteriaMet` — grant guard tier 1 (stage=in_review AND claim_persona non-empty, else GuardManagerSurface with the §5 text — the task-worker refusal, verbatim class), tier 2 (live claim-token arbitration), per-criterion bounds via `validateCriteriaUpdate`, row-locked server re-arbitration + #1747 pause guard inside the tx, guarded UPDATE, per-criterion audit event (action `criteria_met`: index, met, criterion text, persona). |
+| 4 | `pkg/board/criteria_met.go` (new) | `Service.SetCriteriaMet` — grant guard tier 1 (stage=in_review AND claim_persona non-empty, else GuardManagerSurface carrying the §5 sentence verbatim inside its new refusal text — the task-worker refusal), tier 2 (live claim-token arbitration), per-criterion bounds via `validateCriteriaUpdate`, row-locked server re-arbitration + #1747 pause guard inside the tx, guarded UPDATE, per-criterion audit event (action `criteria_met`: index, met, criterion text, persona). |
 | 5 | `api/internal/handlers/board_automation.go` | worker route handler `BoardSetCriteriaMet`: strict loud vocabulary (allowed keys: taskId/shortId/claimToken/setCriteriaMet/requestId/workspaceID/lsp_injected_session — anything else refuses BY NAME), the #1837 P2b MutatedCriterion echo; `boardService` interface widened. |
 | 6 | `api/internal/server/router.go` | `POST /internal/v1/automation/board/tasks/set-criteria-met` (worker group; parity pin updated). |
 | 7 | `pkg/agent/opencode/loopback.go` | `BoardSetCriteriaMet` (boardWorkerPost). |
@@ -39,7 +39,7 @@ The issue's alternative direction (done-move carrying criteria-met assertions) c
 
 `pkg/board/criteria_met_integration_test.go` (PG):
 - `TestCriteriaMet_1946_ReviewerGrantEndToEnd` — the probe-1 scenario now self-completing: implementer →in_review (mint stamps claim_persona='reviewer'), reviewer records BOTH flags through the scoped grant, done passes R2; per-criterion audit rows carry the persona; provenance clears with the token on done.
-- `TestCriteriaMet_1946_TaskWorkerSelfCertificationRefused` — the back-compat pin: implementer's live claim AND token-less callers refuse GuardManagerSurface with the §5 text verbatim; no audit rows.
+- `TestCriteriaMet_1946_TaskWorkerSelfCertificationRefused` — the back-compat pin: implementer's live claim AND token-less callers refuse GuardManagerSurface (the §5 sentence preserved verbatim inside the new engine text; the token-less agentd tier-1 refusal itself is untouched); no audit rows.
 - `TestCriteriaMet_1946_GuardMatrix` — stale token, foreign row, out-of-bounds (loud), walk-both-ways, every write audited.
 - `TestCriteriaMet_1946_BounceClearsProvenance` — the bounce re-claim is implementer-class (provenance NULL) and cannot self-certify with its token.
 
@@ -53,3 +53,11 @@ The issue's alternative direction (done-move carrying criteria-met assertions) c
 - Unit: `api/internal/handlers`, `cmd/workspace-agentd`, `pkg/agent/opencode`, `api/internal/server`, `pkg/board`, `pkg/mcp` — all ok.
 - Integration (PG, sequential — the two suites share one DB and go test parallelizes packages): `pkg/board` ok, `api/internal/handlers` ok.
 - Pre-existing environmental flakes documented, NOT caused by this change (verified identical on pristine main via stash): `TestMintUniqueOwnerWideLadder` re-fails on any rerun against a persistent DB (its fixed-UUID workspace row is never cleaned by its own t.Cleanup; CI uses fresh DBs); the local PG instance moved ports mid-lane (5433→5434), and migration 000050 was applied to both instances for local runs.
+
+## Review round 1 (formal REQUEST_CHANGES on ae6c74b44) — addressed
+
+1. `reconciler.go` RC2 closed-unmerged drift: BOTH landings now clear `claim_persona` — the recorded-identity re-claim mint (→in_progress, a non-persona mint) and the no-identity backlog landing (the token's pre-existing retention untouched); pinned by `TestCriteriaMet_1946_ClosedUnmergedDriftClearsProvenance` (both branches + the drifted worker cannot self-certify).
+2. Pause-guard coverage gap: `TestCriteriaMet_1946_PausedRowRefuses` (GuardPaused refusal, no audit rows, resume re-arms the grant).
+3. The #1946 bonus item (R2 idempotency-key re-evaluation) deferral now recorded in design 0067 §10.9 (deferred paragraph) — a future reader of the design finds it.
+4. Migration 000050 up-comment corrected: under the #1939 flipped defaults a live in_review persona claim at upgrade reads NULL → the grant refuses fail-closed until the RC1 re-arm re-mints with provenance (transient, self-healing).
+5. Wording: "byte-identical §5 text" softened — the token-less manager path IS byte-identical (gate untouched); the engine refusal is a NEW string preserving the §5 sentence verbatim (class `manager_surface`, pinned by `Contains`).

@@ -886,7 +886,7 @@ func (s *Service) rc2Drift(ctx context.Context, cutoff time.Time) (done, review,
 					UPDATE tasks SET stage='in_progress', stage_entered_at=now(),
 						claim_token=$2, lease_expires_at=now()+make_interval(secs=>$3::float8),
 						last_progress_at=now(), assignee_session=NULL,
-						claim_incremented_attempts=false, pending_origin=NULL
+						claim_incremented_attempts=false, claim_persona=NULL, pending_origin=NULL
 					WHERE id=$1 AND stage='in_review'`,
 					t.ID, newToken, s.cfg.LeaseDuration.Seconds())
 				if err != nil {
@@ -895,8 +895,11 @@ func (s *Service) rc2Drift(ctx context.Context, cutoff time.Time) (done, review,
 				}
 				affected = tag.RowsAffected() > 0
 			} else {
+				// #1946: the no-identity landing keeps claim_token
+				// (pre-existing) but drops the persona provenance —
+				// claim_persona rides ONLY a live persona claim.
 				tag, err := tx.Exec(ctx, `
-					UPDATE tasks SET stage='backlog', stage_entered_at=now(), pending_origin=NULL
+					UPDATE tasks SET stage='backlog', stage_entered_at=now(), claim_persona=NULL, pending_origin=NULL
 					WHERE id=$1 AND stage='in_review'`, t.ID)
 				if err != nil {
 					_ = tx.Rollback(ctx)

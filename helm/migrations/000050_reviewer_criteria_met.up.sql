@@ -23,8 +23,12 @@
 -- NULL on every ordinary claim (worker grant, bounce re-claim,
 -- pending-input exit re-claim — the engine's non-persona mints set it
 -- NULL) and cleared wherever claim_token is cleared. No existing row
--- changes meaning: every live claim today is a worker claim, and NULL
--- is its value.
+-- changes meaning for the WORKER claims (NULL is their value). One
+-- transient upgrade window: under the #1939 flipped defaults a row may
+-- hold a LIVE in_review persona claim at migration time — it reads
+-- NULL and the #1946 grant refuses it fail-closed until the lease
+-- lapses and the RC1 re-arm re-mints WITH provenance (self-healing;
+-- the reviewer keeps its token-guarded worker writes throughout).
 
 BEGIN;
 
