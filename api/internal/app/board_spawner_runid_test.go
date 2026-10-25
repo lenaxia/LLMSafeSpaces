@@ -37,12 +37,6 @@ func TestBoardRunID_EpisodeUnique(t *testing.T) {
 	if !regexp.MustCompile(`^3eec1981-b775-4934-bd52-90e9baca03da-w-tok-`).MatchString(boardRunID(mk(""))) {
 		t.Fatalf("worker RunID shape unexpected: %s", boardRunID(mk("")))
 	}
-	// Tokenless claims (should not occur in production) fall back to
-	// nanosecond uniqueness.
-	if boardRunID(&board.Claim{TaskID: "t", Stage: ""}) == boardRunID(&board.Claim{TaskID: "t", Stage: ""}) {
-		// same-second nanos are still distinct; this is near-tautological but guards the shape
-		t.Log("tokenless fallback ids matched — nanosecond window elapsed between calls")
-	}
 	if !strings.Contains(boardRunID(mk(board.StageInReview)), "-in_review-") {
 		t.Fatalf("review RunID shape unexpected: %s", boardRunID(mk(board.StageInReview)))
 	}
