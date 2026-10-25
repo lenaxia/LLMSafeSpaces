@@ -113,13 +113,20 @@ type Task struct {
 	// not observed the session yet), flagged per the #1817/#1821 SSE
 	// precedent. Set at the read edge ONLY; the stored row stays
 	// canonical (bounce/reconciler/messenger consumers keep raw).
-	AssigneeSessionDeprecated bool       `json:"assignee_session_deprecated,omitempty"`
-	ClaimToken                string     `json:"claim_token,omitempty"`
-	LeaseExpiresAt            *time.Time `json:"lease_expires_at,omitempty"`
-	LastProgressAt            *time.Time `json:"last_progress_at,omitempty"`
-	Attempts                  int        `json:"attempts"`
-	ClaimIncremented          bool       `json:"claim_incremented_attempts"`
-	CooldownUntil             *time.Time `json:"cooldown_until,omitempty"`
+	AssigneeSessionDeprecated bool   `json:"assignee_session_deprecated,omitempty"`
+	ClaimToken                string `json:"claim_token,omitempty"`
+	// ClaimPersona is the live claim's persona provenance (#1941 mint,
+	// made durable by #1946): the configured persona name whose mint
+	// holds the row. Empty on every ordinary claim (worker grant,
+	// bounce re-claim, pending-input exit) and wherever the token is
+	// cleared — the seam a reviewer-persona claim is distinguished
+	// from a task-worker claim on.
+	ClaimPersona     string     `json:"claim_persona,omitempty"`
+	LeaseExpiresAt   *time.Time `json:"lease_expires_at,omitempty"`
+	LastProgressAt   *time.Time `json:"last_progress_at,omitempty"`
+	Attempts         int        `json:"attempts"`
+	ClaimIncremented bool       `json:"claim_incremented_attempts"`
+	CooldownUntil    *time.Time `json:"cooldown_until,omitempty"`
 	// WaitingOn (derived, informational): "concurrency_limit" when the
 	// row is ready but the per-user or per-instance concurrent-claim cap
 	// is saturated (#1747 round 3 — over-cap is never an error; the row

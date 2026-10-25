@@ -1370,6 +1370,7 @@ func registerInternalAutomationRoutes(router *gin.Engine, cfg RouterConfig) {
 		b.POST("/tasks/heartbeat", h.BoardHeartbeat)
 		b.POST("/tasks/throttle", h.BoardReportThrottle)
 		b.POST("/tasks/move-stage", h.BoardMoveStage)
+		b.POST("/tasks/set-criteria-met", h.BoardSetCriteriaMet)      // #1946: the reviewer-persona claim's scoped criteria-flags write (claim-token-guarded; persona-provenance-guarded at the engine)
 		b.POST("/tasks/move-stage-bulk", h.BoardManagerMoveStageBulk) // #1836: bulk complete (claim stays owner-surface only, round-3 #2)
 		b.POST("/tasks/delete-bulk", h.BoardManagerDeleteTasksBulk)   // #1836 sibling: bulk delete (a manager action's batch twin)
 

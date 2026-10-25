@@ -56,6 +56,7 @@ func (q txQ) QueryRow(ctx context.Context, sql string, args ...any) pgx.Row {
 const taskColumns = `t.id, t.project_id, t.epic_id, t.short_id, t.title, t.description,
 	t.stage, t.pending_origin, t.project_name, t.epic_name, t.tags,
 	t.acceptance_criteria, t.is_blocked, t.paused, t.assignee_session, t.claim_token::text,
+	t.claim_persona,
 	t.lease_expires_at, t.last_progress_at, t.attempts, t.claim_incremented_attempts,
 	t.last_attempt_failed, t.failure_count, t.last_failure_at,
 	t.cooldown_until, t.stage_entered_at, t.created_at, t.updated_at`
@@ -63,10 +64,11 @@ const taskColumns = `t.id, t.project_id, t.epic_id, t.short_id, t.title, t.descr
 func scanTask(row pgx.Row) (*Task, error) {
 	var t Task
 	var criteria []byte
-	var token, assignee *string
+	var token, assignee, persona *string
 	err := row.Scan(&t.ID, &t.ProjectID, &t.EpicID, &t.ShortID, &t.Title, &t.Description,
 		&t.Stage, &t.PendingOrigin, &t.ProjectName, &t.EpicName, &t.Tags,
 		&criteria, &t.IsBlocked, &t.Paused, &assignee, &token,
+		&persona,
 		&t.LeaseExpiresAt, &t.LastProgressAt, &t.Attempts, &t.ClaimIncremented,
 		&t.LastAttemptFailed, &t.FailureCount, &t.LastFailureAt,
 		&t.CooldownUntil, &t.StageEnteredAt, &t.CreatedAt, &t.UpdatedAt)
@@ -78,6 +80,9 @@ func scanTask(row pgx.Row) (*Task, error) {
 	}
 	if assignee != nil {
 		t.AssigneeSession = *assignee
+	}
+	if persona != nil {
+		t.ClaimPersona = *persona
 	}
 	t.ShortIDDeprecated = IsDeprecatedBoardID(t.ShortID)
 	if len(criteria) > 0 {

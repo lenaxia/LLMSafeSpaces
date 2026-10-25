@@ -476,6 +476,7 @@ func TestBoardParity_AgentColumn(t *testing.T) {
 		"POST /internal/v1/automation/board/tasks/heartbeat",
 		"POST /internal/v1/automation/board/tasks/move-stage",
 		"POST /internal/v1/automation/board/tasks/move-stage-bulk",
+		"POST /internal/v1/automation/board/tasks/set-criteria-met", // #1946: the reviewer-persona claim's scoped criteria-flags write
 		"POST /internal/v1/automation/board/tasks/throttle",
 	}, seamBoardRoutes(t),
 		"agent seam route table: worker + manager (#1747) routes + resource-pressure telemetry; claim_next/task_start never route")

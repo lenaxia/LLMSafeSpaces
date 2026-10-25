@@ -42,6 +42,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — reviewer-persona criteria-met grant (#1946, owner ruling 2026-10-25)
+
+- **Reviewer personas can record criteria-met on their claimed row**:
+  ruling #1747 §5's blanket surface separation caught the auto-review
+  reviewer persona in the task-worker net — it could verify acceptance
+  criteria but never RECORD them met (setCriteriaMet was
+  manager-surface-only), so auto-review could not close a task
+  end-to-end (the done guard R2 refused the reviewer's →done until a
+  user-collaborator hand-set the flags). The owner ruling ("Why is set
+  criteria met manager only. It should not be.") grants it, scoped on
+  all three axes: **who** — only a reviewer-persona claim,
+  distinguished by the #1941 mint's provenance made durable
+  (`tasks.claim_persona`, migration 000050 — non-NULL only while a
+  persona episode's token holds the row; every non-persona mint and
+  token-clearing write NULLs it); **what** — only setCriteriaMet's
+  per-criterion flag walk, audited per-criterion (action
+  `criteria_met`: index, flag, criterion text, persona name); **where**
+  — only the caller's OWN claimed row (live claim-token arbitration
+  under the row lock). Surfaced as a worker route on the pod seam
+  (`POST /internal/v1/automation/board/tasks/set-criteria-met`) with a
+  strict loud vocabulary (any field beyond addressing + token + the one
+  check refuses by name), and agentd's `board_update_task` dual-routes
+  on claimToken presence (the #1832 WS2 shape). Task-worker
+  self-certification REMAINS forbidden — the token-less manager shape
+  and an implementer's token-carrying call both keep the #1747 §5
+  refusal verbatim. The default reviewer persona's charter now teaches
+  the loop: verify → record flags → move done, zero manager touches.
+
 ### Added — board bulk delete variant (#1836, partial)
 
 - **Bulk task delete with per-item result arrays** (#1836's

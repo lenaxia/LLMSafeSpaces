@@ -62,7 +62,10 @@ var DefaultReviewerPersona = PersonaConfig{
 	Instructions: "Verify EACH acceptance criterion adversarially, with evidence. Record ONE structured verdict: " +
 		"board_record_verdict with verdict=approve (requires the task's evidence URL and ALL criteria met — the Done guard applies regardless) " +
 		"or verdict=fail with findings [{severity blocker|major|minor, pointer, criterionIndex}]. A fail bounces the task to its next claimant " +
-		"with your findings embedded. Never merge, never push.",
+		"with your findings embedded. Never merge, never push. " +
+		"Recording criteria flags: as the reviewer persona you hold this row's claim — record each verified criterion with " +
+		"board_update_task {taskId, claimToken, setCriteriaMet:{index, met}} (#1946: your OWN claimed row only); " +
+		"with every criterion flagged and the evidence URL in hand, board_move_stage→done completes the review.",
 }
 
 // personaForStage resolves the effective persona for one stage: an
@@ -110,20 +113,26 @@ func (s *Service) stagePersona(ctx context.Context, p *Project, stage string) *P
 // for the bounce/RC2 consumer today, and the persona worker's guarded
 // spawn-stamp OVERWRITES it under the fresh token — between mint and
 // stamp the bounce path still sees a recorded assignee (its
-// never-token-less-in_progress invariant).
+// never-token-less-in_progress invariant). #1946: the mint stamps its
+// PROVENANCE on the row (claim_persona=$4, the configured persona
+// name) — the durable seam a reviewer-persona claim is distinguished
+// from a task-worker claim on; every non-persona mint and every
+// token-clearing write sets it NULL (migration 000050).
 const personaClaimSQL = `
 	claim_token=$2, lease_expires_at=now()+make_interval(secs=>$3::float8),
-	last_progress_at=now(), claim_incremented_attempts=false`
+	last_progress_at=now(), claim_incremented_attempts=false, claim_persona=$4`
 
 // personaClaimMintTx applies the persona mint to a row already moved
 // into its persona stage (inside the caller's transition transaction)
-// and returns the minted token. The nudge the caller returns fires the
-// spawn strictly post-commit (r1-C5: a token handed out for a mint
-// that rolled back would strand a worker holding a dead claim).
-func (s *Service) personaClaimMintTx(ctx context.Context, tx pgx.Tx, taskID, stage string) (string, error) {
+// and returns the minted token. personaName stamps the claim's
+// provenance (validated non-empty by the config decoder; the mint is
+// only reached for a resolved persona). The nudge the caller returns
+// fires the spawn strictly post-commit (r1-C5: a token handed out for
+// a mint that rolled back would strand a worker holding a dead claim).
+func (s *Service) personaClaimMintTx(ctx context.Context, tx pgx.Tx, taskID, stage, personaName string) (string, error) {
 	token := uuidNew()
 	tag, err := tx.Exec(ctx, `UPDATE tasks SET `+personaClaimSQL+`
-		WHERE id=$1 AND stage=$4 AND NOT paused`, taskID, token, s.cfg.LeaseDuration.Seconds(), stage)
+		WHERE id=$1 AND stage=$5 AND NOT paused`, taskID, token, s.cfg.LeaseDuration.Seconds(), personaName, stage)
 	if err != nil {
 		return "", err
 	}
