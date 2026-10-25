@@ -100,6 +100,12 @@ type byoServer struct {
 	redactor *redact.Redactor
 	client   *http.Client
 	metrics  *byoMetrics
+
+	// agedArgs (#1949) stubs aged llmsafespaces_* tool-call arguments in
+	// chat-completion request bodies before they are forwarded upstream
+	// — the poisoned-context emission cure. Nil-safe (Compact on a nil
+	// compactor is a passthrough).
+	agedArgs *agedArgCompactor
 }
 
 func (s *byoServer) handler() http.Handler {
@@ -346,6 +352,24 @@ func (s *byoServer) handleWorkspaceTraffic(w http.ResponseWriter, r *http.Reques
 		if err := byoModelAllowed(shape, payload.ModelAllowlist); err != nil {
 			reject(byoRejectScopeViolation, http.StatusForbidden, "model outside token allowlist")
 			return
+		}
+	}
+
+	// (4.5) Aged-arg compaction (#1949): stub aged llmsafespaces_* prior-
+	// call arguments in the in-context history before anything else
+	// touches the body. The client's on-disk session store is untouched
+	// (the router never persists bodies, K7) — this only shrinks what
+	// the model re-sees of its own history. Fires loudly: log (metadata
+	// only) + metrics on every fire; passthrough-safe otherwise. The
+	// bytes delta is clamped inside the recorder (small aged args grow
+	// the body; a negative counter delta would panic — r3 finding).
+	if r.Method == http.MethodPost && subPath == "chat/completions" {
+		compacted, cstats := s.agedArgs.Compact(bodyBytes)
+		if cstats.Changed {
+			log.Printf("byo-router: ws=%s slug=%s aged-arg compaction: %d llmsafespaces_* tool-call arguments stubbed (recent window %d), body %d -> %d bytes", //nolint:gosec // sanitized metadata + counts only (K7)
+				sanitizeMeta(workspaceID), sanitizeMeta(providerSlug), cstats.CallsStubbed, s.agedArgs.recentWindow(), cstats.BytesBefore, cstats.BytesAfter)
+			s.metrics.recordAgedArgCompaction(workspaceID, providerSlug, cstats.CallsStubbed, cstats.BytesBefore-cstats.BytesAfter)
+			bodyBytes = compacted
 		}
 	}
 

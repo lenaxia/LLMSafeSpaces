@@ -138,6 +138,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   engine refusal text). The default reviewer persona's charter now
   teaches the loop: verify → record flags → move done, zero manager
   touches.
+### Added — relay-router aged-arg compaction, the poisoned-context emission cure (#1949)
+
+- **Aged `llmsafespaces_*` prior-call argument stubbing on the BYO resolve
+  path** (#1949, the #1849/#1929 follow-up): chat-completion request
+  bodies passing through the relay-router get tool calls older than a
+  recent window (last N tool calls of any tool, default 30,
+  `BYO_AGED_ARG_RECENT_TOOL_CALLS`; 0 = stub all, negative = kill
+  switch) rewritten — bulk-first old-shape arguments (the pattern-
+  continuation poison #1929 replay-proved: 12/12 runaway; production
+  confirmations 2026-10-25) replaced by a one-field note. Call identity,
+  tool name, and tool RESULTS are preserved; the recent window is
+  untouched; the on-disk session store is untouched (the router never
+  persists bodies). Passthrough-safe (anything unexpected forwards
+  byte-identical) and idempotent across re-sent turns. Every fire is
+  loudly observable: metadata-only log line +
+  `llm_relay_byo_aged_arg_{compactions,calls_stubbed,bytes_saved}_total`
+  metrics. Ships with the checked-in replay harness
+  (`scripts/1949-aged-arg-replay.py`: synthetic poisoned transcript +
+  exact-context mode + signature scorer, per the #1849 adjudication's
+  regression plan) and the Go discriminator pin
+  (`TestAgedArgSyntheticReplayCure`: recorded production runaway shapes
+  → compacted → scorer-clean). Live validate-first evidence (13 runs,
+  5 legs, glm-5.3): the un-stubbed runaway could NOT be re-fired on
+  today's serving path — documented in the worklog as an evidence limit
+  of the live leg, with the deterministic pins carrying the regression.
 
 ### Added — board bulk delete variant (#1836, partial)
 
