@@ -42,6 +42,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed — board: creation into terminal epics refuses loud (#1948)
+
+- **`board_create_task` / `board_import_plan` no longer land rows in a
+  terminal target silently** (#1948): a task created into a COMPLETED
+  epic succeeded with no error and then sat permanently unfed — the
+  claim set gates on `e.status='active'` (candidateSQL) /
+  `p.status='active'` (eligibleProjectsSQL), none of which surfaced at
+  create time; the live evidence sat 20+ minutes before manual
+  inspection caught it. Now `CreateTask` refuses (409
+  `epic_state`/`project_state`, error naming the epic/project and its
+  state, with the remedy — reopen/unarchive first) for terminal epics
+  (completed, archived) and archived projects; `ImportPlan` refuses the
+  WHOLE transaction for an archived project (its terminal target — the
+  tool mints a fresh draft epic, so a terminal target EPIC is
+  structurally unreachable there) before any write, all-or-nothing
+  preserved. PAUSED epics still accept creates (pause is a scheduling
+  lever; resume re-feeds — pinned explicitly), as do DRAFT ones
+  (create-then-activate is the documented flow). MCP tool descriptions
+  document the guard. Fixture-only adaptations in two kill-tests that
+  seeded rows into terminal epics incidentally (intent preserved:
+  task_start refusals; requestId idempotency). Reopen-with-audit
+  (auto-reactivating the epic on create) was considered and deliberately
+  left as a follow-up — refuse-only is the minimal, truthful semantics.
+
 ### Added — board bulk delete variant (#1836, partial)
 
 - **Bulk task delete with per-item result arrays** (#1836's
