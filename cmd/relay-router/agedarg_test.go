@@ -195,8 +195,11 @@ func TestAgedArgCompaction_UntouchedFieldsBytePreserved(t *testing.T) {
 // TestAgedArgStubMatchesReplayHarness — the stub is byte-identical to
 // the checked-in python mirror (scripts/1949-aged-arg-replay.py
 // --print-stub): the live replay arm and the Go in-path transform emit
-// the SAME cure bytes. The pin EXECUTES the script (not a hardcoded
-// copy), so drift in either direction fails here.
+// the SAME cure bytes. Two legs: a source pin (always runs — the stub
+// constant and the compact-separator serialization choice must be in
+// the script) and an executed leg (runs the script when an interpreter
+// is available; skipped loudly with the captured error otherwise —
+// e.g. PATH-shim pythons on CI runners).
 func TestAgedArgStubMatchesReplayHarness(t *testing.T) {
 	expected := `{"note":"arguments removed by relay aged-arg compaction (full text preserved in the session audit trail)"}`
 	assert.Equal(t, expected, string(agedArgStub()), "Go stub literal")
@@ -204,18 +207,37 @@ func TestAgedArgStubMatchesReplayHarness(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, string(wireExpected), agedArgStubJSONString(), "wire form: the stub object JSON-encoded as a string")
 
-	python, err := exec.LookPath("python3")
-	if err != nil {
-		t.Skip("python3 not available — script-parity leg skipped (literal legs above still pinned)")
-	}
 	script := filepath.Join("..", "..", "scripts", "1949-aged-arg-replay.py")
-	if _, err := os.Stat(script); err != nil {
-		t.Skipf("replay harness not found at %s", script)
+	src, err := os.ReadFile(script)
+	require.NoError(t, err, "the replay harness must ship beside this package")
+	srcS := string(src)
+	assert.Contains(t, srcS, `"arguments removed by relay aged-arg compaction "`,
+		"the harness's stub constant matches the Go stub note (part 1)")
+	assert.Contains(t, srcS, `"(full text preserved in the session audit trail)"`,
+		"the harness's stub constant matches the Go stub note (part 2)")
+	assert.Contains(t, srcS, `separators=(",", ":")`,
+		"the harness serializes the stub with compact separators (json.dumps default adds a space after the colon — not byte-identical to json.Marshal)")
+
+	var (
+		lastErr    error
+		lastOut    []byte
+		lastInterp string
+	)
+	for _, interp := range []string{"python3", "python"} {
+		path, lerr := exec.LookPath(interp)
+		if lerr != nil {
+			continue
+		}
+		captured, xerr := exec.Command(path, script, "--print-stub").CombinedOutput()
+		if xerr == nil {
+			assert.Equal(t, expected, strings.TrimSpace(string(captured)),
+				"the python mirror's stub payload is byte-identical to the Go stub")
+			return
+		}
+		lastErr, lastOut, lastInterp = xerr, captured, interp
 	}
-	out, err := exec.Command(python, script, "--print-stub").Output()
-	require.NoError(t, err, "running the harness --print-stub")
-	assert.Equal(t, expected, strings.TrimSpace(string(out)),
-		"the python mirror's stub payload is byte-identical to the Go stub")
+	t.Skipf("no working python interpreter for the executed parity leg (last: %s: %v; output: %q) — source-pin leg above still enforced",
+		lastInterp, lastErr, lastOut)
 }
 
 // TestAgedArgCompaction_MalformedEntriesLeftUntouched — a message whose
