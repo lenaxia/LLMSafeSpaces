@@ -85,3 +85,51 @@ func TestCharterPrompt_PersonaRendering(t *testing.T) {
 		t.Fatalf("persona-less charter must render today's opening verbatim:\n%s", got)
 	}
 }
+
+// #1947 (probe 2, live evidence): the spawned reviewer's charter carried
+// the IMPLEMENTER trailer ("Work the task to completion … move the task
+// to in_review when the work is done") — and the mischartered reviewer
+// executed the task's Round 1 and called board_move_stage instead of
+// recording a verdict. A persona-bearing charter must close with the
+// persona's outcome, never the implementer loop; the task body is
+// context, and the persona-less charter stays byte-identical.
+func TestCharterPrompt_PersonaCharterDropsImplementerTrailer(t *testing.T) {
+	rev := &board.PersonaConfig{Name: board.DefaultReviewerPersona.Name, Instructions: board.DefaultReviewerPersona.Instructions}
+	persona := boardCharterPrompt(&board.Claim{
+		ShortID: "tsk-dddd0004", ClaimToken: "tok", Stage: board.StageInReview, Persona: rev,
+		Task: &board.Task{Description: "desc", AcceptanceCriteria: []board.AcceptanceCriterion{{Text: "c1"}}},
+	})
+	for _, banned := range []string{
+		"Work the task to completion",
+		"move the\ntask to in_review",
+	} {
+		if strings.Contains(persona, banned) {
+			t.Fatalf("persona charter must not carry the implementer trailer %q:\n%s", banned, persona)
+		}
+	}
+	for _, want := range []string{
+		"You are the 'reviewer' persona for task tsk-dddd0004 at stage in_review (claim token: tok)",
+		"board_record_verdict",
+		"persona's outcome",
+	} {
+		if !strings.Contains(persona, want) {
+			t.Fatalf("persona charter missing %q:\n%s", want, persona)
+		}
+	}
+
+	// An arbitrary persona drops the trailer too (nothing reviewer-specific).
+	arbitrary := boardCharterPrompt(&board.Claim{
+		ShortID: "tsk-eeee0005", ClaimToken: "tk5", Stage: board.StageInProgress,
+		Persona: &board.PersonaConfig{Name: "implementer"},
+	})
+	if strings.Contains(arbitrary, "Work the task to completion") {
+		t.Fatalf("persona-bearing charters close on the persona outcome, not the implementer loop:\n%s", arbitrary)
+	}
+
+	// The persona-less charter keeps the implementer trailer verbatim
+	// (today's bytes — the existing byte-identity pins hold).
+	worker := boardCharterPrompt(&board.Claim{ShortID: "tsk-ffff0006", ClaimToken: "tk6"})
+	if !strings.Contains(worker, "Work the task to completion") {
+		t.Fatalf("persona-less charter keeps today's trailer:\n%s", worker)
+	}
+}

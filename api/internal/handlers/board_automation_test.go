@@ -36,10 +36,13 @@ type fakeBoardService struct {
 	lastToStage   string
 	calls         map[string]int
 
-	heartbeatErr error
-	moveErr      error // board_parity_test.go: the shared-action guard-class arms
-	getErr       error
-	getTask      *board.Task
+	heartbeatErr  error
+	moveErr       error // board_parity_test.go: the shared-action guard-class arms
+	getErr        error
+	getTask       *board.Task
+	verdictErr    error               // #1947: the verdict channel's guard-class arm
+	lastVerdict   *board.VerdictInput // #1947: the handler's payload pass-through
+	lastRequestID string
 }
 
 func newFakeBoardService() *fakeBoardService {
@@ -79,6 +82,17 @@ func (f *fakeBoardService) GetTaskInWorkspace(_ context.Context, workspaceID, ta
 	return f.getTask, nil
 }
 
+func (f *fakeBoardService) RecordVerdict(_ context.Context, actor board.Actor, taskID, shortIDOrID string, in board.VerdictInput, requestID string) (*board.Task, *board.Verdict, error) {
+	f.calls["record_verdict"]++
+	f.lastActor, f.lastTaskRef, f.lastShortID = actor, taskID, shortIDOrID
+	vin := in
+	f.lastVerdict, f.lastRequestID = &vin, requestID
+	if f.verdictErr != nil {
+		return nil, nil, f.verdictErr
+	}
+	return &board.Task{ID: taskID, Stage: board.StageInProgress}, &board.Verdict{Verdict: in.Verdict, Applied: true}, nil
+}
+
 // newBoardAutomationRouter mounts the board seam exactly as the router
 // does, over the fake service (resolve() is REAL: fake TokenReview +
 // workspace lookup — the auth chain is exercised, not stubbed). #1747:
@@ -107,6 +121,7 @@ func newBoardAutomationRouterWithManager(t *testing.T, svc *fakeBoardService, mg
 	b.GET("/health", h.BoardManagerHealth)
 	b.POST("/tasks/heartbeat", h.BoardHeartbeat)
 	b.POST("/tasks/throttle", h.BoardReportThrottle)
+	b.POST("/tasks/verdict", h.BoardRecordVerdict) // #1947: the spawned reviewer's verdict channel
 	b.POST("/tasks/move-stage", h.BoardMoveStage)
 	b.POST("/tasks/move-stage-bulk", h.BoardManagerMoveStageBulk) // #1836 bulk complete
 	b.POST("/tasks/delete-bulk", h.BoardManagerDeleteTasksBulk)   // #1836 sibling: bulk delete
@@ -204,6 +219,53 @@ func TestBoardAutomation_ReadIsWorkspaceScoped(t *testing.T) {
 	}
 	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &body))
 	assert.Empty(t, body.Suggestions)
+}
+
+// TestBoardAutomation_VerdictChannel (#1947): the spawned reviewer
+// persona's route — actor stamping (pod-resolved owner, agent surface,
+// presented claim token, workspace binding), payload pass-through, the
+// guard-class HTTP mapping the tool description promises, and the
+// explicit malformed-findings refusal.
+func TestBoardAutomation_VerdictChannel(t *testing.T) {
+	svc := newFakeBoardService()
+	r := newBoardAutomationRouter(t, svc)
+
+	// Actor stamping + payload pass-through (one full verdict call).
+	w := doBoard(t, r, http.MethodPost, "/internal/v1/automation/board/tasks/verdict",
+		`{"workspaceID":"ws-1","shortId":"tsk-aaaa1111","claimToken":"tok-9","verdict":"fail","reviewer":"spawned-reviewer","evidenceUrl":"https://example.test/pr/9","findings":[{"severity":"major","pointer":"pkg/x.go:9","criterionIndex":0}],"requestId":"req-42"}`)
+	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
+	assert.Equal(t, 1, svc.calls["record_verdict"])
+	assert.Equal(t, "user-7", svc.lastActor.UserID, "the pod's resolved owner delegates (R7)")
+	assert.Equal(t, board.SurfaceAgent, svc.lastActor.Surface)
+	assert.Equal(t, "tok-9", svc.lastActor.ClaimToken, "the reviewer's charter token rides the actor")
+	assert.Equal(t, "ws-1", svc.lastActor.WorkspaceID, "the resolved workspace rides the actor (S1)")
+	assert.Equal(t, "tsk-aaaa1111", svc.lastShortID)
+	require.NotNil(t, svc.lastVerdict)
+	assert.Equal(t, board.VerdictFail, svc.lastVerdict.Verdict)
+	assert.Equal(t, "spawned-reviewer", svc.lastVerdict.Reviewer)
+	assert.Equal(t, "https://example.test/pr/9", svc.lastVerdict.EvidenceURL)
+	require.Len(t, svc.lastVerdict.Findings, 1)
+	assert.Equal(t, board.SeverityMajor, svc.lastVerdict.Findings[0].Severity)
+	assert.Equal(t, "pkg/x.go:9", svc.lastVerdict.Findings[0].Pointer)
+	require.NotNil(t, svc.lastVerdict.Findings[0].CriterionIndex)
+	assert.Equal(t, 0, *svc.lastVerdict.Findings[0].CriterionIndex)
+	assert.Equal(t, "req-42", svc.lastRequestID)
+	assert.Contains(t, w.Body.String(), `"applied":true`, "the verdict envelope renders")
+
+	// The claim-token guard class maps to 409 — the exact contract the
+	// agentd tool description promises ("A 409 with code claim_token").
+	svc.verdictErr = &board.GuardError{Code: board.GuardClaimToken, Detail: "an agent-surface verdict requires the in_review row's live claim token"}
+	w = doBoard(t, r, http.MethodPost, "/internal/v1/automation/board/tasks/verdict",
+		`{"workspaceID":"ws-1","shortId":"tsk-aaaa1111","claimToken":"stale","verdict":"fail","reviewer":"r"}`)
+	require.Equal(t, http.StatusConflict, w.Code, w.Body.String())
+	assert.Contains(t, w.Body.String(), board.GuardClaimToken)
+
+	// A malformed findings payload is an EXPLICIT 400 (the bind names
+	// the field; nothing is silently dropped).
+	w = doBoard(t, r, http.MethodPost, "/internal/v1/automation/board/tasks/verdict",
+		`{"workspaceID":"ws-1","shortId":"tsk-aaaa1111","claimToken":"tok-9","verdict":"fail","reviewer":"r","findings":"not-an-array"}`)
+	require.Equal(t, http.StatusBadRequest, w.Code, w.Body.String())
+	assert.Contains(t, w.Body.String(), "invalid request body", "the malformed findings arm names its cause")
 }
 
 // TestBoardAutomation_ErrorClasses: the guard classes map to their HTTP

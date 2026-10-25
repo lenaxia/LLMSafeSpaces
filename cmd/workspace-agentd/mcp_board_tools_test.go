@@ -49,8 +49,10 @@ func TestMCPBoard_RegistryShape(t *testing.T) {
 	}
 
 	want := []string{
-		// Worker tools (#1701, design 0067 §4.3c).
-		"board_heartbeat", "board_move_stage", "board_read", "board_report_throttle",
+		// Worker tools (#1701, design 0067 §4.3c). board_record_verdict
+		// (#1947): the spawned reviewer persona's ONE authorized write —
+		// claim-token-required, worker projection only.
+		"board_heartbeat", "board_move_stage", "board_read", "board_record_verdict", "board_report_throttle",
 		// Manager set (#1747): projects.
 		"board_create_project", "board_update_project", "board_project_archive",
 		"board_project_unarchive", "board_project_pause", "board_project_resume",
@@ -103,7 +105,7 @@ func TestMCPBoard_RegistryShape(t *testing.T) {
 func TestMCPBoard_ClaimTokenSchema(t *testing.T) {
 
 	tools := mcpToolsList(t)
-	for _, name := range []string{"board_heartbeat", "board_report_throttle"} {
+	for _, name := range []string{"board_heartbeat", "board_report_throttle", "board_record_verdict"} {
 		tool, ok := tools[name]
 		require.True(t, ok, "%s in tools/list", name)
 		schema := tool["inputSchema"].(map[string]any)
@@ -216,6 +218,37 @@ func TestMCPBoard_WireContract(t *testing.T) {
 		assert.JSONEq(t, `"https://example.test/pr/9"`, string(wire["evidenceUrl"]))
 		assert.JSONEq(t, `"11111111-2222-3333-4444-555555555555"`, string(wire["requestId"]))
 		assert.JSONEq(t, `"tok-1"`, string(wire["claimToken"]))
+	})
+
+	t.Run("board_record_verdict wire", func(t *testing.T) {
+		api, rec := newAutomationAPI(t, 200, `{"verdict":{"applied":true}}`)
+		setupRenameWorkspaceEnv(t, api)
+
+		out, err := mcpAutomation(context.Background(), mcpTestPassword, "board_record_verdict", map[string]any{
+			"shortId": "tsk-aaaa1111", "claimToken": "tok-1", "verdict": "fail",
+			"reviewer": "spawned-reviewer", "evidenceUrl": "https://example.test/pr/9",
+			"findings": []any{map[string]any{"severity": "major", "pointer": "pkg/x.go:9"}}})
+		require.NoError(t, err)
+		assert.Contains(t, out, `"applied":true`)
+		assert.Equal(t, http.MethodPost, rec.method)
+		assert.Equal(t, "/internal/v1/automation/board/tasks/verdict", rec.path)
+
+		var wire map[string]json.RawMessage
+		require.NoError(t, json.Unmarshal([]byte(rec.body), &wire))
+		assert.JSONEq(t, `"tok-1"`, string(wire["claimToken"]), "the reviewer's claim token reaches the wire verbatim")
+		assert.JSONEq(t, `"fail"`, string(wire["verdict"]))
+		assert.JSONEq(t, `"spawned-reviewer"`, string(wire["reviewer"]))
+		assert.JSONEq(t, `[{"pointer":"pkg/x.go:9","severity":"major"}]`, string(wire["findings"]))
+		assert.JSONEq(t, `"ws-1"`, string(wire["workspaceID"]))
+	})
+
+	t.Run("board_record_verdict without a token refuses pre-wire", func(t *testing.T) {
+		api, _ := newAutomationAPI(t, 200, `{}`)
+		setupRenameWorkspaceEnv(t, api)
+
+		_, err := mcpAutomation(context.Background(), mcpTestPassword, "board_record_verdict", map[string]any{
+			"shortId": "tsk-aaaa1111", "verdict": "fail", "reviewer": "tokless"})
+		require.Error(t, err, "the verdict is a claim-guarded in-flight write — the token is required at the seam")
 	})
 
 	t.Run("nested task wrapper tolerated, unwrapped on the wire", func(t *testing.T) {

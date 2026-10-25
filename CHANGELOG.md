@@ -71,6 +71,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   task_start refusals; requestId idempotency). Reopen-with-audit
   (auto-reactivating the epic on create) was considered and deliberately
   left as a follow-up — refuse-only is the minimal, truthful semantics.
+### Fixed — stage-persona spawn defects (#1947)
+
+- **Reviewer persona charter no longer carries the implementer
+  trailer** (#1947, the probe-2 live evidence): a persona-bearing
+  charter closes on the persona's outcome — the shipped trailer
+  ("Work the task to completion … move the task to in_review when
+  the work is done") rode the reviewer's charter too, and the
+  spawned reviewer executed the task's work and called
+  board_move_stage instead of recording its verdict. The
+  persona-less charter is byte-identical to today.
+- **The verdict channel for spawned reviewers** (#1947): the
+  reviewer persona the engine spawns is a WORKER session —
+  `board_record_verdict` now exists in the agentd worker registry,
+  rides the pod automation seam
+  (`POST /internal/v1/automation/board/tasks/verdict`), and is
+  guarded by the in_review row's LIVE claim token at the engine
+  (the reviewer's own; a wrong or missing token refuses; the
+  owner/REST surface is unchanged).
+- **Persona lease-lapse now clears the dead claim's assignee** (rc1
+  parity; #1947's 03:49Z finding): the in_review lapse pass left the
+  corpse assignee recorded while rc1's in_progress reclaim clears
+  it — and the #1832 WS4 stillborn guard reads the row's assignee,
+  so every re-armed reviewer claimant's heartbeats consulted the
+  dead prior worker's zero-turn evidence and were refused (fresh
+  claimant every 15 minutes, none renewable). The lapse's accounting
+  branch now clears `assignee_session`; the unclaimed no-persona
+  convergence branch keeps today's retain-identity semantics.
+- **Race pins for the production async spawn shape** (#1947): the
+  charter dispatch blocks for the spawned session's first turn, so
+  a freshly-granted task sits claimed-but-unstamped and every
+  persona mint opens a mint→stamp window — none of which the sync
+  spawner tests modeled. New PG-harness pins (gated spawner):
+  no-mechanical-flip without a token-bearing move (S1),
+  immediate-move containment — one reviewer-persona spawn on
+  in_review entry, the parked implementer's late stamp aborted
+  (S2), the re-arm heartbeat window (S5), and the verdict-channel
+  token guard (S6); all mutation-verified.
 
 ### Added — board bulk delete variant (#1836, partial)
 

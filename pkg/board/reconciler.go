@@ -417,9 +417,22 @@ func (s *Service) rc1PersonaClaims(ctx context.Context) (personaReclaim, error) 
 		// it, count it CONSECUTIVELY, park behind doubling backoff
 		// (the re-arm pass below honors the cooldown; auto-return, never
 		// a stage change — the review work is done, only the reviewer
-		// died).
+		// died). #1947 (rc1 parity): the lapse also clears the DEAD
+		// claim's recorded identity — rc1's in_progress reclaim clears
+		// assignee_session on lapse, and the persona pass is its
+		// in_review twin. A corpse assignee left on the row poisons the
+		// #1832 WS4 stillborn guard for the NEXT claimant: between the
+		// re-arm's mint and the fresh reviewer's spawn-stamp, a
+		// heartbeat carrying the FRESH token consults the row's assignee
+		// — the dead prior worker — and its zero-turn evidence refuses
+		// the renewal (the live 03:49Z finding: every re-armed claimant
+		// unrenewable, churning forever). The identity's other consumer
+		// (the bounce's never-token-less guard) is unaffected where it
+		// matters: a STAMPED reviewer claim records its own identity,
+		// and the unclaimed no-persona shape below keeps today's
+		// retain-identity semantics.
 		tag, err := tx.Exec(ctx, `
-			UPDATE tasks SET claim_token=NULL, lease_expires_at=NULL,
+			UPDATE tasks SET claim_token=NULL, lease_expires_at=NULL, assignee_session=NULL,
 				last_attempt_failed=true, failure_count=failure_count+1, last_failure_at=now(),
 				cooldown_until=now()+make_interval(secs=>$2::float8)
 			WHERE id=$1 AND stage='in_review' AND lease_expires_at < now()`,

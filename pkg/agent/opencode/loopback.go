@@ -959,6 +959,14 @@ func (c *Client) BoardMoveStage(ctx context.Context, saToken, workspaceID string
 	return c.boardWorkerPost(ctx, saToken, workspaceID, "/internal/v1/automation/board/tasks/move-stage", body)
 }
 
+// BoardRecordVerdict is board_record_verdict (#1947 — the verdict
+// channel): the spawned reviewer persona's ONE authorized write, keyed
+// to the in_review claim its charter carries. The platform arbitrates
+// the agent-surface token guard.
+func (c *Client) BoardRecordVerdict(ctx context.Context, saToken, workspaceID string, body json.RawMessage) (*AutomationResponse, error) {
+	return c.boardWorkerPost(ctx, saToken, workspaceID, "/internal/v1/automation/board/tasks/verdict", body)
+}
+
 // --- Task Board manager seam (#1747, design 0067 §4.3c as amended) -------------
 //
 // The manager half: the same pod-identity seam, the FULL manager set at
