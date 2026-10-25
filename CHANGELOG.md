@@ -43,6 +43,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.43.0] - 2026-10-25
+
+### Added — generalized stage-persona claim-then-spawn (owner directive 2026-10-24; #1941)
+
+- **One mechanism, any stage, any persona**: entering a stage with a
+  persona configured claims the row (re-claim-class mint: fresh token +
+  lease, attempts unchanged) and spawns a fresh session whose charter
+  carries the configured agent persona. The dormant parallel
+  auto-review assignment path (#1832's token-less, lease-less
+  ReviewAssigner) is replaced entirely.
+- **Config-driven via `stagePersonas`** (user + project tiers,
+  migration 000049; per-KEY merge; an explicit `{}` owns the stage
+  mapping outright and is the opt-out the flipped default floor
+  needs). Legacy `reviewColumn=auto` + `autoAssignReviewer=true`
+  composes as the default reviewer persona — existing stored configs
+  keep their meaning.
+- **Board semantics preserved**: claim-before-spawn, token-gated
+  forward writes, liveness = new progress evidence, FIFO +
+  dependencies-only blocking, human-only pending_input exits.
+- **Dead-persona-worker healing**: RC1 persona pass with doubling
+  backoff, fresh-worker re-arm under the pure zero-config default
+  posture, attempts-cap escalation to pending_input; pause doctrine
+  respected at scan and mint. The #1832 WS4 stillborn guard composes
+  (zero-turn persona workers lapse into the healing loop).
+- **Wire surface**: `stagePersonasSet` set-ness field on BoardConfig
+  (openapi documented) so settings save-paths never materialize or
+  wipe stored maps.
+
+### Fixed
+
+- **#1922 pin deflake**: PayloadAssigneeIDs map-order flake made
+  order-insensitive (set compare).
+
 ## [0.42.0] - 2026-10-24
 
 ### Changed — Task Board: auto-review defaults flipped to on (owner ruling 2026-10-24)
