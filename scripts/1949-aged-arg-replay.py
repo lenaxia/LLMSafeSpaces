@@ -351,6 +351,9 @@ def score_response(resp):
 def _load_persona():
     # The pinned-binary build persona (extracted from the opencode binary
     # in the pod) when available; the inline copy below is the fallback.
+    # Lazy — called only for exact-context runs, never at import (an
+    # import-time read would crash fresh clones without the pod-local
+    # persona file: the r2 finding).
     path = os.environ.get("REPLAY_PERSONA", "/tmp/opencode/replay-1949/persona_build.txt")
     try:
         txt = open(path).read()
@@ -360,8 +363,6 @@ def _load_persona():
         pass
     return _PERSONA_FALLBACK
 
-
-PERSONA = _load_persona()
 
 _PERSONA_FALLBACK = """You are opencode, an interactive CLI tool that helps users with software engineering tasks. Use the instructions below and the tools available to you to assist the user.
 
@@ -472,7 +473,7 @@ def main():
                     help="synthetic: deterministic constructed poisoned transcript; "
                          "exact: the reconstructed orchestrator wire context "
                          "(REPLAY_EXACT_CONTEXT=path/to/exact_context.json, built by "
-                         "build-exact-context.py from the pod-local opencode store)")
+                         "scripts/1949-build-exact-context.py from the pod-local opencode store)")
     ap.add_argument("--exact-context", default=None,
                     help="path to the exact-context JSON (overrides REPLAY_EXACT_CONTEXT)")
     ap.add_argument("--base-alpha", type=int, default=7,
@@ -509,7 +510,7 @@ def main():
     for arm in args.arms.split(","):
         arm = arm.strip()
         if args.context == "exact":
-            base_msgs = ([{"role": "system", "content": PERSONA}]
+            base_msgs = ([{"role": "system", "content": _load_persona()}]
                          + exact_messages(exact_path))
             tools = live_catalog_tools() + PLATFORM_TOOLS
         else:

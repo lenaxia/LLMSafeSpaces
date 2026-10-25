@@ -219,25 +219,34 @@ func TestAgedArgStubMatchesReplayHarness(t *testing.T) {
 		"the harness serializes the stub with compact separators (json.dumps default adds a space after the colon — not byte-identical to json.Marshal)")
 
 	var (
-		lastErr    error
-		lastOut    []byte
-		lastInterp string
+		foundInterp bool
+		lastPath    string
+		lastErr     error
+		lastOut     []byte
 	)
 	for _, interp := range []string{"python3", "python"} {
 		path, lerr := exec.LookPath(interp)
 		if lerr != nil {
 			continue
 		}
+		foundInterp, lastPath = true, path
 		captured, xerr := exec.Command(path, script, "--print-stub").CombinedOutput()
 		if xerr == nil {
 			assert.Equal(t, expected, strings.TrimSpace(string(captured)),
 				"the python mirror's stub payload is byte-identical to the Go stub")
 			return
 		}
-		lastErr, lastOut, lastInterp = xerr, captured, interp
+		// An interpreter that EXISTS but fails to run the script is a
+		// DEFECT (the r2 lesson: an import-time crash in the harness was
+		// misclassified here as a python-less runner and the executed
+		// pin died silently). Fail loudly with the captured output.
+		lastErr, lastOut = xerr, captured
 	}
-	t.Skipf("no working python interpreter for the executed parity leg (last: %s: %v; output: %q) — source-pin leg above still enforced",
-		lastInterp, lastErr, lastOut)
+	if foundInterp {
+		t.Fatalf("replay harness failed to run under %s: %v; output: %q",
+			lastPath, lastErr, lastOut)
+	}
+	t.Skip("no python interpreter on PATH (neither python3 nor python) — source-pin leg above still enforced")
 }
 
 // TestAgedArgCompaction_MalformedEntriesLeftUntouched — a message whose

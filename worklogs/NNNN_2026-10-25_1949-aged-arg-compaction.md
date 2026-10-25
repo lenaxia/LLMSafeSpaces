@@ -74,7 +74,7 @@ staged-key redaction (what forwards is compacted AND redacted); quota
 byte accounting follows the compacted body. Fleet path untouched: it
 streams request bodies unbuffered to relay VMs (free-tier); the
 poisoned-context class is proven on the credential-backed BYO path
-(design 0058 §4.5 — platform providers are relay-only through it).
+(design 0058 §4.5 — key-delivered credential-backed providers; the K1 carve-out kinds stay on the raw fleet path).
 
 Observability (silent history rewriting is the failure mode):
 metadata-only log line per fire (ws/slug/count/window/bytes) + three
@@ -136,6 +136,27 @@ Nits taken: production path uses `agedArgStubJSONString()` (no inline
 re-derivation); `slices.Sort` replaces the hand-rolled insertion sort.
 Re-run: full package green, vet/gofmt clean, `--print-stub` byte-checks
 against the Go literal.
+
+## Review round 2 (CHANGES_REQUESTED → fixed)
+
+- **Blocking: harness import crash on fresh clones** —
+  `_PERSONA_FALLBACK` was referenced before definition (the pod-local
+  persona file masked it here; this was ALSO the true cause of the
+  earlier CI exit-1, not a python-less runner). Persona loading is now
+  lazy (exact-mode only); `--help`/`--print-stub` verified with the
+  persona file absent.
+- **Skip misclassification**: the parity test now FAILS when an
+  interpreter exists but the script exits non-zero (captured output in
+  the failure); it skips only when neither python3 nor python is on
+  PATH.
+- `scripts/1949-build-exact-context.py` checked in, documented as
+  pod-store lab tooling (the synthetic arm remains the checked-in
+  discriminator).
+- Phrasing accuracy: K1 carve-out (`bedrock`/`vertex`/`azure_openai`/
+  `opencode`-kind stay on the raw mixed-fleet path — NOT covered by
+  this cure; corrected on the PR thread); "re-emitted verbatim" →
+  value-level fidelity comment (canonical key order on rewritten
+  envelopes).
 
 ## Test runs
 

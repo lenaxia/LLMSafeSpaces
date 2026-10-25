@@ -232,9 +232,10 @@ func toolCallName(call json.RawMessage) ([]byte, bool) {
 }
 
 // stubAgedCalls rewrites one message: every non-protected tool call whose
-// function.name carries the prefix gets arguments = the stub. All other
-// bytes of the message (content, ids, names, other fields, non-matching
-// calls) are re-emitted verbatim.
+// function.name carries the prefix gets arguments = the stub. Every
+// VALUE of the message (content, ids, names, other fields, non-matching
+// calls) is preserved byte-exact via RawMessage; the enclosing message
+// and rewritten tool-call objects re-serialize in canonical key order.
 func stubAgedCalls(msg json.RawMessage, prefix string, isProtected func(msgIdx, callIdx int) bool, msgIdx int) (json.RawMessage, int, error) {
 	var m map[string]json.RawMessage
 	if err := json.Unmarshal(msg, &m); err != nil {
