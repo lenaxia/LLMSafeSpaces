@@ -360,7 +360,9 @@ func (s *byoServer) handleWorkspaceTraffic(w http.ResponseWriter, r *http.Reques
 	// touches the body. The client's on-disk session store is untouched
 	// (the router never persists bodies, K7) — this only shrinks what
 	// the model re-sees of its own history. Fires loudly: log (metadata
-	// only) + metrics on every fire; passthrough-safe otherwise.
+	// only) + metrics on every fire; passthrough-safe otherwise. The
+	// bytes delta is clamped inside the recorder (small aged args grow
+	// the body; a negative counter delta would panic — r3 finding).
 	if r.Method == http.MethodPost && subPath == "chat/completions" {
 		compacted, cstats := s.agedArgs.Compact(bodyBytes)
 		if cstats.Changed {

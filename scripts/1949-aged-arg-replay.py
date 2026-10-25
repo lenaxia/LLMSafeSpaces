@@ -12,11 +12,11 @@
 #
 # The poisoned arm reproduces the mechanism on CURRENT main behavior:
 # main has NO relay-side compaction, so what the model sees is exactly
-# what this harness sends. The compacted arm applies the SAME transform
-# the relay-router (cmd/relay-router agedarg.go) applies in-path — the
-# python mirror is pinned to the Go implementation by the wire-fixture
-# parity test in cmd/relay-router/agedarg_test.go (same transcript in,
-# same stubbed body out).
+# what this harness sends. The compacted arm applies the SAME stub
+# payload the relay-router (cmd/relay-router agedarg.go) applies in-path
+# — the python stub is byte-identical to the Go stub (pinned by
+# TestAgedArgStubMatchesReplayHarness, which executes this script's
+# --print-stub and compares bytes).
 #
 # Arms:
 #   neutral   — clean history, same final request (instrument sanity:

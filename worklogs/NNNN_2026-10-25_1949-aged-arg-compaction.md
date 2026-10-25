@@ -158,6 +158,25 @@ against the Go literal.
   value-level fidelity comment (canonical key order on rewritten
   envelopes).
 
+## Review round 3 (CHANGES_REQUESTED → fixed)
+
+- **Blocking: reachable panic on the live path** — any aged
+  llmsafespaces_* call with args SMALLER than the ~110-byte stub (a
+  17-byte board_read arg is normal in >30-call sessions) made the
+  rewritten body GROW; the naive bytes_saved delta went negative and
+  Prometheus Counter.Add PANICS on negatives — reproduced on the r2
+  head's rig (client EOF, request never reaches upstream). Fix: the
+  delta is clamped at zero inside `recordAgedArgCompaction`
+  (observability can never kill the request it observes) +
+  `TestAgedArgTinyAgedArgsNoPanic` (mutation-verified locally: clamp
+  removed → the pin reproduces the exact panic; clamp restored →
+  green; request 200, stub upstream, counters ≥ 0).
+- Coverage gap closed: `TestAgedArgWindowSplitsWithinOneMessage` — the
+  window boundary between two tool calls of the SAME assistant message
+  (per-call `(msg, idx)` treatment).
+- Doc nit: the harness header's parity claim scoped to the stub bytes
+  (what the pin actually covers).
+
 ## Test runs
 
 - `go test ./cmd/relay-router/ -count=1` — ok (full package, incl. all

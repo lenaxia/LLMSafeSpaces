@@ -87,6 +87,79 @@ func TestAgedArgCompactionCleanBodyUntouchedOnTheWire(t *testing.T) {
 	assert.Equal(t, 0.0, testutil.ToFloat64(rig.svc.metrics.agedArgRequests.WithLabelValues("ws-1", "zai")))
 }
 
+// TestAgedArgTinyAgedArgsNoPanic (#1949 r3 regression): an aged
+// llmsafespaces_* call whose arguments are SMALLER than the stub grows
+// the rewritten body — the naive bytes_saved delta goes negative and
+// Prometheus Counter.Add panics (reproduced on the r2 head's rig),
+// killing the client's request with EOF. The request must complete,
+// the stub must land upstream, and every counter must stay >= 0.
+func TestAgedArgTinyAgedArgsNoPanic(t *testing.T) {
+	rig := newByoTestRig(t)
+	rig.svc.agedArgs = newAgedArgCompactorWindow(0)
+	token := rig.mint(t, nil)
+
+	// 17-byte args — far below the ~110-byte stub.
+	body := `{"model":"glm-4.7","messages":[{"role":"assistant","content":"","tool_calls":[{"id":"c_tiny","type":"function","function":{"name":"llmsafespaces_board_read","arguments":` + jsonString(t, `{"taskId":"t1"}`) + `}}]},{"role":"user","content":"go"}]}`
+	resp, err := rig.do(http.MethodPost, "/w/ws-1/zai/v1/chat/completions", token, body, nil)
+	require.NoError(t, err, "the request must complete — observability never kills the request")
+	defer resp.Body.Close()
+	require.Equal(t, 200, resp.StatusCode)
+
+	up := rig.upstream.last()
+	var got struct {
+		Messages []struct {
+			ToolCalls []struct {
+				Function struct {
+					Arguments string `json:"arguments"`
+				} `json:"function"`
+			} `json:"tool_calls"`
+		} `json:"messages"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(up.body), &got))
+	require.NotEmpty(t, got.Messages[0].ToolCalls)
+	assert.Equal(t, string(agedArgStub()), got.Messages[0].ToolCalls[0].Function.Arguments,
+		"the tiny aged args still land stubbed upstream")
+	assert.NotContains(t, up.body, `"taskId":"t1"`, "the original tiny args are gone")
+
+	assert.Equal(t, 1.0, testutil.ToFloat64(rig.svc.metrics.agedArgRequests.WithLabelValues("ws-1", "zai")))
+	assert.Equal(t, 1.0, testutil.ToFloat64(rig.svc.metrics.agedArgStubbed.WithLabelValues("ws-1", "zai")))
+	assert.GreaterOrEqual(t, testutil.ToFloat64(rig.svc.metrics.agedArgBytesSaved.WithLabelValues("ws-1", "zai")), 0.0,
+		"bytes_saved clamped at zero, never negative")
+}
+
+// TestAgedArgWindowSplitsWithinOneMessage — the window boundary falls
+// BETWEEN two tool calls of the SAME assistant message: per-call
+// treatment inside one message (the (msg, idx) positional set).
+func TestAgedArgWindowSplitsWithinOneMessage(t *testing.T) {
+	msg := `{"role":"assistant","content":"","tool_calls":[` +
+		`{"id":"a","type":"function","function":{"name":"llmsafespaces_session_list","arguments":` + jsonString(t, `{"allSessions":true}`) + `}},` +
+		`{"id":"b","type":"function","function":{"name":"llmsafespaces_board_read","arguments":` + jsonString(t, `{"taskId":"t9"}`) + `}},` +
+		`{"id":"c","type":"function","function":{"name":"bash","arguments":` + jsonString(t, `{"command":"ls"}`) + `}}]}`
+	body := []byte(`{"model":"m","messages":[{"role":"user","content":"hi"},` + msg + `]}`)
+
+	// Window 2 protects the LAST two calls (b, c): a is stubbed.
+	out, stats := newAgedArgCompactorWindow(2).Compact(body)
+	require.True(t, stats.Changed)
+	require.Equal(t, 1, stats.CallsStubbed)
+	var parsed struct {
+		Messages []struct {
+			ToolCalls []struct {
+				ID       string `json:"id"`
+				Function struct {
+					Name      string `json:"name"`
+					Arguments string `json:"arguments"`
+				} `json:"function"`
+			} `json:"tool_calls"`
+		} `json:"messages"`
+	}
+	require.NoError(t, json.Unmarshal(out, &parsed))
+	calls := parsed.Messages[1].ToolCalls
+	require.Len(t, calls, 3)
+	assert.Equal(t, string(agedArgStub()), calls[0].Function.Arguments, "a (beyond window) stubbed")
+	assert.Contains(t, calls[1].Function.Arguments, "t9", "b (in window) intact")
+	assert.Contains(t, calls[2].Function.Arguments, "ls", "c (in window, platform tool) intact")
+}
+
 // TestAgedArgCompactionKillSwitchOnTheWire — a negative window disables
 // the compaction on the wire path: the poisoned body forwards verbatim.
 func TestAgedArgCompactionKillSwitchOnTheWire(t *testing.T) {

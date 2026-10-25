@@ -100,8 +100,16 @@ func (m *byoMetrics) recordInternal(path string, status int) {
 }
 
 // recordAgedArgCompaction counts one compaction fire (#1949): the
-// request, the stubbed-call count, and the body bytes removed.
+// request, the stubbed-call count, and the body bytes removed. The
+// bytes delta is CLAMPED at zero: a small aged payload (e.g. a 17-byte
+// board_read arg) is LARGER than the ~110-byte stub, so the rewritten
+// body can grow — Prometheus Counter.Add panics on negatives (the r3
+// review's reproduced crash), and observability must never be able to
+// kill the request it observes.
 func (m *byoMetrics) recordAgedArgCompaction(workspace, provider string, callsStubbed, bytesSaved int) {
+	if bytesSaved < 0 {
+		bytesSaved = 0
+	}
 	m.agedArgRequests.WithLabelValues(workspace, provider).Inc()
 	m.agedArgStubbed.WithLabelValues(workspace, provider).Add(float64(callsStubbed))
 	m.agedArgBytesSaved.WithLabelValues(workspace, provider).Add(float64(bytesSaved))
