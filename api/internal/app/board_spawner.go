@@ -131,9 +131,9 @@ func boardRunID(c *board.Claim) string {
 // boardSpawnRequest builds the dispatch the spawner wires into
 // executor.Execute — extracted so the regression site itself (#1957:
 // the RunID reaching the wire) is pinnable without the k8s/HTTP seams.
-// The RunID has NO parameter: it derives from boardRunID(c) here, so
-// the dispatch site cannot drift from the pinned episode-unique shape
-// (re-inlining a bare task id would have to edit boardRunID — pinned).
+// The RunID has NO parameter: it derives from boardRunID(c) here;
+// a bare-task-id re-inline anywhere in the dispatch path reds the
+// dispatch pin (TestBoardSpawner_DispatchCarriesEpisodeRunID).
 func boardSpawnRequest(c *board.Claim) *apiwf.NodeExecRequest {
 	spec, _ := json.Marshal(map[string]any{
 		"prompt":  boardCharterPrompt(c),
@@ -172,8 +172,8 @@ func newBoardSpawner(activator spawnActivator, executor spawnDispatcher) board.W
 			return "", fmt.Errorf("board: spawn: activate workspace %s: %w", c.WorkspaceID, err)
 		}
 		// #1957: boardSpawnRequest derives the RunID via boardRunID
-		// internally — no injectable seam, the dispatch site cannot
-		// drift from the pinned episode-unique shape.
+		// internally; drift here (bypassing the builder) reds
+		// TestBoardSpawner_DispatchCarriesEpisodeRunID.
 		resp, err := executor.Execute(ctx, c.WorkspaceID, podIP, boardSpawnRequest(c))
 		if err != nil {
 			return "", fmt.Errorf("board: spawn dispatch: %w", err)

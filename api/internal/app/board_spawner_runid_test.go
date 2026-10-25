@@ -138,3 +138,14 @@ func (d *stubDispatcher) Execute(ctx context.Context, workspaceID, podIP string,
 	*d.capture = req
 	return &apiwf.NodeExecResponse{SessionID: d.session}, nil
 }
+
+// TestBoardRunID_TokenlessFallbackShape (#1957 r4): the fallback arm
+// (no claim token — does not occur in production paths) keeps the
+// task-prefix + worker-tag shape with nanosecond uniqueness.
+func TestBoardRunID_TokenlessFallbackShape(t *testing.T) {
+	c := &board.Claim{TaskID: "tkn", Stage: ""}
+	a, b := boardRunID(c), boardRunID(c)
+	if !strings.HasPrefix(a, "tkn-w-") || !strings.HasPrefix(b, "tkn-w-") {
+		t.Fatalf("fallback shape lost: %s / %s", a, b)
+	}
+}
