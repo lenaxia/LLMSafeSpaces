@@ -43,20 +43,29 @@ type byoRunConfig struct {
 	maxBodyBytes   int64
 	maxRespBytes   int64
 	informerResync time.Duration
+
+	// agedArgRecentToolCalls (#1949): aged-arg compaction recent window —
+	// the last N tool calls (any tool) stay untouched; older
+	// llmsafespaces_* call arguments are stubbed before forwarding.
+	// Default 30 (a heavy board turn's working set). 0 stubs every
+	// llmsafespaces_* call; negative disables the compaction (kill
+	// switch). Threshold-teachable by design (#1949 constraints).
+	agedArgRecentToolCalls int
 }
 
 func loadByoRunConfig() byoRunConfig {
 	return byoRunConfig{
-		listenAddr:     getEnv("LISTEN_ADDR", ":8090"),
-		namespace:      getEnv("BYO_NAMESPACE", "llm-relay"),
-		retention:      getEnvDuration("BYO_PRIOR_KEY_RETENTION", byoDefaultRetention),
-		drainGrace:     getEnvDuration("BYO_DRAIN_GRACE", 10*time.Minute),
-		quotaWindow:    getEnvDuration("BYO_QUOTA_WINDOW", time.Minute),
-		quotaRequests:  int64(getEnvInt("BYO_QUOTA_REQUESTS", 120)),
-		quotaBytes:     int64(getEnvInt("BYO_QUOTA_BYTES", 200<<20)),
-		maxBodyBytes:   int64(getEnvInt("BYO_MAX_BODY_BYTES", byoDefaultMaxBodyBytes)),
-		maxRespBytes:   int64(getEnvInt("BYO_MAX_RESP_BYTES", byoDefaultMaxRespBytes)),
-		informerResync: getEnvDuration("BYO_INFORMER_RESYNC", 5*time.Minute),
+		listenAddr:             getEnv("LISTEN_ADDR", ":8090"),
+		namespace:              getEnv("BYO_NAMESPACE", "llm-relay"),
+		retention:              getEnvDuration("BYO_PRIOR_KEY_RETENTION", byoDefaultRetention),
+		drainGrace:             getEnvDuration("BYO_DRAIN_GRACE", 10*time.Minute),
+		quotaWindow:            getEnvDuration("BYO_QUOTA_WINDOW", time.Minute),
+		quotaRequests:          int64(getEnvInt("BYO_QUOTA_REQUESTS", 120)),
+		quotaBytes:             int64(getEnvInt("BYO_QUOTA_BYTES", 200<<20)),
+		maxBodyBytes:           int64(getEnvInt("BYO_MAX_BODY_BYTES", byoDefaultMaxBodyBytes)),
+		maxRespBytes:           int64(getEnvInt("BYO_MAX_RESP_BYTES", byoDefaultMaxRespBytes)),
+		informerResync:         getEnvDuration("BYO_INFORMER_RESYNC", 5*time.Minute),
+		agedArgRecentToolCalls: getEnvInt("BYO_AGED_ARG_RECENT_TOOL_CALLS", agedArgDefaultWins),
 	}
 }
 
@@ -235,9 +244,10 @@ func buildBYOServer(cfg byoRunConfig, keys *byoKeyManager, cacheStore *byoEnvelo
 	}
 	return &byoServer{
 		cfg: byoServerConfig{
-			listenAddr:   cfg.listenAddr,
-			maxBodyBytes: cfg.maxBodyBytes,
-			maxRespBytes: cfg.maxRespBytes,
+			listenAddr:             cfg.listenAddr,
+			maxBodyBytes:           cfg.maxBodyBytes,
+			maxRespBytes:           cfg.maxRespBytes,
+			agedArgRecentToolCalls: cfg.agedArgRecentToolCalls,
 		},
 		minter:   minter,
 		cache:    cacheStore,
@@ -246,6 +256,7 @@ func buildBYOServer(cfg byoRunConfig, keys *byoKeyManager, cacheStore *byoEnvelo
 		redactor: redactor,
 		client:   client,
 		metrics:  newByoMetrics().withCacheLen(cacheStore.Len),
+		agedArgs: newAgedArgCompactorWindow(cfg.agedArgRecentToolCalls),
 	}, nil
 }
 

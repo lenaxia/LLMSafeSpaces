@@ -21,6 +21,13 @@ type byoMetrics struct {
 	internal  *prometheus.CounterVec
 	envelopes prometheus.GaugeFunc
 
+	// agedArg (#1949): aged-arg compaction observability — the transform
+	// rewrites what the model sees of its own history, so it must be
+	// loudly countable whenever it fires (labels metadata-only, K7).
+	agedArgRequests   *prometheus.CounterVec
+	agedArgStubbed    *prometheus.CounterVec
+	agedArgBytesSaved *prometheus.CounterVec
+
 	registry *prometheus.Registry
 	handler  http.Handler
 
@@ -42,9 +49,21 @@ func newByoMetrics() *byoMetrics {
 			Name: "llm_relay_byo_internal_requests_total",
 			Help: "Internal API (mint/rotate) requests by path and status.",
 		}, []string{"path", "status"}),
+		agedArgRequests: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "llm_relay_byo_aged_arg_compactions_total",
+			Help: "Chat-completion requests where aged llmsafespaces_* tool-call arguments were stubbed (#1949; silent history rewriting is the failure mode — every fire is counted).",
+		}, []string{"workspace", "provider"}),
+		agedArgStubbed: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "llm_relay_byo_aged_arg_calls_stubbed_total",
+			Help: "Aged llmsafespaces_* tool-call arguments stubbed by relay aged-arg compaction (#1949).",
+		}, []string{"workspace", "provider"}),
+		agedArgBytesSaved: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "llm_relay_byo_aged_arg_bytes_saved_total",
+			Help: "Request-body bytes removed by relay aged-arg compaction (#1949).",
+		}, []string{"workspace", "provider"}),
 	}
 	m.registry = prometheus.NewRegistry()
-	m.registry.MustRegister(m.requests, m.bytes, m.internal)
+	m.registry.MustRegister(m.requests, m.bytes, m.internal, m.agedArgRequests, m.agedArgStubbed, m.agedArgBytesSaved)
 	m.handler = promhttp.HandlerFor(m.registry, promhttp.HandlerOpts{})
 	return m
 }
@@ -78,6 +97,14 @@ func (m *byoMetrics) recordBytes(workspace string, n int64) {
 
 func (m *byoMetrics) recordInternal(path string, status int) {
 	m.internal.WithLabelValues(path, strconv.Itoa(status)).Inc()
+}
+
+// recordAgedArgCompaction counts one compaction fire (#1949): the
+// request, the stubbed-call count, and the body bytes removed.
+func (m *byoMetrics) recordAgedArgCompaction(workspace, provider string, callsStubbed, bytesSaved int) {
+	m.agedArgRequests.WithLabelValues(workspace, provider).Inc()
+	m.agedArgStubbed.WithLabelValues(workspace, provider).Add(float64(callsStubbed))
+	m.agedArgBytesSaved.WithLabelValues(workspace, provider).Add(float64(bytesSaved))
 }
 
 func (m *byoMetrics) writePrometheus(w http.ResponseWriter, r *http.Request) {
