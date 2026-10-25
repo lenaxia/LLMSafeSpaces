@@ -911,11 +911,16 @@ func sessionBulkString(raw any) (string, bool) {
 	return s, s != ""
 }
 
-// sessionBulkInvalidItem renders a malformed entry: the ref echoes a
-// printable form of what was submitted (a non-string renders its Go
-// value; a blank string renders empty).
+// sessionBulkInvalidItem renders a malformed entry. The ref echoes a
+// printable form of what was submitted — the caller's own entry,
+// distinguishable from its batch-mates (review r1 F2: a non-string
+// echo of "" made [42, "  ", 3.5] three indistinguishable blank rows;
+// now 42 renders "42", 3.5 renders "3.5", a blank string stays "").
 func sessionBulkInvalidItem(raw any) sessionBulkItem {
-	ref, _ := raw.(string)
+	ref, ok := raw.(string)
+	if !ok {
+		ref = fmt.Sprintf("%v", raw)
+	}
 	return sessionBulkItem{
 		Ref:    ref,
 		Status: sessionBulkFailed,
@@ -927,6 +932,35 @@ func sessionBulkInvalidItem(raw any) sessionBulkItem {
 func sessionBulkFailedItem(ref, code, detail string) sessionBulkItem {
 	return sessionBulkItem{Ref: ref, Status: sessionBulkFailed,
 		Error: &sessionBulkItemError{Code: code, Detail: detail}}
+}
+
+// bulkSuggester renders the #1663 near-miss clause per not-found item
+// from ONE shared session-list fetch per bulk call (review r1's cost
+// note: the singles pay one list read per call — done per ITEM that
+// made a 50-miss batch cost 50 extra reads; the batch pays one total,
+// fetched lazily, only when some item actually needs a clause; a
+// failed fetch degrades to no suggestion, the single tool's rule).
+type bulkSuggester struct {
+	ctx      context.Context
+	password string
+	once     sync.Once
+	sessions []opencode.SessionSummary
+	fetched  bool
+}
+
+func (b *bulkSuggester) clause(ref string) string {
+	b.once.Do(func() {
+		sessions, err := seamClientWithPassword(b.password).SessionList(b.ctx)
+		if err != nil {
+			return
+		}
+		b.sessions = sessions
+		b.fetched = true
+	})
+	if !b.fetched {
+		return ""
+	}
+	return suggestRefClauseFrom(ref, b.sessions)
 }
 
 // resolveCallerSession is the self-identity the delete tools guard on:
@@ -976,6 +1010,9 @@ func mcpSessionArchiveBulk(ctx context.Context, password string, refs []any, arc
 	// resolvedOf maps each done item's verbatim ref to its canonical
 	// harness id — the confirmation read keys on canonical ids.
 	resolvedOf := make(map[string]string, len(refs))
+	// One shared near-miss clause source per call (the r1 cost note —
+	// per-item list fetches would cost one read per miss).
+	suggest := &bulkSuggester{ctx: ctx, password: password}
 	for _, raw := range refs {
 		ref, ok := sessionBulkString(raw)
 		if !ok {
@@ -998,7 +1035,7 @@ func mcpSessionArchiveBulk(ctx context.Context, password string, refs []any, arc
 				// item is refused either way — suggest-only.
 				results = append(results, sessionBulkFailedItem(ref, sessionBulkErrNotFound,
 					fmt.Sprintf("failed to archive session: %v%s", werr,
-						sessionSuggestClause(ctx, seamClientWithPassword(password), resolved))))
+						suggest.clause(resolved))))
 				continue
 			}
 			// Transient class: the item's own internal_error row —
@@ -1048,6 +1085,9 @@ func mcpDeleteSessionBulk(ctx context.Context, password string, refs []any, inje
 		return "", err
 	}
 	results := make([]sessionBulkItem, 0, len(refs))
+	// One shared near-miss clause source per call (the r1 cost note —
+	// per-item list fetches would cost one read per miss).
+	suggest := &bulkSuggester{ctx: ctx, password: password}
 	for _, raw := range refs {
 		ref, ok := sessionBulkString(raw)
 		if !ok {
@@ -1074,7 +1114,7 @@ func mcpDeleteSessionBulk(ctx context.Context, password string, refs []any, inje
 				// way, the near-miss clause the single tool appends.
 				results = append(results, sessionBulkFailedItem(ref, sessionBulkErrNotFound,
 					fmt.Sprintf("failed to delete session: %v%s", werr,
-						sessionSuggestClause(ctx, seamClientWithPassword(password), resolved))))
+						suggest.clause(resolved))))
 				continue
 			}
 			results = append(results, sessionBulkFailedItem(ref, sessionBulkErrInternal,

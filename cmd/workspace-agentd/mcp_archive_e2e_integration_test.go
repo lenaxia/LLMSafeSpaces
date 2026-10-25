@@ -366,3 +366,202 @@ func TestOriginE2E1627_SessionArchiveReachesPlatform(t *testing.T) {
 	assert.Contains(t, gotBody, `"archived":true`)
 	assert.Contains(t, gotBody, `"workspaceID":"ws-e21627"`)
 }
+
+// --- #1836 bulk legs: the batch twins through the REAL chain ----------
+//
+// Review r1's e2e mandate: both new workflows prove the chain end to
+// end — model tool call → origin plugin (stamps lsp_injected_session
+// for the delete bulk) → REAL mcpHandler dispatch → per-item result
+// array. Named TestOriginE2E… so CI's origin-e2e selector runs them.
+
+// The archive bulk, end to end: a mixed batch (two live targets + one
+// platform-miss) renders the per-item array — done/verified for the
+// landed writes, the bare not_found for the miss — and the platform
+// half receives each item's canonical id.
+func TestOriginE2E1836_ArchiveBulkMixedBatch(t *testing.T) {
+	var mu sync.Mutex
+	var writes []string
+	archivedIDs := map[string]bool{}
+	platform := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/internal/v1/session-archived":
+			mu.Lock()
+			ids := make([]string, 0, len(archivedIDs))
+			for id, on := range archivedIDs {
+				if on {
+					ids = append(ids, id)
+				}
+			}
+			mu.Unlock()
+			body, _ := json.Marshal(map[string]any{"archived": ids})
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write(body)
+		case "/internal/v1/session-archive":
+			var req struct {
+				SessionID string `json:"sessionID"`
+				Archived  bool   `json:"archived"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+				t.Errorf("bad body: %v", err)
+				return
+			}
+			mu.Lock()
+			defer mu.Unlock()
+			writes = append(writes, req.SessionID)
+			if strings.Contains(req.SessionID, "ghost") {
+				w.WriteHeader(http.StatusNotFound)
+				_, _ = fmt.Fprintf(w, `{"error":"not found: session %s"}`, req.SessionID)
+				return
+			}
+			archivedIDs[req.SessionID] = req.Archived
+			w.WriteHeader(http.StatusNoContent)
+		default:
+			t.Errorf("unexpected platform path %s", r.URL.Path)
+		}
+	}))
+	defer platform.Close()
+	t.Setenv("WORKSPACE_ID", "ws-e21836")
+	t.Setenv("LLMSAFESPACE_API_URL", platform.URL)
+	token := filepath.Join(t.TempDir(), "token")
+	require.NoError(t, os.WriteFile(token, []byte("sa-token"), 0o600))
+	t.Setenv("LLMSAFESPACE_BOOTSTRAP_TOKEN_FILE", token)
+
+	client, toolResults, provider := bootOriginE2E1627(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 180*time.Second)
+	defer cancel()
+
+	callerID := createWithBootstrapRetry(t, client, "e21836-archiver")
+	targetA := createWithBootstrapRetry(t, client, "e21836-target-a")
+	targetB := createWithBootstrapRetry(t, client, "e21836-target-b")
+
+	provider.mu.Lock()
+	provider.tool = "llmsafespaces_session_archive_bulk"
+	provider.args = `{"sessionIds":["` + targetA + `","ses_ghost_miss","` + targetB + `"],"archived":true}`
+	provider.mu.Unlock()
+
+	_, err := client.SessionSend(ctx, callerID, "archive the finished ones", "", nil)
+	require.NoError(t, err, "the caller's turn must complete (a partial-failure item is not a turn failure)")
+
+	require.NotEmpty(t, *toolResults)
+	if strings.HasPrefix((*toolResults)[0], "ERROR: ") {
+		t.Fatalf("session_archive_bulk failed inside the real dispatch: %s", (*toolResults)[0])
+	}
+	var result struct {
+		Results []struct {
+			ID                 string `json:"id"`
+			Status             string `json:"status"`
+			ArchivedVisibility string `json:"archived_visibility"`
+			Error              *struct {
+				Code string `json:"code"`
+			} `json:"error"`
+		} `json:"results"`
+	}
+	require.NoError(t, json.Unmarshal([]byte((*toolResults)[0]), &result))
+	require.Len(t, result.Results, 3)
+
+	byID := map[string]struct {
+		Status             string
+		ArchivedVisibility string
+		Code               string
+	}{}
+	for _, r := range result.Results {
+		entry := struct {
+			Status             string
+			ArchivedVisibility string
+			Code               string
+		}{Status: r.Status, ArchivedVisibility: r.ArchivedVisibility}
+		if r.Error != nil {
+			entry.Code = r.Error.Code
+		}
+		byID[r.ID] = entry
+	}
+	assert.Equal(t, "done", byID[targetA].Status, "target A lands through the real chain")
+	assert.Equal(t, "verified", byID[targetA].ArchivedVisibility, "#1879 verdict surfaces per item through the real chain")
+	assert.Equal(t, "done", byID[targetB].Status)
+	assert.Equal(t, "verified", byID[targetB].ArchivedVisibility)
+	assert.Equal(t, "failed", byID["ses_ghost_miss"].Status, "the miss is a per-item failure, never a turn failure")
+	assert.Equal(t, "not_found", byID["ses_ghost_miss"].Code)
+
+	mu.Lock()
+	defer mu.Unlock()
+	assert.Equal(t, []string{targetA, "ses_ghost_miss", targetB}, writes,
+		"per-item delegation in order — the platform half receives each canonical id")
+}
+
+// The delete bulk, end to end: the batch [own session, other session]
+// through the REAL plugin chain — the plugin stamps the calling
+// session (the injection half this lane adds to INJECTED_SESSION_TOOLS),
+// the self item renders its per-item refusal, the other item deletes,
+// and the platform half is never asked for the caller's own session.
+func TestOriginE2E1836_DeleteBulkSelfGuard(t *testing.T) {
+	var mu sync.Mutex
+	var asks []string
+	platform := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/internal/v1/session-delete" {
+			t.Errorf("unexpected platform path %s", r.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		var req struct {
+			SessionID string `json:"sessionID"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Errorf("bad body: %v", err)
+			return
+		}
+		mu.Lock()
+		defer mu.Unlock()
+		asks = append(asks, req.SessionID)
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer platform.Close()
+	t.Setenv("WORKSPACE_ID", "ws-e21836d")
+	t.Setenv("LLMSAFESPACE_API_URL", platform.URL)
+	token := filepath.Join(t.TempDir(), "token")
+	require.NoError(t, os.WriteFile(token, []byte("sa-token"), 0o600))
+	t.Setenv("LLMSAFESPACE_BOOTSTRAP_TOKEN_FILE", token)
+
+	client, toolResults, provider := bootOriginE2E1627(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 180*time.Second)
+	defer cancel()
+
+	callerID := createWithBootstrapRetry(t, client, "e21836-selfdel")
+	otherID := createWithBootstrapRetry(t, client, "e21836-othertarget")
+
+	provider.mu.Lock()
+	provider.tool = "llmsafespaces_session_delete_bulk"
+	provider.args = `{"sessionIds":["` + callerID + `","` + otherID + `"]}`
+	provider.mu.Unlock()
+
+	_, err := client.SessionSend(ctx, callerID, "clean up me and the leftover", "", nil)
+	require.NoError(t, err, "the caller's turn must complete (the self refusal is per-item)")
+
+	require.NotEmpty(t, *toolResults)
+	first := (*toolResults)[0]
+	require.False(t, strings.HasPrefix(first, "ERROR: "),
+		"the batch returns its per-item array, not a tool error: %s", first)
+	var result struct {
+		Results []struct {
+			ID     string `json:"id"`
+			Status string `json:"status"`
+			Error  *struct {
+				Code string `json:"code"`
+			} `json:"error"`
+		} `json:"results"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(first), &result))
+	require.Len(t, result.Results, 2)
+
+	assert.Equal(t, callerID, result.Results[0].ID)
+	assert.Equal(t, "failed", result.Results[0].Status, "the plugin-stamped caller is refused per item")
+	require.NotNil(t, result.Results[0].Error)
+	assert.Equal(t, "self_delete_refused", result.Results[0].Error.Code)
+
+	assert.Equal(t, otherID, result.Results[1].ID)
+	assert.Equal(t, "done", result.Results[1].Status, "the rest of the batch still processes")
+
+	mu.Lock()
+	defer mu.Unlock()
+	assert.Equal(t, []string{otherID}, asks,
+		"the platform half is never asked to delete the caller's own session — the injection half works through the real plugin")
+}

@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 
@@ -316,6 +317,14 @@ func TestMCPSessionDeleteBulk_MixedBatch(t *testing.T) {
 	assert.NotContains(t, deleted, "ses-ghost")
 }
 
+// Re-submit of a batch whose items a prior submit already deleted:
+// absence ≡ miss — the SAME bare not_found item, never an error,
+// never a conflict (the destructive-variant ruling recorded on #1836).
+// The 404 here is the REAL wire shape post-r1: the internal delete
+// route now classifies the agent-side not-found verdict (both
+// authority regimes — pinned platform-side by
+// TestPodSessionDelete_AbsenceAdapteRegime_404 / _ActRegime_404)
+// instead of flattening every failure to 502.
 func TestMCPSessionDeleteBulk_IdempotentResubmit_AbsenceRendersNotFound(t *testing.T) {
 	var mu sync.Mutex
 	var calls int
@@ -324,7 +333,7 @@ func TestMCPSessionDeleteBulk_IdempotentResubmit_AbsenceRendersNotFound(t *testi
 		defer mu.Unlock()
 		calls++
 		w.WriteHeader(http.StatusNotFound)
-		_, _ = w.Write([]byte(`{"error":"not found"}`))
+		_, _ = w.Write([]byte(`{"error":"not found: session ses-1"}`))
 	}))
 	defer api.Close()
 	setupPodSessionEnv(t, api)
@@ -588,4 +597,117 @@ func TestCallMCPTool_SessionDeleteBulk_DispatcherReadsInjection(t *testing.T) {
 	mu.Lock()
 	defer mu.Unlock()
 	assert.Equal(t, []string{"ses-other"}, asks, "only the non-self item reaches the platform")
+}
+
+// --- review round 1 pins ----------------------------------------------------
+
+// F1's other half: a REAL platform failure (502 — the agent-side
+// delete failed for transport/harness reasons, the class the internal
+// route honestly keeps) renders internal_error, NEVER a fabricated
+// not_found — a destructive batch must not report "row gone" out of an
+// infrastructure blip (the retry-never-converges inversion r1 found in
+// the pre-classification wire).
+func TestMCPSessionDeleteBulk_RealFailure_IsInternalErrorNotNotFound(t *testing.T) {
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadGateway)
+		_, _ = w.Write([]byte(`{"error":"failed to delete session"}`))
+	}))
+	defer api.Close()
+	setupPodSessionEnv(t, api)
+
+	out, err := mcpDeleteSessionBulk(context.Background(), mcpTestPassword, []any{"ses-1"}, "ses-caller")
+	require.NoError(t, err, "the failure is per-item, not call-level")
+	var res struct {
+		Results []struct {
+			Status string `json:"status"`
+			Error  *struct {
+				Code string `json:"code"`
+			} `json:"error"`
+		} `json:"results"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(out), &res))
+	require.Len(t, res.Results, 1)
+	assert.Equal(t, "failed", res.Results[0].Status)
+	require.NotNil(t, res.Results[0].Error)
+	assert.Equal(t, "internal_error", res.Results[0].Error.Code,
+		"the transient class keeps its honest code — retry converges once the failure clears")
+}
+
+// F2: malformed entries echo DISTINGUISHABLE ids — [42, blank, 3.5]
+// renders three failed rows the caller can tell apart (the pre-fix
+// ""-echo made them indistinguishable).
+func TestMCPSessionBulk_MalformedEntriesEchoDistinguishableIDs(t *testing.T) {
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Error("a malformed entry must never reach the platform")
+	}))
+	defer api.Close()
+	setupPodSessionEnv(t, api)
+
+	out, err := callMCPTool(context.Background(), mcpTestPassword, "session_delete_bulk", map[string]any{
+		"sessionIds":           []any{42, "   ", 3.5},
+		"lsp_injected_session": "ses-caller",
+	})
+	require.NoError(t, err)
+	var res struct {
+		Results []struct {
+			ID     string `json:"id"`
+			Status string `json:"status"`
+			Error  *struct {
+				Code string `json:"code"`
+			} `json:"error"`
+		} `json:"results"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(out), &res))
+	require.Len(t, res.Results, 3)
+	for i, want := range []string{"42", "   ", "3.5"} {
+		assert.Equal(t, want, res.Results[i].ID, "entry %d echoes distinguishably", i)
+		assert.Equal(t, "failed", res.Results[i].Status)
+		assert.Equal(t, "invalid_input", res.Results[i].Error.Code)
+	}
+}
+
+// The r1 cost note: the near-miss clause source fetches the session
+// list ONCE per bulk call, not once per missing item — a many-miss
+// batch costs one list read total (the singles pay one per call).
+func TestMCPSessionArchiveBulk_SuggesterOneFetchPerCall(t *testing.T) {
+	f := newFakeAgent()
+	f.newSession("one")
+	f.newSession("two")
+	listHits := 0
+	srv := withAgentServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.Contains(r.URL.Path, "/session") {
+			listHits++
+		}
+		f.handler(t).ServeHTTP(w, r)
+	}))
+	_ = srv
+
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/internal/v1/session-archive":
+			// The platform's classified absence shape (post-r1): every
+			// item misses.
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = w.Write([]byte(`{"error":"not found: session"}`))
+		case "/internal/v1/session-archived":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"archived":[]}`))
+		}
+	}))
+	defer api.Close()
+	setupPodSessionEnv(t, api)
+
+	refs := make([]any, 5)
+	for i := range refs {
+		// Legacy ses_-form refs resolve as zero-fetch passthroughs, so
+		// the ONLY list reads left are the clause source's — the thing
+		// this pin isolates.
+		refs[i] = fmt.Sprintf("ses_miss_%d", i)
+	}
+	out, err := mcpSessionArchiveBulk(context.Background(), mcpTestPassword, refs, true)
+	require.NoError(t, err)
+	assert.Contains(t, out, `"not_found"`)
+
+	assert.Equal(t, 1, listHits,
+		"five misses share ONE clause-source list fetch — never five (the r1 cost note)")
 }

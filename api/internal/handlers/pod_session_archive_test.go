@@ -16,6 +16,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	apierrors "github.com/lenaxia/llmsafespaces/api/internal/errors"
+	agent "github.com/lenaxia/llmsafespaces/pkg/agent"
 	"github.com/lenaxia/llmsafespaces/pkg/types"
 )
 
@@ -176,6 +177,50 @@ func TestPodSessionDelete_AdapterFailure_502(t *testing.T) {
 
 	w := doPodSessionCall(t, r, http.MethodPost, "/internal/v1/session-delete", "tok", `{"workspaceID":"ws-1","sessionID":"ses-1"}`)
 	assert.Equal(t, http.StatusBadGateway, w.Code)
+}
+
+// #1836 review r1 F1: the absence class must render 404 on the wire —
+// the shape agentd's isSessionNotFoundErr matches — in BOTH authority
+// regimes. Pre-classification every HardDeleteSession error flattened
+// to 502, so a delete-bulk re-submit rendered the permanent absence
+// class as retryable internal_error forever.
+func TestPodSessionDelete_AbsenceAdapteRegime_404(t *testing.T) {
+	reviewer := &fakeTokenReviewer{username: "system:serviceaccount:" + testRenameNamespace + ":workspace-ws-1"}
+	lookup := &fakeBootstrapLookup{ws: &types.WorkspaceMetadata{ID: "ws-1", UserID: "user-7"}}
+	// The adapter regime's session-404 shape (#1340): ErrHTTPStatus
+	// wrapping agent.ErrSessionNotFound — errors.Is must see it.
+	proxy := &fakePodSessionProxy{deleteErr: fmt.Errorf("%w: %w: /session/ses-gone returned 404: {}",
+		agent.ErrHTTPStatus, agent.ErrSessionNotFound)}
+	r := newPodSessionArchiveRouter(t, reviewer, lookup, &fakePodArchiver{}, proxy, &mockSessionIndexForPod{})
+
+	w := doPodSessionCall(t, r, http.MethodPost, "/internal/v1/session-delete", "tok", `{"workspaceID":"ws-1","sessionID":"ses-gone"}`)
+	assert.Equal(t, http.StatusNotFound, w.Code, "absence renders the bare not_found verdict: %s", w.Body.String())
+	assert.Contains(t, w.Body.String(), "not found: session ses-gone", "the caller's own ref echoes back")
+}
+
+func TestPodSessionDelete_AbsenceActRegime_404(t *testing.T) {
+	reviewer := &fakeTokenReviewer{username: "system:serviceaccount:" + testRenameNamespace + ":workspace-ws-1"}
+	lookup := &fakeBootstrapLookup{ws: &types.WorkspaceMetadata{ID: "ws-1", UserID: "user-7"}}
+	// The Act regime's shape: the connect not_found code off the wire
+	// (agentd's opencodeActor maps the harness 404 to CodeNotFound).
+	proxy := &fakePodSessionProxy{deleteErr: &connectCodeError{code: "not_found", msg: "unknown session"}}
+	r := newPodSessionArchiveRouter(t, reviewer, lookup, &fakePodArchiver{}, proxy, &mockSessionIndexForPod{})
+
+	w := doPodSessionCall(t, r, http.MethodPost, "/internal/v1/session-delete", "tok", `{"workspaceID":"ws-1","sessionID":"ses-gone"}`)
+	assert.Equal(t, http.StatusNotFound, w.Code, "the Act regime's absence classifies identically: %s", w.Body.String())
+}
+
+// The 404 arm must stay NARROW: a connect failure of any other class
+// (e.g. unauthenticated) keeps the honest 502 — absence is the only
+// class the ruling renders as not_found.
+func TestPodSessionDelete_OtherConnectCode_502(t *testing.T) {
+	reviewer := &fakeTokenReviewer{username: "system:serviceaccount:" + testRenameNamespace + ":workspace-ws-1"}
+	lookup := &fakeBootstrapLookup{ws: &types.WorkspaceMetadata{ID: "ws-1", UserID: "user-7"}}
+	proxy := &fakePodSessionProxy{deleteErr: &connectCodeError{code: "unavailable", msg: "harness down"}}
+	r := newPodSessionArchiveRouter(t, reviewer, lookup, &fakePodArchiver{}, proxy, &mockSessionIndexForPod{})
+
+	w := doPodSessionCall(t, r, http.MethodPost, "/internal/v1/session-delete", "tok", `{"workspaceID":"ws-1","sessionID":"ses-1"}`)
+	assert.Equal(t, http.StatusBadGateway, w.Code, "a non-not_found connect class is a real failure, never a fabricated absence")
 }
 
 func TestPodSessionArchivedSet_ReturnsArchivedIDs(t *testing.T) {
