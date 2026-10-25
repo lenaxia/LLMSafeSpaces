@@ -40,8 +40,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **#1756** — retro completion r4: 7th surface + record corrections (#1900).
 - **#1856** — ai-workflows v0.2.24 reapply (#1896).
 
-## [Unreleased]
 
+## [0.44.0] - 2026-10-25
 ### Fixed — board: creation into terminal epics refuses loud (#1948)
 
 - **`board_create_task` / `board_import_plan` no longer land rows in a
