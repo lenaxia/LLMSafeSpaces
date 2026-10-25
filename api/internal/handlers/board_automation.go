@@ -19,6 +19,7 @@ package handlers
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"io"
 	"net/http"
 	"time"
@@ -35,6 +36,7 @@ type boardService interface {
 	Heartbeat(ctx context.Context, actor board.Actor, taskID, shortIDOrID string, observedProgressAt time.Time) (board.HeartbeatResult, error)
 	ReportThrottle(ctx context.Context, actor board.Actor, taskID, shortIDOrID string, retryAfter time.Duration, requestID string) (*board.Task, error)
 	MoveStage(ctx context.Context, actor board.Actor, taskID, shortIDOrID, toStage, evidenceURL, requestID string) (*board.Task, error)
+	RecordVerdict(ctx context.Context, actor board.Actor, taskID, shortIDOrID string, in board.VerdictInput, requestID string) (*board.Task, *board.Verdict, error)
 	GetTaskInWorkspace(ctx context.Context, workspaceID, taskID, shortIDOrID string) (*board.Task, error)
 }
 
@@ -142,6 +144,52 @@ func (h *PodAutomationHandler) BoardMoveStage(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, task)
+}
+
+// BoardRecordVerdict is board_record_verdict (worker projection): the
+// verdict channel for the SPAWNED reviewer persona (#1947 — the
+// reviewer the stage-persona claim-then-spawn mints is a worker
+// session; this is its one authorized write). Token-guarded: the
+// service requires the in_review row's live claim token (the reviewer's
+// own claim from its charter envelope).
+func (h *PodAutomationHandler) BoardRecordVerdict(c *gin.Context) {
+	raw, workspaceID, ownerID, ok := h.resolve(c)
+	if !ok {
+		return
+	}
+	var req struct {
+		TaskID      string `json:"taskId"`
+		ShortID     string `json:"shortId"`
+		ClaimToken  string `json:"claimToken"`
+		Verdict     string `json:"verdict"`
+		Reviewer    string `json:"reviewer"`
+		EvidenceURL string `json:"evidenceUrl"`
+		RequestID   string `json:"requestId"`
+	}
+	if !bindBoardBody(c, raw, &req) {
+		return
+	}
+	var findings []board.VerdictFinding
+	if raw != nil {
+		var body struct {
+			Findings []board.VerdictFinding `json:"findings"`
+		}
+		_ = json.Unmarshal(raw, &body)
+		findings = body.Findings
+	}
+	task, v, err := h.board.RecordVerdict(c.Request.Context(), h.boardActor(ownerID, workspaceID, req.ClaimToken),
+		req.TaskID, req.ShortID,
+		board.VerdictInput{
+			Verdict:     board.VerdictKind(req.Verdict),
+			Findings:    findings,
+			Reviewer:    req.Reviewer,
+			EvidenceURL: req.EvidenceURL,
+		}, req.RequestID)
+	if err != nil {
+		renderBoardError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"task": task, "verdict": v})
 }
 
 // BoardTaskGet is board_read's item form: the worker's view of a task

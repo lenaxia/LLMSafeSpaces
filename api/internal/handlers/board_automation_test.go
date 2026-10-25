@@ -79,6 +79,12 @@ func (f *fakeBoardService) GetTaskInWorkspace(_ context.Context, workspaceID, ta
 	return f.getTask, nil
 }
 
+func (f *fakeBoardService) RecordVerdict(_ context.Context, actor board.Actor, taskID, shortIDOrID string, in board.VerdictInput, _ string) (*board.Task, *board.Verdict, error) {
+	f.calls["record_verdict"]++
+	f.lastActor, f.lastTaskRef, f.lastShortID = actor, taskID, shortIDOrID
+	return &board.Task{ID: taskID, Stage: board.StageInProgress}, &board.Verdict{Verdict: in.Verdict, Applied: true}, nil
+}
+
 // newBoardAutomationRouter mounts the board seam exactly as the router
 // does, over the fake service (resolve() is REAL: fake TokenReview +
 // workspace lookup — the auth chain is exercised, not stubbed). #1747:

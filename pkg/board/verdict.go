@@ -126,6 +126,19 @@ func (s *Service) RecordVerdict(ctx context.Context, actor Actor, taskID, shortI
 	if err := requireOwner(actor, p.UserID); err != nil {
 		return nil, nil, err
 	}
+	// #1947 (the verdict channel): the reviewer persona the engine
+	// spawns is a WORKER session — an agent-surface caller whose ONE
+	// authorized write is this verdict, keyed to the persona claim its
+	// charter carries. An agent-surface RecordVerdict therefore requires
+	// the in_review row's LIVE claim token (the reviewer's own): a
+	// wrong or missing token refuses — spawned workers hold no manager
+	// grant, and no other in-pod session may arbitrate a verdict. The
+	// owner/REST surface keeps today's semantics (no token required).
+	if isAgentSurface(actor.Surface) {
+		if t.Stage != StageInReview || actor.ClaimToken == "" || t.ClaimToken == "" || actor.ClaimToken != t.ClaimToken {
+			return nil, nil, &GuardError{Code: GuardClaimToken, Detail: "an agent-surface verdict requires the in_review row's live claim token (the spawned reviewer's own claim)"}
+		}
+	}
 	if err := ValidateVerdict(in, t.AcceptanceCriteria); err != nil {
 		return nil, nil, &GuardError{Code: "validation", Detail: err.Error()}
 	}

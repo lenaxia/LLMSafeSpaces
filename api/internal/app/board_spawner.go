@@ -86,9 +86,23 @@ func boardCharterPrompt(c *board.Claim) string {
 		}
 		b.WriteString("\n")
 	}
-	b.WriteString("Work the task to completion. Report progress via board heartbeats; move the\n")
-	b.WriteString("task to in_review when the work is done, attaching evidence. The claim token\n")
-	b.WriteString("above authorizes your in-flight writes for this task only.\n")
+	// #1947 (probe 2, live evidence): a persona-bearing charter closes
+	// on the PERSONA's outcome — never the implementer loop. The shipped
+	// trailer ("Work the task to completion … move the task to in_review
+	// when the work is done") rode the reviewer persona's charter too,
+	// and the spawned reviewer executed the task's Round 1 and called
+	// board_move_stage instead of recording its verdict. The task body
+	// above is the persona's working context; the persona-less charter
+	// keeps today's trailer byte-identically.
+	if c.Persona != nil {
+		fmt.Fprintf(&b, "Deliver the '%s' persona's outcome for stage %s per its instructions above — the task\n", c.Persona.Name, stage)
+		b.WriteString("body is your working context, not an implementer loop to run. Report progress via board\n")
+		b.WriteString("heartbeats. The claim token above authorizes your in-flight writes for this task only.\n")
+	} else {
+		b.WriteString("Work the task to completion. Report progress via board heartbeats; move the\n")
+		b.WriteString("task to in_review when the work is done, attaching evidence. The claim token\n")
+		b.WriteString("above authorizes your in-flight writes for this task only.\n")
+	}
 	return b.String()
 }
 

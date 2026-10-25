@@ -1369,6 +1369,7 @@ func registerInternalAutomationRoutes(router *gin.Engine, cfg RouterConfig) {
 		b.GET("/health", h.BoardManagerHealth)                // #1837 P2a board_health
 		b.POST("/tasks/heartbeat", h.BoardHeartbeat)
 		b.POST("/tasks/throttle", h.BoardReportThrottle)
+		b.POST("/tasks/verdict", h.BoardRecordVerdict) // #1947: the spawned reviewer persona's verdict channel (token-guarded)
 		b.POST("/tasks/move-stage", h.BoardMoveStage)
 		b.POST("/tasks/move-stage-bulk", h.BoardManagerMoveStageBulk) // #1836: bulk complete (claim stays owner-surface only, round-3 #2)
 		b.POST("/tasks/delete-bulk", h.BoardManagerDeleteTasksBulk)   // #1836 sibling: bulk delete (a manager action's batch twin)

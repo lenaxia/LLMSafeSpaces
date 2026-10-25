@@ -665,6 +665,20 @@ func mcpToolCatalog() []mcpTool {
 			}, "required": []string{"toStage"}},
 		},
 		{
+			Name:        "board_record_verdict",
+			Description: "Record your structured review verdict on a task (#1947 — the reviewer persona's ONE authorized write; you hold the in_review claim, so the verdict is yours to record). verdict=approve requires the task's evidence URL and ALL acceptance criteria met (the Done guard applies regardless — a refusal keeps your verdict in the chain with the reason); verdict=fail requires findings [{severity blocker|major|minor, pointer, criterionIndex}] and bounces the task to a fresh implementer with your findings embedded in its charter. Requires the claim token from your charter envelope. A 409 with code claim_token means the in_review claim is no longer yours — STOP and re-read the task with board_read.",
+			InputSchema: map[string]any{"type": "object", "properties": map[string]any{
+				"claimToken":  map[string]any{"type": "string", "description": "The claim token from your charter envelope (the in-flight guard — required)"},
+				"verdict":     map[string]any{"type": "string", "description": "approve or fail"},
+				"reviewer":    map[string]any{"type": "string", "description": "Your reviewer identity (session name or phrase)"},
+				"evidenceUrl": map[string]any{"type": "string", "description": "The artifact link the verdict certifies (required for approve)"},
+				"findings":    map[string]any{"type": "array", "description": "fail findings: [{severity, pointer, criterionIndex?}]", "items": map[string]any{"type": "object"}},
+				"requestId":   map[string]any{"type": "string", "description": "Optional idempotency key (UUID): reuse it on retry of the SAME logical verdict"},
+				"shortId":     map[string]any{"type": "string", "description": "The task's short id (word-phrase form) — alternative to taskId"},
+				"taskId":      map[string]any{"type": "string", "description": "The task's UUID — alternative to shortId"},
+			}, "required": []string{"claimToken", "verdict", "reviewer"}},
+		},
+		{
 			Name:        "abort_session",
 			Annotations: annot(false, true, false),
 			Description: "Stop a session's current turn (IDs from session_list / session_metadata — the busy ones). The turn ends immediately; the session's history and recorded work are kept — only the in-flight generation is cut. Use for cross-session management: a runaway or wrong-direction session you started (create_session / send_message), or stopping work that is no longer needed so it stops consuming tokens. Abort stops the in-flight turn DESTRUCTIVELY: any message queued for the target (e.g. a send_message still waiting for its turn to end) may be dropped — after aborting, re-send anything that mattered. Aborting an idle session is a harmless no-op. Sending another message afterwards (send_message) starts a new turn as usual. Not for: your own current session (you cannot abort your way out of this turn — finish it), or deleting history (compact summarizes; deleting is delete_session's job — abort never removes anything).",
@@ -1079,7 +1093,8 @@ func callMCPTool(ctx context.Context, password, name string, args map[string]any
 		"board_delete_task", "board_pause_task", "board_resume_task", "board_rearm_task",
 		"board_move_stage_bulk",
 		"board_delete_tasks",
-		"board_import_plan":
+		"board_import_plan",
+		"board_record_verdict": // #1947: the spawned reviewer persona's verdict channel
 		// #1701: the board worker tools ride the same automation seam
 		// (pod SA token, verbatim passthrough, platform-validated).
 		// #1747: the manager set joins them, session-gated at dispatch.

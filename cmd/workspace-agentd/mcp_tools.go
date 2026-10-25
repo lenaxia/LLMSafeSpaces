@@ -1800,6 +1800,16 @@ func mcpAutomation(ctx context.Context, password, name string, body map[string]a
 			return "", err
 		}
 		res, err = client.BoardReportThrottle(ctx, saToken, workspaceID, passThroughBody(body, "task"))
+	case "board_record_verdict":
+		// #1947 — the verdict channel: the spawned reviewer persona's
+		// ONE authorized write. Worker projection only: the claim token
+		// is REQUIRED (the service-side agent guard refuses a missing or
+		// wrong token), so unlike board_move_stage there is no
+		// token-less manager arm on this tool.
+		if err := requireBoardClaimToken(name, body); err != nil {
+			return "", err
+		}
+		res, err = client.BoardRecordVerdict(ctx, saToken, workspaceID, passThroughBody(body, "task"))
 	case "board_move_stage":
 		// #1832 WS2 dual-route: a caller holding a claim token rides
 		// the worker projection (unchanged); a token-less caller rides

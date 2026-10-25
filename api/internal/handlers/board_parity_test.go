@@ -149,7 +149,8 @@ var boardParityMatrix = []parityRow{
 		externalMCP: liveCell, extTools: []string{"board_list_projects", "board_get", "board_read", "board_health"}, agent: liveCell,
 		agentTools: []string{"board_read", "board_list", "board_health"}}, // agent item form (GetTaskInWorkspace) + #1837 P2a: board_list (per-project stage/claim projection + ready set) and board_health (workspace health) on the agent manager surface; search remains a manager-surface read (REST/external)
 	{action: "record_verdict", restMethods: []string{"RecordTaskVerdict"}, rest: liveCell,
-		externalMCP: liveCell, extTools: []string{"board_record_verdict"}, agent: absentCell}, // #1832 item 5: reviewers are manager surfaces — the verdict core is forge-agnostic, adapters map INTO it
+		externalMCP: liveCell, extTools: []string{"board_record_verdict"},
+		agent: liveCell, agentTools: []string{"board_record_verdict"}}, // #1832 item 5: reviewers are manager surfaces — the verdict core is forge-agnostic, adapters map INTO it. #1947: the SPAWNED reviewer persona (the stage-persona claim-then-spawn) is a worker session — its verdict rides the agent seam, claim-token-guarded (the in_review row's live token)
 	{action: "task_verdicts", restMethods: []string{"ListTaskVerdicts"}, rest: liveCell,
 		externalMCP: liveCell, extTools: []string{"board_task_verdicts"}, agent: absentCell}, // #1832 item 5: the ordered verdict chain (B2's envelope input)
 	{action: "board_task_events", restMethods: []string{"TaskEvents"}, rest: liveCell,
@@ -477,6 +478,7 @@ func TestBoardParity_AgentColumn(t *testing.T) {
 		"POST /internal/v1/automation/board/tasks/move-stage",
 		"POST /internal/v1/automation/board/tasks/move-stage-bulk",
 		"POST /internal/v1/automation/board/tasks/throttle",
+		"POST /internal/v1/automation/board/tasks/verdict", // #1947: the spawned reviewer persona's verdict channel (token-guarded)
 	}, seamBoardRoutes(t),
 		"agent seam route table: worker + manager (#1747) routes + resource-pressure telemetry; claim_next/task_start never route")
 
