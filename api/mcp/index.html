@@ -3097,6 +3097,11 @@ external actors hold no claim tokens.</p>
 <td>#1836 bulk stage move: one shared target stage + evidence across up to 50 tasks, per-item result array <code>[{id, status: done\|failed, error?}]</code> — partial failures per item, never all-or-nothing; an item already at the target stage returns <code>done</code> (idempotent retry). Every single-task guard applies per item. Canonical use: completing review sets (<code>in_review</code> → <code>done</code>). Optional: <code>evidence_url</code>, <code>request_id</code></td>
 </tr>
 <tr>
+<td><code>board_delete_tasks</code></td>
+<td><code>task_ids</code></td>
+<td>#1836 sibling bulk delete (the issue's own delete_task(s) batch): up to 50 destructive removals in one call, ONE shared <code>reconnect</code> flag, per-item result array <code>[{id, status: done\|failed, orphaned_dependents?, reconnected?, error?}]</code> — partial failures per item, never all-or-nothing. Idempotent retry for a destructive variant: re-submitting is safe; a miss, a foreign row, and an already-deleted row all render the SAME <code>not_found</code> item (absence ≡ miss ≡ foreign — absence is the done state; rendering it done would fabricate outcomes for foreign probes and leak foreign existence). Canonical use: cleanup sweeps after re-planning. Optional: <code>reconnect</code>, <code>request_id</code></td>
+</tr>
+<tr>
 <td><code>board_start_tasks</code></td>
 <td><code>task_ids</code></td>
 <td>#1836 bulk claim: up to 50 manual dispatches (claim + fresh-charter spawn) in one call, per-item result array — an item already claimed returns <code>done</code> (idempotent retry), an attempts-capped item returns <code>done</code> + <code>escalated: true</code>. No claim tokens render on the bulk projection (#1864 ruling). Optional: <code>request_id</code></td>
@@ -3264,7 +3269,7 @@ ready set and creation order serves it.</p>
     <span class="md-icon" title="Last update">
       <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M21 13.1c-.1 0-.3.1-.4.2l-1 1 2.1 2.1 1-1c.2-.2.2-.6 0-.8l-1.3-1.3c-.1-.1-.2-.2-.4-.2m-1.9 1.8-6.1 6V23h2.1l6.1-6.1zM12.5 7v5.2l4 2.4-1 1L11 13V7zM11 21.9c-5.1-.5-9-4.8-9-9.9C2 6.5 6.5 2 12 2c5.3 0 9.6 4.1 10 9.3-.3-.1-.6-.2-1-.2s-.7.1-1 .2C19.6 7.2 16.2 4 12 4c-4.4 0-8 3.6-8 8 0 4.1 3.1 7.5 7.1 7.9l-.1.2z"/></svg>
     </span>
-    <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-timeago" title="October 24, 2026 13:48:58 UTC"><span class="timeago" datetime="2026-10-24T13:48:58+00:00" locale="en"></span></span><span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-iso_date" title="October 24, 2026 13:48:58 UTC">2026-10-24</span>
+    <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-timeago" title="October 24, 2026 22:13:48 UTC"><span class="timeago" datetime="2026-10-24T22:13:48+00:00" locale="en"></span></span><span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-iso_date" title="October 24, 2026 22:13:48 UTC">2026-10-24</span>
   </span>
 
     
