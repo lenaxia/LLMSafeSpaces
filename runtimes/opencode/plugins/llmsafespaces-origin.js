@@ -30,9 +30,10 @@
 
 /** The qualified tool names the harness registers for the platform MCP
  *  server's tools (server "llmsafespaces" + "_" + tool). send_message
- *  carries the origin for attribution (#1465); session_metadata and
- *  delete_session carry the CALLING session for the current-session
- *  default and the self-delete guard (#1627). The 21 board MANAGER
+ *  carries the origin for attribution (#1465); session_metadata,
+ *  delete_session, and the delete bulk (#1836) carry the CALLING
+ *  session for the current-session default and the self-delete guard
+ *  (#1627). The 21 board MANAGER
  *  tools (#1747 §5) carry the calling session's identity the same way:
  *  the seam stamps it into the audit actor, and injection OVERWRITES
  *  any model-supplied copy. Kept in lockstep with the agentd registry
@@ -41,6 +42,7 @@ const INJECTED_SESSION_TOOLS = new Set([
   "llmsafespaces_send_message",
   "llmsafespaces_session_metadata",
   "llmsafespaces_delete_session",
+  "llmsafespaces_session_delete_bulk",
   "llmsafespaces_board_create_project",
   "llmsafespaces_board_update_project",
   "llmsafespaces_board_project_archive",

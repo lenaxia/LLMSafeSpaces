@@ -67,11 +67,14 @@ func TestMCPBoard_ManagerInjectionSupply(t *testing.T) {
 		}
 	}
 	// The platform trio stays injected (send_message attribution #1465,
-	// session_metadata/delete_session self-scope #1627).
+	// session_metadata/delete_session self-scope #1627); the delete
+	// bulk joins the frozen baseline (#1836 — the batch self-delete
+	// guard's injection half).
 	for _, name := range []string{
 		"llmsafespaces_send_message",
 		"llmsafespaces_session_metadata",
 		"llmsafespaces_delete_session",
+		"llmsafespaces_session_delete_bulk",
 	} {
 		if !pluginSet[name] {
 			t.Errorf("platform tool %s lost its injection — the pre-#1747 baseline must hold", name)

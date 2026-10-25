@@ -779,22 +779,9 @@ func mcpDeleteSession(ctx context.Context, password, sessionID, injectedSession 
 	// finding 4: without it the guard is inert exactly where the
 	// plugin is missing). Ambiguity (0 or multiple busy) allows the
 	// delete: the target is an explicitly named ID, not a guess.
-	self := strings.TrimSpace(injectedSession)
-	if self == "" {
-		client := seamClientWithPassword(password)
-		if busy, err := client.GetSessionStatuses(ctx); err == nil {
-			var busyIDs []string
-			for id, st := range busy {
-				if st == "busy" || st == "retry" {
-					busyIDs = append(busyIDs, id)
-				}
-			}
-			if len(busyIDs) == 1 {
-				self = busyIDs[0]
-			}
-		}
-	}
-	if self != "" && sessionID == self {
+	// (#1836: the logic lives in resolveCallerSession, shared with the
+	// delete bulk twin.)
+	if self := resolveCallerSession(ctx, password, injectedSession); self != "" && sessionID == self {
 		return "", fmt.Errorf("refusing to delete your own current session — its turn (this tool call) is still running; finish your turn and let the user or a peer session delete it, or ask the user")
 	}
 	client, saToken, workspaceID, err := podPlatformClient()
@@ -827,6 +814,276 @@ func mcpDeleteSession(ctx context.Context, password, sessionID, injectedSession 
 		res["deprecation"] = note
 	}
 	out, _ := json.Marshal(res)
+	return string(out), nil
+}
+
+// --- session bulk variants (#1836) ------------------------------------------
+
+// The #1836 session siblings: session_archive_bulk and
+// session_delete_bulk — ONE agent round-trip for the N-session sweep
+// (the lived pain: archiving ~48 sessions cost ~48 context-resending
+// single-field calls). The batch adds ONLY the per-item envelope:
+// every item is one full delegation to the single-session seams above
+// (resolveSessionRef → the pod-identity platform write), serial, in
+// order — no second write path, no concurrency, exactly what N single
+// calls do minus the round-trips.
+//
+// Contract (issue #1836, the #1937/#1944 vocabulary):
+//   - Per-item result array {id, status: done|failed, error?} —
+//     partial failures reported per item, never all-or-nothing.
+//   - Idempotent retry: re-submitting the batch (or its failed subset)
+//     is safe. Archive: the platform seam is idempotent for repeat
+//     writes (the root row always matches), so an already-archived
+//     item returns done, not conflict. Delete (destructive — the
+//     ruling recorded on #1836 for the delete batch): a delete's
+//     already-done state is row ABSENCE, indistinguishable from a
+//     miss and from a foreign row; all three render the SAME bare
+//     not_found item. Rendering absence as done would fabricate
+//     outcomes for probes and leak row existence; the re-submit
+//     itself never errors, never double-writes.
+//   - Per-item validation: one malformed/blank/non-string id sinks
+//     only its own item; the rest of the batch still processes.
+//   - Batch cap: board.BulkMaxItems (the merged #1937 constant — one
+//     cap number across every bulk surface) with a clear overflow
+//     error; a batch-level problem poisons every item, so empty and
+//     over-cap refuse the whole call with zero wire spend.
+const (
+	sessionBulkDone   = "done"
+	sessionBulkFailed = "failed"
+)
+
+// Per-item error codes (the board bulk's vocabulary at the session
+// seam; sessions have no typed engine guards here, so the classes are
+// the tool seam's own).
+const (
+	sessionBulkErrInvalidInput = "invalid_input"       // malformed item: blank, or not a string
+	sessionBulkErrNotFound     = "not_found"           // resolve miss, platform 404, or (delete) absence
+	sessionBulkErrInternal     = "internal_error"      // transport/5xx — honest, never a fabricated miss
+	sessionBulkErrSelfDelete   = "self_delete_refused" // the caller's own current session (delete bulk)
+)
+
+// sessionBulkItemError is one failed item's error: the class code plus
+// its detail (the same message the single tool renders — resolve
+// misses carry the did-you-mean clause; this surface is
+// workspace-scoped by pod identity, so there is no cross-user
+// disclosure class to defend — the suggestions the single tools show
+// are safe per item too).
+type sessionBulkItemError struct {
+	Code   string `json:"code"`
+	Detail string `json:"detail"`
+}
+
+// sessionBulkItem is one submitted ref's outcome. Ref echoes the
+// caller's id VERBATIM (phrase, alias, or raw — self-identifying, the
+// #1937 rule); ArchivedVisibility rides done archive items only
+// (#1879 semantics per item, from ONE shared post-write confirmation
+// read); Error is present exactly on failed items.
+type sessionBulkItem struct {
+	Ref                string                `json:"id"`
+	Status             string                `json:"status"`
+	ArchivedVisibility string                `json:"archived_visibility,omitempty"`
+	Error              *sessionBulkItemError `json:"error,omitempty"`
+}
+
+// sessionBulkValidateCount is the shared batch-level guard (#1836
+// contracts 3+4 — a batch-level problem poisons every item, so it
+// refuses whole, spending zero wire calls).
+func sessionBulkValidateCount(n int) error {
+	if n == 0 {
+		return fmt.Errorf("sessionIds must carry at least one session")
+	}
+	if n > board.BulkMaxItems {
+		return fmt.Errorf("bulk batch capped at %d items (got %d) — split the batch",
+			board.BulkMaxItems, n)
+	}
+	return nil
+}
+
+// sessionBulkString coerces one array entry to a trimmed ref. ok is
+// false for non-string or blank entries — the caller renders that
+// item's own invalid_input row, never a batch failure.
+func sessionBulkString(raw any) (string, bool) {
+	s, ok := raw.(string)
+	if !ok {
+		return "", false
+	}
+	s = strings.TrimSpace(s)
+	return s, s != ""
+}
+
+// sessionBulkInvalidItem renders a malformed entry: the ref echoes a
+// printable form of what was submitted (a non-string renders its Go
+// value; a blank string renders empty).
+func sessionBulkInvalidItem(raw any) sessionBulkItem {
+	ref, _ := raw.(string)
+	return sessionBulkItem{
+		Ref:    ref,
+		Status: sessionBulkFailed,
+		Error: &sessionBulkItemError{Code: sessionBulkErrInvalidInput,
+			Detail: "not a non-blank session id string — this item only; the rest of the batch still processed"},
+	}
+}
+
+func sessionBulkFailedItem(ref, code, detail string) sessionBulkItem {
+	return sessionBulkItem{Ref: ref, Status: sessionBulkFailed,
+		Error: &sessionBulkItemError{Code: code, Detail: detail}}
+}
+
+// resolveCallerSession is the self-identity the delete tools guard on:
+// the plugin-injected current session first; on a degraded pod (no
+// working plugin) the single busy session IS the caller (ambiguity —
+// 0 or multiple busy — yields "", allowing the delete: the target is
+// an explicitly named id, not a guess). Extracted from mcpDeleteSession
+// for the bulk twin (#1836); behavior-identical.
+func resolveCallerSession(ctx context.Context, password, injectedSession string) string {
+	self := strings.TrimSpace(injectedSession)
+	if self == "" {
+		client := seamClientWithPassword(password)
+		if busy, err := client.GetSessionStatuses(ctx); err == nil {
+			var busyIDs []string
+			for id, st := range busy {
+				if st == "busy" || st == "retry" {
+					busyIDs = append(busyIDs, id)
+				}
+			}
+			if len(busyIDs) == 1 {
+				self = busyIDs[0]
+			}
+		}
+	}
+	return self
+}
+
+// mcpSessionArchiveBulk archives (true) or unarchives (false) a batch
+// of sessions — session_archive's batch twin. ONE shared direction
+// across the batch (per-item direction would be N single calls); the
+// direction itself is validated at dispatch (the REQUIRED DIRECTION
+// discipline — no default, a malformed call archives nothing). Items
+// run serially, each one full resolve + platform write; after the
+// loop ONE forceArchivedSetRefresh both refreshes this pod's cache
+// (listings converge immediately) and verifies every done item
+// (#1879 — verified/unverified per item, never a fabricated
+// freshness, never a failed write masked).
+func mcpSessionArchiveBulk(ctx context.Context, password string, refs []any, archived bool) (string, error) {
+	if err := sessionBulkValidateCount(len(refs)); err != nil {
+		return "", err
+	}
+	client, saToken, workspaceID, err := podPlatformClient()
+	if err != nil {
+		return "", err
+	}
+	results := make([]sessionBulkItem, 0, len(refs))
+	// resolvedOf maps each done item's verbatim ref to its canonical
+	// harness id — the confirmation read keys on canonical ids.
+	resolvedOf := make(map[string]string, len(refs))
+	for _, raw := range refs {
+		ref, ok := sessionBulkString(raw)
+		if !ok {
+			results = append(results, sessionBulkInvalidItem(raw))
+			continue
+		}
+		resolved, rerr := resolveSessionRef(ctx, password, ref)
+		if rerr != nil {
+			// The resolver's message carries the did-you-mean clause
+			// already (same as the single tool's resolve failure).
+			results = append(results, sessionBulkFailedItem(ref, sessionBulkErrNotFound, rerr.Error()))
+			continue
+		}
+		itemCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+		werr := client.SessionArchive(itemCtx, saToken, workspaceID, resolved, archived)
+		cancel()
+		if werr != nil {
+			if isSessionNotFoundErr(werr) {
+				// #1663 near-miss clause, same as the single tool: the
+				// item is refused either way — suggest-only.
+				results = append(results, sessionBulkFailedItem(ref, sessionBulkErrNotFound,
+					fmt.Sprintf("failed to archive session: %v%s", werr,
+						sessionSuggestClause(ctx, seamClientWithPassword(password), resolved))))
+				continue
+			}
+			// Transient class: the item's own internal_error row —
+			// never a fabricated miss (a retry converges).
+			results = append(results, sessionBulkFailedItem(ref, sessionBulkErrInternal,
+				fmt.Sprintf("failed to archive session: %v", werr)))
+			continue
+		}
+		resolvedOf[ref] = resolved
+		results = append(results, sessionBulkItem{Ref: ref, Status: sessionBulkDone})
+	}
+	// ONE shared confirmation read (#1879, batch-amortized): refreshes
+	// this pod's archived-set cache and verifies every done item. A
+	// failed or disagreeing read renders unverified — the write is the
+	// state truth; the tool never fails on it.
+	confirmed := forceArchivedSetRefresh(ctx)
+	for i := range results {
+		if results[i].Status != sessionBulkDone {
+			continue
+		}
+		visibility := "unverified"
+		if confirmed != nil && confirmed[resolvedOf[results[i].Ref]] == archived {
+			visibility = "verified"
+		}
+		results[i].ArchivedVisibility = visibility
+	}
+	out, _ := json.Marshal(map[string]any{"results": results})
+	return string(out), nil
+}
+
+// mcpDeleteSessionBulk hard-deletes a batch of sessions —
+// delete_session's batch twin. The self-delete guard is per item
+// (resolved against the caller identity computed ONCE): the caller's
+// own session renders self_delete_refused and the batch keeps
+// processing — the platform is never asked for it. Idempotent retry
+// is the destructive-variant ruling recorded on #1836: absence ≡ miss
+// ≡ foreign → the same bare not_found item (the platform 404 and the
+// resolve miss already agree byte-for-byte in spirit — both are the
+// item's not-found verdict, never a conflict, never a batch error).
+func mcpDeleteSessionBulk(ctx context.Context, password string, refs []any, injectedSession string) (string, error) {
+	if err := sessionBulkValidateCount(len(refs)); err != nil {
+		return "", err
+	}
+	self := resolveCallerSession(ctx, password, injectedSession)
+	client, saToken, workspaceID, err := podPlatformClient()
+	if err != nil {
+		return "", err
+	}
+	results := make([]sessionBulkItem, 0, len(refs))
+	for _, raw := range refs {
+		ref, ok := sessionBulkString(raw)
+		if !ok {
+			results = append(results, sessionBulkInvalidItem(raw))
+			continue
+		}
+		resolved, rerr := resolveSessionRef(ctx, password, ref)
+		if rerr != nil {
+			results = append(results, sessionBulkFailedItem(ref, sessionBulkErrNotFound, rerr.Error()))
+			continue
+		}
+		if self != "" && resolved == self {
+			results = append(results, sessionBulkFailedItem(ref, sessionBulkErrSelfDelete,
+				"refusing to delete your own current session — its turn (this tool call) is still running; finish your turn and let the user or a peer session delete it, or ask the user"))
+			continue
+		}
+		itemCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+		werr := client.PlatformSessionDelete(itemCtx, saToken, workspaceID, resolved)
+		cancel()
+		if werr != nil {
+			if isSessionNotFoundErr(werr) {
+				// Absence ≡ miss ≡ foreign (#1836 destructive ruling):
+				// the platform's 404 IS the verdict — same code either
+				// way, the near-miss clause the single tool appends.
+				results = append(results, sessionBulkFailedItem(ref, sessionBulkErrNotFound,
+					fmt.Sprintf("failed to delete session: %v%s", werr,
+						sessionSuggestClause(ctx, seamClientWithPassword(password), resolved))))
+				continue
+			}
+			results = append(results, sessionBulkFailedItem(ref, sessionBulkErrInternal,
+				fmt.Sprintf("failed to delete session: %v", werr)))
+			continue
+		}
+		results = append(results, sessionBulkItem{Ref: ref, Status: sessionBulkDone})
+	}
+	out, _ := json.Marshal(map[string]any{"results": results})
 	return string(out), nil
 }
 

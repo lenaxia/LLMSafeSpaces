@@ -42,6 +42,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — session bulk variants (#1836, partial)
+
+- **Bulk session archive/delete with per-item result arrays** (#1836's
+  session siblings — the lived pain: archiving ~48 sessions cost ~48
+  context-resending tool round-trips): `session_archive_bulk` and
+  `session_delete_bulk` on the agentd MCP surface (session_archive's
+  and delete_session's batch twins — up to 50 refs in ONE call, every
+  item one full single-tool delegation: `resolveSessionRef`
+  phrase/alias/raw dual-accept, then the pod-identity platform write).
+  Contract: per-item `{id, status: done|failed, archived_visibility?,
+  error?}` — partial failures per item, never all-or-nothing; one
+  malformed id sinks only its own item; batch capped at 50
+  (`board.BulkMaxItems`, single-sourced). Idempotent retry: repeat
+  archive returns done (the platform seam's root-row write is
+  idempotent); delete follows the destructive ruling recorded on #1836
+  — absence ≡ miss ≡ foreign, all three the same bare `not_found`
+  item. The self-delete guard is per item (`self_delete_refused` —
+  the batch keeps processing); done archive items carry #1879's
+  `archived_visibility` from ONE shared post-write confirmation read.
+  The origin plugin stamps the delete bulk for the guard's injection
+  half (lockstep pin extended); the #1816 §2 deprecation notice scans
+  array args.
+
 ### Added — board bulk delete variant (#1836, partial)
 
 - **Bulk task delete with per-item result arrays** (#1836's

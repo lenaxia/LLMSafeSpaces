@@ -416,6 +416,23 @@ func sessionArgsDeprecationNote(args map[string]any) string {
 				"accepted through one release, then rejected."
 		}
 	}
+	// #1836 bulk arrays: every entry is a caller-typed ref — one
+	// deprecated form anywhere in the batch carries the same notice
+	// (the envelope-level carrier covers array-shaped tools the string
+	// scan cannot see).
+	for _, key := range []string{"sessionIds", "session_ids"} {
+		items, ok := args[key].([]any)
+		if !ok {
+			continue
+		}
+		for _, it := range items {
+			if ref, ok := it.(string); ok && shortid.IsDeprecatedInputForm(ref) {
+				return "DEPRECATED: you addressed a session by its full/hashed id; " +
+					"use the 3-word phrase (see session_list). Full/hashed session-id inputs are " +
+					"accepted through one release, then rejected."
+			}
+		}
+	}
 	return ""
 }
 

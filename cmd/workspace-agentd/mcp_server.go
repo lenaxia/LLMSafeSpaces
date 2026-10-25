@@ -373,7 +373,7 @@ func mcpToolByName(name string) *mcpTool {
 }
 
 func mcpToolCatalog() []mcpTool {
-	return append(boardManagerTools(), []mcpTool{
+	tools := append(boardManagerTools(), []mcpTool{
 		{
 			Name:        "session_list",
 			Annotations: annot(true, false, false),
@@ -738,6 +738,50 @@ func mcpToolCatalog() []mcpTool {
 			},
 		},
 	}...)
+	appendSessionBulkTools(&tools)
+	return tools
+}
+
+// appendSessionBulkTools splices the #1836 session bulk pair —
+// session_archive's and delete_session's batch twins (the
+// cleanup-sweep round-trip economy) — in after their singles. A helper
+// only for mcpToolCatalog's funlen budget; the entries are ordinary
+// catalog rows.
+func appendSessionBulkTools(tools *[]mcpTool) {
+	*tools = append(*tools, []mcpTool{
+		{
+			// #1836 session sibling: the archive batch — ONE round-trip for
+			// the N-session sweep (archiving ~48 sessions one call at a
+			// time burned ~48 context-resending round-trips). Every item is
+			// one full single-tool archive: resolve (phrase/alias/raw),
+			// platform write, #1879 post-write visibility.
+			Name:        "session_archive_bulk",
+			Description: "Bulk archive/unarchive (#1836): up to 50 sessions in ONE call — session_archive's batch twin, built for the cleanup sweep (tidying a finished lane's sessions after a multi-agent run). ONE shared archived direction for the whole batch (true = archive every item, false = unarchive every item). Response is a per-item result array [{id, status: done|failed, archived_visibility?, error?}] — partial failures are reported per item, never all-or-nothing; one malformed id sinks only its own item; each id takes the 3-word phrase, an unambiguous title/slug alias, or the raw id (same forms session_archive takes) and echoes verbatim in its row. Idempotent retry: re-submitting the batch (or its failed subset) is safe — an already-archived session returns done again, NOT a conflict. Done rows carry archived_visibility verified (the shared post-write read confirmed every transition and this pod's listings reflect it immediately) or unverified (the confirmation could not be read or disagreed; the state still holds, listings may lag up to ~15s — check session_metadata, do NOT re-archive on unverified). NOT for deleting — session_delete_bulk is the destructive batch twin; archive first when in doubt. Over 50 items refuses the whole call.",
+			InputSchema: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"sessionIds": map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Session refs — 3-word phrase (from session_list / session_metadata; case-insensitive), unambiguous title/slug alias, or raw id — 1 to 50 items"},
+					"archived":   map[string]any{"type": "boolean", "description": "REQUIRED DIRECTION: true = ARCHIVE every item (read-only, Archived group); false = UNARCHIVE every item (restore chat). There is no default — pass it explicitly."},
+				},
+				"required": []string{"sessionIds", "archived"},
+			},
+		},
+		{
+			// #1836 session sibling: the destructive delete batch — the
+			// carrier/probe cleanup sweep in one call. The self-delete
+			// guard and the absence≡miss≡foreign rendering are per item.
+			Name:        "session_delete_bulk",
+			Annotations: annot(false, true, false),
+			Description: "Bulk hard-delete (#1836): up to 50 sessions in ONE call — delete_session's batch twin, for carrier/probe cleanup after a multi-agent run. HARD DELETE, no undo: every destroyed transcript disappears from BOTH the platform's index and the agent's store. Response is a per-item result array [{id, status: done|failed, error?}] — partial failures per item, never all-or-nothing; one malformed id sinks only its own item; each id takes the same forms delete_session takes and echoes verbatim. YOUR OWN current session is refused per item (self_delete_refused — finish your turn; the rest of the batch still processes). Idempotent retry for a destructive batch: re-submitting is safe; a session a prior submit already deleted, a mistyped id, and a session outside this workspace all render the SAME not_found item (absence is the done state — rendering it done would fabricate outcomes and leak existence; never a conflict). Use ONLY when the user explicitly asks to delete multiple sessions' history, or to clean up empty/accidental sessions YOU created; prefer session_archive_bulk when intent is ambiguous. Over 50 items refuses the whole call.",
+			InputSchema: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"sessionIds": map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Session refs to hard-delete — 3-word phrase (from session_list / session_metadata; case-insensitive), unambiguous title/slug alias, or raw id — 1 to 50 items"},
+				},
+				"required": []string{"sessionIds"},
+			},
+		},
+	}...)
 }
 
 func mcpHandler(password string) http.HandlerFunc {
@@ -981,6 +1025,20 @@ func argBool(args map[string]any, key string) (bool, bool) {
 	return false, false
 }
 
+// argSlice reads an array argument (camelCase key with the snake_case
+// legacy spelling tolerated) without coercing its entries — the bulk
+// tools (#1836) isolate malformed entries per item, so coercion here
+// would erase the per-item validation the contract pins.
+func argSlice(args map[string]any, key string) ([]any, bool) {
+	if v, ok := args[key].([]any); ok {
+		return v, true
+	}
+	if v, ok := args[camelToSnake(key)].([]any); ok {
+		return v, true
+	}
+	return nil, false
+}
+
 func callMCPTool(ctx context.Context, password, name string, args map[string]any) (string, error) {
 	switch name {
 	case "session_list":
@@ -1120,10 +1178,31 @@ func callMCPTool(ctx context.Context, password, name string, args map[string]any
 			return "", fmt.Errorf("archived (boolean) is required: true = archive, false = unarchive — no default")
 		}
 		return mcpSessionArchive(ctx, password, sessionID, archived)
+	case "session_archive_bulk":
+		// #1836: the batch twin. The direction is batch-level (ONE
+		// shared boolean — per-item direction would be N single
+		// calls), so its REQUIRED DIRECTION discipline refuses the
+		// whole call, spending zero wire round-trips.
+		refs, ok := argSlice(args, "sessionIds")
+		if !ok {
+			return "", fmt.Errorf("sessionIds (array of session refs) is required")
+		}
+		archived, aok := args["archived"].(bool)
+		if !aok {
+			return "", fmt.Errorf("archived (boolean) is required: true = archive, false = unarchive — no default")
+		}
+		return mcpSessionArchiveBulk(ctx, password, refs, archived)
 	case "delete_session":
 		sessionID := argStr(args, "sessionId")
 		injected, _ := args["lsp_injected_session"].(string)
 		return mcpDeleteSession(ctx, password, sessionID, injected)
+	case "session_delete_bulk":
+		refs, ok := argSlice(args, "sessionIds")
+		if !ok {
+			return "", fmt.Errorf("sessionIds (array of session refs) is required")
+		}
+		injected, _ := args["lsp_injected_session"].(string)
+		return mcpDeleteSessionBulk(ctx, password, refs, injected)
 	case "feature_status":
 		return mcpFeatureStatus()
 	case "dev_preview_headers":
