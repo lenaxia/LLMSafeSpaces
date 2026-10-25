@@ -131,8 +131,9 @@ func (s *Service) RecordVerdict(ctx context.Context, actor Actor, taskID, shortI
 	// authorized write is this verdict, keyed to the persona claim its
 	// charter carries. An agent-surface RecordVerdict therefore requires
 	// the in_review row's LIVE claim token (the reviewer's own): a
-	// wrong or missing token refuses — spawned workers hold no manager
-	// grant, and no other in-pod session may arbitrate a verdict. The
+	// wrong or missing token refuses. The guard binds the CLAIM
+	// CAPABILITY, not a session identity — the token is the same
+	// capability the heartbeat/move-stage guards rely on. The
 	// owner/REST surface keeps today's semantics (no token required).
 	if isAgentSurface(actor.Surface) {
 		if t.Stage != StageInReview || actor.ClaimToken == "" || t.ClaimToken == "" || actor.ClaimToken != t.ClaimToken {

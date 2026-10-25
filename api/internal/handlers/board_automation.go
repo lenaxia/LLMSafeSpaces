@@ -19,7 +19,6 @@ package handlers
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"io"
 	"net/http"
 	"time"
@@ -158,30 +157,23 @@ func (h *PodAutomationHandler) BoardRecordVerdict(c *gin.Context) {
 		return
 	}
 	var req struct {
-		TaskID      string `json:"taskId"`
-		ShortID     string `json:"shortId"`
-		ClaimToken  string `json:"claimToken"`
-		Verdict     string `json:"verdict"`
-		Reviewer    string `json:"reviewer"`
-		EvidenceURL string `json:"evidenceUrl"`
-		RequestID   string `json:"requestId"`
+		TaskID      string                 `json:"taskId"`
+		ShortID     string                 `json:"shortId"`
+		ClaimToken  string                 `json:"claimToken"`
+		Verdict     string                 `json:"verdict"`
+		Reviewer    string                 `json:"reviewer"`
+		EvidenceURL string                 `json:"evidenceUrl"`
+		Findings    []board.VerdictFinding `json:"findings"`
+		RequestID   string                 `json:"requestId"`
 	}
 	if !bindBoardBody(c, raw, &req) {
 		return
-	}
-	var findings []board.VerdictFinding
-	if raw != nil {
-		var body struct {
-			Findings []board.VerdictFinding `json:"findings"`
-		}
-		_ = json.Unmarshal(raw, &body)
-		findings = body.Findings
 	}
 	task, v, err := h.board.RecordVerdict(c.Request.Context(), h.boardActor(ownerID, workspaceID, req.ClaimToken),
 		req.TaskID, req.ShortID,
 		board.VerdictInput{
 			Verdict:     board.VerdictKind(req.Verdict),
-			Findings:    findings,
+			Findings:    req.Findings,
 			Reviewer:    req.Reviewer,
 			EvidenceURL: req.EvidenceURL,
 		}, req.RequestID)
