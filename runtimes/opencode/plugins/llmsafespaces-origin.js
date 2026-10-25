@@ -60,6 +60,7 @@ const INJECTED_SESSION_TOOLS = new Set([
   "llmsafespaces_board_remove_dependency",
   "llmsafespaces_board_delete_task",
   "llmsafespaces_board_move_stage_bulk",
+  "llmsafespaces_board_delete_tasks",
   "llmsafespaces_board_pause_task",
   "llmsafespaces_board_resume_task",
   "llmsafespaces_board_rearm_task",

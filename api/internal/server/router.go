@@ -1371,6 +1371,7 @@ func registerInternalAutomationRoutes(router *gin.Engine, cfg RouterConfig) {
 		b.POST("/tasks/throttle", h.BoardReportThrottle)
 		b.POST("/tasks/move-stage", h.BoardMoveStage)
 		b.POST("/tasks/move-stage-bulk", h.BoardManagerMoveStageBulk) // #1836: bulk complete (claim stays owner-surface only, round-3 #2)
+		b.POST("/tasks/delete-bulk", h.BoardManagerDeleteTasksBulk)   // #1836 sibling: bulk delete (a manager action's batch twin)
 
 		b.POST("/projects", h.BoardCreateProject)
 		b.PATCH("/projects/:id", h.BoardUpdateProject)
@@ -2394,6 +2395,7 @@ func registerWorkflowRoutes(router *gin.Engine, services interfaces.Services, cf
 		// statics first, so both trees resolve).
 		k.POST("/bulk-start", b.StartTasksBulk)
 		k.POST("/bulk-move-stage", b.MoveStageBulk)
+		k.POST("/bulk-delete", b.DeleteTasksBulk) // #1836 sibling: delete_task(s) batch
 	}
 
 	// Org-scope trigger routes.

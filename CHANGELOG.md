@@ -5,7 +5,6 @@ All notable changes to LLMSafeSpaces are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-
 ## [0.41.0] - 2026-10-23
 
 ### Added — board dispatch durability + stage-machine hardening (the #1832 lane)
@@ -43,58 +42,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.43.0] - 2026-10-25
+### Added — board bulk delete variant (#1836, partial)
 
-### Added — generalized stage-persona claim-then-spawn (owner directive 2026-10-24; #1941)
+- **Bulk task delete with per-item result arrays** (#1836's
+  delete_task(s) batch — the issue's first-listed board sibling):
+  `BulkDeleteTasks` at the engine seam (each item ONE full
+  single-task DeleteTask — its own transaction, snapshot-bearing
+  audit event, orphan events + `is_blocked` rederive, post-commit
+  worker abort; ONE shared `reconnect` flag), rendered on REST
+  (`POST /api/v1/me/tasks/bulk-delete`), the agentd manager surface
+  (`board_delete_tasks` — delete IS a manager action; only
+  claim/create carry the owner-only boundary), and the external
+  platform MCP (`board_delete_tasks`). Delete-variant retry
+  semantics: absence ≡ miss ≡ foreign — all three render the same
+  bare `not_found` item (never disclosed, never a conflict on
+  re-submit); done items echo `orphaned_dependents`/`reconnected`.
 
-- **One mechanism, any stage, any persona**: entering a stage with a
-  persona configured claims the row (re-claim-class mint: fresh token +
-  lease, attempts unchanged) and spawns a fresh session whose charter
-  carries the configured agent persona. The dormant parallel
-  auto-review assignment path (#1832's token-less, lease-less
-  ReviewAssigner) is replaced entirely.
-- **Config-driven via `stagePersonas`** (user + project tiers,
-  migration 000049; per-KEY merge; an explicit `{}` owns the stage
-  mapping outright and is the opt-out the flipped default floor
-  needs). Legacy `reviewColumn=auto` + `autoAssignReviewer=true`
-  composes as the default reviewer persona — existing stored configs
-  keep their meaning.
-- **Board semantics preserved**: claim-before-spawn, token-gated
-  forward writes, liveness = new progress evidence, FIFO +
-  dependencies-only blocking, human-only pending_input exits.
-- **Dead-persona-worker healing**: RC1 persona pass with doubling
-  backoff, fresh-worker re-arm under the pure zero-config default
-  posture, attempts-cap escalation to pending_input; pause doctrine
-  respected at scan and mint. The #1832 WS4 stillborn guard composes
-  (zero-turn persona workers lapse into the healing loop).
-- **Wire surface**: `stagePersonasSet` set-ness field on BoardConfig
-  (openapi documented) so settings save-paths never materialize or
-  wipe stored maps.
-
-### Fixed
-
-- **#1922 pin deflake**: PayloadAssigneeIDs map-order flake made
-  order-insensitive (set compare).
-
-## [0.42.0] - 2026-10-24
-
-### Changed — Task Board: auto-review defaults flipped to on (owner ruling 2026-10-24)
-
-- **The code defaults for review automation are now `reviewColumn=auto`
-  + `autoAssignReviewer=true`** (was `manual`/`false` — the #1832
-  landing default that left auto-review dormant for every
-  freshly-created board project). A fresh project with zero config rows
-  now dispatches a reviewer directly on →in_review.
-- **Explicit stored opt-outs still win** (back-compat): the flip changes
-  only the inheritance floor of the code → user → project read-time
-  merge — a deliberate `reviewColumn=manual|off` or
-  `autoAssignReviewer=false` at either tier (board-wide defaults or
-  per-project overrides) keeps auto-review off; clearing the map
-  (REPLACE `{}`) re-inherits the new default. Pinned in the PG harness
-  (`TestReview_AutoReviewDefaultOn`,
-  `TestReview_ExplicitOptOutSurvivesDefaultFlip`).
-- OpenAPI `BoardConfig` documents the new defaults; the Settings
-  pre-data display fallbacks match the new floor.
 ### Added — board bulk claim/complete variants (#1836)
 
 - **Bulk task claim/complete with per-item result arrays** (#1836):
@@ -721,7 +684,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   asserts the merged tree passes the uniqueness gate; the control test
   pins that claims-blind assignment still collides (the documented
   degraded mode the invariant nets).
-
 
 ### Changed — Task Board: stillborn turn-evidence guard on heartbeats (issue #1832, lane board-stage-hygiene WS4)
 
@@ -1354,6 +1316,60 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (pinned). The #1901 item-b invariant is untouched: a refused delete
   (the session survived) writes no carrier mark, and preserved
   sessions' kind='session' verdicts stay invisible to the bypass.
+
+## [0.43.0] - 2026-10-25
+
+### Added — generalized stage-persona claim-then-spawn (owner directive 2026-10-24; #1941)
+
+- **One mechanism, any stage, any persona**: entering a stage with a
+  persona configured claims the row (re-claim-class mint: fresh token +
+  lease, attempts unchanged) and spawns a fresh session whose charter
+  carries the configured agent persona. The dormant parallel
+  auto-review assignment path (#1832's token-less, lease-less
+  ReviewAssigner) is replaced entirely.
+- **Config-driven via `stagePersonas`** (user + project tiers,
+  migration 000049; per-KEY merge; an explicit `{}` owns the stage
+  mapping outright and is the opt-out the flipped default floor
+  needs). Legacy `reviewColumn=auto` + `autoAssignReviewer=true`
+  composes as the default reviewer persona — existing stored configs
+  keep their meaning.
+- **Board semantics preserved**: claim-before-spawn, token-gated
+  forward writes, liveness = new progress evidence, FIFO +
+  dependencies-only blocking, human-only pending_input exits.
+- **Dead-persona-worker healing**: RC1 persona pass with doubling
+  backoff, fresh-worker re-arm under the pure zero-config default
+  posture, attempts-cap escalation to pending_input; pause doctrine
+  respected at scan and mint. The #1832 WS4 stillborn guard composes
+  (zero-turn persona workers lapse into the healing loop).
+- **Wire surface**: `stagePersonasSet` set-ness field on BoardConfig
+  (openapi documented) so settings save-paths never materialize or
+  wipe stored maps.
+
+### Fixed
+
+- **#1922 pin deflake**: PayloadAssigneeIDs map-order flake made
+  order-insensitive (set compare).
+
+## [0.42.0] - 2026-10-24
+
+### Changed — Task Board: auto-review defaults flipped to on (owner ruling 2026-10-24)
+
+- **The code defaults for review automation are now `reviewColumn=auto`
+  + `autoAssignReviewer=true`** (was `manual`/`false` — the #1832
+  landing default that left auto-review dormant for every
+  freshly-created board project). A fresh project with zero config rows
+  now dispatches a reviewer directly on →in_review.
+- **Explicit stored opt-outs still win** (back-compat): the flip changes
+  only the inheritance floor of the code → user → project read-time
+  merge — a deliberate `reviewColumn=manual|off` or
+  `autoAssignReviewer=false` at either tier (board-wide defaults or
+  per-project overrides) keeps auto-review off; clearing the map
+  (REPLACE `{}`) re-inherits the new default. Pinned in the PG harness
+  (`TestReview_AutoReviewDefaultOn`,
+  `TestReview_ExplicitOptOutSurvivesDefaultFlip`).
+- OpenAPI `BoardConfig` documents the new defaults; the Settings
+  pre-data display fallbacks match the new floor.
+
 ## [0.40.1] - 2026-10-21
 
 ### Fixed — v0.40.0 regression: user-stream session events carry the phrase id (#1817, #1821 piece 1)
@@ -1431,7 +1447,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `beginSessionAliasBatch`/`endSessionAliasBatch`. The r11 companion commit
   also hoists provider ref mutations out of state updaters so StrictMode's
   double-invoked updaters stay pure and resolves staging maps at commit.
-
 
 ## [0.40.0] - 2026-10-21
 
@@ -1707,7 +1722,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   The full verdict matrix — allows present, denies still biting — is
   pinned in `permissiontiers_test.go`; the deny-preservation pin
   asserts every deny entry survives the amendment.
-
 
 ### Added — Automation: agentdDelivery updatePolicy — workspace pods no longer roll on platform upgrades (#1746)
 
@@ -2464,7 +2478,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   all 20 workflow go-version pins, and both digest-pinned golang
   builder images re-pinned (registry-verified GOLANG_VERSION=1.26.9)
   so shipped binaries don't embed the vulnerable stdlib (#1636).
-
 
 ## [0.34.20] - 2026-10-08
 
@@ -3595,7 +3608,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   duplicate/out-of-order Deliver, boundary-stall, and wire-drift
   corruption controls — the contract's failure modes are executable.
 
-
 ## [0.28.2] - 2026-09-10
 
 ### Fixed (outbox stranded as error pills — Connect unary ack misparse)
@@ -3641,7 +3653,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **XDG config copy** (#1310): opencode writes config through the
   XDG path; the copy replaces the symlink (the read-only mount
   caused EACCES).
-
 
 ## [0.27.9] - 2026-09-10
 
@@ -4570,7 +4581,6 @@ F1–F5, under `OPENCODE_V2_DELIVERY=1` + `AGENTD_STATE_AUTHORITY=1`, gVisor,
   and queue pills surface `verifying`/`delivering` states. Also fixed a
   stress-found production race: concurrent accepts could overshoot the
   per-session queue cap across API replicas (atomic check-and-push).
-
 
 ## [0.18.0] - 2026-08-20
 
@@ -5927,7 +5937,6 @@ to firing DAG workflows or scripts — they directly embody agent routines
   Language Packs (Python/Node/Go/Rust/Java/.NET/Ruby/PHP via mise), System
   Packages (Playwright, Chromium, TeX Live, Tesseract, Graphviz, etc via apt),
   Files (MOTD). Frontend groups extensions by type.
-
 
 ## [0.8.1] - 2026-08-03
 

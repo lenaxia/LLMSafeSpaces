@@ -210,6 +210,14 @@ var boardParityMatrix = []parityRow{
 		externalMCP: liveCell, extTools: []string{"board_move_stage_bulk"}, agent: liveCell,
 		agentTools: []string{"board_move_stage_bulk"},
 		denyErr:    &board.GuardError{Code: board.GuardDone, Detail: "criteria unmet or evidence missing"}, denyCode: http.StatusConflict},
+	// #1836 sibling: the bulk delete keeps delete_task's three-live
+	// shape (delete IS a manager action — only task_start/task_create
+	// carry the owner-only boundary; the bulk form follows the single
+	// form's boundary, unlike the bulk claim).
+	{action: "bulk_delete", restMethods: []string{"DeleteTasksBulk"}, rest: liveCell,
+		externalMCP: liveCell, extTools: []string{"board_delete_tasks"}, agent: liveCell,
+		agentTools: []string{"board_delete_tasks"},
+		denyErr:    &board.GuardError{Code: board.GuardInput, Detail: "bulk batch capped at 50 items"}, denyCode: http.StatusBadRequest},
 	{action: "delete_task", restMethods: []string{"DeleteTask"}, rest: liveCell,
 		externalMCP: liveCell, extTools: []string{"board_delete"}, agent: liveCell,
 		agentTools: []string{"board_delete_task"},
@@ -395,6 +403,8 @@ func boardParityRESTCall(t *testing.T, r *gin.Engine, action string) *httptest.R
 		return doBoardREST(t, r, http.MethodPost, "/api/v1/me/tasks/bulk-start", `{"taskIds":["tsk-cccc3333"]}`)
 	case "bulk_move_stage":
 		return doBoardREST(t, r, http.MethodPost, "/api/v1/me/tasks/bulk-move-stage", `{"taskIds":["tsk-cccc3333"],"toStage":"done"}`)
+	case "bulk_delete":
+		return doBoardREST(t, r, http.MethodPost, "/api/v1/me/tasks/bulk-delete", `{"taskIds":["tsk-cccc3333"]}`)
 	case "rearm_task":
 		return doBoardREST(t, r, http.MethodPost, "/api/v1/me/tasks/tsk-cccc3333/rearm", `{}`)
 	case "delete_task":
@@ -462,6 +472,7 @@ func TestBoardParity_AgentColumn(t *testing.T) {
 		"POST /internal/v1/automation/board/tasks/:id/pause",
 		"POST /internal/v1/automation/board/tasks/:id/rearm", // #1832 WS3
 		"POST /internal/v1/automation/board/tasks/:id/resume",
+		"POST /internal/v1/automation/board/tasks/delete-bulk",
 		"POST /internal/v1/automation/board/tasks/heartbeat",
 		"POST /internal/v1/automation/board/tasks/move-stage",
 		"POST /internal/v1/automation/board/tasks/move-stage-bulk",
@@ -841,6 +852,8 @@ func boardParityExtToolArgs(action string) (string, map[string]any, bool) {
 		return "board_start_tasks", map[string]any{"task_ids": []any{"tsk-cccc3333"}}, true
 	case "bulk_move_stage":
 		return "board_move_stage_bulk", map[string]any{"task_ids": []any{"tsk-cccc3333"}, "to_stage": "done"}, true
+	case "bulk_delete":
+		return "board_delete_tasks", map[string]any{"task_ids": []any{"tsk-cccc3333"}}, true
 	case "rearm_task":
 		return "board_rearm_task", map[string]any{"task_id": "tsk-cccc3333"}, true
 	case "delete_task":
@@ -1016,6 +1029,7 @@ func TestBoardParity_RestRouteTable(t *testing.T) {
 		"POST /api/v1/me/tasks/:id/resume",
 		"POST /api/v1/me/tasks/:id/start",
 		"POST /api/v1/me/tasks/:id/verdict",
+		"POST /api/v1/me/tasks/bulk-delete",
 		"POST /api/v1/me/tasks/bulk-move-stage",
 		"POST /api/v1/me/tasks/bulk-start",
 		"PUT /api/v1/me/board/config",
@@ -1191,6 +1205,8 @@ func boardParityRESTCallReqID(t *testing.T, r *gin.Engine, action, requestID str
 		return doBoardREST(t, r, http.MethodPost, "/api/v1/me/tasks/bulk-start", `{"taskIds":["tsk-cccc3333"],"requestId":`+q(requestID)+`}`)
 	case "bulk_move_stage":
 		return doBoardREST(t, r, http.MethodPost, "/api/v1/me/tasks/bulk-move-stage", `{"taskIds":["tsk-cccc3333"],"toStage":"done","requestId":`+q(requestID)+`}`)
+	case "bulk_delete":
+		return doBoardREST(t, r, http.MethodPost, "/api/v1/me/tasks/bulk-delete", `{"taskIds":["tsk-cccc3333"],"requestId":`+q(requestID)+`}`)
 	case "rearm_task":
 		return doBoardREST(t, r, http.MethodPost, "/api/v1/me/tasks/tsk-cccc3333/rearm", body)
 	case "add_dependency":

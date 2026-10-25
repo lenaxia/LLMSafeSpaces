@@ -366,6 +366,12 @@ func (m *MockAPIClient) BoardMoveStageBulk(ctx context.Context, taskIDs []string
 	return json.RawMessage(args.String(0)), args.Error(1)
 }
 
+// #1836 sibling: the bulk delete client arm.
+func (m *MockAPIClient) BoardDeleteTasksBulk(ctx context.Context, taskIDs []string, reconnect bool, requestID string) (json.RawMessage, error) {
+	args := m.Called(ctx, taskIDs, reconnect, requestID)
+	return json.RawMessage(args.String(0)), args.Error(1)
+}
+
 func (m *MockAPIClient) BoardRearmTask(ctx context.Context, taskID, requestID string) (json.RawMessage, error) {
 	args := m.Called(ctx, taskID, requestID)
 	return json.RawMessage(args.String(0)), args.Error(1)

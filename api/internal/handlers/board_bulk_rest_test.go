@@ -144,3 +144,57 @@ func TestBoardREST_BulkEngineGuardPassThrough(t *testing.T) {
 
 // compile-time: the fake keeps satisfying the seam as it grows.
 var _ boardManager = (*fakeBoardManager)(nil)
+
+// TestBoardREST_BulkDelete is the bulk delete adapter (#1836
+// delete_task(s) sibling): binding, reconnect flag threading (ONE
+// shared flag across the batch), actor stamping, requestID threading,
+// per-item result rendering with the orphan echo verbatim.
+func TestBoardREST_BulkDelete(t *testing.T) {
+	svc := newFakeBoardManager()
+	svc.bulkDeleteResults = []board.BulkItemResult{
+		{Ref: "tsk-aaa", Status: board.BulkDone, Orphaned: []string{"tsk-orph"}},
+		{Ref: "tsk-bbb", Status: board.BulkFailed, Error: &board.BulkItemError{Code: board.BulkItemNotFound, Detail: "nope"}},
+	}
+	r := newBoardRESTRouter(t, svc)
+
+	w := doBoardREST(t, r, http.MethodPost, "/api/v1/me/tasks/bulk-delete",
+		`{"taskIds":["tsk-aaa","tsk-bbb"],"reconnect":true,"requestId":"bulk-del-9"}`)
+	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
+	assert.Equal(t, 1, svc.calls["bulk_delete"], "the engine seam is reached once per batch, not per item")
+	assert.Equal(t, []string{"tsk-aaa", "tsk-bbb"}, svc.lastBulkDeleteRefs)
+	assert.True(t, svc.lastBulkDeleteReconnect, "the shared reconnect flag threads through")
+	assert.Equal(t, "bulk-del-9", svc.lastBulkDeleteRequestID)
+	assert.Equal(t, board.SurfaceREST, svc.lastActor.Surface, "the REST actor stamp")
+	assert.Empty(t, svc.lastActor.ClaimToken, "the owner surface holds no claim token")
+
+	var body struct {
+		Results []board.BulkItemResult `json:"results"`
+		Count   int                    `json:"count"`
+	}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &body))
+	assert.Len(t, body.Results, 2, "the per-item array renders verbatim")
+	assert.Equal(t, board.BulkDone, body.Results[0].Status)
+	assert.Equal(t, []string{"tsk-orph"}, body.Results[0].Orphaned, "the orphan echo renders")
+	assert.Equal(t, board.BulkFailed, body.Results[1].Status)
+	assert.Equal(t, board.BulkItemNotFound, body.Results[1].Error.Code)
+	assert.Equal(t, 2, body.Count)
+}
+
+// TestBoardREST_BulkDeleteBinding: the adapter's own validation — a
+// missing or empty taskIds is a 400 before the seam is reached.
+func TestBoardREST_BulkDeleteBinding(t *testing.T) {
+	svc := newFakeBoardManager()
+	r := newBoardRESTRouter(t, svc)
+
+	w := doBoardREST(t, r, http.MethodPost, "/api/v1/me/tasks/bulk-delete", `{}`)
+	assert.Equal(t, http.StatusBadRequest, w.Code, w.Body.String())
+	assert.Contains(t, w.Body.String(), "taskIds")
+
+	w = doBoardREST(t, r, http.MethodPost, "/api/v1/me/tasks/bulk-delete", `{"taskIds":[]}`)
+	assert.Equal(t, http.StatusBadRequest, w.Code, w.Body.String())
+	assert.Contains(t, w.Body.String(), "taskIds")
+
+	w = doBoardREST(t, r, http.MethodPost, "/api/v1/me/tasks/bulk-delete", `not-json`)
+	assert.Equal(t, http.StatusBadRequest, w.Code, w.Body.String())
+	assert.Zero(t, svc.calls["bulk_delete"])
+}

@@ -1173,6 +1173,15 @@ func (c *Client) BoardManagerMoveStageBulk(ctx context.Context, saToken, workspa
 		"/internal/v1/automation/board/tasks/move-stage-bulk", body)
 }
 
+// BoardManagerDeleteTasksBulk is #1836's sibling bulk delete on the
+// manager seam: the delete_task(s) batch, ONE shared reconnect flag,
+// per-item result array (board_delete_task's batch twin — delete IS a
+// manager action; the bulk CLAIM stays owner-surface only).
+func (c *Client) BoardManagerDeleteTasksBulk(ctx context.Context, saToken, workspaceID, sessionID string, body json.RawMessage) (*AutomationResponse, error) {
+	return c.boardManagerPost(ctx, saToken, workspaceID, sessionID,
+		"/internal/v1/automation/board/tasks/delete-bulk", body)
+}
+
 // BoardDeleteTask destructively removes a task (reconnect rides the query).
 func (c *Client) BoardDeleteTask(ctx context.Context, saToken, workspaceID, sessionID, taskID string, reconnect bool) (*AutomationResponse, error) {
 	if err := validateBoardRef(taskID); err != nil {

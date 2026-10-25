@@ -428,6 +428,44 @@ func (h *PodAutomationHandler) BoardManagerMoveStageBulk(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"results": results, "count": len(results)})
 }
 
+// BoardManagerDeleteTasksBulk is #1836's sibling bulk delete on the
+// pod seam (board_delete_task's batch twin — delete IS a manager
+// action; only task_start/task_create carry the owner-only boundary,
+// so unlike the bulk claim this form legitimately lives here): up to
+// 50 destructive removals, one call, ONE shared reconnect flag.
+// Per-item results (partial failures included — never
+// all-or-nothing); each landed item keeps its own single-task
+// transaction + snapshot audit event + orphan events + post-commit
+// worker abort. The delete-variant's idempotent-retry rendering: a
+// miss, a foreign row, and an already-deleted row all render the same
+// bare not_found item (absence ≡ miss ≡ foreign — never disclosed,
+// never a conflict on retry).
+func (h *PodAutomationHandler) BoardManagerDeleteTasksBulk(c *gin.Context) {
+	raw, ws, owner, session, ok := h.resolveManager(c)
+	if !ok {
+		return
+	}
+	var req struct {
+		TaskIDs   []string `json:"taskIds"`
+		Reconnect bool     `json:"reconnect"`
+		RequestID string   `json:"requestId"`
+	}
+	if !bindBoardBody(c, raw, &req) {
+		return
+	}
+	if len(req.TaskIDs) == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "taskIds is required (at least one task id)", "code": board.GuardInput})
+		return
+	}
+	results, err := h.boardMgr.BulkDeleteTasks(c.Request.Context(), h.managerActor(owner, ws, session),
+		req.TaskIDs, req.Reconnect, req.RequestID)
+	if err != nil {
+		renderBoardError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"results": results, "count": len(results)})
+}
+
 // BoardCreateTask creates a backlog task (inline dependsOn allowed).
 func (h *PodAutomationHandler) BoardCreateTask(c *gin.Context) {
 	raw, ws, owner, session, ok := h.resolveManager(c)

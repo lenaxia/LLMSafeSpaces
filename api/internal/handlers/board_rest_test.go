@@ -98,6 +98,12 @@ type fakeBoardManager struct {
 	lastBulkMoveEvidence  string
 	lastBulkMoveRequestID string
 	bulkMoveResults       []board.BulkItemResult
+
+	// #1836 sibling: the bulk delete arms.
+	lastBulkDeleteRefs      []string
+	lastBulkDeleteReconnect bool
+	lastBulkDeleteRequestID string
+	bulkDeleteResults       []board.BulkItemResult
 }
 
 func (f *fakeBoardManager) BulkTaskStart(_ context.Context, actor board.Actor, refs []string, requestID string) ([]board.BulkItemResult, error) {
@@ -109,6 +115,24 @@ func (f *fakeBoardManager) BulkTaskStart(_ context.Context, actor board.Actor, r
 	}
 	if f.bulkStartResults != nil {
 		return f.bulkStartResults, nil
+	}
+	out := make([]board.BulkItemResult, 0, len(refs))
+	for _, ref := range refs {
+		out = append(out, board.BulkItemResult{Ref: ref, Status: board.BulkDone})
+	}
+	return out, nil
+}
+
+func (f *fakeBoardManager) BulkDeleteTasks(_ context.Context, actor board.Actor, refs []string, reconnect bool, requestID string) ([]board.BulkItemResult, error) {
+	f.call("bulk_delete")
+	f.lastActor, f.lastRequestID = actor, requestID
+	f.lastBulkDeleteRefs, f.lastBulkDeleteReconnect = refs, reconnect
+	f.lastBulkDeleteRequestID = requestID
+	if err := f.errFor["bulk_delete"]; err != nil {
+		return nil, err
+	}
+	if f.bulkDeleteResults != nil {
+		return f.bulkDeleteResults, nil
 	}
 	out := make([]board.BulkItemResult, 0, len(refs))
 	for _, ref := range refs {
@@ -622,6 +646,9 @@ func newBoardRESTRouter(t *testing.T, svc *fakeBoardManager) *gin.Engine {
 	// static siblings of the /:id routes; gin routes statics first).
 	k.POST("/bulk-start", h.StartTasksBulk)
 	k.POST("/bulk-move-stage", h.MoveStageBulk)
+	// #1836 sibling: the bulk delete projection (delete_task's batch
+	// form — the issue's own "delete_task(s)").
+	k.POST("/bulk-delete", h.DeleteTasksBulk)
 	return r
 }
 

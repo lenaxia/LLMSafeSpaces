@@ -87,3 +87,36 @@ func (h *BoardHandler) MoveStageBulk(c *gin.Context) {
 	}
 	c.JSON(http.StatusOK, gin.H{"results": results, "count": len(results)})
 }
+
+// boardBulkDeleteRequest is POST /api/v1/me/tasks/bulk-delete.
+type boardBulkDeleteRequest struct {
+	TaskIDs   []string `json:"taskIds"`
+	Reconnect bool     `json:"reconnect"`
+	RequestID string   `json:"requestId"`
+}
+
+// DeleteTasksBulk is the bulk delete (#1836's delete_task(s) batch):
+// N destructive removals in one call — each item one full single-task
+// DeleteTask (own transaction + snapshot audit event, orphan events,
+// post-commit worker abort for an in-flight row); ONE shared
+// reconnect flag across the batch. Per-item results, partial failures
+// included; a miss, a foreign row, and an already-deleted row render
+// the same not_found item (absence ≡ miss ≡ foreign — never
+// disclosed, never a conflict on retry).
+func (h *BoardHandler) DeleteTasksBulk(c *gin.Context) {
+	var req boardBulkDeleteRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request body: " + err.Error()})
+		return
+	}
+	if len(req.TaskIDs) == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "taskIds is required (at least one task id)", "code": board.GuardInput})
+		return
+	}
+	results, err := h.board.BulkDeleteTasks(c.Request.Context(), h.boardActor(c), req.TaskIDs, req.Reconnect, req.RequestID)
+	if err != nil {
+		renderBoardError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"results": results, "count": len(results)})
+}

@@ -109,6 +109,7 @@ func newBoardAutomationRouterWithManager(t *testing.T, svc *fakeBoardService, mg
 	b.POST("/tasks/throttle", h.BoardReportThrottle)
 	b.POST("/tasks/move-stage", h.BoardMoveStage)
 	b.POST("/tasks/move-stage-bulk", h.BoardManagerMoveStageBulk) // #1836 bulk complete
+	b.POST("/tasks/delete-bulk", h.BoardManagerDeleteTasksBulk)   // #1836 sibling: bulk delete
 	b.POST("/projects", h.BoardCreateProject)
 	b.PATCH("/projects/:id", h.BoardUpdateProject)
 	b.POST("/projects/:id/archive", h.BoardArchiveProject)

@@ -81,6 +81,7 @@ type boardManager interface {
 	// the adapters render the envelope).
 	BulkTaskStart(ctx context.Context, actor board.Actor, refs []string, requestID string) ([]board.BulkItemResult, error)
 	BulkMoveStage(ctx context.Context, actor board.Actor, refs []string, toStage, evidenceURL, requestID string) ([]board.BulkItemResult, error)
+	BulkDeleteTasks(ctx context.Context, actor board.Actor, refs []string, reconnect bool, requestID string) ([]board.BulkItemResult, error)
 
 	ImportPlan(ctx context.Context, actor board.Actor, projectID, shortIDOrID string, in board.PlanInput, dryRun bool, requestID string) (*board.ImportResult, error)
 

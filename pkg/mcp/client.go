@@ -135,6 +135,7 @@ type APIClient interface {
 	// #1836: the bulk claim/complete batches (per-item result arrays).
 	BoardStartTasks(ctx context.Context, taskIDs []string, requestID string) (json.RawMessage, error)
 	BoardMoveStageBulk(ctx context.Context, taskIDs []string, toStage, evidenceURL, requestID string) (json.RawMessage, error)
+	BoardDeleteTasksBulk(ctx context.Context, taskIDs []string, reconnect bool, requestID string) (json.RawMessage, error)
 	BoardRearmTask(ctx context.Context, taskID, requestID string) (json.RawMessage, error)
 	BoardPauseTask(ctx context.Context, taskID, requestID string) (json.RawMessage, error)
 	BoardResumeTask(ctx context.Context, taskID, requestID string) (json.RawMessage, error)
@@ -1537,6 +1538,14 @@ type boardBulkMoveStageBody struct {
 	RequestID   string   `json:"requestId,omitempty"`
 }
 
+// boardBulkDeleteBody is the POST /me/tasks/bulk-delete payload
+// (#1836 sibling — ONE shared reconnect flag across the batch).
+type boardBulkDeleteBody struct {
+	TaskIDs   []string `json:"taskIds"`
+	Reconnect bool     `json:"reconnect"`
+	RequestID string   `json:"requestId,omitempty"`
+}
+
 // BoardStartTasks is the bulk claim (#1836): N manual dispatches, one
 // call, per-item result array.
 func (c *HTTPClient) BoardStartTasks(ctx context.Context, taskIDs []string, requestID string) (json.RawMessage, error) {
@@ -1555,6 +1564,17 @@ func (c *HTTPClient) BoardMoveStageBulk(ctx context.Context, taskIDs []string, t
 	}
 	return c.doRaw(ctx, http.MethodPost, "/api/v1/me/tasks/bulk-move-stage",
 		boardBulkMoveStageBody{TaskIDs: taskIDs, ToStage: toStage, EvidenceURL: evidenceURL, RequestID: requestID})
+}
+
+// BoardDeleteTasksBulk is the bulk delete (#1836 sibling): the
+// delete_task(s) batch, one shared reconnect flag, per-item result
+// array.
+func (c *HTTPClient) BoardDeleteTasksBulk(ctx context.Context, taskIDs []string, reconnect bool, requestID string) (json.RawMessage, error) {
+	if len(taskIDs) == 0 || len(taskIDs) > board.BulkMaxItems {
+		return nil, fmt.Errorf("task_ids must carry 1 to %d tasks (got %d)", board.BulkMaxItems, len(taskIDs))
+	}
+	return c.doRaw(ctx, http.MethodPost, "/api/v1/me/tasks/bulk-delete",
+		boardBulkDeleteBody{TaskIDs: taskIDs, Reconnect: reconnect, RequestID: requestID})
 }
 
 // BoardRearmTask is board_rearm_task (#1832 WS3): re-pool an

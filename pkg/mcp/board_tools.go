@@ -301,6 +301,21 @@ var boardMoveStageBulkTool = mcp.NewTool("board_move_stage_bulk",
 	mcp.WithString("request_id", mcp.Description("Idempotency key: ONE per logical batch, reused across retries of the same batch — "+
 		"reusing a batch's key for a DIFFERENT batch replays the first batch's recorded outcomes (stale done items)")),
 )
+var boardDeleteTasksTool = mcp.NewTool("board_delete_tasks",
+	mcp.WithDescription("Bulk delete (#1836): the delete_task(s) batch — up to 50 destructive removals in one call, "+
+		"ONE shared reconnect flag. Each item is one full board_delete_task (its own snapshot-bearing audit event, "+
+		"orphan events, post-commit worker abort for an in-flight row). Response is a per-item result array "+
+		"[{id, status: done|failed, orphaned_dependents?, reconnected?, error?}] — partial failures per item, never "+
+		"all-or-nothing; one malformed id sinks only its own item. Idempotent retry for a destructive variant: "+
+		"re-submitting the batch is safe, and a miss, a foreign row, and an already-deleted row all render the SAME "+
+		"not_found item (absence is the done state — rendering it done would fabricate outcomes for foreign probes "+
+		"and leak foreign existence; never a conflict). Canonical use: cleanup sweeps after re-planning."),
+	mcp.WithArray("task_ids", mcp.Required(), mcp.WithStringItems(),
+		mcp.Description("Task short ids (phrase form preferred; legacy forms resolve) — 1 to 50 items")),
+	mcp.WithBoolean("reconnect", mcp.Description("The ONE shared reconnect flag: orphans of every deleted item inherit that item's direct upstream edges (deduplicated, cycle-guarded) — default off")),
+	mcp.WithString("request_id", mcp.Description("Idempotency key: ONE per logical batch, reused across retries of the same batch — "+
+		"reusing a batch's key for a DIFFERENT batch replays the first batch's recorded outcomes (stale done items)")),
+)
 
 var boardRearmTaskTool = mcp.NewTool("board_rearm_task",
 	mcp.WithDescription("Re-pool an attempts-exhausted task (#1832 WS3): an escalated pending_input row (attempts at the cap) "+
@@ -862,6 +877,20 @@ func (h *handlers) boardMoveStageBulk(ctx context.Context, req mcp.CallToolReque
 	return mcp.NewToolResultText(string(resp)), nil
 }
 
+func (h *handlers) boardDeleteTasks(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	args := req.GetArguments()
+	ids, err := bulkIDsArg(args)
+	if err != nil {
+		return mcp.NewToolResultError(err.Error()), nil
+	}
+	reconnect, _ := args["reconnect"].(bool)
+	resp, err := h.client.BoardDeleteTasksBulk(ctx, ids, reconnect, strArg(args, "request_id"))
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("failed to bulk delete tasks: %v", err)), nil
+	}
+	return mcp.NewToolResultText(string(resp)), nil
+}
+
 func (h *handlers) boardRearmTask(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	args := req.GetArguments()
 	taskID := strArg(args, "task_id")
@@ -1254,6 +1283,7 @@ func AddBoardTools(srv *server.MCPServer, h *handlers) {
 		server.ServerTool{Tool: boardStartTaskTool, Handler: h.boardStartTask},
 		server.ServerTool{Tool: boardStartTasksTool, Handler: h.boardStartTasks},
 		server.ServerTool{Tool: boardMoveStageBulkTool, Handler: h.boardMoveStageBulk},
+		server.ServerTool{Tool: boardDeleteTasksTool, Handler: h.boardDeleteTasks},
 		server.ServerTool{Tool: boardRearmTaskTool, Handler: h.boardRearmTask},
 		server.ServerTool{Tool: boardEpicActivateTool, Handler: h.boardEpicActivate},
 		server.ServerTool{Tool: boardEpicPauseTool, Handler: h.boardEpicPause},
