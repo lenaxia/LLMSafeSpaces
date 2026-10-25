@@ -106,10 +106,63 @@ func boardCharterPrompt(c *board.Claim) string {
 	return b.String()
 }
 
+// boardRunID derives the workflow-agent RunID for a claim's dispatch.
+// #1957: EVERY episode must be unique — agentd's workflow-agent mux keys
+// charter delivery on the (workflow, run) pair and silently drops a
+// re-used key, so a plain worker re-claim (bounce, cooldown re-arm,
+// lapse re-feed) whose RunID is the bare task id spawns a session whose
+// charter is never delivered (the live stillborn class: zero tokens,
+// 15-min lease churn). The persona arm always suffixed; the worker arm
+// now does too.
+func boardRunID(c *board.Claim) string {
+	stageTag := c.Stage
+	if stageTag == "" || stageTag == board.StageInProgress {
+		stageTag = "w"
+	}
+	// The claim token is minted fresh per episode — uniqueness by
+	// construction, no clock resolution dependence (a wall-clock
+	// suffix collides for same-second re-claims; the pin catches it).
+	if c.ClaimToken != "" {
+		return fmt.Sprintf("%s-%s-%s", c.TaskID, stageTag, c.ClaimToken)
+	}
+	return fmt.Sprintf("%s-%s-%d", c.TaskID, stageTag, time.Now().UnixNano())
+}
+
+// boardSpawnRequest builds the dispatch the spawner wires into
+// executor.Execute — extracted so the regression site itself (#1957:
+// the RunID reaching the wire) is pinnable without the k8s/HTTP seams.
+// The RunID has NO parameter: it derives from boardRunID(c) here;
+// a bare-task-id re-inline anywhere in the dispatch path reds the
+// dispatch pin (TestBoardSpawner_DispatchCarriesEpisodeRunID).
+func boardSpawnRequest(c *board.Claim) *apiwf.NodeExecRequest {
+	spec, _ := json.Marshal(map[string]any{
+		"prompt":  boardCharterPrompt(c),
+		"session": "new", // fresh-charter, preserved: the worker's session outlives the dispatch turn (R9)
+	})
+	return &apiwf.NodeExecRequest{
+		NodeID: "board-worker", NodeType: "agent",
+		WorkflowID: "board:" + c.ProjectID, RunID: boardRunID(c),
+		Spec: spec, Timeout: "30m",
+	}
+}
+
 // newBoardSpawner builds the production spawn seam: resolve the target
 // workspace's pod, dispatch a fresh-session charter through the agentd
 // user mux, and return the minted session id.
-func newBoardSpawner(activator *apiwf.K8sWorkspaceActivator, executor *apiwf.HTTPAgentExecutor) board.WorkerSpawner {
+// The spawn seam as interfaces (#1957 r4): the production concretes
+// (apiwf.K8sWorkspaceActivator, apiwf.HTTPAgentExecutor) satisfy both —
+// the constructor's callers are unchanged — while the dispatch closure
+// itself becomes pinnable end-to-end with fakes (the reviewer's bypass
+// mutation: re-inlining a bare-task-id RunID in the closure must RED).
+type spawnActivator interface {
+	EnsureActive(ctx context.Context, workspaceID string, timeout time.Duration) (string, error)
+}
+
+type spawnDispatcher interface {
+	Execute(ctx context.Context, workspaceID, podIP string, req *apiwf.NodeExecRequest) (*apiwf.NodeExecResponse, error)
+}
+
+func newBoardSpawner(activator spawnActivator, executor spawnDispatcher) board.WorkerSpawner {
 	return func(ctx context.Context, c *board.Claim) (string, error) {
 		if c.WorkspaceID == "" {
 			return "", fmt.Errorf("board: spawn: claim carries no workspace (task %s)", c.TaskID)
@@ -118,24 +171,10 @@ func newBoardSpawner(activator *apiwf.K8sWorkspaceActivator, executor *apiwf.HTT
 		if err != nil {
 			return "", fmt.Errorf("board: spawn: activate workspace %s: %w", c.WorkspaceID, err)
 		}
-		// RunID unique per episode: the worker grant keeps the bare
-		// task id (today's shape); a persona claim that can RE-ENTER
-		// its stage across rounds (a task reviewed, bounced, and
-		// re-completed) suffixes the stage + wall clock — reusing the
-		// bare task id would collide across rounds.
-		runID := c.TaskID
-		if c.Stage != "" && c.Stage != board.StageInProgress {
-			runID = fmt.Sprintf("%s-%s-%d", c.TaskID, c.Stage, time.Now().Unix())
-		}
-		spec, _ := json.Marshal(map[string]any{
-			"prompt":  boardCharterPrompt(c),
-			"session": "new", // fresh-charter, preserved: the worker's session outlives the dispatch turn (R9)
-		})
-		resp, err := executor.Execute(ctx, c.WorkspaceID, podIP, &apiwf.NodeExecRequest{
-			NodeID: "board-worker", NodeType: "agent",
-			WorkflowID: "board:" + c.ProjectID, RunID: runID,
-			Spec: spec, Timeout: "30m",
-		})
+		// #1957: boardSpawnRequest derives the RunID via boardRunID
+		// internally; drift here (bypassing the builder) reds
+		// TestBoardSpawner_DispatchCarriesEpisodeRunID.
+		resp, err := executor.Execute(ctx, c.WorkspaceID, podIP, boardSpawnRequest(c))
 		if err != nil {
 			return "", fmt.Errorf("board: spawn dispatch: %w", err)
 		}
