@@ -6,6 +6,9 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -190,15 +193,29 @@ func TestAgedArgCompaction_UntouchedFieldsBytePreserved(t *testing.T) {
 }
 
 // TestAgedArgStubMatchesReplayHarness — the stub is byte-identical to
-// the checked-in python mirror (scripts/1949-aged-arg-replay.py): the
-// live replay arm and the Go in-path transform are the same cure.
+// the checked-in python mirror (scripts/1949-aged-arg-replay.py
+// --print-stub): the live replay arm and the Go in-path transform emit
+// the SAME cure bytes. The pin EXECUTES the script (not a hardcoded
+// copy), so drift in either direction fails here.
 func TestAgedArgStubMatchesReplayHarness(t *testing.T) {
-	// {"note": "<agedArgStubNote>"} — exact compact JSON, one key.
 	expected := `{"note":"arguments removed by relay aged-arg compaction (full text preserved in the session audit trail)"}`
-	assert.Equal(t, expected, string(agedArgStub()))
+	assert.Equal(t, expected, string(agedArgStub()), "Go stub literal")
 	wireExpected, err := json.Marshal(expected)
 	require.NoError(t, err)
 	assert.Equal(t, string(wireExpected), agedArgStubJSONString(), "wire form: the stub object JSON-encoded as a string")
+
+	python, err := exec.LookPath("python3")
+	if err != nil {
+		t.Skip("python3 not available — script-parity leg skipped (literal legs above still pinned)")
+	}
+	script := filepath.Join("..", "..", "scripts", "1949-aged-arg-replay.py")
+	if _, err := os.Stat(script); err != nil {
+		t.Skipf("replay harness not found at %s", script)
+	}
+	out, err := exec.Command(python, script, "--print-stub").Output()
+	require.NoError(t, err, "running the harness --print-stub")
+	assert.Equal(t, expected, strings.TrimSpace(string(out)),
+		"the python mirror's stub payload is byte-identical to the Go stub")
 }
 
 // TestAgedArgCompaction_MalformedEntriesLeftUntouched — a message whose

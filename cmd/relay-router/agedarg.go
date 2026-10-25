@@ -6,6 +6,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"slices"
 )
 
 // Aged-arg compaction (#1949): the poisoned-context emission CURE.
@@ -270,14 +271,11 @@ func stubAgedCalls(msg json.RawMessage, prefix string, isProtected func(msgIdx, 
 		}
 		// Replace arguments (whatever it was — string, object, or absent)
 		// with the stub JSON string, preserving every other field.
-		wireStub, err := json.Marshal(string(agedArgStub()))
-		if err != nil {
-			return nil, 0, err
-		}
+		wireStub := json.RawMessage(agedArgStubJSONString())
 		if bytes.Equal(bytes.TrimSpace(f["arguments"]), wireStub) {
 			continue // already stubbed (idempotent across re-sent turns)
 		}
-		f["arguments"] = json.RawMessage(wireStub)
+		f["arguments"] = wireStub
 		newFn, err := marshalOrderedMap(f, []string{"name", "arguments"})
 		if err != nil {
 			return nil, 0, err
@@ -341,7 +339,8 @@ func marshalOrderedMap(m map[string]json.RawMessage, first []string) (json.RawMe
 		}
 	}
 	// insertion order for the rest: sort for determinism
-	for _, k := range sortedStringKeys(rest) {
+	slices.Sort(rest)
+	for _, k := range rest {
 		v := m[k]
 		if i > 0 {
 			buf.WriteByte(',')
@@ -358,11 +357,7 @@ func marshalOrderedMap(m map[string]json.RawMessage, first []string) (json.RawMe
 
 func sortedStringKeys(keys []string) []string {
 	out := append([]string(nil), keys...)
-	for i := 1; i < len(out); i++ {
-		for j := i; j > 0 && out[j] < out[j-1]; j-- {
-			out[j], out[j-1] = out[j-1], out[j]
-		}
-	}
+	slices.Sort(out)
 	return out
 }
 

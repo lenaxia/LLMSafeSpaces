@@ -111,6 +111,32 @@ credentials): deterministic synthetic poisoned transcript + exact-mode
 scorer (duplicate keys, ≥10x tiling, malformed, native-markup leak,
 splice artifacts, size blowup). Arms: neutral / poisoned / compacted.
 
+## Review round 1 (CHANGES_REQUESTED → fixed)
+
+All four findings fixed:
+
+1. **Go↔Python byte parity made TRUE and EXECUTED** (was a false
+   claim): the python mirror now emits the stub with compact
+   separators (`separators=(",", ":")`); `TestAgedArgStubMatchesReplayHarness`
+   now RUNS `scripts/1949-aged-arg-replay.py --print-stub` and
+   compares bytes (skip only when python3 is absent); the script
+   header's claim scoped to the stub payload.
+2. **Production construction pinned**:
+   `TestBuildBYOServerPinsAgedArgCompactor` (the
+   `TestBuildBYOServerPinsNonNilRedactor` precedent) — non-nil
+   compactor + window threading (7 via config; default 30) on the
+   `buildBYOServer` path, so dropping the wiring assignment goes red.
+3. **Worklog renamed to the `NNNN_` sentinel** (author-picked 1228
+   violated the numbering mandate; the post-merge bot assigns the real
+   number).
+4. **Dead config field removed** (`byoServerConfig.agedArgRecentToolCalls`
+   was never read; the live knob is `byoRunConfig` → compactor).
+
+Nits taken: production path uses `agedArgStubJSONString()` (no inline
+re-derivation); `slices.Sort` replaces the hand-rolled insertion sort.
+Re-run: full package green, vet/gofmt clean, `--print-stub` byte-checks
+against the Go literal.
+
 ## Test runs
 
 - `go test ./cmd/relay-router/ -count=1` — ok (full package, incl. all

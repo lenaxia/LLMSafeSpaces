@@ -230,6 +230,15 @@ FINAL_REQUEST = ("Create one more task in epic epc-drill3 titled 'Final replay "
 
 # ---- the compaction (python mirror of cmd/relay-router/agedarg.go) ----
 
+def stub_json():
+    # The stub payload, byte-identical to the Go transform's
+    # json.Marshal (cmd/relay-router/agedarg.go agedArgStub) — compact
+    # separators, no space after the colon. The parity is PINNED by
+    # TestAgedArgStubMatchesReplayHarness, which executes this script
+    # (--print-stub) and compares bytes.
+    return json.dumps({"note": STUB_NOTE}, separators=(",", ":"))
+
+
 def compact(body, recent_tool_calls=RECENT_TOOL_CALLS):
     msgs = body.get("messages")
     if not isinstance(msgs, list):
@@ -241,6 +250,7 @@ def compact(body, recent_tool_calls=RECENT_TOOL_CALLS):
                 flat.append((mi, ci))
     protected = set(flat[-recent_tool_calls:]) if recent_tool_calls > 0 else set()
     stubbed = 0
+    stub = stub_json()
     for mi, ci in flat:
         if (mi, ci) in protected:
             continue
@@ -253,9 +263,9 @@ def compact(body, recent_tool_calls=RECENT_TOOL_CALLS):
         name = fn.get("name", "")
         if not isinstance(name, str) or not name.startswith(TOOL_PREFIX):
             continue
-        if fn.get("arguments") == json.dumps({"note": STUB_NOTE}):
+        if fn.get("arguments") == stub:
             continue  # already stubbed (idempotent across turns)
-        fn["arguments"] = json.dumps({"note": STUB_NOTE})
+        fn["arguments"] = stub
         stubbed += 1
     return json.dumps(body), stubbed
 
@@ -469,7 +479,15 @@ def main():
                     help="seed for deterministic transcript generation")
     ap.add_argument("--pace", type=float, default=5.0)
     ap.add_argument("--max-tokens", type=int, default=6000)
+    ap.add_argument("--print-stub", action="store_true",
+                    help="print the stub payload (byte-parity pin for the Go "
+                         "transform; used by TestAgedArgStubMatchesReplayHarness) "
+                         "and exit")
     args = ap.parse_args()
+
+    if args.print_stub:
+        print(stub_json())
+        return 0
 
     base = os.environ.get("REPLAY_BASE_URL", "")
     key = os.environ.get("REPLAY_API_KEY", "")

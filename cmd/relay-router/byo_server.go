@@ -55,11 +55,6 @@ type byoServerConfig struct {
 	listenAddr   string
 	maxBodyBytes int64
 	maxRespBytes int64
-
-	// agedArgRecentToolCalls (#1949): the recent-window size for aged-arg
-	// compaction (last N tool calls of any tool left untouched). <0
-	// disables the compaction; 0 stubs every llmsafespaces_* call.
-	agedArgRecentToolCalls int
 }
 
 func byoReject(w http.ResponseWriter, code string, status int, detail string) {

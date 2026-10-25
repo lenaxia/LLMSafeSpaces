@@ -262,6 +262,35 @@ func TestBuildBYOServerPinsNonNilRedactor(t *testing.T) {
 	require.NotNil(t, keys.redaction, "key manager wired to the redaction hook")
 }
 
+// TestBuildBYOServerPinsAgedArgCompactor (#1949): the production
+// construction path wires a non-nil aged-arg compactor with the
+// configured window. Without this pin, dropping the one assignment in
+// buildBYOServer passes the entire suite while silently disabling the
+// cure (a nil compactor is a passthrough that emits zero telemetry —
+// the absence would be invisible in production).
+func TestBuildBYOServerPinsAgedArgCompactor(t *testing.T) {
+	store := newFakeByoStore()
+	keys := newTestKeyManager(store, 0)
+	require.NoError(t, keys.Bootstrap(context.Background()))
+	redactor, err := redact.NewRedactor(nil)
+	require.NoError(t, err)
+	keys.redaction = secrets.RedactStagedKeys{Redactor: redactor}
+
+	cfg := loadByoRunConfig()
+	cfg.agedArgRecentToolCalls = 7
+	svc, err := buildBYOServer(cfg, keys, newByoEnvelopeCache(), redactor, staticMintService{}, defaultRouterClient())
+	require.NoError(t, err)
+	require.NotNil(t, svc.agedArgs, "the aged-arg compactor must be wired on the production path")
+	assert.Equal(t, agedArgToolPrefix, svc.agedArgs.ToolPrefix)
+	assert.Equal(t, 7, svc.agedArgs.RecentToolCalls, "the env knob threads to the compactor window")
+
+	// The default window is the documented constant (threshold default 30).
+	svcDefault, err := buildBYOServer(loadByoRunConfig(), keys, newByoEnvelopeCache(), redactor, staticMintService{}, defaultRouterClient())
+	require.NoError(t, err)
+	require.NotNil(t, svcDefault.agedArgs)
+	assert.Equal(t, agedArgDefaultWins, svcDefault.agedArgs.RecentToolCalls)
+}
+
 // TestDrainCompletesInFlightStreams (#1078, e2e-leg substitute for the
 // two-replica drill): Shutdown within the grace bound lets an in-flight
 // SSE-style stream run to completion — zero client resets.

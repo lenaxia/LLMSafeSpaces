@@ -244,10 +244,9 @@ func buildBYOServer(cfg byoRunConfig, keys *byoKeyManager, cacheStore *byoEnvelo
 	}
 	return &byoServer{
 		cfg: byoServerConfig{
-			listenAddr:             cfg.listenAddr,
-			maxBodyBytes:           cfg.maxBodyBytes,
-			maxRespBytes:           cfg.maxRespBytes,
-			agedArgRecentToolCalls: cfg.agedArgRecentToolCalls,
+			listenAddr:   cfg.listenAddr,
+			maxBodyBytes: cfg.maxBodyBytes,
+			maxRespBytes: cfg.maxRespBytes,
 		},
 		minter:   minter,
 		cache:    cacheStore,
