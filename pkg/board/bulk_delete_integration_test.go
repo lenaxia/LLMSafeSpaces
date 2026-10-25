@@ -28,6 +28,7 @@ package board_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -343,4 +344,67 @@ func (s *BoardSuite) TestBulk_DeleteNoTokensAndEchoShape() {
 		assert.NotContains(s.T(), k, "token", "no token-class field on the bulk projection (#1864)")
 		assert.NotContains(s.T(), k, "claim", "no claim-class field on the bulk projection (#1864)")
 	}
+}
+
+// TestBulk_TransientResolveNeverFabricatesNotFound (review r1 finding
+// 2): a resolve-path infrastructure blip renders the item's OWN
+// internal_error row — NEVER not_found. For a destructive batch a
+// false "row gone" out of a DB blip is the worst possible fabrication
+// (the caller would believe the sweep landed); the retry contract
+// says re-submit, and the re-submit converges on the real state. The
+// claim and move variants share the resolve seam — the same pin
+// holds for them.
+func (s *BoardSuite) TestBulk_TransientResolveNeverFabricatesNotFound() {
+	ws := s.seedWorkspace()
+	p := s.seedProject(ws, 5)
+	e := s.seedEpic(p, board.EpicActive)
+	victim := s.seedTask(e, "victim", nil, true)
+
+	s.fps.armAt("bulk.resolve", errors.New("connection reset by peer"))
+	res, err := s.svc.BulkDeleteTasks(context.Background(), s.owner(), []string{victim.ShortID}, false, "tr-1")
+	require.NoError(s.T(), err, "the transient class is a per-item failure, never a batch error")
+	require.Len(s.T(), res, 1)
+	assert.Equal(s.T(), board.BulkFailed, res[0].Status)
+	require.NotNil(s.T(), res[0].Error)
+	assert.Equal(s.T(), "internal_error", res[0].Error.Code,
+		"a transient resolve failure is honest internals — never a fabricated not_found")
+	assert.NotEqual(s.T(), board.BulkItemNotFound, res[0].Error.Code)
+	assert.False(s.T(), s.bulkDeleteGone(victim.ID), "nothing was written")
+
+	// The move variant shares bulkResolveItem — same discipline.
+	res2, err := s.svc.BulkMoveStage(context.Background(), s.owner(),
+		[]string{victim.ShortID}, board.StageDone, "https://example/e", "tr-2")
+	require.NoError(s.T(), err)
+	require.Len(s.T(), res2, 1)
+	assert.Equal(s.T(), "internal_error", res2[0].Error.Code, "the move variant shares the honest-internals discipline")
+
+	// Blip cleared (re-armed with nil — the seam's disarm): the same
+	// batch is an ordinary delete (convergence on retry).
+	s.fps.armAt("bulk.resolve", nil)
+	res3, err := s.svc.BulkDeleteTasks(context.Background(), s.owner(), []string{victim.ShortID}, false, "tr-1")
+	require.NoError(s.T(), err)
+	assert.Equal(s.T(), board.BulkDone, res3[0].Status, "after the blip clears, the retry lands")
+}
+
+// TestBulk_DeleteDuplicateRefsInBatch (review r1 missing-test 3): the
+// same ref twice in one batch is N single calls in order — the first
+// copy lands (one write, one event, one abort if in-flight), the
+// second renders the truthful absence (not_found), never a second
+// write.
+func (s *BoardSuite) TestBulk_DeleteDuplicateRefsInBatch() {
+	ws := s.seedWorkspace()
+	p := s.seedProject(ws, 5)
+	e := s.seedEpic(p, board.EpicActive)
+	a := s.seedTask(e, "dup", nil, true)
+
+	res, err := s.svc.BulkDeleteTasks(context.Background(), s.owner(),
+		[]string{a.ShortID, a.ShortID}, false, "dup-1")
+	require.NoError(s.T(), err)
+	require.Len(s.T(), res, 2)
+	assert.Equal(s.T(), board.BulkDone, res[0].Status, "the first copy lands")
+	assert.Equal(s.T(), board.BulkFailed, res[1].Status, "the second copy sees the absence")
+	require.NotNil(s.T(), res[1].Error)
+	assert.Equal(s.T(), board.BulkItemNotFound, res[1].Error.Code)
+	assert.True(s.T(), s.bulkDeleteGone(a.ID), "the row is gone — once")
+	assert.Equal(s.T(), 1, s.countEvents("delete_task"), "one snapshot event, not two")
 }

@@ -136,7 +136,10 @@ func TestIntegrationBoardManagerDeleteTasksBulk(t *testing.T) {
 		require.NoError(t, json.Unmarshal(w.Body.Bytes(), &task))
 		return &task
 	}
-	idle := mkTask("idle")
+	// The belt probe is seeded FIRST and claimed while it is the ONLY
+	// claimable row (the engine's candidate SQL is FIFO by creation
+	// order then id — review r1 finding 1: claiming with two claimable
+	// rows is seed-order-dependent and fails deterministically).
 	beltProbe := mkTask("belt-probe")
 
 	w = call(http.MethodPost, "/internal/v1/automation/board/epics/"+epic.ID+"/activate",
@@ -148,8 +151,13 @@ func TestIntegrationBoardManagerDeleteTasksBulk(t *testing.T) {
 	// engine and keep it in flight.
 	claim, err := svc.ClaimNext(ctx, "worker-1836del", wsPod)
 	require.NoError(t, err)
-	require.Equal(t, beltProbe.ID, claim.TaskID, "the probe is the claimable row")
+	require.Equal(t, beltProbe.ID, claim.TaskID, "the probe is the only claimable row")
 	liveWorker := claim.Assignee
+
+	// The idle row is created AFTER the claim: it stays a backlog row
+	// the engine never claims (no second ClaimNext in this test), so
+	// the bulk delete's done item is an idle-row-straight delete.
+	idle := mkTask("idle")
 
 	// --- 1: the belt's worker refusal through REAL wiring --------------------------
 	w = call(http.MethodPost, "/internal/v1/automation/board/tasks/delete-bulk",

@@ -132,25 +132,42 @@ func bulkFailedItem(ref string, err error) BulkItemResult {
 	return res
 }
 
-// bulkPerimeterOk resolves the item for the actor and applies the
+// bulkResolveItem resolves the item for the actor and applies the
 // read-perimeter discipline the single-task paths enforce: an
 // unresolvable ref is a miss; a row outside the actor's perimeter
 // (foreign owner on the user surface; the agent surfaces are
 // workspace-scoped from the start) renders the SAME not_found item a
-// miss renders — never disclosed.
-func (s *Service) bulkResolveItem(ctx context.Context, actor Actor, ref string) (*Task, bool) {
+// miss renders — never disclosed. Every OTHER failure (the transient
+// DB class) propagates to the caller so the item renders its own
+// error through bulkFailedItem's internal_error arm — a batch must
+// never fabricate a not_found outcome out of an infrastructure blip
+// (review r1 finding 2; for the destructive variant a false "row
+// gone" is the worst possible fabrication). The bulk.resolve
+// failpoint is the fault seam for pinning that class.
+func (s *Service) bulkResolveItem(ctx context.Context, actor Actor, ref string) (*Task, error) {
+	if s.failpoint != nil {
+		if err := s.failpoint("bulk.resolve"); err != nil {
+			return nil, err
+		}
+	}
 	t, err := s.resolveTaskForActor(ctx, actor, ref)
 	if err != nil {
-		return nil, false
+		return nil, err
 	}
 	if isAgentSurface(actor.Surface) && actor.WorkspaceID != "" {
-		return t, true // workspace binding already scoped the resolve
+		return t, nil // workspace binding already scoped the resolve
 	}
 	p, err := s.store.resolveProject(ctx, s.q(), "", t.ProjectID)
-	if err != nil || requireOwner(actor, p.UserID) != nil {
-		return nil, false // foreign row: the miss class, never disclosed
+	if err != nil {
+		return nil, err
 	}
-	return t, true
+	if err := requireOwner(actor, p.UserID); err != nil {
+		// foreign row: the miss class, never disclosed (a clean
+		// NotFoundError — no did-you-mean suggestions ride the bulk
+		// envelope).
+		return nil, &NotFoundError{Item: "task", Identifier: ref}
+	}
+	return t, nil
 }
 
 // BulkTaskStart is the bulk claim (#1836): each ready backlog item is
@@ -170,10 +187,20 @@ func (s *Service) BulkTaskStart(ctx context.Context, actor Actor, refs []string,
 	return out, nil
 }
 
+// bulkMissItem renders the perimeter's bare not_found item: the miss
+// class (a clean NotFoundError — the bulk envelope never carries the
+// single-task 404's did-you-mean suggestions).
+func bulkMissItem(ref string) BulkItemResult {
+	return bulkFailedItem(ref, &NotFoundError{Item: "task", Identifier: ref})
+}
+
 func (s *Service) bulkTaskStartOne(ctx context.Context, actor Actor, ref, requestID string) BulkItemResult {
-	t, ok := s.bulkResolveItem(ctx, actor, ref)
-	if !ok {
-		return bulkFailedItem(ref, &NotFoundError{Item: "task", Identifier: ref})
+	t, err := s.bulkResolveItem(ctx, actor, ref)
+	if err != nil {
+		if _, miss := err.(*NotFoundError); miss {
+			return bulkMissItem(ref)
+		}
+		return bulkFailedItem(ref, err)
 	}
 	if t.Stage == StageInProgress {
 		// The batch's own prior outcome: already claimed — done, not
@@ -210,9 +237,12 @@ func (s *Service) BulkMoveStage(ctx context.Context, actor Actor, refs []string,
 }
 
 func (s *Service) bulkMoveStageOne(ctx context.Context, actor Actor, ref, toStage, evidenceURL, requestID string) BulkItemResult {
-	t, ok := s.bulkResolveItem(ctx, actor, ref)
-	if !ok {
-		return bulkFailedItem(ref, &NotFoundError{Item: "task", Identifier: ref})
+	t, err := s.bulkResolveItem(ctx, actor, ref)
+	if err != nil {
+		if _, miss := err.(*NotFoundError); miss {
+			return bulkMissItem(ref)
+		}
+		return bulkFailedItem(ref, err)
 	}
 	if t.Stage == toStage {
 		// Already at the target stage — the batch's prior outcome:
@@ -269,11 +299,17 @@ func (s *Service) BulkDeleteTasks(ctx context.Context, actor Actor, refs []strin
 }
 
 func (s *Service) bulkDeleteOne(ctx context.Context, actor Actor, ref string, reconnect bool, requestID string) BulkItemResult {
-	if _, ok := s.bulkResolveItem(ctx, actor, ref); !ok {
-		// Miss ≡ foreign ≡ absent (a prior submission of this batch
-		// already landed): the same bare not_found item — never
-		// disclosed, never a conflict, no write.
-		return bulkFailedItem(ref, &NotFoundError{Item: "task", Identifier: ref})
+	if _, err := s.bulkResolveItem(ctx, actor, ref); err != nil {
+		if _, miss := err.(*NotFoundError); miss {
+			// Miss ≡ foreign ≡ absent (a prior submission of this
+			// batch already landed): the same bare not_found item —
+			// never disclosed, never a conflict, no write.
+			return bulkMissItem(ref)
+		}
+		// Transient class: the item's own internal_error row — a
+		// destructive batch never fabricates "row gone" out of a DB
+		// blip (r1 finding 2).
+		return bulkFailedItem(ref, err)
 	}
 	out, err := s.DeleteTask(ctx, actor, "", ref, reconnect, bulkItemRequestID(requestID, ref))
 	if err != nil {
