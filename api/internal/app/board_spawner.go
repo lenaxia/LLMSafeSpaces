@@ -128,6 +128,21 @@ func boardRunID(c *board.Claim) string {
 	return fmt.Sprintf("%s-%s-%d", c.TaskID, stageTag, time.Now().UnixNano())
 }
 
+// boardSpawnRequest builds the dispatch the spawner wires into
+// executor.Execute — extracted so the regression site itself (#1957:
+// the RunID reaching the wire) is pinnable without the k8s/HTTP seams.
+func boardSpawnRequest(c *board.Claim, runID string) *apiwf.NodeExecRequest {
+	spec, _ := json.Marshal(map[string]any{
+		"prompt":  boardCharterPrompt(c),
+		"session": "new", // fresh-charter, preserved: the worker's session outlives the dispatch turn (R9)
+	})
+	return &apiwf.NodeExecRequest{
+		NodeID: "board-worker", NodeType: "agent",
+		WorkflowID: "board:" + c.ProjectID, RunID: runID,
+		Spec: spec, Timeout: "30m",
+	}
+}
+
 // newBoardSpawner builds the production spawn seam: resolve the target
 // workspace's pod, dispatch a fresh-session charter through the agentd
 // user mux, and return the minted session id.
@@ -154,15 +169,7 @@ func newBoardSpawner(activator *apiwf.K8sWorkspaceActivator, executor *apiwf.HTT
 		// zero tokens, 15-min lease churn). The persona arm already
 		// suffixes; the worker arm now does too.
 		runID := boardRunID(c)
-		spec, _ := json.Marshal(map[string]any{
-			"prompt":  boardCharterPrompt(c),
-			"session": "new", // fresh-charter, preserved: the worker's session outlives the dispatch turn (R9)
-		})
-		resp, err := executor.Execute(ctx, c.WorkspaceID, podIP, &apiwf.NodeExecRequest{
-			NodeID: "board-worker", NodeType: "agent",
-			WorkflowID: "board:" + c.ProjectID, RunID: runID,
-			Spec: spec, Timeout: "30m",
-		})
+		resp, err := executor.Execute(ctx, c.WorkspaceID, podIP, boardSpawnRequest(c, runID))
 		if err != nil {
 			return "", fmt.Errorf("board: spawn dispatch: %w", err)
 		}

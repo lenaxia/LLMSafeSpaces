@@ -1,6 +1,7 @@
 package app
 
 import (
+	"encoding/json"
 	"fmt"
 	"regexp"
 	"strings"
@@ -39,5 +40,37 @@ func TestBoardRunID_EpisodeUnique(t *testing.T) {
 	}
 	if !strings.Contains(boardRunID(mk(board.StageInReview)), "-in_review-") {
 		t.Fatalf("review RunID shape unexpected: %s", boardRunID(mk(board.StageInReview)))
+	}
+}
+
+// TestBoardSpawnRequest_WiresTheRunID (#1957 r1): the regression SITE —
+// the RunID that actually reaches executor.Execute — carries
+// boardRunID's episode-unique value, the fresh-session shape, and the
+// charter prompt verbatim.
+func TestBoardSpawnRequest_WiresTheRunID(t *testing.T) {
+	c := &board.Claim{
+		TaskID: "3eec1981-b775-4934-bd52-90e9baca03da", Stage: "",
+		ProjectID:  "e2fa7e6a-6216-406f-9ff6-45ef337fb155",
+		ClaimToken: "tok-wire", Task: &board.Task{Description: "probe charter"},
+	}
+	req := boardSpawnRequest(c, boardRunID(c))
+	if req.RunID != "3eec1981-b775-4934-bd52-90e9baca03da-w-tok-wire" {
+		t.Fatalf("RunID not wired verbatim: %s", req.RunID)
+	}
+	if req.NodeID != "board-worker" || req.NodeType != "agent" {
+		t.Fatalf("node addressing changed: %+v", req)
+	}
+	if req.WorkflowID != "board:e2fa7e6a-6216-406f-9ff6-45ef337fb155" {
+		t.Fatalf("workflow key changed: %s", req.WorkflowID)
+	}
+	var spec map[string]any
+	if err := json.Unmarshal(req.Spec, &spec); err != nil {
+		t.Fatalf("spec not json: %v", err)
+	}
+	if spec["session"] != "new" {
+		t.Fatalf("fresh-charter session shape lost: %+v", spec)
+	}
+	if p, _ := spec["prompt"].(string); !strings.Contains(p, "probe charter") {
+		t.Fatalf("charter prompt not carried: %q", p)
 	}
 }
