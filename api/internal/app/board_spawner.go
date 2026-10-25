@@ -149,7 +149,20 @@ func boardSpawnRequest(c *board.Claim) *apiwf.NodeExecRequest {
 // newBoardSpawner builds the production spawn seam: resolve the target
 // workspace's pod, dispatch a fresh-session charter through the agentd
 // user mux, and return the minted session id.
-func newBoardSpawner(activator *apiwf.K8sWorkspaceActivator, executor *apiwf.HTTPAgentExecutor) board.WorkerSpawner {
+// The spawn seam as interfaces (#1957 r4): the production concretes
+// (apiwf.K8sWorkspaceActivator, apiwf.HTTPAgentExecutor) satisfy both —
+// the constructor's callers are unchanged — while the dispatch closure
+// itself becomes pinnable end-to-end with fakes (the reviewer's bypass
+// mutation: re-inlining a bare-task-id RunID in the closure must RED).
+type spawnActivator interface {
+	EnsureActive(ctx context.Context, workspaceID string, timeout time.Duration) (string, error)
+}
+
+type spawnDispatcher interface {
+	Execute(ctx context.Context, workspaceID, podIP string, req *apiwf.NodeExecRequest) (*apiwf.NodeExecResponse, error)
+}
+
+func newBoardSpawner(activator spawnActivator, executor spawnDispatcher) board.WorkerSpawner {
 	return func(ctx context.Context, c *board.Claim) (string, error) {
 		if c.WorkspaceID == "" {
 			return "", fmt.Errorf("board: spawn: claim carries no workspace (task %s)", c.TaskID)
