@@ -289,7 +289,7 @@ func (s *Service) rc1Reclaims(ctx context.Context) (int, error) {
 		tag, err := tx.Exec(ctx, `
 			UPDATE tasks SET stage='backlog', stage_entered_at=now(),
 				claim_token=NULL, lease_expires_at=NULL, assignee_session=NULL,
-				claim_incremented_attempts=false,
+				claim_incremented_attempts=false, claim_persona=NULL,
 				last_attempt_failed=true, failure_count=failure_count+1, last_failure_at=now(),
 				cooldown_until=now()+make_interval(secs=>$2::float8)
 			WHERE id=$1 AND stage='in_progress' AND (lease_expires_at IS NULL OR lease_expires_at < now())`,
@@ -390,7 +390,7 @@ func (s *Service) rc1PersonaClaims(ctx context.Context) (personaReclaim, error) 
 			// Config removed mid-flight: converge to today's unclaimed
 			// in_review shape (no accounting, no transition).
 			tag, err := tx.Exec(ctx, `
-				UPDATE tasks SET claim_token=NULL, lease_expires_at=NULL
+				UPDATE tasks SET claim_token=NULL, lease_expires_at=NULL, claim_persona=NULL
 				WHERE id=$1 AND stage='in_review' AND lease_expires_at < now()`, v.id)
 			if err != nil {
 				_ = tx.Rollback(ctx)
@@ -432,7 +432,7 @@ func (s *Service) rc1PersonaClaims(ctx context.Context) (personaReclaim, error) 
 		// and the unclaimed no-persona shape below keeps today's
 		// retain-identity semantics.
 		tag, err := tx.Exec(ctx, `
-			UPDATE tasks SET claim_token=NULL, lease_expires_at=NULL, assignee_session=NULL,
+			UPDATE tasks SET claim_token=NULL, lease_expires_at=NULL, assignee_session=NULL, claim_persona=NULL,
 				last_attempt_failed=true, failure_count=failure_count+1, last_failure_at=now(),
 				cooldown_until=now()+make_interval(secs=>$2::float8)
 			WHERE id=$1 AND stage='in_review' AND lease_expires_at < now()`,
@@ -544,7 +544,7 @@ func (s *Service) rc1PersonaClaims(ctx context.Context) (personaReclaim, error) 
 			UPDATE tasks SET `+personaClaimSQL+`
 			WHERE id=$1 AND stage='in_review' AND claim_token IS NULL AND NOT paused
 			  AND (cooldown_until IS NULL OR cooldown_until < now())`,
-			v.id, token, s.cfg.LeaseDuration.Seconds())
+			v.id, token, s.cfg.LeaseDuration.Seconds(), persona.Name)
 		if err != nil {
 			_ = tx.Rollback(ctx)
 			return out, err
@@ -799,7 +799,7 @@ func (s *Service) rc2Drift(ctx context.Context, cutoff time.Time) (done, review,
 				}
 				tag, err := tx.Exec(ctx, `
 					UPDATE tasks SET stage='done', stage_entered_at=now(),
-						claim_token=NULL, lease_expires_at=NULL, claim_incremented_attempts=false,
+						claim_token=NULL, lease_expires_at=NULL, claim_incremented_attempts=false, claim_persona=NULL,
 						failure_count=0, last_attempt_failed=false, last_failure_at=NULL
 					WHERE id=$1 AND stage='in_review'`, t.ID)
 				if err != nil {
@@ -899,7 +899,7 @@ func (s *Service) rc2Drift(ctx context.Context, cutoff time.Time) (done, review,
 					UPDATE tasks SET stage='in_progress', stage_entered_at=now(),
 						claim_token=$2, lease_expires_at=now()+make_interval(secs=>$3::float8),
 						last_progress_at=now(), assignee_session=NULL,
-						claim_incremented_attempts=false, pending_origin=NULL
+						claim_incremented_attempts=false, claim_persona=NULL, pending_origin=NULL
 					WHERE id=$1 AND stage='in_review'`,
 					t.ID, newToken, s.cfg.LeaseDuration.Seconds())
 				if err != nil {
@@ -908,8 +908,11 @@ func (s *Service) rc2Drift(ctx context.Context, cutoff time.Time) (done, review,
 				}
 				affected = tag.RowsAffected() > 0
 			} else {
+				// #1946: the no-identity landing keeps claim_token
+				// (pre-existing) but drops the persona provenance —
+				// claim_persona rides ONLY a live persona claim.
 				tag, err := tx.Exec(ctx, `
-					UPDATE tasks SET stage='backlog', stage_entered_at=now(), pending_origin=NULL
+					UPDATE tasks SET stage='backlog', stage_entered_at=now(), claim_persona=NULL, pending_origin=NULL
 					WHERE id=$1 AND stage='in_review'`, t.ID)
 				if err != nil {
 					_ = tx.Rollback(ctx)

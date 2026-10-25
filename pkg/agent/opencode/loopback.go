@@ -967,6 +967,15 @@ func (c *Client) BoardRecordVerdict(ctx context.Context, saToken, workspaceID st
 	return c.boardWorkerPost(ctx, saToken, workspaceID, "/internal/v1/automation/board/tasks/verdict", body)
 }
 
+// BoardSetCriteriaMet is the #1946 scoped grant's worker call: the
+// reviewer persona records one criterion's met flag on its OWN claimed
+// row (claim-token-guarded; persona provenance arbitrated at the
+// engine — a task worker's identical call refuses with the #1747 §5
+// class there).
+func (c *Client) BoardSetCriteriaMet(ctx context.Context, saToken, workspaceID string, body json.RawMessage) (*AutomationResponse, error) {
+	return c.boardWorkerPost(ctx, saToken, workspaceID, "/internal/v1/automation/board/tasks/set-criteria-met", body)
+}
+
 // --- Task Board manager seam (#1747, design 0067 §4.3c as amended) -------------
 //
 // The manager half: the same pod-identity seam, the FULL manager set at

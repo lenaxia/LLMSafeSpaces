@@ -19,6 +19,7 @@ package handlers
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"io"
 	"net/http"
 	"time"
@@ -36,6 +37,7 @@ type boardService interface {
 	ReportThrottle(ctx context.Context, actor board.Actor, taskID, shortIDOrID string, retryAfter time.Duration, requestID string) (*board.Task, error)
 	MoveStage(ctx context.Context, actor board.Actor, taskID, shortIDOrID, toStage, evidenceURL, requestID string) (*board.Task, error)
 	RecordVerdict(ctx context.Context, actor board.Actor, taskID, shortIDOrID string, in board.VerdictInput, requestID string) (*board.Task, *board.Verdict, error)
+	SetCriteriaMet(ctx context.Context, actor board.Actor, taskID, shortIDOrID string, check board.CriteriaCheck, requestID string) (*board.Task, error)
 	GetTaskInWorkspace(ctx context.Context, workspaceID, taskID, shortIDOrID string) (*board.Task, error)
 }
 
@@ -198,6 +200,68 @@ func (h *PodAutomationHandler) BoardTaskGet(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, task)
+}
+
+// BoardSetCriteriaMet is the #1946 scoped grant's worker route: the
+// reviewer persona records ONE criterion's met flag on its OWN claimed
+// row (claim-token-guarded, persona-provenance-guarded at the engine —
+// the platform validates; this handler keeps the surface narrow). The
+// request vocabulary is deliberately minimal — anything beyond the
+// addressing + token + the one check refuses LOUDLY (a reviewer that
+// reaches for title/description/criteria-replace fields is told to use
+// the manager surface, whose grant it does not hold).
+func (h *PodAutomationHandler) BoardSetCriteriaMet(c *gin.Context) {
+	raw, workspaceID, ownerID, ok := h.resolve(c)
+	if !ok {
+		return
+	}
+	if raw == nil {
+		c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": "request body required"})
+		return
+	}
+	var fields map[string]json.RawMessage
+	c.Request.Body = io.NopCloser(bytes.NewReader(raw))
+	if err := c.ShouldBindJSON(&fields); err != nil {
+		c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": "invalid request body: " + err.Error()})
+		return
+	}
+	for k := range fields {
+		switch k {
+		case "taskId", "shortId", "claimToken", "setCriteriaMet", "requestId", "lsp_injected_session", "workspaceID":
+		default:
+			c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{
+				"error": "the reviewer grant covers setCriteriaMet only — field \"" + k + "\" is not part of it (title/description/tags/criteria edits ride the manager surface)",
+				"code":  board.GuardInput,
+			})
+			return
+		}
+	}
+	var req struct {
+		TaskID         string               `json:"taskId"`
+		ShortID        string               `json:"shortId"`
+		ClaimToken     string               `json:"claimToken"`
+		SetCriteriaMet *board.CriteriaCheck `json:"setCriteriaMet"`
+		RequestID      string               `json:"requestId"`
+	}
+	c.Request.Body = io.NopCloser(bytes.NewReader(raw))
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": "invalid request body: " + err.Error()})
+		return
+	}
+	if req.SetCriteriaMet == nil {
+		c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{
+			"error": "setCriteriaMet is required — the reviewer grant records criterion flags {index, met} on your claimed row",
+			"code":  board.GuardInput,
+		})
+		return
+	}
+	task, err := h.board.SetCriteriaMet(c.Request.Context(), h.boardActor(ownerID, workspaceID, req.ClaimToken),
+		req.TaskID, req.ShortID, *req.SetCriteriaMet, req.RequestID)
+	if err != nil {
+		renderBoardError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, taskEchoResponse{Task: *task, MutatedCriterion: mutatedCriterion(req.SetCriteriaMet, task)})
 }
 
 // bindBoardBody binds the captured body verbatim (the resolve() capture

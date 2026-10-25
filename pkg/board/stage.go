@@ -183,10 +183,10 @@ func (s *Service) moveStageTx(ctx context.Context, tx pgx.Tx, actor Actor, taskI
 			// then the persona mint layers the reviewer-class claim on
 			// top — one transaction, claim-before-spawn.
 			resulting, err = s.updateStageTx(ctx, tx, taskID, from, toStage,
-				`claim_token=NULL, lease_expires_at=NULL, claim_incremented_attempts=false`+reset_overlay, evidenceURL, actor)
+				`claim_token=NULL, lease_expires_at=NULL, claim_incremented_attempts=false, claim_persona=NULL`+reset_overlay, evidenceURL, actor)
 			if err == nil {
 				var token string
-				token, err = s.personaClaimMintTx(ctx, tx, taskID, StageInReview)
+				token, err = s.personaClaimMintTx(ctx, tx, taskID, StageInReview, entryPersona.Name)
 				if err == nil {
 					var evt Event
 					evt, err = personaClaimEventTx(ctx, tx, cur.ProjectID, taskID, StageInReview, entryPersona, "engine", cur.Attempts)
@@ -199,7 +199,7 @@ func (s *Service) moveStageTx(ctx context.Context, tx pgx.Tx, actor Actor, taskI
 			}
 		} else {
 			resulting, err = s.updateStageTx(ctx, tx, taskID, from, toStage,
-				`claim_token=NULL, lease_expires_at=NULL, claim_incremented_attempts=false`+reset_overlay, evidenceURL, actor)
+				`claim_token=NULL, lease_expires_at=NULL, claim_incremented_attempts=false, claim_persona=NULL`+reset_overlay, evidenceURL, actor)
 		}
 
 	case from == StageInProgress && toStage == StageDone:
@@ -207,7 +207,7 @@ func (s *Service) moveStageTx(ctx context.Context, tx pgx.Tx, actor Actor, taskI
 			return res, nudge{}, err
 		}
 		resulting, err = s.updateStageTx(ctx, tx, taskID, from, toStage,
-			`claim_token=NULL, lease_expires_at=NULL, claim_incremented_attempts=false`+reset_overlay, evidenceURL, actor)
+			`claim_token=NULL, lease_expires_at=NULL, claim_incremented_attempts=false, claim_persona=NULL`+reset_overlay, evidenceURL, actor)
 		if err == nil {
 			err = s.doneCascade(ctx, tx, cur, evidenceURL, &postNudge)
 		}
@@ -237,7 +237,7 @@ func (s *Service) moveStageTx(ctx context.Context, tx pgx.Tx, actor Actor, taskI
 			return res, nudge{}, err
 		}
 		resulting, err = s.updateStageTx(ctx, tx, taskID, from, toStage,
-			`claim_token=NULL, lease_expires_at=NULL, claim_incremented_attempts=false`+reset_overlay, evidenceURL, actor)
+			`claim_token=NULL, lease_expires_at=NULL, claim_incremented_attempts=false, claim_persona=NULL`+reset_overlay, evidenceURL, actor)
 		if err == nil {
 			err = s.doneCascade(ctx, tx, cur, evidenceURL, &postNudge)
 		}
@@ -262,7 +262,7 @@ func (s *Service) moveStageTx(ctx context.Context, tx pgx.Tx, actor Actor, taskI
 			resulting, reclaimed, postNudge, err = s.exitPendingReclaim(ctx, tx, actor, cur)
 		} else {
 			resulting, err = s.updateStageTx(ctx, tx, taskID, from, StageBacklog,
-				`claim_token=NULL, lease_expires_at=NULL, assignee_session=NULL,
+				`claim_token=NULL, lease_expires_at=NULL, assignee_session=NULL, claim_persona=NULL,
 				 claim_incremented_attempts=false, attempts=0, failure_count=0, last_attempt_failed=false, last_failure_at=NULL`, evidenceURL, actor)
 		}
 
@@ -376,7 +376,7 @@ func (s *Service) reclaimTx(ctx context.Context, tx pgx.Tx, taskID, assignee str
 	tag, err := tx.Exec(ctx, `
 		UPDATE tasks SET stage='in_progress', stage_entered_at=now(),
 			claim_token=$2, lease_expires_at=now()+make_interval(secs=>$3::float8), last_progress_at=now(),
-			assignee_session=NULL, claim_incremented_attempts=false, pending_origin=NULL
+			assignee_session=NULL, claim_incremented_attempts=false, claim_persona=NULL, pending_origin=NULL
 		WHERE id=$1 AND NOT paused`,
 		taskID, token, s.cfg.LeaseDuration.Seconds())
 	if err != nil {
@@ -399,7 +399,7 @@ func (s *Service) exitPendingReclaim(ctx context.Context, tx pgx.Tx, actor Actor
 	tag, err := tx.Exec(ctx, `
 		UPDATE tasks SET stage='in_progress', stage_entered_at=now(),
 			claim_token=$2, lease_expires_at=now()+make_interval(secs=>$3::float8), last_progress_at=now(),
-			assignee_session=NULL, claim_incremented_attempts=false, pending_origin=NULL, attempts=0,
+			assignee_session=NULL, claim_incremented_attempts=false, claim_persona=NULL, pending_origin=NULL, attempts=0,
 			failure_count=0, last_attempt_failed=false, last_failure_at=NULL
 		WHERE id=$1 AND stage='pending_input'`,
 		cur.ID, token, s.cfg.LeaseDuration.Seconds())
@@ -539,7 +539,7 @@ func (s *Service) ReportThrottle(ctx context.Context, actor Actor, taskID, short
 			UPDATE tasks SET stage='backlog', stage_entered_at=now(),
 				cooldown_until=now()+make_interval(secs=>$2::float8),
 				claim_token=NULL, lease_expires_at=NULL, assignee_session=NULL,
-				claim_incremented_attempts=false,
+				claim_incremented_attempts=false, claim_persona=NULL,
 				attempts = attempts - CASE WHEN claim_incremented_attempts THEN 1 ELSE 0 END
 			WHERE id=$1 AND stage='in_progress' AND claim_token=$3`,
 			t.ID, retryAfter.Seconds(), actor.ClaimToken)

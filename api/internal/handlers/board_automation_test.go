@@ -34,6 +34,7 @@ type fakeBoardService struct {
 	lastTaskRef   string
 	lastShortID   string
 	lastToStage   string
+	lastCheck     *board.CriteriaCheck
 	calls         map[string]int
 
 	heartbeatErr  error
@@ -43,6 +44,7 @@ type fakeBoardService struct {
 	verdictErr    error               // #1947: the verdict channel's guard-class arm
 	lastVerdict   *board.VerdictInput // #1947: the handler's payload pass-through
 	lastRequestID string
+	setCritErr    error // #1946: the criteria-met grant's guard-class arm
 }
 
 func newFakeBoardService() *fakeBoardService {
@@ -93,6 +95,20 @@ func (f *fakeBoardService) RecordVerdict(_ context.Context, actor board.Actor, t
 	return &board.Task{ID: taskID, Stage: board.StageInProgress}, &board.Verdict{Verdict: in.Verdict, Applied: true}, nil
 }
 
+func (f *fakeBoardService) SetCriteriaMet(_ context.Context, actor board.Actor, taskID, shortIDOrID string, check board.CriteriaCheck, _ string) (*board.Task, error) {
+	f.calls["criteria_met"]++
+	f.lastActor, f.lastTaskRef, f.lastShortID, f.lastCheck = actor, taskID, shortIDOrID, &check
+	if f.setCritErr != nil {
+		return nil, f.setCritErr
+	}
+	out := &board.Task{ID: taskID, Stage: board.StageInReview, ClaimPersona: "reviewer",
+		AcceptanceCriteria: []board.AcceptanceCriterion{{Text: "criterion 0"}, {Text: "criterion 1"}}}
+	if check.Index >= 0 && check.Index < len(out.AcceptanceCriteria) {
+		out.AcceptanceCriteria[check.Index].Met = check.Met
+	}
+	return out, nil
+}
+
 // newBoardAutomationRouter mounts the board seam exactly as the router
 // does, over the fake service (resolve() is REAL: fake TokenReview +
 // workspace lookup — the auth chain is exercised, not stubbed). #1747:
@@ -123,6 +139,7 @@ func newBoardAutomationRouterWithManager(t *testing.T, svc *fakeBoardService, mg
 	b.POST("/tasks/throttle", h.BoardReportThrottle)
 	b.POST("/tasks/verdict", h.BoardRecordVerdict) // #1947: the spawned reviewer's verdict channel
 	b.POST("/tasks/move-stage", h.BoardMoveStage)
+	b.POST("/tasks/set-criteria-met", h.BoardSetCriteriaMet)      // #1946 reviewer-persona scoped grant
 	b.POST("/tasks/move-stage-bulk", h.BoardManagerMoveStageBulk) // #1836 bulk complete
 	b.POST("/tasks/delete-bulk", h.BoardManagerDeleteTasksBulk)   // #1836 sibling: bulk delete
 	b.POST("/projects", h.BoardCreateProject)

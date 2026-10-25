@@ -477,6 +477,7 @@ func TestBoardParity_AgentColumn(t *testing.T) {
 		"POST /internal/v1/automation/board/tasks/heartbeat",
 		"POST /internal/v1/automation/board/tasks/move-stage",
 		"POST /internal/v1/automation/board/tasks/move-stage-bulk",
+		"POST /internal/v1/automation/board/tasks/set-criteria-met", // #1946: the reviewer-persona claim's scoped criteria-flags write
 		"POST /internal/v1/automation/board/tasks/throttle",
 		"POST /internal/v1/automation/board/tasks/verdict", // #1947: the spawned reviewer persona's verdict channel (token-guarded)
 	}, seamBoardRoutes(t),
