@@ -31,6 +31,23 @@ func (s *Service) ImportPlan(ctx context.Context, actor Actor, projectID, shortI
 	if err := requireManagerAction(actor, p); err != nil {
 		return nil, err
 	}
+	// #1948: a terminal target fails the WHOLE transaction — the guard
+	// fires before any write, so nothing strands (all-or-nothing).
+	// import_plan mints a FRESH draft epic inside its one transaction,
+	// so the epic arm cannot fire here; the archived project is this
+	// seam's terminal target (the minted epic + every node would sit
+	// silently unfed outside the claimable set). Replay-first: a
+	// requestId that already landed renders the original outcome even
+	// after the project archived (projectLifecycle's discipline).
+	replay, err := s.replayOf(ctx, p.ID, requestID, "import_plan")
+	if err != nil {
+		return nil, err
+	}
+	if replay == nil {
+		if err := refuseArchivedProjectCreateTarget(p); err != nil {
+			return nil, err
+		}
+	}
 
 	validation := s.validatePlan(in)
 	if dryRun {

@@ -91,10 +91,15 @@ func (s *BoardSuite) TestKill_TaskStartR3Pins() {
 	s.finishClaim(started2)
 
 	// (b) refusals: paused / completed / archived epics, archived project.
+	// #1948 fixture note: create now refuses terminal epics, so the
+	// status flips land AFTER seeding — the pin still exercises
+	// task_start's own refusal per status.
 	for i, status := range []string{board.EpicPaused, board.EpicCompleted, board.EpicArchived} {
-		e := s.seedEpic(p, status)
+		e := s.seedEpic(p, board.EpicDraft)
 		tt := s.seedTask(e, fmt.Sprintf("refuse-%s", status), nil, false)
-		_, err := s.svc.TaskStart(ctx, s.owner(), tt.ID, "", "")
+		_, err := s.pool.Exec(ctx, `UPDATE epics SET status=$1 WHERE id=$2`, status, e.ID)
+		s.Require().NoError(err)
+		_, err = s.svc.TaskStart(ctx, s.owner(), tt.ID, "", "")
 		s.Require().Error(err, "%s epic must refuse task_start", status)
 		var ge *board.GuardError
 		s.Require().ErrorAs(err, &ge)

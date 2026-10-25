@@ -230,6 +230,43 @@ func requireAgentWorkspaceTarget(actor Actor, targetWorkspaceID string) error {
 	return nil
 }
 
+// refuseTerminalEpicCreateTarget is the #1948 loud-refusal seam at
+// board_create_task's boundary: a task landed in a terminal epic looks
+// identical to a healthy backlog while the claim set silently starves
+// it (candidateSQL gates on e.status='active' — never surfaced at
+// create time; the issue's live evidence sat unfed for 20+ minutes).
+// Terminal means no path back into the claimable set without an
+// explicit lifecycle move: completed (reopen via epic_activate) or
+// archived (unarchive). Paused is NOT refused — pause is a scheduling
+// lever and resume re-feeds the rows (the trap a naive "not active →
+// refuse" guard falls into) — and draft is not (create-then-activate
+// is the documented flow).
+func refuseTerminalEpicCreateTarget(e *Epic) error {
+	switch e.Status {
+	case EpicCompleted:
+		return &GuardError{Code: GuardEpicState,
+			Detail: fmt.Sprintf("epic %s is completed — create refuses loud: the row would sit silently unfed outside the claimable set (#1948); reopen the epic first (epic_activate; completed→active)", e.ShortID)}
+	case EpicArchived:
+		return &GuardError{Code: GuardEpicState,
+			Detail: fmt.Sprintf("epic %s is archived — create refuses loud: the row would sit silently unfed outside the claimable set (#1948); unarchive the epic first (unarchive restores active)", e.ShortID)}
+	}
+	return nil
+}
+
+// refuseArchivedProjectCreateTarget is the project arm of the same
+// #1948 starvation shape: eligibleProjectsSQL gates on
+// p.status='active', so every row created under an archived project —
+// task OR import_plan's whole fresh epic — sits silently unfed until
+// an explicit unarchive (engine precedent: task_start's own "terminal
+// storage stays closed").
+func refuseArchivedProjectCreateTarget(p *Project) error {
+	if p.Status == ProjectArchived {
+		return &GuardError{Code: GuardProjectState,
+			Detail: fmt.Sprintf("project %s is archived — create refuses loud: the row would sit silently unfed outside the claimable set (#1948); unarchive the project first (unarchive restores active)", p.ShortID)}
+	}
+	return nil
+}
+
 // taskForUpdate loads a task under row lock inside tx.
 func (st *Store) taskForUpdate(ctx context.Context, tx pgx.Tx, taskID string) (*Task, error) {
 	return scanTask(tx.QueryRow(ctx, `SELECT `+taskColumns+` FROM tasks t WHERE t.id=$1 FOR UPDATE`, taskID))
@@ -712,6 +749,26 @@ func (s *Service) CreateTask(ctx context.Context, actor Actor, epicID, shortIDOr
 	}
 	if err := requireManagerAction(actor, p); err != nil {
 		return nil, err
+	}
+	// #1948: refuse loud before any write — a task created into a
+	// terminal epic (completed/archived) or an archived project sits
+	// permanently outside the claimable set with no error and no audit
+	// signal. Paused/draft targets stay green (scheduling lever /
+	// pre-activation). Replay-first (projectLifecycle's discipline): a
+	// requestId that already landed renders the original outcome — the
+	// state the original write left behind must not turn a replay into
+	// a guard error.
+	replay, err := s.replayOf(ctx, p.ID, requestID, "create_task")
+	if err != nil {
+		return nil, err
+	}
+	if replay == nil {
+		if err := refuseArchivedProjectCreateTarget(p); err != nil {
+			return nil, err
+		}
+		if err := refuseTerminalEpicCreateTarget(e); err != nil {
+			return nil, err
+		}
 	}
 	if in.Title == "" {
 		return nil, &GuardError{Code: "validation", Detail: "task title is required"}
