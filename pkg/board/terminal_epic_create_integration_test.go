@@ -76,6 +76,15 @@ func (s *BoardSuite) TestGuard_1948_CreateIntoArchivedEpicRefuses() {
 	require.Equal(s.T(), board.GuardEpicState, ge.Code)
 	require.Contains(s.T(), err.Error(), e.ShortID)
 	require.Contains(s.T(), err.Error(), board.EpicArchived)
+
+	// Symmetry with the completed-epic pin: nothing landed, nothing
+	// audited (r1 review: the cheap twin the completed pin already
+	// asserted — the silent-partial-write channel).
+	var n int
+	s.Require().NoError(s.pool.QueryRow(ctx,
+		`SELECT count(*) FROM tasks WHERE epic_id=$1`, e.ID).Scan(&n))
+	require.Zero(s.T(), n, "no task row may land from a refused create")
+	require.Zero(s.T(), s.countEvents("create_task"), "no create_task audit event from the refusal")
 }
 
 func (s *BoardSuite) TestGuard_1948_CreateIntoActiveEpicGreen() {
@@ -199,6 +208,125 @@ func (s *BoardSuite) TestGuard_1948_ImportPlanMidPayloadFailureRollsBackWhole() 
 	require.Equal(s.T(), epicsBefore, epicsAfter, "no epic may strand from a mid-payload failure")
 	require.Zero(s.T(), tasksAfter, "no task may strand from a mid-payload failure")
 	require.Zero(s.T(), edgesAfter, "no edge may strand from a mid-payload failure")
+}
+
+func (s *BoardSuite) TestGuard_1948_ImportPlanDryRunIntoArchivedProjectRefuses() {
+	ctx := context.Background()
+	ws := s.seedWorkspace()
+	p := s.seedProject(ws, 2)
+	_, err := s.svc.ArchiveProject(ctx, s.owner(), p.ID, "")
+	s.Require().NoError(err)
+
+	// r1 review pin: the guard precedes the dry-run branch — the
+	// plan-approval moment never blesses an unlandable plan (a
+	// regression that moves the guard below `if dryRun` reddens here).
+	out, err := s.svc.ImportPlan(ctx, s.owner(), p.ID, "", board.PlanInput{
+		EpicTitle: "unapprovable", Outcome: "never lands",
+		Tasks: []board.PlanTaskInput{
+			{Key: "a", Title: "A", Description: "charter", AcceptanceCriteria: []board.AcceptanceCriterion{{Text: "c"}}},
+		},
+	}, true, "")
+	require.Error(s.T(), err, "dry-run into an archived project refuses — no approval moment for a terminal target")
+	var ge *board.GuardError
+	require.ErrorAs(s.T(), err, &ge)
+	require.Equal(s.T(), board.GuardProjectState, ge.Code)
+	s.Require().Nil(out)
+}
+
+func (s *BoardSuite) TestGuard_1948_CreateEpicIntoArchivedProjectRefuses() {
+	ctx := context.Background()
+	ws := s.seedWorkspace()
+	p := s.seedProject(ws, 2)
+	_, err := s.svc.ArchiveProject(ctx, s.owner(), p.ID, "")
+	s.Require().NoError(err)
+
+	// r2 review pin: the last unguarded creation seam of this class —
+	// a draft epic minted into an archived project would sit outside
+	// the claimable set with no signal, one seam over create_task.
+	before := s.countEvents("create_epic")
+	_, err = s.svc.CreateEpic(ctx, s.owner(), p.ID, "",
+		board.EpicInput{Title: "starved epic", Outcome: "never feeds"}, "")
+	require.Error(s.T(), err, "create_epic into an archived project must refuse loud")
+	var ge *board.GuardError
+	require.ErrorAs(s.T(), err, &ge)
+	require.Equal(s.T(), board.GuardProjectState, ge.Code)
+	require.Contains(s.T(), err.Error(), p.ShortID)
+	var n int
+	s.Require().NoError(s.pool.QueryRow(ctx,
+		`SELECT count(*) FROM epics WHERE project_id=$1`, p.ID).Scan(&n))
+	require.Zero(s.T(), n, "no epic row may land from a refused create_epic")
+	require.Equal(s.T(), before, s.countEvents("create_epic"))
+}
+
+func (s *BoardSuite) TestGuard_1948_ConcurrentTerminalizationStillRefuses() {
+	ctx := context.Background()
+	ws := s.seedWorkspace()
+	p := s.seedProject(ws, 2)
+	e := s.seedEpic(p, board.EpicActive)
+
+	// r1 review pin: the pre-write guard is check-then-act — the epic
+	// terminalizes BETWEEN the pre-check and the in-transaction
+	// re-check (the create_task.recheck failpoint fires there), and
+	// the locked re-read must still refuse. This is the deterministic
+	// form of racing epicCompletionCheck against CreateTask.
+	s.fps.armAtFn("create_task.recheck", func() error {
+		_, err := s.pool.Exec(context.Background(),
+			`UPDATE epics SET status=$1 WHERE id=$2`, board.EpicCompleted, e.ID)
+		return err
+	})
+	defer s.fps.disarm("create_task.recheck")
+
+	_, err := s.svc.CreateTask(ctx, s.owner(), e.ID, "",
+		board.TaskInput{Title: "raced row", Description: "terminalized mid-flight",
+			AcceptanceCriteria: []board.AcceptanceCriterion{{Text: "c"}}}, "")
+	require.Error(s.T(), err, "a mid-flight terminalization must still refuse (in-tx re-check)")
+	var ge *board.GuardError
+	require.ErrorAs(s.T(), err, &ge)
+	require.Equal(s.T(), board.GuardEpicState, ge.Code)
+	require.Contains(s.T(), err.Error(), e.ShortID)
+	var n int
+	s.Require().NoError(s.pool.QueryRow(ctx,
+		`SELECT count(*) FROM tasks WHERE epic_id=$1`, e.ID).Scan(&n))
+	require.Zero(s.T(), n, "the raced create landed nothing")
+}
+
+func (s *BoardSuite) TestGuard_1948_ImportPlanConcurrentArchiveStillRefusesWhole() {
+	ctx := context.Background()
+	ws := s.seedWorkspace()
+	p := s.seedProject(ws, 2)
+
+	var epicsBefore int
+	s.Require().NoError(s.pool.QueryRow(ctx,
+		`SELECT count(*) FROM epics WHERE project_id=$1`, p.ID).Scan(&epicsBefore))
+
+	// r1 review pin: the project archives BETWEEN the pre-check and
+	// the in-tx re-check (the import_plan.recheck failpoint fires
+	// there) — the whole transaction aborts, nothing strands.
+	s.fps.armAtFn("import_plan.recheck", func() error {
+		_, err := s.pool.Exec(context.Background(),
+			`UPDATE projects SET status=$1 WHERE id=$2`, board.ProjectArchived, p.ID)
+		return err
+	})
+	defer s.fps.disarm("import_plan.recheck")
+
+	in := board.PlanInput{EpicTitle: "raced plan", Outcome: "never lands",
+		Tasks: []board.PlanTaskInput{
+			{Key: "a", Title: "A", Description: "charter", AcceptanceCriteria: []board.AcceptanceCriterion{{Text: "c"}}},
+			{Key: "b", Title: "B", Description: "charter", DependsOn: []string{"a"},
+				AcceptanceCriteria: []board.AcceptanceCriterion{{Text: "c"}}},
+		}}
+	_, err := s.svc.ImportPlan(ctx, s.owner(), p.ID, "", in, false, "")
+	require.Error(s.T(), err, "a mid-flight archive must still fail the whole import")
+	var ge *board.GuardError
+	require.ErrorAs(s.T(), err, &ge)
+	require.Equal(s.T(), board.GuardProjectState, ge.Code)
+	var epicsAfter, tasksAfter int
+	s.Require().NoError(s.pool.QueryRow(ctx,
+		`SELECT count(*) FROM epics WHERE project_id=$1`, p.ID).Scan(&epicsAfter))
+	s.Require().NoError(s.pool.QueryRow(ctx,
+		`SELECT count(*) FROM tasks WHERE project_id=$1`, p.ID).Scan(&tasksAfter))
+	require.Equal(s.T(), epicsBefore, epicsAfter, "no epic may strand from the raced import")
+	require.Zero(s.T(), tasksAfter, "no task may strand from the raced import")
 }
 
 func (s *BoardSuite) TestGuard_1948_ImportPlanMintsDraftEpicGreen() {

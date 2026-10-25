@@ -61,6 +61,26 @@ func (s *Service) ImportPlan(ctx context.Context, actor Actor, projectID, shortI
 	out := &ImportResult{DryRun: false, ProjectID: p.ID, TaskKeys: map[string]string{}, Warnings: validation.Warnings}
 	ew := &eventWriter{svc: s, projectID: p.ID, requestID: requestID, action: "import_plan", itemKind: "epic", itemID: epicID, actor: actor}
 	_, dup, err := ew.run(ctx, func(tx pgx.Tx) (map[string]any, error) {
+		// r1 (#1948 review): the pre-write guard is check-then-act —
+		// re-check the project status under its row lock INSIDE the
+		// write transaction (the TaskStart in-tx precedent), so a
+		// concurrent ArchiveProject either waits for this commit or
+		// aborts it — a mid-flight terminalization never strands nodes.
+		// The failpoint between the two checks is the deterministic
+		// race seam the kill-pin arms.
+		if s.failpoint != nil {
+			if ferr := s.failpoint("import_plan.recheck"); ferr != nil {
+				return nil, ferr
+			}
+		}
+		var projStatus string
+		if err := tx.QueryRow(ctx,
+			`SELECT status FROM projects WHERE id=$1 FOR UPDATE`, p.ID).Scan(&projStatus); err != nil {
+			return nil, err
+		}
+		if err := refuseArchivedProjectCreateStatus(p.ShortID, projStatus); err != nil {
+			return nil, err
+		}
 		shortID, err := mintUnique(ctx, txQ{tx}, "epics", PrefixEpic, taskMintOwnerScope, actor.UserID)
 		if err != nil {
 			return nil, err

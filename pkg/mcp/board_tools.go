@@ -165,7 +165,9 @@ var boardCreateProjectTool = mcp.NewTool("board_create_project",
 
 var boardCreateEpicTool = mcp.NewTool("board_create_epic",
 	mcp.WithDescription("Create a DRAFT epic in a project (ruling R2's default). Activate it to start "+
-		"feeding work to fresh workers; the outcome field is the human's steering wheel."),
+		"feeding work to fresh workers; the outcome field is the human's steering wheel. "+
+		"TERMINAL-TARGET GUARD (#1948): an ARCHIVED project refuses the create — the epic would "+
+		"sit silently unfed outside the claimable set; unarchive the project first."),
 	mcp.WithString("project_id", mcp.Required(), mcp.Description("Project short id, phrase form (prj-amber-lantern-ambles; legacy prj-XXXXXXXX still resolves, deprecated)")),
 	mcp.WithString("title", mcp.Required(), mcp.Description("Epic title")),
 	mcp.WithString("outcome", mcp.Description("What this epic exists to achieve (the steering wheel)")),

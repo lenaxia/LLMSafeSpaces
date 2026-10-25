@@ -148,14 +148,40 @@ external platform MCP identically. 409 render pre-pinned
   unrelated to this change (no svc.CreateTask in it); CI runs on fresh DBs.
   Worked around locally with `TRUNCATE workspaces CASCADE` between runs.
 
+## Review r1 (CHANGES_REQUESTED on 5ab2b1a6f — both findings fixed)
+
+- **Finding 1 (concurrent terminalization)**: the guards were
+  check-then-act OUTSIDE the write transaction — a concurrent
+  `epicCompletionCheck`/archive/`ArchiveProject` between the read and
+  the commit could still strand a row. Fixed with the TaskStart in-tx
+  precedent: `CreateTask`'s fn re-reads `e.status, p.status` under
+  `FOR UPDATE OF e, p` inside the write tx; `ImportPlan`'s fn re-reads
+  the project status under `FOR UPDATE`; guard helpers split into
+  pre-write (struct) + in-tx (status-string) forms so both layers
+  render the identical error. Deterministic race pins arm new
+  `create_task.recheck` / `import_plan.recheck` failpoints (firing
+  between the two checks) to terminalize mid-flight — both refuse, both
+  land nothing. CreateEpic's fn re-checks the project row too.
+- **Finding 2 (CreateEpic seam)**: `create_epic` into an archived
+  project now refuses (pre-guard + in-tx recheck + replay probe) — was
+  the last unguarded creation seam of this class; MCP description
+  updated; pinned (refusal + zero rows + zero events).
+- **Missing pins** (all three): dry-run into an archived project →
+  guard error (never a rendered approval moment); archived-epic refusal
+  pin now asserts the no-row/no-event symmetry its completed twin had;
+  the two concurrency pins above.
+
+Pin count 9 → 13; full `pkg/board` integration suite green (33.4s) on
+the r1 head; `pkg/mcp` green; vet/gofmt clean.
+
 ## Files
 
-- `pkg/board/service.go` — the two guards + CreateTask wiring
-- `pkg/board/plan.go` — ImportPlan wiring (whole-transaction refusal)
-- `pkg/board/terminal_epic_create_integration_test.go` — NEW, 8 pins
+- `pkg/board/service.go` — the two guards (pre-write + in-tx status forms) + CreateTask/CreateEpic wiring (locked re-checks, replay probes)
+- `pkg/board/plan.go` — ImportPlan wiring (pre-write + in-tx locked re-check, replay probe)
+- `pkg/board/terminal_epic_create_integration_test.go` — NEW, 13 pins
 - `pkg/board/remediation_test.go` — fixture adaptation (task_start pins)
 - `pkg/board/service_kill_test.go` — fixture adaptation (keeper task)
-- `pkg/mcp/board_tools.go` — tool description updates
+- `pkg/mcp/board_tools.go` — tool description updates (create_task, create_epic, import_plan)
 - `CHANGELOG.md` — [Unreleased] entry (directly under the header)
 - `worklogs/1228_2026-10-25_1948-terminal-epic-create-guard.md` — this file
 - `COORDINATE.md` — lane claim row

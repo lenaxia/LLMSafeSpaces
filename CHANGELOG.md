@@ -59,7 +59,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   structurally unreachable there) before any write, all-or-nothing
   preserved. PAUSED epics still accept creates (pause is a scheduling
   lever; resume re-feeds — pinned explicitly), as do DRAFT ones
-  (create-then-activate is the documented flow). MCP tool descriptions
+  (create-then-activate is the documented flow). The guards are
+  two-layer — pre-write fast-fail AND an in-transaction re-check under
+  row locks (`FOR UPDATE`, the task_start precedent) so a CONCURRENT
+  completion/archive between the read and the commit still refuses
+  (pinned via deterministic failpoint races); `board_create_epic` into
+  an archived project refuses the same way (the sibling seam). MCP tool
+  descriptions
   document the guard. Fixture-only adaptations in two kill-tests that
   seeded rows into terminal epics incidentally (intent preserved:
   task_start refusals; requestId idempotency). Reopen-with-audit

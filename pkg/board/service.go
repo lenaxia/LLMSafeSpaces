@@ -242,13 +242,22 @@ func requireAgentWorkspaceTarget(actor Actor, targetWorkspaceID string) error {
 // refuse" guard falls into) — and draft is not (create-then-activate
 // is the documented flow).
 func refuseTerminalEpicCreateTarget(e *Epic) error {
-	switch e.Status {
+	return refuseTerminalEpicCreateStatus(e.ShortID, e.Status)
+}
+
+// refuseTerminalEpicCreateStatus is the same guard over freshly-read
+// status — the authoritative in-transaction re-check's form (r1: the
+// pre-write check is check-then-act; a concurrent epicCompletionCheck
+// or archive between the read and the commit must still refuse, the
+// TaskStart in-tx precedent).
+func refuseTerminalEpicCreateStatus(shortID, status string) error {
+	switch status {
 	case EpicCompleted:
 		return &GuardError{Code: GuardEpicState,
-			Detail: fmt.Sprintf("epic %s is completed — create refuses loud: the row would sit silently unfed outside the claimable set (#1948); reopen the epic first (epic_activate; completed→active)", e.ShortID)}
+			Detail: fmt.Sprintf("epic %s is completed — create refuses loud: the row would sit silently unfed outside the claimable set (#1948); reopen the epic first (epic_activate; completed→active)", shortID)}
 	case EpicArchived:
 		return &GuardError{Code: GuardEpicState,
-			Detail: fmt.Sprintf("epic %s is archived — create refuses loud: the row would sit silently unfed outside the claimable set (#1948); unarchive the epic first (unarchive restores active)", e.ShortID)}
+			Detail: fmt.Sprintf("epic %s is archived — create refuses loud: the row would sit silently unfed outside the claimable set (#1948); unarchive the epic first (unarchive restores active)", shortID)}
 	}
 	return nil
 }
@@ -256,13 +265,20 @@ func refuseTerminalEpicCreateTarget(e *Epic) error {
 // refuseArchivedProjectCreateTarget is the project arm of the same
 // #1948 starvation shape: eligibleProjectsSQL gates on
 // p.status='active', so every row created under an archived project —
-// task OR import_plan's whole fresh epic — sits silently unfed until
-// an explicit unarchive (engine precedent: task_start's own "terminal
-// storage stays closed").
+// task, epic, OR import_plan's whole fresh epic — sits silently unfed
+// until an explicit unarchive (engine precedent: task_start's own
+// "terminal storage stays closed").
 func refuseArchivedProjectCreateTarget(p *Project) error {
-	if p.Status == ProjectArchived {
+	return refuseArchivedProjectCreateStatus(p.ShortID, p.Status)
+}
+
+// refuseArchivedProjectCreateStatus is the in-transaction re-check's
+// form (r1: a concurrent ArchiveProject between the pre-write read and
+// the commit must still refuse).
+func refuseArchivedProjectCreateStatus(shortID, status string) error {
+	if status == ProjectArchived {
 		return &GuardError{Code: GuardProjectState,
-			Detail: fmt.Sprintf("project %s is archived — create refuses loud: the row would sit silently unfed outside the claimable set (#1948); unarchive the project first (unarchive restores active)", p.ShortID)}
+			Detail: fmt.Sprintf("project %s is archived — create refuses loud: the row would sit silently unfed outside the claimable set (#1948); unarchive the project first (unarchive restores active)", shortID)}
 	}
 	return nil
 }
@@ -494,9 +510,32 @@ func (s *Service) CreateEpic(ctx context.Context, actor Actor, projectID, shortI
 	if err := ValidateEpicInput(in); err != nil {
 		return nil, err
 	}
+	// #1948 r2: the project arm covers this seam too — a draft epic
+	// minted into an archived project sits outside the claimable set
+	// with no signal (the last unguarded creation seam of this class).
+	replay, err := s.replayOf(ctx, p.ID, requestID, "create_epic")
+	if err != nil {
+		return nil, err
+	}
+	if replay == nil {
+		if err := refuseArchivedProjectCreateTarget(p); err != nil {
+			return nil, err
+		}
+	}
 	epicID := uuid.NewString()
 	ew := &eventWriter{svc: s, projectID: p.ID, requestID: requestID, action: "create_epic", itemKind: "epic", itemID: epicID, actor: actor}
 	outcome, dup, err := ew.run(ctx, func(tx pgx.Tx) (map[string]any, error) {
+		// r1 in-tx re-check (same discipline as CreateTask): a
+		// concurrent ArchiveProject serializes against the locked
+		// project row instead of slipping a starved epic through.
+		var projStatus string
+		if err := tx.QueryRow(ctx,
+			`SELECT status FROM projects WHERE id=$1 FOR UPDATE`, p.ID).Scan(&projStatus); err != nil {
+			return nil, err
+		}
+		if err := refuseArchivedProjectCreateStatus(p.ShortID, projStatus); err != nil {
+			return nil, err
+		}
 		shortID, err := mintUnique(ctx, txQ{tx}, "epics", PrefixEpic, taskMintOwnerScope, actor.UserID)
 		if err != nil {
 			return nil, err
@@ -800,6 +839,30 @@ func (s *Service) CreateTask(ctx context.Context, actor Actor, epicID, shortIDOr
 	taskID := uuid.NewString()
 	ew := &eventWriter{svc: s, projectID: p.ID, requestID: requestID, action: "create_task", itemKind: "task", itemID: taskID, actor: actor}
 	outcome, dup, err := ew.run(ctx, func(tx pgx.Tx) (map[string]any, error) {
+		// r1 (#1948 review): the pre-write guard is check-then-act —
+		// re-check under row locks INSIDE the write transaction so a
+		// concurrent epicCompletionCheck / archive / ArchiveProject
+		// serializes against this create (the TaskStart in-tx
+		// precedent). The failpoint between the two checks is the
+		// deterministic race seam the kill-pin arms.
+		if s.failpoint != nil {
+			if ferr := s.failpoint("create_task.recheck"); ferr != nil {
+				return nil, ferr
+			}
+		}
+		var epicStatus, projStatus string
+		if err := tx.QueryRow(ctx, `
+			SELECT e.status, p.status FROM epics e
+			JOIN projects p ON p.id = e.project_id
+			WHERE e.id = $1 FOR UPDATE OF e, p`, e.ID).Scan(&epicStatus, &projStatus); err != nil {
+			return nil, err
+		}
+		if err := refuseArchivedProjectCreateStatus(p.ShortID, projStatus); err != nil {
+			return nil, err
+		}
+		if err := refuseTerminalEpicCreateStatus(e.ShortID, epicStatus); err != nil {
+			return nil, err
+		}
 		shortID, err := mintUnique(ctx, txQ{tx}, "tasks", PrefixTask, taskMintOwnerScope, actor.UserID)
 		if err != nil {
 			return nil, err
