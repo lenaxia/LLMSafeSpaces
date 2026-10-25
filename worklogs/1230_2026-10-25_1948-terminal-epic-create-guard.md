@@ -183,5 +183,5 @@ the r1 head; `pkg/mcp` green; vet/gofmt clean.
 - `pkg/board/service_kill_test.go` — fixture adaptation (keeper task)
 - `pkg/mcp/board_tools.go` — tool description updates (create_task, create_epic, import_plan)
 - `CHANGELOG.md` — [Unreleased] entry (directly under the header)
-- `worklogs/1228_2026-10-25_1948-terminal-epic-create-guard.md` — this file
+- `worklogs/1230_2026-10-25_1948-terminal-epic-create-guard.md` — this file
 - `COORDINATE.md` — lane claim row
