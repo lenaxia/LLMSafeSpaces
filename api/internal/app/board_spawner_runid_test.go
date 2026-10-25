@@ -53,7 +53,10 @@ func TestBoardSpawnRequest_WiresTheRunID(t *testing.T) {
 		ProjectID:  "e2fa7e6a-6216-406f-9ff6-45ef337fb155",
 		ClaimToken: "tok-wire", Task: &board.Task{Description: "probe charter"},
 	}
-	req := boardSpawnRequest(c, boardRunID(c))
+	req := boardSpawnRequest(c)
+	if req.RunID != boardRunID(c) { // same c — divergence means the site drifted from the pinned helper
+		t.Fatalf("dispatch-site RunID drifted from boardRunID: %s", req.RunID)
+	}
 	if req.RunID != "3eec1981-b775-4934-bd52-90e9baca03da-w-tok-wire" {
 		t.Fatalf("RunID not wired verbatim: %s", req.RunID)
 	}
