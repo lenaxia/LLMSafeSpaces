@@ -41,6 +41,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **#1856** — ai-workflows v0.2.24 reapply (#1896).
 
 
+## [0.44.1] - 2026-10-25
+
+### Fixed — board: episode-unique workflow RunIDs for worker claims (#1957)
+
+- **Re-claimed tasks no longer spawn stillborn workers** (#1957 BUG A,
+  live-proven): the spawner's workflow-agent RunID for a plain worker
+  claim was the BARE task id — agentd's workflow-agent mux keys charter
+  delivery on the (workflow, run) pair, so after a task's first
+  dispatch every re-claim (bounce, cooldown re-arm, lapse re-feed)
+  re-used the key and the charter was silently dropped: a session
+  spawned with zero tokens and lapsed at +15min, forever. RunIDs are
+  now unique per episode by construction (task + stage tag + the fresh
+  claim token); the dispatch closure is pinned end-to-end over
+  interface seams (the reviewer's bypass mutation verified RED).
+  BUG B (the reviewer persona's missing toolset) was the stale
+  digest-pinned agentd image — rolled to the v0.44.0 build
+  (talos-ops-prod#2854).
+
+
 ## [0.44.0] - 2026-10-25
 ### Fixed — board: creation into terminal epics refuses loud (#1948)
 
