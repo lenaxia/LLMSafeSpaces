@@ -249,6 +249,27 @@ func TestAdapter_DeleteSession(t *testing.T) {
 	require.Contains(t, srv.requests, "DELETE /session/ses_1")
 }
 
+// #1836 r2 F1: the REAL producer's absence shape — DeleteSession against
+// a harness 404 must wrap agent.ErrSessionNotFound (the read routes'
+// #1340 definitiveness, extended to the delete route), because the
+// internal delete route's absence classification (the destructive retry
+// contract: absence ≡ miss ≡ foreign → bare not_found) reads this
+// sentinel in the adapter regime — the production-default posture.
+// Pre-r2 the route wrapped ONLY ErrHTTPStatus and the classification
+// arm was dead code.
+func TestAdapter_DeleteSession_404_WrapsSessionNotFound(t *testing.T) {
+	srv := newFakeOpencode(t)
+	srv.register("DELETE", "/session/ses_gone", `{"error":"not found"}`, http.StatusNotFound)
+
+	a := newTestAdapter(t, srv.Server)
+	err := a.DeleteSession(context.Background(), "u-1", "ws-1", "ses_gone")
+	require.Error(t, err)
+	assert.ErrorIs(t, err, agent.ErrSessionNotFound,
+		"a delete-route 404 carries the definitive not-found sentinel")
+	assert.ErrorIs(t, err, agent.ErrHTTPStatus, "the status sentinel survives alongside (#987)")
+	assert.Contains(t, err.Error(), "returned 404", "the wire text keeps the agentd matcher's shape (isSessionNotFoundErr's Abort arm)")
+}
+
 // --- Messaging ---
 
 func TestAdapter_Send_ReturnsTranslatedMessage(t *testing.T) {

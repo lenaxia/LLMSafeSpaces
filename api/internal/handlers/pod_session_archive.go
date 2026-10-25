@@ -220,7 +220,11 @@ func (h *PodSessionArchiveHandler) Delete(c *gin.Context) {
 // sessionDeleteAbsent reports whether a HardDeleteSession error is the
 // agent-side session-not-found verdict — the #1836 absence class:
 //   - adapter regime: agent.ErrSessionNotFound is wrapped into the
-//     session-route 404 shape (#1340, adapter_helpers);
+//     session-route 404 shape (httpSessionError — the #1340
+//     definitiveness the read routes carry, extended to the DELETE
+//     route by r2: the adapter's DeleteSession originally wrapped only
+//     ErrHTTPStatus, leaving this arm dead code in the
+//     production-default regime);
 //   - Act regime: the connect not_found code rides the error
 //     (mapConnectError's 404 class — agentd's opencodeActor maps the
 //     harness's HTTP 404 to CodeNotFound).
@@ -229,7 +233,8 @@ func (h *PodSessionArchiveHandler) Delete(c *gin.Context) {
 // workspace's id all die at the SAME agent-side 404 — one bare 404 for
 // all three is the never-disclose rendering the ruling pins (the
 // caller's own ref echoes back; no class information beyond
-// not-found).
+// not-found). Both arms are pinned against their REAL producers
+// (the adapter leg drives the actual Adapter against a 404 harness).
 func sessionDeleteAbsent(err error) bool {
 	if errors.Is(err, agent.ErrSessionNotFound) {
 		return true

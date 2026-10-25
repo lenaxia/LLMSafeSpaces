@@ -1050,8 +1050,13 @@ func mcpSessionArchiveBulk(ctx context.Context, password string, refs []any, arc
 	// ONE shared confirmation read (#1879, batch-amortized): refreshes
 	// this pod's archived-set cache and verifies every done item. A
 	// failed or disagreeing read renders unverified — the write is the
-	// state truth; the tool never fails on it.
-	confirmed := forceArchivedSetRefresh(ctx)
+	// state truth; the tool never fails on it. Skipped when NOTHING
+	// landed (r2: an all-failed batch has no visibility to prove — one
+	// wasted platform read per such call otherwise).
+	var confirmed map[string]bool
+	if len(resolvedOf) > 0 {
+		confirmed = forceArchivedSetRefresh(ctx)
+	}
 	for i := range results {
 		if results[i].Status != sessionBulkDone {
 			continue

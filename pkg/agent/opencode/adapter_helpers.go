@@ -65,13 +65,14 @@ func readBody(resp *http.Response, limit int64) ([]byte, error) {
 // error additionally wraps agent.ErrImageInTextOnlyHistory so callers
 // can surface the targeted remediation. Caller has already
 // deferred-Close'd the body.
-// httpSessionError is httpError narrowed for SESSION-READ routes
-// (GetSession, GetHistory, GetHistoryPage): there — and only there — a
-// 404 is the definitive session-not-found verdict (#1340), so it
-// additionally wraps agent.ErrSessionNotFound. Non-session routes
-// (question/permission replies, prompts) can also 404 with a DIFFERENT
-// meaning ("pending input gone", "session busy") and must not carry the
-// reap sentinel — httpError stays unclassified for them.
+// httpSessionError is httpError narrowed for SESSION routes (GetSession,
+// GetHistory, GetHistoryPage — the #1340 read case — and, since #1836 r2,
+// DeleteSession): there — and only there — a 404 is the definitive
+// session-not-found verdict, so it additionally wraps
+// agent.ErrSessionNotFound. Non-session routes (question/permission
+// replies, prompts) can also 404 with a DIFFERENT meaning ("pending
+// input gone", "session busy") and must not carry the reap sentinel —
+// httpError stays unclassified for them.
 func (a *Adapter) httpSessionError(path string, resp *http.Response) error {
 	if resp.StatusCode == http.StatusNotFound {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 512))

@@ -320,11 +320,12 @@ func TestMCPSessionDeleteBulk_MixedBatch(t *testing.T) {
 // Re-submit of a batch whose items a prior submit already deleted:
 // absence ≡ miss — the SAME bare not_found item, never an error,
 // never a conflict (the destructive-variant ruling recorded on #1836).
-// The 404 here is the REAL wire shape post-r1: the internal delete
-// route now classifies the agent-side not-found verdict (both
-// authority regimes — pinned platform-side by
-// TestPodSessionDelete_AbsenceAdapteRegime_404 / _ActRegime_404)
-// instead of flattening every failure to 502.
+// The 404 here is the REAL wire shape post-r2: the internal delete
+// route classifies the agent-side not-found verdict in BOTH authority
+// regimes — the adapter leg pinned against the REAL Adapter producer
+// (TestPodSessionDelete_AbsenceAdapterRegime_404), the Act leg at
+// _ActRegime_404, and the sentinel itself at the adapter tier
+// (TestAdapter_DeleteSession_404_WrapsSessionNotFound).
 func TestMCPSessionDeleteBulk_IdempotentResubmit_AbsenceRendersNotFound(t *testing.T) {
 	var mu sync.Mutex
 	var calls int
