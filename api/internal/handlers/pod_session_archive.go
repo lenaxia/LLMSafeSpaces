@@ -13,6 +13,7 @@ import (
 	"k8s.io/client-go/kubernetes"
 
 	apierrors "github.com/lenaxia/llmsafespaces/api/internal/errors"
+	agent "github.com/lenaxia/llmsafespaces/pkg/agent"
 	"github.com/lenaxia/llmsafespaces/pkg/interfaces"
 	"github.com/lenaxia/llmsafespaces/pkg/types"
 )
@@ -194,6 +195,19 @@ func (h *PodSessionArchiveHandler) Delete(c *gin.Context) {
 		return
 	}
 	if err := h.proxy.HardDeleteSession(c.Request.Context(), req.WorkspaceID, req.SessionID); err != nil {
+		// The absence class renders 404 — #1836's destructive ruling at
+		// the session seam (absence ≡ miss ≡ foreign: all three surface
+		// as the agent-side not-found verdict, and the route classifies
+		// exactly like the Archive route classifies its apiErr). The
+		// 404 wire shape is what agentd's isSessionNotFoundErr matches;
+		// pre-classification every delete error flattened to 502 and a
+		// re-submitted batch rendered the permanent absence class as
+		// retryable internal_error forever (review r1 F1). Every OTHER
+		// failure keeps the honest 502.
+		if sessionDeleteAbsent(err) {
+			c.AbortWithStatusJSON(http.StatusNotFound, gin.H{"error": "not found: session " + req.SessionID})
+			return
+		}
 		if h.logger != nil {
 			h.logger.Error("session-delete: hard delete failed", err, "workspaceID", req.WorkspaceID, "sessionID", req.SessionID)
 		}
@@ -201,6 +215,35 @@ func (h *PodSessionArchiveHandler) Delete(c *gin.Context) {
 		return
 	}
 	c.Status(http.StatusNoContent)
+}
+
+// sessionDeleteAbsent reports whether a HardDeleteSession error is the
+// agent-side session-not-found verdict — the #1836 absence class:
+//   - adapter regime: agent.ErrSessionNotFound is wrapped into the
+//     session-route 404 shape (httpSessionError — the #1340
+//     definitiveness the read routes carry, extended to the DELETE
+//     route by r2: the adapter's DeleteSession originally wrapped only
+//     ErrHTTPStatus, leaving this arm dead code in the
+//     production-default regime);
+//   - Act regime: the connect not_found code rides the error
+//     (mapConnectError's 404 class — agentd's opencodeActor maps the
+//     harness's HTTP 404 to CodeNotFound).
+//
+// An absent row (a prior delete landed), a mistyped id, and a foreign
+// workspace's id all die at the SAME agent-side 404 — one bare 404 for
+// all three is the never-disclose rendering the ruling pins (the
+// caller's own ref echoes back; no class information beyond
+// not-found). Both arms are pinned against their REAL producers
+// (the adapter leg drives the actual Adapter against a 404 harness).
+func sessionDeleteAbsent(err error) bool {
+	if errors.Is(err, agent.ErrSessionNotFound) {
+		return true
+	}
+	var cce *connectCodeError
+	if errors.As(err, &cce) && cce.code == "not_found" {
+		return true
+	}
+	return false
 }
 
 // ArchivedSet handles GET /internal/v1/session-archived — the archived

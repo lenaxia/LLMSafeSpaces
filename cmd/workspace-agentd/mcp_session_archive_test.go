@@ -367,7 +367,7 @@ func TestMCPDeleteSession_NoInjection_OtherTarget_Proceeds(t *testing.T) {
 func TestOriginPlugin_InjectionTargetsMatchDispatcher(t *testing.T) {
 	src, err := os.ReadFile(filepath.Join("..", "..", "runtimes", "opencode", "plugins", "llmsafespaces-origin.js"))
 	require.NoError(t, err)
-	for _, tool := range []string{"llmsafespaces_send_message", "llmsafespaces_session_metadata", "llmsafespaces_delete_session"} {
+	for _, tool := range []string{"llmsafespaces_send_message", "llmsafespaces_session_metadata", "llmsafespaces_delete_session", "llmsafespaces_session_delete_bulk"} {
 		assert.Contains(t, string(src), `"`+tool+`"`,
 			"the plugin must stamp %s — a typo here silently disables injection (and with it the metadata default + self-delete guard)", tool)
 	}

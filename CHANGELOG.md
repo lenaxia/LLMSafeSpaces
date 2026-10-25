@@ -163,6 +163,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   5 legs, glm-5.3): the un-stubbed runaway could NOT be re-fired on
   today's serving path — documented in the worklog as an evidence limit
   of the live leg, with the deterministic pins carrying the regression.
+### Added — session bulk variants (#1836, partial)
+
+- **Bulk session archive/delete with per-item result arrays** (#1836's
+  session siblings — the lived pain: archiving ~48 sessions cost ~48
+  context-resending tool round-trips): `session_archive_bulk` and
+  `session_delete_bulk` on the agentd MCP surface (session_archive's
+  and delete_session's batch twins — up to 50 refs in ONE call, every
+  item one full single-tool delegation: `resolveSessionRef`
+  phrase/alias/raw dual-accept, then the pod-identity platform write).
+  Contract: per-item `{id, status: done|failed, archived_visibility?,
+  error?}` — partial failures per item, never all-or-nothing; one
+  malformed id sinks only its own item; batch capped at 50
+  (`board.BulkMaxItems`, single-sourced). Idempotent retry: repeat
+  archive returns done (the platform seam's root-row write is
+  idempotent); delete follows the destructive ruling recorded on #1836
+  — absence ≡ miss ≡ foreign, all three the same bare `not_found`
+  item. The self-delete guard is per item (`self_delete_refused` —
+  the batch keeps processing); done archive items carry #1879's
+  `archived_visibility` from ONE shared post-write confirmation read.
+  The origin plugin stamps the delete bulk for the guard's injection
+  half (lockstep pin extended); the #1816 §2 deprecation notice scans
+  array args.
+- **Fixed (review r1 F1 + r2 F1)**: the pod-identity internal delete
+  route (`POST /internal/v1/session-delete`) classifies the agent-side
+  session-not-found verdict as 404 in BOTH authority regimes — the
+  adapter's `Adapter.DeleteSession` now wraps `agent.ErrSessionNotFound`
+  on a delete-route 404 (the #1340 definitiveness the session-READ
+  routes already carried; the Act regime's connect `not_found` was
+  already classified) instead of the route flattening every failure to
+  502 — live absence renders the bare `not_found` shape the
+  destructive-variant retry contract keys on; every other failure keeps
+  the honest 502. Both bulk forms carry origin-plugin e2e legs
+  (`TestOriginE2E1836_*`, CI-selected).
 
 ### Added — board bulk delete variant (#1836, partial)
 

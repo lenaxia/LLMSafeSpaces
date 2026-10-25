@@ -900,6 +900,47 @@ func TestMCPHandler_ToolDescriptionGuidance(t *testing.T) {
 		}
 	})
 
+	// #1836 session bulk siblings: same clear-instructions ruling —
+	// the batch forms' load-bearing elements (per-item array, the
+	// shared direction, the destructive retry rendering, the
+	// per-item self guard, the cap) are contract.
+	t.Run("session_archive_bulk guidance", func(t *testing.T) {
+		d, ok := descs["session_archive_bulk"]
+		require.True(t, ok, "session_archive_bulk in tools/list")
+		for _, want := range []string{
+			"per-item result array",                    // contract 1: partial failures per item
+			"never all-or-nothing",                     // contract 1's negative
+			"one malformed id sinks only its own item", // contract 3
+			"NOT a conflict",                           // contract 2: already-done renders done
+			"archived_visibility",                      // #1879 semantics per item
+			"do NOT re-archive on unverified",          // the #1879 incident's lesson
+			"NOT for deleting",                         // the archive/delete decision rule
+		} {
+			assert.Contains(t, d, want)
+		}
+		sd, ok := schemaDescs["session_archive_bulk/archived"]
+		require.True(t, ok, "session_archive_bulk/archived schema description present")
+		assert.Contains(t, sd, "REQUIRED DIRECTION")
+		assert.Contains(t, sd, "no default")
+	})
+
+	t.Run("session_delete_bulk guidance", func(t *testing.T) {
+		d, ok := descs["session_delete_bulk"]
+		require.True(t, ok, "session_delete_bulk in tools/list")
+		for _, want := range []string{
+			"HARD DELETE, no undo",        // destructiveness named up front
+			"per-item result array",       // contract 1
+			"never all-or-nothing",        // contract 1's negative
+			"refused per item",            // the self guard is item-isolated
+			"self_delete_refused",         // the item's code is named
+			"SAME not_found item",         // contract 2's destructive rendering
+			"absence is the done state",   // the ruling's substance
+			"prefer session_archive_bulk", // the decision rule
+		} {
+			assert.Contains(t, d, want)
+		}
+	})
+
 	t.Run("session_metadata scope-change guidance", func(t *testing.T) {
 		d, ok := descs["session_metadata"]
 		require.True(t, ok, "session_metadata in tools/list")

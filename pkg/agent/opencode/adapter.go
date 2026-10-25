@@ -259,7 +259,15 @@ func (a *Adapter) DeleteSession(ctx context.Context, userID, workspaceID, sessio
 	}
 	defer resp.Body.Close() //nolint:errcheck // best-effort drain
 	if resp.StatusCode >= 400 {
-		return a.httpError("DELETE /session/"+sessionID, resp)
+		// #1836 r2 F1: a DELETE /session/{id} 404 is the definitive
+		// session-not-found verdict, exactly the read routes' #1340
+		// case — the session-route classifier (httpSessionError) wraps
+		// ErrSessionNotFound there and only there, and the internal
+		// delete route's absence classification (the destructive
+		// retry contract: absence ≡ miss ≡ foreign → bare not_found)
+		// reads that sentinel in the ADAPTER regime (the production
+		// default posture).
+		return a.httpSessionError("DELETE /session/"+sessionID, resp)
 	}
 	return nil
 }
