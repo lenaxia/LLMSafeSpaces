@@ -54,6 +54,15 @@ func WithWorkerMessenger(m WorkerMessenger) Option {
 	return func(s *Service) { s.messenger = m }
 }
 
+// WithBounceRedispatcher installs the #1959 bounce re-dispatch seam:
+// delivery of a re-dispatch turn (fresh bounce claim token + embedded
+// verdict chain) to the ORIGINAL implementer's existing session — the
+// owner ruling's bounce-target semantics. Nil = no delivery seam: the
+// bounce falls back to a fresh-implementer spawn (today's shape).
+func WithBounceRedispatcher(r BounceRedispatcher) Option {
+	return func(s *Service) { s.redispatcher = r }
+}
+
 // WithPRDriftSource installs the RC2 external-truth source.
 func WithPRDriftSource(src PRDriftSource) Option {
 	return func(s *Service) { s.drift = src }
@@ -86,6 +95,11 @@ type Service struct {
 	// (#1747 pause-must-pause). Nil = no delivery (the flags stay
 	// authoritative; tests pin the nil-seam behavior).
 	messenger WorkerMessenger
+	// redispatcher delivers the #1959 bounce re-dispatch turn to the
+	// ORIGINAL implementer's existing session (the ruling's
+	// bounce-target semantics). Nil = no delivery seam: the bounce
+	// falls back to a fresh-implementer spawn.
+	redispatcher BounceRedispatcher
 	// pressureMu guards the last resource-pressure sample per workspace
 	// (#1747 round 3): agentd pushes over the seam; the claim choke
 	// point skips pressured workspaces; reads surface the note.

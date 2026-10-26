@@ -68,24 +68,10 @@ func boardCharterPrompt(c *board.Claim) string {
 	}
 	// #1832 item 5 (2/2): prior review verdicts ride the charter — the
 	// iteration history after a fail-bounce (never a failure count).
-	if len(c.VerdictChain) > 0 {
-		b.WriteString("PRIOR REVIEW VERDICTS (address every outstanding finding):\n")
-		for _, v := range c.VerdictChain {
-			fmt.Fprintf(&b, "  - %s by %s", v.Verdict, v.Reviewer)
-			if !v.Applied {
-				fmt.Fprintf(&b, " (transition refused: %s)", v.Transition)
-			}
-			fmt.Fprintln(&b)
-			for _, f := range v.Findings {
-				crit := ""
-				if f.CriterionIndex != nil {
-					crit = fmt.Sprintf(" [criterion %d]", *f.CriterionIndex)
-				}
-				fmt.Fprintf(&b, "      %s: %s%s\n", f.Severity, f.Pointer, crit)
-			}
-		}
-		b.WriteString("\n")
-	}
+	// #1959: the block is board.RenderVerdictChain — the SAME renderer
+	// the bounce re-dispatch message uses, so the original implementer
+	// sees byte-equivalent findings whether re-dispatched or replaced.
+	b.WriteString(board.RenderVerdictChain(c.VerdictChain))
 	// #1947 (probe 2, live evidence): a persona-bearing charter closes
 	// on the PERSONA's outcome — never the implementer loop. The shipped
 	// trailer ("Work the task to completion … move the task to in_review

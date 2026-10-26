@@ -114,7 +114,16 @@ type Task struct {
 	// precedent. Set at the read edge ONLY; the stored row stays
 	// canonical (bounce/reconciler/messenger consumers keep raw).
 	AssigneeSessionDeprecated bool   `json:"assignee_session_deprecated,omitempty"`
-	ClaimToken                string `json:"claim_token,omitempty"`
+	// ImplementerSession is the #1959 bounce-consumer identity: the
+	// session that moved the row to in_review — the ORIGINAL worker the
+	// ruling's bounce re-dispatches. Captured at the forward exit
+	// (=assignee_session at that moment), preserved through the whole
+	// review lifecycle (the reviewer mint/stamp/lapse never touches
+	// it), cleared on every new episode. Internal engine addressing —
+	// deliberately NOT exposed on read edges (no phrase-translation
+	// debt); `json:"-"` keeps it off the wire.
+	ImplementerSession string `json:"-"`
+	ClaimToken         string `json:"claim_token,omitempty"`
 	// ClaimPersona is the live claim's persona provenance (#1941 mint,
 	// made durable by #1946): the configured persona name whose mint
 	// holds the row. Empty on every ordinary claim (worker grant,

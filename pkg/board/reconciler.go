@@ -288,7 +288,7 @@ func (s *Service) rc1Reclaims(ctx context.Context) (int, error) {
 		// existing cooldown candidacy gate; never a stage).
 		tag, err := tx.Exec(ctx, `
 			UPDATE tasks SET stage='backlog', stage_entered_at=now(),
-				claim_token=NULL, lease_expires_at=NULL, assignee_session=NULL,
+				claim_token=NULL, lease_expires_at=NULL, assignee_session=NULL, implementer_session=NULL,
 				claim_incremented_attempts=false, claim_persona=NULL,
 				last_attempt_failed=true, failure_count=failure_count+1, last_failure_at=now(),
 				cooldown_until=now()+make_interval(secs=>$2::float8)
