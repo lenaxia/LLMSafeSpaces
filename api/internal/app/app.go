@@ -1599,6 +1599,13 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 				board.WithWorkerSpawner(newBoardSpawner(
 					&apiwf.K8sWorkspaceActivator{K8sClient: k8sClient, Namespace: cfg.Kubernetes.Namespace},
 					&apiwf.HTTPAgentExecutor{Port: 4097, PasswordProvider: proxyHandler},
+					// #1966: the spawner stamps the worker-class origin
+					// mark (session_origins, kind='session') on every
+					// successful fresh-worker spawn — the sidebar's
+					// Workers folder classifies on it. Same DB (the
+					// board pool shares cfg.Database), its own pool; the
+					// mark write is best-effort like every #1915 mark.
+					workflows.NewStore(boardPool),
 				)),
 				board.WithAsyncSpawn(),
 				// Stage-persona claim-then-spawn (owner directive

@@ -23,11 +23,14 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 
 	apiwf "github.com/lenaxia/llmsafespaces/api/internal/workflows"
 	"github.com/lenaxia/llmsafespaces/pkg/board"
+	"github.com/lenaxia/llmsafespaces/pkg/types"
+	wf "github.com/lenaxia/llmsafespaces/pkg/workflows"
 )
 
 // boardCharterPrompt builds the fresh worker's charter (ruling R2: the
@@ -148,7 +151,15 @@ type spawnDispatcher interface {
 	Execute(ctx context.Context, workspaceID, podIP string, req *apiwf.NodeExecRequest) (*apiwf.NodeExecResponse, error)
 }
 
-func newBoardSpawner(activator spawnActivator, executor spawnDispatcher) board.WorkerSpawner {
+// spawnOriginRecorder is the #1966 narrow seam the spawner marks
+// through — the same two verbs as apiwf.SessionOriginStore (satisfied
+// structurally by the workflows store). Nil ⇒ marking skipped.
+type spawnOriginRecorder interface {
+	RecordSessionOrigin(ctx context.Context, row *wf.SessionOriginRow) error
+	DeleteSessionOrigin(ctx context.Context, sessionID string) error
+}
+
+func newBoardSpawner(activator spawnActivator, executor spawnDispatcher, origins spawnOriginRecorder) board.WorkerSpawner {
 	return func(ctx context.Context, c *board.Claim) (string, error) {
 		if c.WorkspaceID == "" {
 			return "", fmt.Errorf("board: spawn: claim carries no workspace (task %s)", c.TaskID)
@@ -167,6 +178,30 @@ func newBoardSpawner(activator spawnActivator, executor spawnDispatcher) board.W
 		if resp.SessionID == "" {
 			return "", fmt.Errorf("board: spawn: agentd returned no session id (errorCode=%s detail=%s)",
 				resp.ErrorCode, resp.Detail)
+		}
+		// #1966: stamp the worker-class origin mark so the sidebar's
+		// Workers folder can classify this session (presentation-only
+		// grouping). The #1915 best-effort discipline: a failed write
+		// logs and the spawn still succeeds — the mark feeds display,
+		// not the spawn's outcome. kind='session': the worker session
+		// survives its dispatch (R9) and must never be reap-admitted
+		// as a carrier.
+		if origins != nil {
+			title := c.ShortID
+			if title == "" {
+				title = c.TaskID
+			}
+			if err := origins.RecordSessionOrigin(ctx, &wf.SessionOriginRow{
+				SessionID:   resp.SessionID,
+				WorkspaceID: c.WorkspaceID,
+				Origin:      types.SessionOriginWorker,
+				Kind:        types.SessionOriginKindSession,
+				Title:       title,
+				CreatedAt:   time.Now().UTC(),
+			}); err != nil {
+				slog.ErrorContext(ctx, "board: spawn: failed to record worker origin mark",
+					"error", err.Error(), "workspaceID", c.WorkspaceID, "sessionId", resp.SessionID, "taskId", c.TaskID)
+			}
 		}
 		return resp.SessionID, nil
 	}

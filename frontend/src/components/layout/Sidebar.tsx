@@ -34,6 +34,7 @@ import {
   Zap,
   Archive,
   KanbanSquare,
+  Bot,
 } from "lucide-react";
 import { Spinner } from "../ui/Spinner";
 import { BusyIndicator } from "../ui/BusyIndicator";
@@ -44,6 +45,7 @@ import { useNow } from "../../hooks/useNow";
 import { cn } from "../../lib/utils";
 import { buildSessionTree, ancestorChain } from "../../lib/sessionTree";
 import type { SessionTreeNode } from "../../lib/sessionTree";
+import { isWorkerSession } from "../../lib/sessionWorker";
 import { useUserSetting } from "../../hooks/useUserSettings";
 
 interface Props {
@@ -627,18 +629,29 @@ function WorkspaceSessionList({
 
   // #1627: archived sessions never render in the live tree — they
   // live in the collapsed-by-default Archived group below it.
+  // #1966: within the live set, worker sessions (board/engine-spawned
+  // origin-class workers + parented Task-tool subagents) leave the
+  // main list for the collapsed Workers folder; archived filters
+  // FIRST, so an archived worker rows under Archived (retirement
+  // outranks the worker class).
   const archivedSessions = useMemo(
     () => (sessions ?? []).filter((s) => s.archived),
     [sessions],
   );
-  const liveSessions = useMemo(
-    () => (sessions ?? []).filter((s) => !s.archived),
+  const workerSessions = useMemo(
+    () => (sessions ?? []).filter((s) => !s.archived && isWorkerSession(s)),
+    [sessions],
+  );
+  const userSessions = useMemo(
+    () => (sessions ?? []).filter((s) => !s.archived && !isWorkerSession(s)),
     [sessions],
   );
 
   // Tree shape: roots + orphans, where roots/orphans contain children of
   // arbitrary depth. Recomputed only when the session list changes.
-  const tree = useMemo(() => buildSessionTree(liveSessions), [liveSessions]);
+  // #1966: the tree is built from USER sessions only — every parented
+  // session is worker-classified and lives in the Workers folder.
+  const tree = useMemo(() => buildSessionTree(userSessions), [userSessions]);
 
   const pendingActionIds = useSessionPendingActions();
 
@@ -738,15 +751,29 @@ function WorkspaceSessionList({
     prevSelectedRef.current = next;
   }, [sessions, selectedSessionId, autoExpandChildren]);
 
-  // The synthetic "Orphaned subtasks" group is also collapsible, but
-  // tracked separately from real session IDs to avoid any chance of
-  // collision with a real ses_orphans-like ID.
-  const [orphansExpanded, setOrphansExpanded] = useState(false);
+  // The synthetic "Orphaned subtasks" group was removed by #1966:
+  // every parented session (the only orphan candidates) is
+  // worker-classified into the Workers folder, so the main tree can no
+  // longer contain orphans.
 
   // #1627 ruling 3: the Archived group is ALWAYS collapsed by default —
   // deliberate friction. Expanding requires a human click; nothing
   // auto-expands it (not even selecting an archived session).
   const [archivedExpanded, setArchivedExpanded] = useState(false);
+
+  // #1966: the Workers folder is collapsed by default (the folder IS
+  // the decluttering), but — unlike Archived — a live worker CAN be
+  // the session the user is reading, so selecting a worker expands it
+  // (the tree's auto-expand-the-active-chain precedent, not the
+  // Archived group's deliberate friction).
+  const [workersExpanded, setWorkersExpanded] = useState(false);
+  const selectedIsWorker = useMemo(
+    () => !!selectedSessionId && workerSessions.some((s) => s.id === selectedSessionId),
+    [workerSessions, selectedSessionId],
+  );
+  useEffect(() => {
+    if (selectedIsWorker) setWorkersExpanded(true);
+  }, [selectedIsWorker]);
 
   const toggleExpanded = (sessionId: string) => {
     setExpanded((prev) => {
@@ -802,15 +829,13 @@ function WorkspaceSessionList({
             />
           ))}
 
-          {tree.orphans.length > 0 && (
-            <OrphansGroup
-              orphans={tree.orphans}
-              expanded={orphansExpanded}
-              onToggleExpand={() => setOrphansExpanded((v) => !v)}
+          {workerSessions.length > 0 && (
+            <WorkersGroup
+              sessions={workerSessions}
+              expanded={workersExpanded}
+              onToggleExpand={() => setWorkersExpanded((v) => !v)}
               workspaceId={workspaceId}
               selectedSessionId={selectedSessionId}
-              childExpanded={expanded}
-              onChildToggleExpand={toggleExpanded}
               onSelectSession={onSelectSession}
               onRenameSession={onRenameSession}
               onArchiveSession={onArchiveSession}
@@ -820,7 +845,6 @@ function WorkspaceSessionList({
               onRenameSessionCancel={onRenameSessionCancel}
               onRenameSessionConfirm={onRenameSessionConfirm}
               contextBySessionId={contextBySessionId}
-              pendingIndicatorIds={pendingIndicatorIds}
             />
           )}
 
@@ -1011,8 +1035,8 @@ function SessionTreeRow({
             <span
               className="flex-shrink-0 rounded px-1 text-[9px] font-medium uppercase"
               style={{
-                color: s.origin === "routine" ? "#8b5cf6" : s.origin === "workflow" ? "#3b82f6" : "#6b7280",
-                backgroundColor: s.origin === "routine" ? "#8b5cf620" : s.origin === "workflow" ? "#3b82f620" : "#6b728020",
+                color: s.origin === "routine" ? "#8b5cf6" : s.origin === "workflow" ? "#3b82f6" : s.origin === "worker" ? "#d97706" : "#6b7280",
+                backgroundColor: s.origin === "routine" ? "#8b5cf620" : s.origin === "workflow" ? "#3b82f620" : s.origin === "worker" ? "#d9770620" : "#6b728020",
               }}
               title={`Origin: ${s.origin}`}
             >
@@ -1045,95 +1069,6 @@ function SessionTreeRow({
             selectedSessionId={selectedSessionId}
             expanded={expanded}
             onToggleExpand={onToggleExpand}
-            onSelectSession={onSelectSession}
-            onRenameSession={onRenameSession}
-            onArchiveSession={onArchiveSession}
-            onDeleteSession={onDeleteSession}
-            onAbortSession={onAbortSession}
-            renamingSession={renamingSession}
-            onRenameSessionCancel={onRenameSessionCancel}
-            onRenameSessionConfirm={onRenameSessionConfirm}
-            contextBySessionId={contextBySessionId}
-            pendingIndicatorIds={pendingIndicatorIds}
-          />
-        ))}
-    </>
-  );
-}
-
-interface OrphansGroupProps {
-  orphans: SessionTreeNode[];
-  expanded: boolean;
-  onToggleExpand: () => void;
-  workspaceId: string;
-  selectedSessionId?: string;
-  childExpanded: Set<string>;
-  onChildToggleExpand: (sessionId: string) => void;
-  onSelectSession: (sessionId: string) => void;
-  onRenameSession: (sessionId: string, title: string) => void;
-  onArchiveSession: (sessionId: string, archived: boolean) => void;
-  onDeleteSession: (sessionId: string) => void;
-  onAbortSession: (sessionId: string) => void;
-  renamingSession: { wsId: string; sessionId: string; title: string } | null;
-  onRenameSessionCancel: () => void;
-  onRenameSessionConfirm: (sessionId: string, title: string) => void;
-  /** Per-session context token count from workspace status (S36.5). */
-  contextBySessionId: Map<string, number>;
-  /** Sessions (and ancestors) whose subtree has a pending question/permission request. */
-  pendingIndicatorIds: Set<string>;
-}
-
-/** Synthetic top-level entry that collects all sessions whose parent is
- *  no longer in the workspace (e.g. the parent session was deleted).
- *  Renders as a non-clickable header row with a chevron, mirroring the
- *  collapsed/expanded behaviour of a real parent. */
-function OrphansGroup({
-  orphans,
-  expanded,
-  onToggleExpand,
-  workspaceId,
-  selectedSessionId,
-  childExpanded,
-  onChildToggleExpand,
-  onSelectSession,
-  onRenameSession,
-  onArchiveSession,
-  onDeleteSession,
-  onAbortSession,
-  renamingSession,
-  onRenameSessionCancel,
-  onRenameSessionConfirm,
-  contextBySessionId,
-  pendingIndicatorIds,
-}: OrphansGroupProps) {
-  return (
-    <>
-      <div className="group flex items-center rounded-md transition-colors hover:bg-accent/50">
-        <button
-          onClick={onToggleExpand}
-          className="flex flex-1 items-center gap-1 rounded-md px-2 py-1.5 text-left text-sm text-muted-foreground italic"
-          aria-label={expanded ? "Collapse orphaned subtasks" : "Expand orphaned subtasks"}
-          aria-expanded={expanded}
-        >
-          {expanded ? (
-            <ChevronDown className="h-3 w-3 flex-shrink-0" />
-          ) : (
-            <ChevronRight className="h-3 w-3 flex-shrink-0" />
-          )}
-          <span className="flex-1 truncate">Orphaned subtasks</span>
-          <span className="flex-shrink-0 text-xs text-muted-foreground/60">{orphans.length}</span>
-        </button>
-      </div>
-      {expanded &&
-        orphans.map((node) => (
-          <SessionTreeRow
-            key={node.session.id}
-            node={node}
-            depth={1}
-            workspaceId={workspaceId}
-            selectedSessionId={selectedSessionId}
-            expanded={childExpanded}
-            onToggleExpand={onChildToggleExpand}
             onSelectSession={onSelectSession}
             onRenameSession={onRenameSession}
             onArchiveSession={onArchiveSession}
@@ -1209,6 +1144,96 @@ function ArchivedGroup({
           )}
           <Archive className="h-3 w-3 flex-shrink-0" aria-hidden="true" />
           <span className="flex-1 truncate text-muted-foreground/80">Archived</span>
+          <span className="flex-shrink-0 text-xs text-muted-foreground/60">{sessions.length}</span>
+        </button>
+      </div>
+      {expanded &&
+        sessions.map((session) => (
+          <SessionTreeRow
+            key={session.id}
+            node={{ session, children: [] }}
+            depth={1}
+            workspaceId={workspaceId}
+            selectedSessionId={selectedSessionId}
+            expanded={new Set()}
+            onToggleExpand={() => {}}
+            onSelectSession={onSelectSession}
+            onRenameSession={onRenameSession}
+            onArchiveSession={onArchiveSession}
+            onDeleteSession={onDeleteSession}
+            onAbortSession={onAbortSession}
+            renamingSession={renamingSession}
+            onRenameSessionCancel={onRenameSessionCancel}
+            onRenameSessionConfirm={onRenameSessionConfirm}
+            contextBySessionId={contextBySessionId}
+            pendingIndicatorIds={new Set()}
+          />
+        ))}
+    </>
+  );
+}
+
+interface WorkersGroupProps {
+  sessions: SessionListItem[];
+  expanded: boolean;
+  onToggleExpand: () => void;
+  workspaceId: string;
+  selectedSessionId?: string;
+  onSelectSession: (sessionId: string) => void;
+  onRenameSession: (sessionId: string, title: string) => void;
+  onArchiveSession: (sessionId: string, archived: boolean) => void;
+  onDeleteSession: (sessionId: string) => void;
+  onAbortSession: (sessionId: string) => void;
+  renamingSession: { wsId: string; sessionId: string; title: string } | null;
+  onRenameSessionCancel: () => void;
+  onRenameSessionConfirm: (sessionId: string, title: string) => void;
+  /** Per-session context token count from workspace status (S36.5). */
+  contextBySessionId: Map<string, number>;
+}
+
+/**
+ * #1966: the Workers folder — every live worker-classified session of
+ * this workspace (board/engine-spawned origin-class workers + parented
+ * Task-tool subagents), rendered as a top-level entry INSIDE the
+ * workspace's session list. Rendered only when at least one session is
+ * worker-classified, and collapsed by default with a count badge
+ * ('Workers (87)') so activity stays visible without clutter. Rows are
+ * fully usable when expanded: open, rename, archive, delete, force
+ * stop — grouping is presentation-only (no behavior change to the
+ * sessions; the list query and the server-side search are untouched).
+ */
+function WorkersGroup({
+  sessions,
+  expanded,
+  onToggleExpand,
+  workspaceId,
+  selectedSessionId,
+  onSelectSession,
+  onRenameSession,
+  onArchiveSession,
+  onDeleteSession,
+  onAbortSession,
+  renamingSession,
+  onRenameSessionCancel,
+  onRenameSessionConfirm,
+  contextBySessionId,
+}: WorkersGroupProps) {
+  return (
+    <>
+      <div className="group flex items-center rounded-md transition-colors hover:bg-accent/50" data-testid="workers-group">
+        <button
+          onClick={onToggleExpand}
+          className="flex flex-1 items-center gap-1 rounded-md px-2 py-1.5 text-left text-sm text-muted-foreground"
+          aria-label={expanded ? "Collapse worker sessions" : "Expand worker sessions"}
+          aria-expanded={expanded}
+        >
+          {expanded ? (
+            <ChevronDown className="h-3 w-3 flex-shrink-0" />
+          ) : (
+            <ChevronRight className="h-3 w-3 flex-shrink-0" />
+          )}
+          <Bot className="h-3 w-3 flex-shrink-0" aria-hidden="true" />
+          <span className="flex-1 truncate text-muted-foreground/80">Workers</span>
           <span className="flex-shrink-0 text-xs text-muted-foreground/60">{sessions.length}</span>
         </button>
       </div>

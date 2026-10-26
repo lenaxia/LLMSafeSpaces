@@ -77,6 +77,13 @@ const (
 	SessionOriginRoutine  = "routine"
 	SessionOriginWorkflow = "workflow"
 	SessionOriginAPI      = "api"
+	// SessionOriginWorker (#1966): the session is a board/engine
+	// fresh-worker spawn (task implementers, reviewer personas, bounce
+	// replacements) — recorded by the board spawner as a persistent
+	// kind='session' origin mark so the sidebar's Workers folder can
+	// classify it. Presentation-only signal: nothing about the
+	// session's behavior changes.
+	SessionOriginWorker = "worker"
 )
 
 // SessionOriginKind discriminates a routine origin row's FATE (#1901
