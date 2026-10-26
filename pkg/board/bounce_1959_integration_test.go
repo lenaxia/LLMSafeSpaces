@@ -244,75 +244,72 @@ func (s *BoardSuite) TestBounce1959_RedispatchReachesOriginalImplementer() {
 	s.Require().Len(spawner.claims, spawnsBefore, "no fresh spawn when the original implementer is live")
 }
 
-// TestBounce1959_FallbackOnDeadOriginal — the ruling's fallback: a
-// fresh-implementer spawn fires ONLY when the original session is
-// gone/unresponsive. Two arms pinned: never-turned (zero turn
-// evidence) and delivery failure (the seam errors — archived/reaped).
-func (s *BoardSuite) TestBounce1959_FallbackOnDeadOriginal() {
+// TestBounce1959_FallbackOnDeadOriginal_NeverTurned — the ruling's
+// fallback, arm 1: a never-turned original (zero turn evidence) is
+// never messaged; a fresh worker spawns for the minted claim.
+func (s *BoardSuite) TestBounce1959_FallbackOnDeadOriginal_NeverTurned() {
 	ctx := context.Background()
+	ws := s.seedWorkspace()
+	p := s.seedProject(ws, 2)
+	e := s.seedEpic(p, board.EpicActive)
+	task := s.seedTask(e, "bounce-dead1", nil, false)
 
-	// Arm 1: never-turned original — the re-dispatch is skipped, a
-	// fresh worker spawns for the minted claim.
-	s.Run("never-turned", func() {
-		ws := s.seedWorkspace()
-		p := s.seedProject(ws, 2)
-		e := s.seedEpic(p, board.EpicActive)
-		task := s.seedTask(e, "bounce-dead1", nil, false)
+	spawner := &windowSpawner{}
+	redispatch := &redispatchCapture{}
+	svc := board.NewService(s.pool, s.cfg,
+		board.WithWorkerSpawner(spawner.Spawn),
+		board.WithBounceRedispatcher(redispatch.Deliver),
+		board.WithTurnEvidenceSource(turnsEvidence{turns: 0}), // never-turned
+	)
+	s.setStagePersonas(svc, p, map[string]board.PersonaConfig{"in_review": {Name: "reviewer"}})
+	_, reviewerToken := s.armRearmWindow1959(svc, spawner, task, ws)
+	spawnsBefore := len(spawner.claims)
 
-		spawner := &windowSpawner{}
-		redispatch := &redispatchCapture{}
-		svc := board.NewService(s.pool, s.cfg,
-			board.WithWorkerSpawner(spawner.Spawn),
-			board.WithBounceRedispatcher(redispatch.Deliver),
-			board.WithTurnEvidenceSource(turnsEvidence{turns: 0}), // never-turned
-		)
-		s.setStagePersonas(svc, p, map[string]board.PersonaConfig{"in_review": {Name: "reviewer"}})
-		_, reviewerToken := s.armRearmWindow1959(svc, spawner, task, ws)
-		spawnsBefore := len(spawner.claims)
+	_, v, err := svc.RecordVerdict(ctx, s.agent("reviewer-session", reviewerToken), "", task.ShortID, board.VerdictInput{
+		Verdict: board.VerdictFail, Reviewer: "rev-dead1",
+		Findings: []board.VerdictFinding{{Severity: board.SeverityMajor, Pointer: "criterion 0: no evidence"}},
+	}, "")
+	s.Require().NoError(err)
+	s.Require().True(v.Applied)
+	s.Require().Empty(redispatch.to, "a never-turned original is never messaged")
+	s.Require().Len(spawner.claims, spawnsBefore+1, "the fallback spawns a FRESH implementer")
+	fresh := spawner.claims[len(spawner.claims)-1]
+	s.Require().Nil(fresh.Persona, "the fallback is the implementer class (no reviewer persona)")
+	s.Require().Equal(board.StageInProgress, fresh.Stage)
+	rowAfter := s.rawTask(task.ID)
+	s.Require().NotNil(rowAfter.ClaimToken)
+	s.Require().Equal(*rowAfter.ClaimToken, fresh.ClaimToken, "the fresh worker receives the bounce's minted token")
+}
 
-		_, v, err := svc.RecordVerdict(ctx, s.agent("reviewer-session", reviewerToken), "", task.ShortID, board.VerdictInput{
-			Verdict: board.VerdictFail, Reviewer: "rev-dead1",
-			Findings: []board.VerdictFinding{{Severity: board.SeverityMajor, Pointer: "criterion 0: no evidence"}},
-		}, "")
-		s.Require().NoError(err)
-		s.Require().True(v.Applied)
-		s.Require().Empty(redispatch.to, "a never-turned original is never messaged")
-		s.Require().Len(spawner.claims, spawnsBefore+1, "the fallback spawns a FRESH implementer")
-		fresh := spawner.claims[len(spawner.claims)-1]
-		s.Require().Nil(fresh.Persona, "the fallback is the implementer class (no reviewer persona)")
-		s.Require().Equal(board.StageInProgress, fresh.Stage)
-		rowAfter := s.rawTask(task.ID)
-		s.Require().NotNil(rowAfter.ClaimToken)
-		s.Require().Equal(*rowAfter.ClaimToken, fresh.ClaimToken, "the fresh worker receives the bounce's minted token")
-	})
+// TestBounce1959_FallbackOnDeadOriginal_DeliveryFailure — arm 2: the
+// original's session is gone (the seam errors — archived/reaped); the
+// failed delivery falls back to a fresh-implementer spawn.
+func (s *BoardSuite) TestBounce1959_FallbackOnDeadOriginal_DeliveryFailure() {
+	ctx := context.Background()
+	ws := s.seedWorkspace()
+	p := s.seedProject(ws, 2)
+	e := s.seedEpic(p, board.EpicActive)
+	task := s.seedTask(e, "bounce-dead2", nil, false)
 
-	// Arm 2: delivery failure (archived/reaped) — the fallback spawns.
-	s.Run("delivery-failure", func() {
-		ws := s.seedWorkspace()
-		p := s.seedProject(ws, 2)
-		e := s.seedEpic(p, board.EpicActive)
-		task := s.seedTask(e, "bounce-dead2", nil, false)
+	spawner := &windowSpawner{}
+	redispatch := &redispatchCapture{failWith: errors.New("session gone")}
+	svc := board.NewService(s.pool, s.cfg,
+		board.WithWorkerSpawner(spawner.Spawn),
+		board.WithBounceRedispatcher(redispatch.Deliver),
+		board.WithTurnEvidenceSource(turnsEvidence{turns: 3}),
+	)
+	s.setStagePersonas(svc, p, map[string]board.PersonaConfig{"in_review": {Name: "reviewer"}})
+	_, reviewerToken := s.armRearmWindow1959(svc, spawner, task, ws)
+	spawnsBefore := len(spawner.claims)
 
-		spawner := &windowSpawner{}
-		redispatch := &redispatchCapture{failWith: errors.New("session gone")}
-		svc := board.NewService(s.pool, s.cfg,
-			board.WithWorkerSpawner(spawner.Spawn),
-			board.WithBounceRedispatcher(redispatch.Deliver),
-			board.WithTurnEvidenceSource(turnsEvidence{turns: 3}),
-		)
-		s.setStagePersonas(svc, p, map[string]board.PersonaConfig{"in_review": {Name: "reviewer"}})
-		_, reviewerToken := s.armRearmWindow1959(svc, spawner, task, ws)
-		spawnsBefore := len(spawner.claims)
-
-		_, v, err := svc.RecordVerdict(ctx, s.agent("reviewer-session", reviewerToken), "", task.ShortID, board.VerdictInput{
-			Verdict: board.VerdictFail, Reviewer: "rev-dead2",
-			Findings: []board.VerdictFinding{{Severity: board.SeverityMajor, Pointer: "criterion 0: no evidence"}},
-		}, "")
-		s.Require().NoError(err)
-		s.Require().True(v.Applied)
-		s.Require().Len(redispatch.to, 1, "delivery was attempted")
-		s.Require().Len(spawner.claims, spawnsBefore+1, "the failed delivery falls back to a FRESH implementer spawn")
-	})
+	_, v, err := svc.RecordVerdict(ctx, s.agent("reviewer-session", reviewerToken), "", task.ShortID, board.VerdictInput{
+		Verdict: board.VerdictFail, Reviewer: "rev-dead2",
+		Findings: []board.VerdictFinding{{Severity: board.SeverityMajor, Pointer: "criterion 0: no evidence"}},
+	}, "")
+	s.Require().NoError(err)
+	s.Require().True(v.Applied)
+	s.Require().Len(redispatch.to, 1, "delivery was attempted")
+	s.Require().Len(spawner.claims, spawnsBefore+1, "the failed delivery falls back to a FRESH implementer spawn")
 }
 
 // TestBounce1959_NoIdentityFallsBackToFreshSpawn — a bounce with NO

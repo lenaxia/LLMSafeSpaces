@@ -5,6 +5,31 @@ All notable changes to LLMSafeSpaces are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed — board bounce round-trip (#1959)
+
+- **Verdict-driven bounce refusal (mint→stamp window)**: a fail verdict on an
+  in_review row holding a live reviewer-persona claim returned
+  `applied:false, refused:stage_transition` whenever it fired before the reviewer's
+  async assignee spawn-stamp landed (~90s in prod) — and since the #1947 lapse-clear
+  that window recurs on every reviewer lapse→re-arm cycle, so prompt reviewers (the
+  normal case) NEVER bounced. The manual in_review→in_progress move refused through
+  the same guard. The bounce now reads `tasks.implementer_session` (migration
+  000051): the ORIGINAL implementer captured at the in_progress→in_review forward
+  exit, preserved through the whole review lifecycle, immune to the reviewer
+  claim's mint/stamp/lapse churn.
+- **Bounce-target semantics (owner ruling)**: a fail verdict re-dispatches the
+  ORIGINAL worker — the fresh claim token + the embedded verdict chain (findings as
+  iteration history) delivered to the implementer's EXISTING session via the
+  session-message seam (`board.WithBounceRedispatcher`, SendAsync — never a
+  session:new spawn). A fresh-implementer spawn fires ONLY when the original is
+  gone/unresponsive: never-turned (zero turn evidence), delivery failure
+  (archived/reaped), or no captured identity. The mint stamps the implementer in
+  the same statement (never a token-less in_progress row); attempts stay unchanged
+  (a bounce is an iteration, not a failure). #1958's episode-unique RunIDs hold
+  across bounce rounds (pinned).
+
 ## [0.41.0] - 2026-10-23
 
 ### Added — board dispatch durability + stage-machine hardening (the #1832 lane)

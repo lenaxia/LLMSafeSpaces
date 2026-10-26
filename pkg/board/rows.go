@@ -113,7 +113,7 @@ type Task struct {
 	// not observed the session yet), flagged per the #1817/#1821 SSE
 	// precedent. Set at the read edge ONLY; the stored row stays
 	// canonical (bounce/reconciler/messenger consumers keep raw).
-	AssigneeSessionDeprecated bool   `json:"assignee_session_deprecated,omitempty"`
+	AssigneeSessionDeprecated bool `json:"assignee_session_deprecated,omitempty"`
 	// ImplementerSession is the #1959 bounce-consumer identity: the
 	// session that moved the row to in_review — the ORIGINAL worker the
 	// ruling's bounce re-dispatches. Captured at the forward exit
