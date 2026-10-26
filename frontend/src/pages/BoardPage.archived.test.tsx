@@ -260,6 +260,89 @@ describe("BoardPage #1964 — archived projects drawer", () => {
     expect(mockUnarchiveProject).not.toHaveBeenCalled();
   });
 
+  // #1964 r2 (review finding): the drawer's expansion state is
+  // click-owned and must never outlive its object.
+  it("a re-archived project renders its drawer row COLLAPSED again (name-only, no click)", async () => {
+    mockUnarchiveProject.mockResolvedValue({ ...PROJECT_ARCHIVED, status: "active" });
+    mockArchiveProject.mockResolvedValue({ ...PROJECT_ARCHIVED, status: "archived" });
+    // Unarchive → re-archive within one session: each refetch lands the
+    // authoritative status.
+    let listCalls = 0;
+    mockListProjects.mockImplementation(async () => {
+      listCalls += 1;
+      if (listCalls <= 1) return [PROJECT_A, PROJECT_ARCHIVED];
+      if (listCalls === 2) return [PROJECT_A, { ...PROJECT_ARCHIVED, status: "active" }];
+      return [PROJECT_A, PROJECT_ARCHIVED];
+    });
+    renderBoard();
+
+    // Expand the lane inside the drawer, then unarchive it back to the
+    // active surface (the drawer empties and unmounts).
+    await expandArchivedLane("prj-arch3333");
+    fireEvent.click(screen.getByTestId("project-kebab-prj-arch3333"));
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Unarchive project" }));
+    await waitFor(() => expect(mockUnarchiveProject).toHaveBeenCalledWith("proj-uuid-arc"));
+    await screen.findByTestId("swimlane-prj-arch3333");
+    await waitFor(() => expect(screen.queryByTestId("archived-projects-drawer")).toBeNull());
+
+    // Re-archive: the drawer's project row must start OVER — name-only,
+    // collapsed, no swimlane — until a fresh click (criterion 3 holds
+    // on every entry into the drawer, not just the first).
+    fireEvent.click(screen.getByTestId("project-kebab-prj-arch3333"));
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Archive project" }));
+    await waitFor(() => expect(mockArchiveProject).toHaveBeenCalledWith("proj-uuid-arc"));
+    await screen.findByTestId("archived-projects-drawer");
+
+    // The outer drawer also re-entered collapsed (it emptied above) —
+    // the first click is the human's, not carried state.
+    const outerToggle = screen.getByTestId("archived-projects-toggle");
+    expect(outerToggle.getAttribute("aria-expanded")).toBe("false");
+    fireEvent.click(outerToggle);
+    const rowToggle = screen.getByTestId("archived-project-toggle-prj-arch3333");
+    expect(rowToggle.getAttribute("aria-expanded")).toBe("false");
+    expect(screen.queryByTestId("swimlane-prj-arch3333")).toBeNull();
+    expect(screen.queryByTestId("slots-prj-arch3333")).toBeNull();
+  });
+
+  it("an archive landing into a previously-emptied drawer leaves the section collapsed (nothing auto-expands)", async () => {
+    mockUnarchiveProject.mockResolvedValue({ ...PROJECT_ARCHIVED, status: "active" });
+    // call 1: the seed (one archived lane). call 2: the unarchive
+    // refetch (drawer empties). call 3+: a CROSS-CONTEXT archive of
+    // Apollo riding the board.event invalidation.
+    let listCalls = 0;
+    mockListProjects.mockImplementation(async () => {
+      listCalls += 1;
+      if (listCalls <= 1) return [PROJECT_A, PROJECT_ARCHIVED];
+      if (listCalls === 2) return [PROJECT_A, { ...PROJECT_ARCHIVED, status: "active" }];
+      return [{ ...PROJECT_A, status: "archived" }, { ...PROJECT_ARCHIVED, status: "active" }];
+    });
+    const { queryClient } = renderBoard();
+
+    // Open the drawer, then empty it (unarchive the last archived
+    // lane) — the section unmounts while archivedDrawerExpanded stays
+    // true in state (the stale seed this test pins against).
+    fireEvent.click(await screen.findByTestId("archived-projects-toggle"));
+    fireEvent.click(screen.getByTestId("archived-project-toggle-prj-arch3333"));
+    fireEvent.click(screen.getByTestId("project-kebab-prj-arch3333"));
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Unarchive project" }));
+    await waitFor(() => expect(mockUnarchiveProject).toHaveBeenCalledWith("proj-uuid-arc"));
+    await waitFor(() => expect(screen.queryByTestId("archived-projects-drawer")).toBeNull());
+    expect(mockArchiveProject).not.toHaveBeenCalled();
+
+    // Apollo archives ELSEWHERE: the refetch lands it in the drawer —
+    // the section must re-enter COLLAPSED (aria-expanded=false, the
+    // archived name not even on screen), never pre-expanded by the
+    // carried state.
+    await act(async () => {
+      await queryClient.invalidateQueries({ queryKey: ["board"] });
+    });
+    const toggle = await screen.findByTestId("archived-projects-toggle");
+    expect(toggle.getAttribute("aria-expanded")).toBe("false");
+    expect(screen.queryByText("Apollo")).toBeNull();
+    expect(screen.queryByTestId("archived-project-toggle-prj-aaaa1111")).toBeNull();
+    expect(mockArchiveProject).not.toHaveBeenCalled();
+  });
+
   it("the active surface derivations ignore archived lanes (epic/tag chips, search)", async () => {
     // An archived-lane task whose tag and epic would otherwise surface.
     const tagged: BoardTask = {

@@ -101,6 +101,30 @@ export function BoardPage() {
   const activeProjects = useMemo(() => projects.filter((p) => p.status !== "archived"), [projects]);
   const archivedProjects = useMemo(() => projects.filter((p) => p.status === "archived"), [projects]);
   const activeProjectIds = useMemo(() => new Set(activeProjects.map((p) => p.id)), [activeProjects]);
+  const archivedProjectIds = useMemo(() => new Set(archivedProjects.map((p) => p.id)), [archivedProjects]);
+
+  // #1964 r2 (review finding): the drawer's expansion state is
+  // click-owned but must never OUTLIVE its object — a project that
+  // leaves the drawer (unarchived, here or cross-context) loses its
+  // expanded row: re-archiving starts name-only again (criterion 3's
+  // "until clicked" holds on EVERY entry, not just the first). The
+  // id-set prune returns the same Set reference when nothing changed
+  // (no re-render loop).
+  useEffect(() => {
+    setExpandedArchivedProjects((prev) => {
+      if (prev.size === 0) return prev;
+      const next = new Set([...prev].filter((id) => archivedProjectIds.has(id)));
+      return next.size === prev.size ? prev : next;
+    });
+  }, [archivedProjectIds]);
+
+  // …and a drawer that EMPTIES collapses: a later archive (in-session
+  // or riding a cross-context refetch) never lands pre-expanded —
+  // nothing auto-expands the drawer, not even an archive arriving
+  // mid-session (the file's founding posture, criterion 2).
+  useEffect(() => {
+    if (archivedProjects.length === 0) setArchivedDrawerExpanded(false);
+  }, [archivedProjects.length]);
 
   // #1964 r1 (review finding 2): the focused lane can leave the
   // active surface without THIS session's hand — another tab's
