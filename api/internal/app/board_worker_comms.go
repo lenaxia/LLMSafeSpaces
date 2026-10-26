@@ -47,6 +47,7 @@ import (
 	"github.com/lenaxia/llmsafespaces/pkg/agent"
 	"github.com/lenaxia/llmsafespaces/pkg/board"
 	"github.com/lenaxia/llmsafespaces/pkg/session"
+	"github.com/lenaxia/llmsafespaces/pkg/shortid"
 )
 
 // boardV1Sender is the delivery dependency of the worker-comms seams:
@@ -64,6 +65,84 @@ type boardV1Sender interface {
 // (compile-time assertion — every agent.Adapter, wrapped or not,
 // carries the V1 Send).
 var _ boardV1Sender = agent.Adapter(nil)
+
+// boardPhraseLookup is the platform's phrase registry consult (#1959c):
+// phrase → RAW harness session id within one workspace (the session_index
+// layer — the SAME registry the SessionRefResolution middleware
+// (api/internal/middleware/session_ref.go) and the pod-side replica
+// (cmd/workspace-agentd/session_shortids.go) read; FindSessionByShortID's
+// exact query). "" with nil error = no live session holds the phrase.
+//
+// Honest-scope note (#1959c lane): the charter's first sketch resolved
+// via the adapter's session LIST (GET /session + ParseSessionListWire) —
+// checked, and the production opencode list wire carries NO phrase
+// field (the phrase is platform-layer identity, #1816; the list is
+// raw-keyed ids + titles). The platform's own phrase registry is the
+// only phrase→raw authority reachable from the api side without an
+// HTTP self-hop, so the resolver leg binds HERE.
+type boardPhraseLookup func(ctx context.Context, workspaceID, phrase string) (rawID string, err error)
+
+// boardPhraseLookupFor binds the pool-backed registry consult.
+func boardPhraseLookupFor(pool *pgxpool.Pool) boardPhraseLookup {
+	return func(ctx context.Context, workspaceID, phrase string) (string, error) {
+		var raw string
+		err := pool.QueryRow(ctx,
+			`SELECT session_id FROM session_index WHERE workspace_id=$1 AND lower(short_id)=$2`,
+			workspaceID, shortid.Normalize(phrase)).Scan(&raw)
+		return raw, err
+	}
+}
+
+// boardResolvingSender is the #1959c production sender: the adapter's
+// V1 legs plus the phrase-registry resolution, so a PHRASE-addressed
+// target (the engine's stored assignee/implementer_session — durable
+// identity, #1850) reaches opencode's RAW-keyed routes as its raw
+// harness id. Construction is the ONLY way the board seams may hold an
+// adapter: the constructors' dependency carries the resolver, so a bare
+// agent.Adapter (no resolution) cannot be wired in by accident.
+type boardResolvingSender struct {
+	delegate agent.Adapter
+	lookup   boardPhraseLookup
+}
+
+// newBoardResolvingSender builds the production delivery dependency.
+func newBoardResolvingSender(delegate agent.Adapter, lookup boardPhraseLookup) *boardResolvingSender {
+	return &boardResolvingSender{delegate: delegate, lookup: lookup}
+}
+
+// Send delivers over the adapter's V1 route (delegation).
+func (s *boardResolvingSender) Send(ctx context.Context, userID, workspaceID, sessionID, text string, opts session.SendOpts) (*session.Message, error) {
+	return s.delegate.Send(ctx, userID, workspaceID, sessionID, text, opts)
+}
+
+// Abort interrupts over the adapter's V1 abort route (delegation).
+func (s *boardResolvingSender) Abort(ctx context.Context, userID, workspaceID, sessionID string) error {
+	return s.delegate.Abort(ctx, userID, workspaceID, sessionID)
+}
+
+// ResolveSessionRef maps a board-comms session ref to the id opencode's
+// routes key on. PHRASE-form refs (#1756 3-word shape, case-insensitive)
+// consult the platform registry; RAW (ses_…) and legacy forms pass
+// through byte-identical — the adapter stays the authority for raw
+// addressing (the #1663 lesson: resolution must never make a live
+// session unaddressable), and raw consults are free.
+func (s *boardResolvingSender) ResolveSessionRef(ctx context.Context, workspaceID, ref string) (string, error) {
+	if !shortid.IsShortIDForm(ref) {
+		return ref, nil
+	}
+	phrase := shortid.Normalize(ref)
+	raw, err := s.lookup(ctx, workspaceID, phrase)
+	if err != nil {
+		return "", fmt.Errorf("board: session phrase lookup for %s: %w", phrase, err)
+	}
+	if raw == "" {
+		return "", fmt.Errorf("board: session phrase %s resolves to no live session in workspace %s", phrase, workspaceID)
+	}
+	return raw, nil
+}
+
+// compile-time: the resolving sender satisfies the narrow seam.
+var _ boardV1Sender = (*boardResolvingSender)(nil)
 
 // Delivery knobs (package vars so the wiring tests can bound them):
 //
@@ -174,14 +253,16 @@ func boardTaskScope(ctx context.Context, pool *pgxpool.Pool, taskRef string) (us
 	return userID, workspaceID, err
 }
 
-// newBoardAborter builds the delete-of-in-flight-claim interrupt seam.
-func newBoardAborter(pool *pgxpool.Pool, adapter agent.Adapter) board.WorkerAborter {
+// newBoardAborter builds the delete-of-in-flight-claim interrupt seam
+// (scope via the injected resolver — the #1963 constructor shape, so the
+// wiring pins drive the production closure without a database).
+func newBoardAborter(scope boardScopeResolver, sender *boardResolvingSender) board.WorkerAborter {
 	return func(ctx context.Context, taskID, assigneeSession string) error {
-		userID, workspaceID, err := boardTaskScope(ctx, pool, taskID)
+		userID, workspaceID, err := scope(ctx, taskID)
 		if err != nil {
 			return fmt.Errorf("board: abort scope: %w", err)
 		}
-		return adapter.Abort(ctx, userID, workspaceID, assigneeSession)
+		return sender.Abort(ctx, userID, workspaceID, assigneeSession)
 	}
 }
 
