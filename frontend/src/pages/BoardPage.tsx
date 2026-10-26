@@ -17,7 +17,7 @@ import { TaskCard } from "../components/board/TaskCard";
 import { TaskDialog } from "../components/board/TaskDialog";
 import { TaskDrawer } from "../components/board/TaskDrawer";
 import { EpicDrawer } from "../components/board/EpicDrawer";
-import { KanbanSquare, ChevronRight } from "lucide-react";
+import { Archive, KanbanSquare, ChevronRight } from "lucide-react";
 import { cn } from "../lib/utils";
 import { boardApi, type BoardEpic, type BoardProject, type BoardTask, type BoardEventPayload } from "../api/board";
 import { subscribeBoardEvents } from "../lib/boardFeed";
@@ -70,6 +70,20 @@ export function BoardPage() {
   // pattern — the server ?failed= param serves programmatic callers).
   const [failedOnly, setFailedOnly] = useState(false);
   const [sideCollapsed, setSideCollapsed] = useState(true);
+  // #1964: archived projects' two-level drawer — the #1627
+  // Archived-group deliberate-friction posture: BOTH levels are
+  // collapsed by default and open only on a human click; nothing
+  // auto-expands them (not even an archive landing mid-session).
+  const [archivedDrawerExpanded, setArchivedDrawerExpanded] = useState(false);
+  const [expandedArchivedProjects, setExpandedArchivedProjects] = useState<ReadonlySet<string>>(new Set());
+  const toggleArchivedProject = useCallback((projectId: string) => {
+    setExpandedArchivedProjects((prev) => {
+      const next = new Set(prev);
+      if (next.has(projectId)) next.delete(projectId);
+      else next.add(projectId);
+      return next;
+    });
+  }, []);
 
   // --- Data ---------------------------------------------------------------------
   const projectsQuery = useQuery({
@@ -77,6 +91,16 @@ export function BoardPage() {
     queryFn: () => boardApi.listProjects(),
   });
   const projects = useMemo(() => projectsQuery.data ?? [], [projectsQuery.data]);
+
+  // #1964: the active/archived partition — archived projects are
+  // HIDDEN from the board's active surface (swimlanes, focus
+  // dropdown, epic/tag chips, search) and live only in the collapsed
+  // Archived drawer at the board's end. History stays reachable there;
+  // the archive semantics themselves (#1755) are untouched. The tasks/
+  // epics fan-outs still fetch every lane: drawer content needs them.
+  const activeProjects = useMemo(() => projects.filter((p) => p.status !== "archived"), [projects]);
+  const archivedProjects = useMemo(() => projects.filter((p) => p.status === "archived"), [projects]);
+  const activeProjectIds = useMemo(() => new Set(activeProjects.map((p) => p.id)), [activeProjects]);
 
   const tasksQuery = useQuery({
     queryKey: ["board", "tasks", focusProject],
@@ -202,41 +226,58 @@ export function BoardPage() {
     return [...byId.values()];
   }, [epicsByProject]);
 
+  // #1964: epic chips are ACTIVE-surface scope — archived lanes'
+  // epics never graduate to the toolbar (they render only inside the
+  // collapsed drawer's lanes).
   const scopedEpics = useMemo(
-    () => derivedEpics.filter((e) => focusProject === "all" || e.project_id === focusProject),
-    [derivedEpics, focusProject],
+    () =>
+      derivedEpics.filter(
+        (e) => activeProjectIds.has(e.project_id) && (focusProject === "all" || e.project_id === focusProject),
+      ),
+    [derivedEpics, activeProjectIds, focusProject],
   );
 
   const visibleProjects = useMemo(
-    () => (focusProject === "all" ? projects : projects.filter((p) => p.id === focusProject)),
-    [projects, focusProject],
+    () => (focusProject === "all" ? activeProjects : activeProjects.filter((p) => p.id === focusProject)),
+    [activeProjects, focusProject],
+  );
+
+  // #1964: the ACTIVE surface's derivations (tag chips, search hits)
+  // draw from active lanes only — archived lanes are drawer content,
+  // never toolbar state.
+  const surfaceTasks = useMemo(
+    () => tasks.filter((t) => activeProjectIds.has(t.project_id)),
+    [tasks, activeProjectIds],
   );
 
   const allTags = useMemo(() => {
     const counts = new Map<string, number>();
-    for (const t of tasks) for (const tag of t.tags) counts.set(tag, (counts.get(tag) ?? 0) + 1);
+    for (const t of surfaceTasks) for (const tag of t.tags) counts.set(tag, (counts.get(tag) ?? 0) + 1);
     return [...counts.entries()].sort((a, b) => b[1] - a[1]).slice(0, 12).map(([tag]) => tag);
-  }, [tasks]);
+  }, [surfaceTasks]);
 
   // --- Filtering ------------------------------------------------------------------
+  // #1964: search arbitrates over the ACTIVE surface (surfaceTasks) —
+  // archived rows render only inside the collapsed drawer, so a term
+  // matching history alone is an honest miss on the board.
   const searchMiss = useMemo(() => {
     if (!search.trim()) return null;
     const q = search.trim().toLowerCase();
-    const hit = tasks.some(
+    const hit = surfaceTasks.some(
       (t) => t.short_id.toLowerCase().includes(q) || t.title.toLowerCase().includes(q) || t.tags.some((tag) => tag.toLowerCase().includes(q)),
     );
     return hit ? null : q;
-  }, [search, tasks]);
+  }, [search, surfaceTasks]);
 
   const searchSuggestions = useMemo(
     () =>
       searchMiss
         ? suggestBoardItems(
             searchMiss,
-            tasks.map((t) => ({ shortId: t.short_id, title: t.title })),
+            surfaceTasks.map((t) => ({ shortId: t.short_id, title: t.title })),
           ).map((s) => s.shortId)
         : [],
-    [searchMiss, tasks],
+    [searchMiss, surfaceTasks],
   );
 
   const filteredTasks = useMemo(() => {
@@ -571,12 +612,19 @@ export function BoardPage() {
         const updated =
           action === "archive" ? await boardApi.archiveProject(project.id) : await boardApi.unarchiveProject(project.id);
         await queryClient.invalidateQueries({ queryKey: ["board"] });
+        // #1964: archiving the focused lane would leave the scope
+        // pointed at a project the active surface no longer renders —
+        // reset to All (the archived lane lives in the drawer now).
+        if (action === "archive" && focusProject === project.id) {
+          setFocusProject("all");
+          setFocusEpic("all");
+        }
         setPageNotice(`${updated.short_id}: ${action === "archive" ? "archived (claims into it stopped)" : "unarchived (active again)"}.`);
       } catch (err) {
         setPageError(toBoardError(err));
       }
     },
-    [queryClient],
+    [queryClient, focusProject],
   );
 
   // §4.8 activity feed: subscribe to the root stream's board.event fan-
@@ -619,6 +667,277 @@ export function BoardPage() {
   const slotsInUse = (projectId: string) =>
     tasks.filter((t) => t.project_id === projectId && t.stage === "in_progress").length;
 
+  // #1964: ONE swimlane renderer for both surfaces — the active
+  // board's lanes and the Archived drawer's expanded projects render
+  // identically (the drawer is the same lane, one click deeper;
+  // history stays reachable — purely presentation, the #1755
+  // archive semantics are untouched).
+  const renderSwimlane = (project: BoardProject) => {
+    const projectTasks = filteredTasks.filter((t) => t.project_id === project.id);
+    const laneAllTasks = tasks.filter((t) => t.project_id === project.id);
+    // Unfiltered row count per epic (#1832 r2, finding 2): the
+    // band's "No tasks yet." must not fire when tasks exist but
+    // the lane's filter (epic chip / tag / search) hides them.
+    const laneRowsByEpic = new Map<string, number>();
+    for (const t of laneAllTasks) laneRowsByEpic.set(t.epic_id, (laneRowsByEpic.get(t.epic_id) ?? 0) + 1);
+    const laneEpics = epicsByProject.get(project.id) ?? [];
+    // The swimlane's selection (derived — a vanished epic reads
+    // as unselected) drives highlight/dim on the kanban cards
+    // and scopes the header's New task.
+    const selectedEpic = selectedEpicOf(project.id);
+    const highlightEpicId = selectedEpic?.id ?? null;
+    return (
+      <section key={project.id} data-swimlane={project.short_id} data-testid={`swimlane-${project.short_id}`} className="rounded-lg border border-border">
+        <header className="flex items-center gap-2 border-b border-border px-3 py-1.5">
+          <span className="text-xs font-semibold">{project.name}</span>
+          <span className="font-mono text-[10px] text-muted-foreground">{project.short_id}</span>
+          <span className="text-[10px] text-muted-foreground" data-testid={`slots-${project.short_id}`}>
+            {slotsInUse(project.id)}/{project.worker_slots} slots
+          </span>
+          {project.status === "archived" && <Badge variant="muted" className="text-[10px]">archived</Badge>}
+          {project.slot_cooldown_until && new Date(project.slot_cooldown_until) > new Date() && (
+            <Badge variant="warning" className="text-[10px]" title="Provider throttle: new claims paused">
+              slot cooldown
+            </Badge>
+          )}
+          {/* #1832 item 1: contextual creation — the swimlane IS
+            * the selection (New epic / New task land here, no
+            * dropdown needed; New task honors the selected epic
+            * band, else the picker). */}
+          <div className="ml-auto flex items-center gap-1">
+            <Button
+              variant="outline"
+              size="sm"
+              className="h-6 px-2 text-[11px]"
+              onClick={() => { setCreateEpicTarget(project.id); setCreateError(null); }}
+              data-testid={`new-epic-${project.short_id}`}
+              title={`New epic in ${project.name}`}
+            >
+              New epic
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              className="h-6 px-2 text-[11px]"
+              onClick={() => openSwimlaneNewTask(project)}
+              data-testid={`new-task-${project.short_id}`}
+              title={selectedEpic ? `New task in ${selectedEpic.title}` : `New task in ${project.name} — pick an epic`}
+            >
+              New task
+            </Button>
+            {/* #1832 item 3: project kebab — archive/unarchive
+             * ONLY (#1747: project delete is eliminated; this
+             * menu never grows a delete item). */}
+            <KebabMenu
+              ariaLabel={`Project actions for ${project.name}`}
+              testId={`project-kebab-${project.short_id}`}
+              items={[
+                project.status === "archived"
+                  ? {
+                      label: "Unarchive project",
+                      onClick: () => void handleProjectLifecycle(project, "unarchive"),
+                    }
+                  : {
+                      label: "Archive project",
+                      onClick: () => void handleProjectLifecycle(project, "archive"),
+                    },
+              ]}
+            />
+          </div>
+        </header>
+        {/* #1832 item 2: collapsible epic bands, tasks grouped
+         * beneath; clicking a band selects it (highlight own
+         * tasks, dim the lane's others, scope New task). */}
+        <div className="flex flex-col gap-1 border-b border-border px-2 py-1.5" data-testid={`epic-bands-${project.short_id}`}>
+          {laneEpics.length === 0 ? (
+            <span className="px-1 text-[10px] text-muted-foreground/70">No epics yet — use New epic above.</span>
+          ) : (
+            laneEpics.map((epic) => {
+              const collapsed = collapsedBands.has(epic.id);
+              const selected = selectedEpic?.id === epic.id;
+              const bandTasks = projectTasks.filter((t) => t.epic_id === epic.id);
+              return (
+                <div
+                  key={epic.id}
+                  data-testid={`epic-band-${epic.id}`}
+                  data-selected={selected ? "true" : undefined}
+                  className={cn(
+                    "rounded-md border transition-colors",
+                    selected ? "border-primary/50 bg-primary/5" : "border-border bg-muted/20 hover:border-primary/30",
+                  )}
+                >
+                  {/* The HEADER ROW is the selection surface (not the
+                   * whole container): a container-level click would
+                   * sit atop the task rows beneath it — in a real
+                   * pointer click the band's center lands on its
+                   * only task row (task-edit), never selecting. */}
+                  <div
+                    className="flex cursor-pointer select-none items-center gap-1.5 px-2 py-1"
+                    data-testid={`band-header-${epic.id}`}
+                    onClick={() => toggleEpicSelection(project.id, epic.id)}
+                    onDoubleClick={() => void openEpicDrawer(epic.id)}
+                    title={`${epic.title} — click to highlight its tasks; double-click for the epic drawer`}
+                  >
+                    <button
+                      type="button"
+                      data-testid={`band-toggle-${epic.id}`}
+                      aria-expanded={!collapsed}
+                      aria-label={collapsed ? `Expand ${epic.title}` : `Collapse ${epic.title}`}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        toggleBand(epic.id);
+                      }}
+                      className="rounded p-0.5 text-muted-foreground hover:bg-accent hover:text-foreground"
+                    >
+                      <ChevronRight className={cn("h-3 w-3 transition-transform", !collapsed && "rotate-90")} />
+                    </button>
+                    <span className="text-[11px] font-medium">{epic.title}</span>
+                    <span className="font-mono text-[10px] text-muted-foreground">{epic.short_id}</span>
+                    <span className="text-[10px] text-muted-foreground" data-testid={`band-progress-${epic.id}`}>
+                      {epic.progress_done}/{epic.progress_total}
+                    </span>
+                    {epic.status === "paused" && <Badge variant="warning" className="px-1.5 py-0 text-[10px]">paused</Badge>}
+                    {selected && <Badge variant="default" className="px-1.5 py-0 text-[10px]">selected</Badge>}
+                    {/* #1832 item 3: epic kebab — the delete flow
+                     * (in-flight surfacing + refuse/force-confirm
+                     * inside the modal). The trigger stops
+                     * propagation: the kebab never toggles the
+                     * band's selection. */}
+                    <span className="ml-auto">
+                      <KebabMenu
+                        ariaLabel={`Epic actions for ${epic.title}`}
+                        testId={`epic-kebab-${epic.id}`}
+                        items={[
+                          {
+                            label: "Delete epic…",
+                            destructive: true,
+                            onClick: () => {
+                              setDeleteError(null);
+                              setEpicDeleteTarget(epic);
+                            },
+                          },
+                        ]}
+                      />
+                    </span>
+                  </div>
+                  {!collapsed && (
+                    <div className="flex flex-col gap-0.5 px-2 pb-1.5 pt-0.5">
+                      {bandTasks.map((t) => (
+                        <button
+                          key={t.short_id}
+                          type="button"
+                          data-testid={`band-task-${epic.id}-${t.short_id}`}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setTaskDialog({ mode: "edit", task: t });
+                          }}
+                          className={cn(
+                            "flex items-center gap-2 rounded px-1.5 py-0.5 text-left text-[11px] hover:bg-accent",
+                            highlightEpicId && t.epic_id !== highlightEpicId && "opacity-40",
+                          )}
+                        >
+                          <span className="font-mono text-[10px] text-muted-foreground">{t.short_id}</span>
+                          <span className="truncate">{t.title}</span>
+                          <span className="ml-auto rounded bg-muted px-1 py-px text-[10px] text-muted-foreground">
+                            {STAGE_LABELS[t.stage as BoardStage] ?? t.stage}
+                          </span>
+                        </button>
+                      ))}
+                      {bandTasks.length === 0 &&
+                        (laneRowsByEpic.get(epic.id) ?? 0) > 0 && (
+                          <span className="px-1 text-[10px] text-muted-foreground/60" data-testid={`band-filtered-empty-${epic.id}`}>
+                            No tasks match the current filter.
+                          </span>
+                        )}
+                      {bandTasks.length === 0 &&
+                        (laneRowsByEpic.get(epic.id) ?? 0) === 0 && (
+                          <span className="px-1 text-[10px] text-muted-foreground/60" data-testid={`band-empty-${epic.id}`}>
+                            No tasks yet.
+                          </span>
+                        )}
+                    </div>
+                  )}
+                </div>
+              );
+            })
+          )}
+        </div>
+        <div className="grid grid-cols-4 gap-2 p-2">
+          {MAIN_STAGES.map((stage) => (
+            <StageCell
+              key={stage}
+              stage={stage}
+              projectTasks={projectTasks}
+              allProjectTasks={laneAllTasks}
+              stageOf={stageOf}
+              optimistic={optimistic}
+              refusedShortId={refusedShortId}
+              draggingStage={draggingStage}
+              highlightEpicId={highlightEpicId}
+              onDrop={handleDrop(stage)}
+              onOpenCard={(t) => setTaskDialog({ mode: "edit", task: t })}
+              onCardDetails={(t) => setTaskDrawer(t)}
+              onCardDragStart={(t) => setDraggingStage(t.stage)}
+              onCardDragEnd={() => setDraggingStage(null)}
+              onCardStart={(t) => {
+                setStartingShortId(t.short_id);
+                startTaskMutation.mutate(t);
+              }}
+              onCardDelete={(t) => {
+                setDeleteError(null);
+                setTaskDeleteTarget(t);
+              }}
+              startingShortId={startingShortId}
+            />
+          ))}
+        </div>
+        {/* Side columns: Pending Input + Cancelled (collapsible, §4.8) */}
+        <div className="border-t border-border px-2 py-1.5">
+          <button
+            onClick={() => setSideCollapsed((v) => !v)}
+            className="flex items-center gap-1 text-[11px] text-muted-foreground"
+            aria-expanded={!sideCollapsed}
+            data-testid="side-columns-toggle"
+          >
+            <ChevronRight className={cn("h-3 w-3 transition-transform", !sideCollapsed && "rotate-90")} />
+            {SIDE_STAGES.map((s) => `${STAGE_LABELS[s]} ${projectTasks.filter((t) => stageOf(t) === s).length}`).join(" · ")}
+          </button>
+          {!sideCollapsed && (
+            <div className="mt-1.5 grid grid-cols-2 gap-2">
+              {SIDE_STAGES.map((stage) => (
+                <StageCell
+                  key={stage}
+                  stage={stage}
+                  projectTasks={projectTasks}
+                  allProjectTasks={laneAllTasks}
+                  stageOf={stageOf}
+                  optimistic={optimistic}
+                  refusedShortId={refusedShortId}
+                  draggingStage={draggingStage}
+                  highlightEpicId={highlightEpicId}
+                  onDrop={handleDrop(stage)}
+                  onOpenCard={(t) => setTaskDialog({ mode: "edit", task: t })}
+                  onCardDetails={(t) => setTaskDrawer(t)}
+                  onCardDragStart={(t) => setDraggingStage(t.stage)}
+                  onCardDragEnd={() => setDraggingStage(null)}
+                  onCardStart={(t) => {
+                    setStartingShortId(t.short_id);
+                    startTaskMutation.mutate(t);
+                  }}
+                  onCardDelete={(t) => {
+                    setDeleteError(null);
+                    setTaskDeleteTarget(t);
+                  }}
+                  startingShortId={startingShortId}
+                />
+              ))}
+            </div>
+          )}
+        </div>
+      </section>
+    );
+  };
+
   return (
     <div className="flex h-full flex-col overflow-hidden" data-page="board">
       {/* --- Scope switcher (project focus + epic chips + search) --------------- */}
@@ -637,9 +956,11 @@ export function BoardPage() {
             data-testid="project-focus"
           >
             <option value="all">All projects</option>
-            {projects.map((p) => (
+            {/* #1964: archived projects never list here — the drawer is
+             * their only surface (focus is the ACTIVE board's scope). */}
+            {activeProjects.map((p) => (
               <option key={p.id} value={p.id}>
-                {p.name} ({p.short_id}){p.status === "archived" ? " — archived" : ""}
+                {p.name} ({p.short_id})
               </option>
             ))}
           </select>
@@ -782,273 +1103,75 @@ export function BoardPage() {
             <span>No boards yet.</span>
             <Button size="sm" onClick={() => setShowCreateProject(true)}>Create your first project</Button>
           </div>
+        ) : projectsQuery.isSuccess && activeProjects.length === 0 ? (
+          // #1964: every project archived — the active surface is empty
+          // but the board itself is not; point at the drawer below.
+          <div className="flex flex-col items-center gap-2 p-6 text-sm text-muted-foreground" data-testid="board-no-active-projects">
+            <span>No active projects — archived history sits in the drawer below.</span>
+          </div>
         ) : null}
         <div className="flex flex-col gap-4">
-          {visibleProjects.map((project) => {
-            const projectTasks = filteredTasks.filter((t) => t.project_id === project.id);
-            const laneAllTasks = tasks.filter((t) => t.project_id === project.id);
-            // Unfiltered row count per epic (#1832 r2, finding 2): the
-            // band's "No tasks yet." must not fire when tasks exist but
-            // the lane's filter (epic chip / tag / search) hides them.
-            const laneRowsByEpic = new Map<string, number>();
-            for (const t of laneAllTasks) laneRowsByEpic.set(t.epic_id, (laneRowsByEpic.get(t.epic_id) ?? 0) + 1);
-            const laneEpics = epicsByProject.get(project.id) ?? [];
-            // The swimlane's selection (derived — a vanished epic reads
-            // as unselected) drives highlight/dim on the kanban cards
-            // and scopes the header's New task.
-            const selectedEpic = selectedEpicOf(project.id);
-            const highlightEpicId = selectedEpic?.id ?? null;
-            return (
-              <section key={project.id} data-swimlane={project.short_id} data-testid={`swimlane-${project.short_id}`} className="rounded-lg border border-border">
-                <header className="flex items-center gap-2 border-b border-border px-3 py-1.5">
-                  <span className="text-xs font-semibold">{project.name}</span>
-                  <span className="font-mono text-[10px] text-muted-foreground">{project.short_id}</span>
-                  <span className="text-[10px] text-muted-foreground" data-testid={`slots-${project.short_id}`}>
-                    {slotsInUse(project.id)}/{project.worker_slots} slots
-                  </span>
-                  {project.status === "archived" && <Badge variant="muted" className="text-[10px]">archived</Badge>}
-                  {project.slot_cooldown_until && new Date(project.slot_cooldown_until) > new Date() && (
-                    <Badge variant="warning" className="text-[10px]" title="Provider throttle: new claims paused">
-                      slot cooldown
-                    </Badge>
-                  )}
-                  {/* #1832 item 1: contextual creation — the swimlane IS
-                    * the selection (New epic / New task land here, no
-                    * dropdown needed; New task honors the selected epic
-                    * band, else the picker). */}
-                  <div className="ml-auto flex items-center gap-1">
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      className="h-6 px-2 text-[11px]"
-                      onClick={() => { setCreateEpicTarget(project.id); setCreateError(null); }}
-                      data-testid={`new-epic-${project.short_id}`}
-                      title={`New epic in ${project.name}`}
-                    >
-                      New epic
-                    </Button>
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      className="h-6 px-2 text-[11px]"
-                      onClick={() => openSwimlaneNewTask(project)}
-                      data-testid={`new-task-${project.short_id}`}
-                      title={selectedEpic ? `New task in ${selectedEpic.title}` : `New task in ${project.name} — pick an epic`}
-                    >
-                      New task
-                    </Button>
-                    {/* #1832 item 3: project kebab — archive/unarchive
-                     * ONLY (#1747: project delete is eliminated; this
-                     * menu never grows a delete item). */}
-                    <KebabMenu
-                      ariaLabel={`Project actions for ${project.name}`}
-                      testId={`project-kebab-${project.short_id}`}
-                      items={[
-                        project.status === "archived"
-                          ? {
-                              label: "Unarchive project",
-                              onClick: () => void handleProjectLifecycle(project, "unarchive"),
-                            }
-                          : {
-                              label: "Archive project",
-                              onClick: () => void handleProjectLifecycle(project, "archive"),
-                            },
-                      ]}
-                    />
-                  </div>
-                </header>
-                {/* #1832 item 2: collapsible epic bands, tasks grouped
-                 * beneath; clicking a band selects it (highlight own
-                 * tasks, dim the lane's others, scope New task). */}
-                <div className="flex flex-col gap-1 border-b border-border px-2 py-1.5" data-testid={`epic-bands-${project.short_id}`}>
-                  {laneEpics.length === 0 ? (
-                    <span className="px-1 text-[10px] text-muted-foreground/70">No epics yet — use New epic above.</span>
-                  ) : (
-                    laneEpics.map((epic) => {
-                      const collapsed = collapsedBands.has(epic.id);
-                      const selected = selectedEpic?.id === epic.id;
-                      const bandTasks = projectTasks.filter((t) => t.epic_id === epic.id);
-                      return (
-                        <div
-                          key={epic.id}
-                          data-testid={`epic-band-${epic.id}`}
-                          data-selected={selected ? "true" : undefined}
-                          className={cn(
-                            "rounded-md border transition-colors",
-                            selected ? "border-primary/50 bg-primary/5" : "border-border bg-muted/20 hover:border-primary/30",
-                          )}
+          {visibleProjects.map(renderSwimlane)}
+          {/* #1964: the Archived drawer — at the board's end. Collapsed
+           * by default (deliberate friction, the #1627 Archived-group
+           * ruling); each archived project inside is itself a collapsed
+           * drawer showing ONLY its name until clicked (progressive
+           * disclosure). Expanding a project renders its full swimlane:
+           * history stays reachable and the lane kebab keeps Unarchive —
+           * purely presentation. */}
+          {archivedProjects.length > 0 && (
+            <section className="rounded-lg border border-border" data-testid="archived-projects-drawer">
+              <button
+                type="button"
+                onClick={() => setArchivedDrawerExpanded((v) => !v)}
+                className="flex w-full items-center gap-2 px-3 py-1.5 text-left"
+                aria-expanded={archivedDrawerExpanded}
+                aria-label={archivedDrawerExpanded ? "Collapse archived projects" : "Expand archived projects"}
+                data-testid="archived-projects-toggle"
+              >
+                <ChevronRight
+                  className={cn("h-3 w-3 text-muted-foreground transition-transform", archivedDrawerExpanded && "rotate-90")}
+                />
+                <Archive className="h-3 w-3 text-muted-foreground" aria-hidden="true" />
+                <span className="text-xs font-semibold text-muted-foreground">Archived</span>
+                <span className="text-[10px] text-muted-foreground/60" data-testid="archived-projects-count">
+                  {archivedProjects.length}
+                </span>
+              </button>
+              {archivedDrawerExpanded && (
+                <div className="flex flex-col gap-2 border-t border-border p-2">
+                  {archivedProjects.map((project) => {
+                    const expanded = expandedArchivedProjects.has(project.id);
+                    return (
+                      <div
+                        key={project.id}
+                        className="rounded-md border border-border"
+                        data-testid={`archived-project-${project.short_id}`}
+                      >
+                        {/* Name ONLY until clicked — the project's
+                         * history renders exclusively inside this
+                         * drawer, never on the active surface. */}
+                        <button
+                          type="button"
+                          onClick={() => toggleArchivedProject(project.id)}
+                          className="flex w-full items-center gap-2 px-2 py-1 text-left"
+                          aria-expanded={expanded}
+                          aria-label={expanded ? `Collapse ${project.name}` : `Expand ${project.name}`}
+                          data-testid={`archived-project-toggle-${project.short_id}`}
                         >
-                          {/* The HEADER ROW is the selection surface (not the
-                           * whole container): a container-level click would
-                           * sit atop the task rows beneath it — in a real
-                           * pointer click the band's center lands on its
-                           * only task row (task-edit), never selecting. */}
-                          <div
-                            className="flex cursor-pointer select-none items-center gap-1.5 px-2 py-1"
-                            data-testid={`band-header-${epic.id}`}
-                            onClick={() => toggleEpicSelection(project.id, epic.id)}
-                            onDoubleClick={() => void openEpicDrawer(epic.id)}
-                            title={`${epic.title} — click to highlight its tasks; double-click for the epic drawer`}
-                          >
-                            <button
-                              type="button"
-                              data-testid={`band-toggle-${epic.id}`}
-                              aria-expanded={!collapsed}
-                              aria-label={collapsed ? `Expand ${epic.title}` : `Collapse ${epic.title}`}
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                toggleBand(epic.id);
-                              }}
-                              className="rounded p-0.5 text-muted-foreground hover:bg-accent hover:text-foreground"
-                            >
-                              <ChevronRight className={cn("h-3 w-3 transition-transform", !collapsed && "rotate-90")} />
-                            </button>
-                            <span className="text-[11px] font-medium">{epic.title}</span>
-                            <span className="font-mono text-[10px] text-muted-foreground">{epic.short_id}</span>
-                            <span className="text-[10px] text-muted-foreground" data-testid={`band-progress-${epic.id}`}>
-                              {epic.progress_done}/{epic.progress_total}
-                            </span>
-                            {epic.status === "paused" && <Badge variant="warning" className="px-1.5 py-0 text-[10px]">paused</Badge>}
-                            {selected && <Badge variant="default" className="px-1.5 py-0 text-[10px]">selected</Badge>}
-                            {/* #1832 item 3: epic kebab — the delete flow
-                             * (in-flight surfacing + refuse/force-confirm
-                             * inside the modal). The trigger stops
-                             * propagation: the kebab never toggles the
-                             * band's selection. */}
-                            <span className="ml-auto">
-                              <KebabMenu
-                                ariaLabel={`Epic actions for ${epic.title}`}
-                                testId={`epic-kebab-${epic.id}`}
-                                items={[
-                                  {
-                                    label: "Delete epic…",
-                                    destructive: true,
-                                    onClick: () => {
-                                      setDeleteError(null);
-                                      setEpicDeleteTarget(epic);
-                                    },
-                                  },
-                                ]}
-                              />
-                            </span>
-                          </div>
-                          {!collapsed && (
-                            <div className="flex flex-col gap-0.5 px-2 pb-1.5 pt-0.5">
-                              {bandTasks.map((t) => (
-                                <button
-                                  key={t.short_id}
-                                  type="button"
-                                  data-testid={`band-task-${epic.id}-${t.short_id}`}
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    setTaskDialog({ mode: "edit", task: t });
-                                  }}
-                                  className={cn(
-                                    "flex items-center gap-2 rounded px-1.5 py-0.5 text-left text-[11px] hover:bg-accent",
-                                    highlightEpicId && t.epic_id !== highlightEpicId && "opacity-40",
-                                  )}
-                                >
-                                  <span className="font-mono text-[10px] text-muted-foreground">{t.short_id}</span>
-                                  <span className="truncate">{t.title}</span>
-                                  <span className="ml-auto rounded bg-muted px-1 py-px text-[10px] text-muted-foreground">
-                                    {STAGE_LABELS[t.stage as BoardStage] ?? t.stage}
-                                  </span>
-                                </button>
-                              ))}
-                              {bandTasks.length === 0 &&
-                                (laneRowsByEpic.get(epic.id) ?? 0) > 0 && (
-                                  <span className="px-1 text-[10px] text-muted-foreground/60" data-testid={`band-filtered-empty-${epic.id}`}>
-                                    No tasks match the current filter.
-                                  </span>
-                                )}
-                              {bandTasks.length === 0 &&
-                                (laneRowsByEpic.get(epic.id) ?? 0) === 0 && (
-                                  <span className="px-1 text-[10px] text-muted-foreground/60" data-testid={`band-empty-${epic.id}`}>
-                                    No tasks yet.
-                                  </span>
-                                )}
-                            </div>
-                          )}
-                        </div>
-                      );
-                    })
-                  )}
+                          <ChevronRight
+                            className={cn("h-3 w-3 text-muted-foreground transition-transform", expanded && "rotate-90")}
+                          />
+                          <span className="text-xs font-medium">{project.name}</span>
+                        </button>
+                        {expanded && <div className="border-t border-border">{renderSwimlane(project)}</div>}
+                      </div>
+                    );
+                  })}
                 </div>
-                <div className="grid grid-cols-4 gap-2 p-2">
-                  {MAIN_STAGES.map((stage) => (
-                    <StageCell
-                      key={stage}
-                      stage={stage}
-                      projectTasks={projectTasks}
-                      allProjectTasks={laneAllTasks}
-                      stageOf={stageOf}
-                      optimistic={optimistic}
-                      refusedShortId={refusedShortId}
-                      draggingStage={draggingStage}
-                      highlightEpicId={highlightEpicId}
-                      onDrop={handleDrop(stage)}
-                      onOpenCard={(t) => setTaskDialog({ mode: "edit", task: t })}
-                      onCardDetails={(t) => setTaskDrawer(t)}
-                      onCardDragStart={(t) => setDraggingStage(t.stage)}
-                      onCardDragEnd={() => setDraggingStage(null)}
-                      onCardStart={(t) => {
-                        setStartingShortId(t.short_id);
-                        startTaskMutation.mutate(t);
-                      }}
-                      onCardDelete={(t) => {
-                        setDeleteError(null);
-                        setTaskDeleteTarget(t);
-                      }}
-                      startingShortId={startingShortId}
-                    />
-                  ))}
-                </div>
-                {/* Side columns: Pending Input + Cancelled (collapsible, §4.8) */}
-                <div className="border-t border-border px-2 py-1.5">
-                  <button
-                    onClick={() => setSideCollapsed((v) => !v)}
-                    className="flex items-center gap-1 text-[11px] text-muted-foreground"
-                    aria-expanded={!sideCollapsed}
-                    data-testid="side-columns-toggle"
-                  >
-                    <ChevronRight className={cn("h-3 w-3 transition-transform", !sideCollapsed && "rotate-90")} />
-                    {SIDE_STAGES.map((s) => `${STAGE_LABELS[s]} ${projectTasks.filter((t) => stageOf(t) === s).length}`).join(" · ")}
-                  </button>
-                  {!sideCollapsed && (
-                    <div className="mt-1.5 grid grid-cols-2 gap-2">
-                      {SIDE_STAGES.map((stage) => (
-                        <StageCell
-                          key={stage}
-                          stage={stage}
-                          projectTasks={projectTasks}
-                          allProjectTasks={laneAllTasks}
-                          stageOf={stageOf}
-                          optimistic={optimistic}
-                          refusedShortId={refusedShortId}
-                          draggingStage={draggingStage}
-                          highlightEpicId={highlightEpicId}
-                          onDrop={handleDrop(stage)}
-                          onOpenCard={(t) => setTaskDialog({ mode: "edit", task: t })}
-                          onCardDetails={(t) => setTaskDrawer(t)}
-                          onCardDragStart={(t) => setDraggingStage(t.stage)}
-                          onCardDragEnd={() => setDraggingStage(null)}
-                          onCardStart={(t) => {
-                            setStartingShortId(t.short_id);
-                            startTaskMutation.mutate(t);
-                          }}
-                          onCardDelete={(t) => {
-                            setDeleteError(null);
-                            setTaskDeleteTarget(t);
-                          }}
-                          startingShortId={startingShortId}
-                        />
-                      ))}
-                    </div>
-                  )}
-                </div>
-              </section>
-            );
-          })}
+              )}
+            </section>
+          )}
         </div>
       </div>
 
