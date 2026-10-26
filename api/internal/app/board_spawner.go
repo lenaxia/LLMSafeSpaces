@@ -159,7 +159,7 @@ type spawnOriginRecorder interface {
 	DeleteSessionOrigin(ctx context.Context, sessionID string) error
 }
 
-func newBoardSpawner(activator spawnActivator, executor spawnDispatcher, origins spawnOriginRecorder) board.WorkerSpawner {
+func newBoardSpawner(activator spawnActivator, executor spawnDispatcher, origins spawnOriginRecorder, retain func(ctx context.Context, workspaceID, podIP, keepSessionID string)) board.WorkerSpawner {
 	return func(ctx context.Context, c *board.Claim) (string, error) {
 		if c.WorkspaceID == "" {
 			return "", fmt.Errorf("board: spawn: claim carries no workspace (task %s)", c.TaskID)
@@ -202,6 +202,19 @@ func newBoardSpawner(activator spawnActivator, executor spawnDispatcher, origins
 				slog.ErrorContext(ctx, "board: spawn: failed to record worker origin mark",
 					"error", err.Error(), "workspaceID", c.WorkspaceID, "sessionId", resp.SessionID, "taskId", c.TaskID)
 			}
+		}
+		// #1966 owner ruling: enforce the worker-session hard cap after
+		// the create (on-create prune of the tail). Detached — the
+		// retention deletes never block or fail the spawn; the podIP is
+		// this spawn's own activation (the delete leg runs against a
+		// warm target), and keepSessionID shields the just-created
+		// worker (with the grace floor as the second guard).
+		if retain != nil {
+			go func(workspaceID, podIP, keep string) {
+				rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Minute)
+				defer cancel()
+				retain(rctx, workspaceID, podIP, keep)
+			}(c.WorkspaceID, podIP, resp.SessionID)
 		}
 		return resp.SessionID, nil
 	}

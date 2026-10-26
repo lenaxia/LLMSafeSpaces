@@ -602,6 +602,8 @@ func TestBoardEnvOverrides_R6(t *testing.T) {
 	t.Setenv("LLMSAFESPACES_BOARD_GLOBALCLAIMCAP", "96")
 	t.Setenv("LLMSAFESPACES_BOARD_MAXEDGESPERNODE", "20")
 	t.Setenv("LLMSAFESPACES_BOARD_MAXNODESPEREPIC", "80")
+	t.Setenv("LLMSAFESPACES_BOARD_WORKERSESSIONCAP", "25")
+	t.Setenv("LLMSAFESPACES_BOARD_WORKERSESSIONGRACESECONDS", "1800")
 
 	cfg := &Config{Board: struct {
 		Enabled                bool `mapstructure:"enabled"`
@@ -615,14 +617,18 @@ func TestBoardEnvOverrides_R6(t *testing.T) {
 		GlobalClaimCap         int  `mapstructure:"globalClaimCap"`
 		MaxEdgesPerNode        int  `mapstructure:"maxEdgesPerNode"`
 		MaxNodesPerEpic        int  `mapstructure:"maxNodesPerEpic"`
+		WorkerSessionCap       int  `mapstructure:"workerSessionCap"`
+		WorkerSessionGraceSecs int  `mapstructure:"workerSessionGraceSeconds"`
 	}{Enabled: true, AttemptsCap: 3, LeaseSeconds: 900, ThrottleBackoffSeconds: 300, FailureBackoffSeconds: 60, DRRQuantum: 1, SweepSeconds: 30,
-		UserClaimCap: 8, GlobalClaimCap: 64, MaxEdgesPerNode: 16, MaxNodesPerEpic: 64}}
+		UserClaimCap: 8, GlobalClaimCap: 64, MaxEdgesPerNode: 16, MaxNodesPerEpic: 64,
+		WorkerSessionCap: 50, WorkerSessionGraceSecs: 3600}}
 	applyBoardEnvOverrides(cfg)
 
 	if cfg.Board.Enabled != false || cfg.Board.AttemptsCap != 5 || cfg.Board.LeaseSeconds != 42 ||
 		cfg.Board.ThrottleBackoffSeconds != 77 || cfg.Board.FailureBackoffSeconds != 120 || cfg.Board.DRRQuantum != 2 || cfg.Board.SweepSeconds != 15 ||
 		cfg.Board.UserClaimCap != 12 || cfg.Board.GlobalClaimCap != 96 ||
-		cfg.Board.MaxEdgesPerNode != 20 || cfg.Board.MaxNodesPerEpic != 80 {
+		cfg.Board.MaxEdgesPerNode != 20 || cfg.Board.MaxNodesPerEpic != 80 ||
+		cfg.Board.WorkerSessionCap != 25 || cfg.Board.WorkerSessionGraceSecs != 1800 {
 		t.Fatalf("board env overrides not applied: %+v", cfg.Board)
 	}
 }
@@ -644,8 +650,11 @@ func TestBoardEnvOverrides_R6_InvalidIgnored(t *testing.T) {
 		GlobalClaimCap         int  `mapstructure:"globalClaimCap"`
 		MaxEdgesPerNode        int  `mapstructure:"maxEdgesPerNode"`
 		MaxNodesPerEpic        int  `mapstructure:"maxNodesPerEpic"`
+		WorkerSessionCap       int  `mapstructure:"workerSessionCap"`
+		WorkerSessionGraceSecs int  `mapstructure:"workerSessionGraceSeconds"`
 	}{Enabled: true, AttemptsCap: 3, LeaseSeconds: 900, ThrottleBackoffSeconds: 300, FailureBackoffSeconds: 60, DRRQuantum: 1, SweepSeconds: 30,
-		UserClaimCap: 8, GlobalClaimCap: 64, MaxEdgesPerNode: 16, MaxNodesPerEpic: 64}}
+		UserClaimCap: 8, GlobalClaimCap: 64, MaxEdgesPerNode: 16, MaxNodesPerEpic: 64,
+		WorkerSessionCap: 50, WorkerSessionGraceSecs: 3600}}
 	applyBoardEnvOverrides(cfg)
 	if cfg.Board.AttemptsCap != 3 || cfg.Board.LeaseSeconds != 900 {
 		t.Fatalf("invalid env must not clobber the base: %+v", cfg.Board)

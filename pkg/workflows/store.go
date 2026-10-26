@@ -1280,6 +1280,85 @@ func (s *Store) ListSessionOrigins(ctx context.Context, workspaceID string) ([]*
 	return out, rows.Err()
 }
 
+// --- #1966 worker retention ---
+
+// WorkerSessionRow is the #1966 retention projection: one live session
+// of the workspace carrying the RAW worker signals (not a precomputed
+// verdict) so the retainer re-applies the worker predicate itself — a
+// misclassified user session in the listing can be refused at the
+// deleter. OriginWorker: the platform-stamped origin-class worker mark
+// (the board spawner's). Parented: a Task-tool subagent / one-shot
+// lane (session_index.parent_session_id set).
+type WorkerSessionRow struct {
+	SessionID    string
+	OriginWorker bool
+	Parented     bool
+	// LastActivity drives oldest-first eviction order.
+	LastActivity time.Time
+	// UpdatedAt drives the grace floor (never delete rows updated
+	// recently — mid-lease workers).
+	UpdatedAt time.Time
+}
+
+// workerSessionPredicate is the SQL worker classifier shared by the
+// listing and the single-row re-verification — deliberately inline in
+// both queries (not a Go constant interpolated) so the EXPLAIN-visible
+// predicate and the schema stay reviewable together.
+//
+// Cross-table read note: session_index belongs to the proxy/session
+// domain and session_origins to the workflows domain; both live in the
+// same database this store's pool serves. The join is read-only.
+func (s *Store) ListWorkerSessions(ctx context.Context, workspaceID string) ([]WorkerSessionRow, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT si.session_id,
+		       COALESCE(so.origin, '') = 'worker' AS origin_worker,
+		       COALESCE(si.parent_session_id, '') <> '' AS parented,
+		       COALESCE(si.last_message_at, si.created_at) AS last_activity,
+		       si.updated_at
+		FROM session_index si
+		LEFT JOIN session_origins so
+		       ON so.session_id = si.session_id AND so.workspace_id = si.workspace_id
+		WHERE si.workspace_id = $1
+		  AND si.deleted_at IS NULL
+		  AND (COALESCE(so.origin, '') = 'worker' OR COALESCE(si.parent_session_id, '') <> '')
+		ORDER BY COALESCE(si.last_message_at, si.created_at) ASC
+	`, workspaceID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []WorkerSessionRow
+	for rows.Next() {
+		var r WorkerSessionRow
+		if err := rows.Scan(&r.SessionID, &r.OriginWorker, &r.Parented, &r.LastActivity, &r.UpdatedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+// IsWorkerSession is the deleter's independent verification leg (#1966
+// ruling: "the classifier must be proven before the deleter trusts
+// it"): a fresh single-row read of the same predicate, taken
+// immediately before a hard delete, so a classification that flipped
+// or vanished between the listing and the delete refuses the eviction.
+func (s *Store) IsWorkerSession(ctx context.Context, workspaceID, sessionID string) (bool, error) {
+	var isWorker bool
+	err := s.pool.QueryRow(ctx, `
+		SELECT EXISTS (
+			SELECT 1 FROM session_index si
+			LEFT JOIN session_origins so
+			       ON so.session_id = si.session_id AND so.workspace_id = si.workspace_id
+			WHERE si.workspace_id = $1
+			  AND si.session_id = $2
+			  AND si.deleted_at IS NULL
+			  AND (COALESCE(so.origin, '') = 'worker' OR COALESCE(si.parent_session_id, '') <> '')
+		)
+	`, workspaceID, sessionID).Scan(&isWorker)
+	return isWorker, err
+}
+
 // ListCarrierOriginMarks returns the workspace's CARRIER-class origin
 // marks (#1901 item a): the session ids the platform itself deleted
 // (kind='carrier') — the ONLY class the reap bypass admits. Preserved
