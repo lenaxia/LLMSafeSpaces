@@ -1,7 +1,7 @@
 // Copyright (C) 2026 Michael Kao
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-import { screen, fireEvent, waitFor, within } from "@testing-library/react";
+import { screen, fireEvent, waitFor, within, act } from "@testing-library/react";
 import { describe, it, expect, beforeEach, vi } from "vitest";
 // boardTestUtils FIRST (its vi.mock registrations must evaluate before
 // BoardPage resolves ../api/board).
@@ -17,6 +17,7 @@ import {
   PROJECT_ARCHIVED,
   TASK_DONE,
   TASK_BACKLOG,
+  TASK_PENDING,
 } from "./boardTestUtils";
 import type { BoardProject, BoardTask } from "../api/board";
 
@@ -116,6 +117,24 @@ describe("BoardPage #1964 — archived projects drawer", () => {
     expect(within(lane).getAllByText("Ancient history").length).toBeGreaterThan(0);
   });
 
+  // #1964 r1 (review finding 1): the drawer is not focus-aware — its
+  // lanes need their rows under ANY scope-switcher focus.
+  it("expanding a drawer lane under an ACTIVE project focus still renders its history", async () => {
+    renderBoard();
+    await screen.findByTestId("swimlane-prj-aaaa1111");
+
+    // Scope the active surface to one lane…
+    fireEvent.change(screen.getByTestId("project-focus"), { target: { value: "proj-uuid-a" } });
+    await screen.findByTestId("swimlane-prj-aaaa1111");
+
+    // …then open the Archived drawer: the lane's history must render
+    // (the full fan-out feeds drawer lanes regardless of focus — a
+    // focused single-lane read left them an empty scaffold).
+    await expandArchivedLane("prj-arch3333");
+    const lane = screen.getByTestId("swimlane-prj-arch3333");
+    expect(within(lane).getAllByText("Ancient history").length).toBeGreaterThan(0);
+  });
+
   it("unarchive from inside the drawer returns the lane to the active surface", async () => {
     mockUnarchiveProject.mockResolvedValue({ ...PROJECT_ARCHIVED, status: "active" });
     // Stateful read: the initial load carries the archived seed; every
@@ -162,6 +181,82 @@ describe("BoardPage #1964 — archived projects drawer", () => {
     await waitFor(() => expect(screen.queryByTestId("swimlane-prj-bbbb2222")).toBeNull());
     // Focus reset to All — the scope never points at a hidden lane.
     expect((screen.getByTestId("project-focus") as HTMLSelectElement).value).toBe("all");
+    expect(mockUnarchiveProject).not.toHaveBeenCalled();
+  });
+
+  // #1964 r1 (review finding 2): the focused lane can archive WITHOUT
+  // this session's hand — another tab's write rides the board.event
+  // ["board"] invalidation and the refetch lands it archived.
+  it("a focused lane archived cross-context (refetch lands it archived) resets focus — never a stranded board", async () => {
+    // No archive from THIS session: the stateful read simulates the
+    // invalidation-triggered refetch landing B archived while other
+    // active lanes exist.
+    let listCalls = 0;
+    mockListProjects.mockImplementation(async () => {
+      listCalls += 1;
+      return listCalls <= 1
+        ? [PROJECT_A, PROJECT_B]
+        : [PROJECT_A, { ...PROJECT_B, status: "archived" }];
+    });
+    const { queryClient } = renderBoard();
+    await screen.findByTestId("swimlane-prj-aaaa1111");
+
+    fireEvent.change(screen.getByTestId("project-focus"), { target: { value: "proj-uuid-b" } });
+    await screen.findByTestId("swimlane-prj-bbbb2222");
+
+    // The cross-context update: the board.event branch's
+    // invalidateQueries(["board"]) — B archived elsewhere.
+    await act(async () => {
+      await queryClient.invalidateQueries({ queryKey: ["board"] });
+    });
+
+    // Focus resets to All: Apollo still renders (no dead-end empty
+    // surface), B files into the drawer, and the select never points
+    // at a hidden lane.
+    await waitFor(() =>
+      expect((screen.getByTestId("project-focus") as HTMLSelectElement).value).toBe("all"),
+    );
+    await screen.findByTestId("swimlane-prj-aaaa1111");
+    await screen.findByTestId("archived-projects-drawer");
+    await waitFor(() => expect(screen.queryByTestId("swimlane-prj-bbbb2222")).toBeNull());
+    expect(mockArchiveProject).not.toHaveBeenCalled();
+  });
+
+  // #1964 r1 (review minor): a tag filter is only honest while its
+  // chip renders — the chip leaves the toolbar with its lane.
+  it("archiving the tag-filtered lane drops the filter with its chip (no silently hidden rows)", async () => {
+    // The tag lives ONLY on B's rows (moved to a main-stage column so
+    // the positive assertion renders uncollapsed); the filter is set
+    // from its chip. Seed FIRST — the stateful read override below
+    // must come after seedBoard's plain mockResolvedValue.
+    const tasks: BoardTask[] = defaultTasks().map((t): BoardTask =>
+      t.id === TASK_PENDING.id ? { ...t, stage: "backlog", tags: ["pr:1964b"] } : t,
+    );
+    seedBoard(tasks, [PROJECT_A, PROJECT_B]);
+    mockArchiveProject.mockResolvedValue({ ...PROJECT_B, status: "archived" });
+    let listCalls = 0;
+    mockListProjects.mockImplementation(async () => {
+      listCalls += 1;
+      return listCalls <= 1
+        ? [PROJECT_A, PROJECT_B]
+        : [PROJECT_A, { ...PROJECT_B, status: "archived" }];
+    });
+    renderBoard();
+    await screen.findByTestId("task-card-tsk-aaaa0001");
+
+    fireEvent.click(screen.getByTestId("tag-filter-pr:1964b"));
+    await waitFor(() => expect(screen.queryByTestId("task-card-tsk-aaaa0001")).toBeNull());
+    expect(screen.getByTestId("task-card-tsk-ffff0006")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByTestId("project-kebab-prj-bbbb2222"));
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Archive project" }));
+    await waitFor(() => expect(mockArchiveProject).toHaveBeenCalledWith("proj-uuid-b"));
+
+    // The chip left the toolbar with its lane — the filter drops with
+    // it: the surviving active lane's rows are NOT silently hidden
+    // behind a filter with no visible chip to clear.
+    await waitFor(() => expect(screen.queryByTestId("tag-filter-pr:1964b")).toBeNull());
+    await waitFor(() => expect(screen.getByTestId("task-card-tsk-aaaa0001")).toBeInTheDocument());
     expect(mockUnarchiveProject).not.toHaveBeenCalled();
   });
 

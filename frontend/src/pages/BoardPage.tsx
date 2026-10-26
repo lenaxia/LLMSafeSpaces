@@ -102,12 +102,32 @@ export function BoardPage() {
   const archivedProjects = useMemo(() => projects.filter((p) => p.status === "archived"), [projects]);
   const activeProjectIds = useMemo(() => new Set(activeProjects.map((p) => p.id)), [activeProjects]);
 
+  // #1964 r1 (review finding 2): the focused lane can leave the
+  // active surface without THIS session's hand — another tab's
+  // archive rides the board.event ["board"] invalidation (or a
+  // window-focus refetch), the lane drops out of activeProjects,
+  // and a stale focus id would strand the board: visibleProjects
+  // = [] while other active lanes exist, the scope select matching
+  // no option, no hint, no recovery. Reset scope to All the moment
+  // the focus id stops naming an active lane.
+  useEffect(() => {
+    if (focusProject !== "all" && !activeProjectIds.has(focusProject)) {
+      setFocusProject("all");
+      setFocusEpic("all");
+    }
+  }, [focusProject, activeProjectIds]);
+
+  // #1964 r1 (review finding 1): the tasks read is ALWAYS the full
+  // fan-out, never a focused single-lane fetch — the Archived drawer
+  // renders any lane's history regardless of the scope switcher's
+  // focus, and a focused read starved drawer lanes of their rows
+  // (band headers rendered, every cell stayed empty). The epics
+  // fan-out below already fetches every lane for the same reason;
+  // focus stays a pure VIEW filter (visibleProjects), and a cached
+  // full board makes switching focus instant (no refetch, no flash).
   const tasksQuery = useQuery({
-    queryKey: ["board", "tasks", focusProject],
+    queryKey: ["board", "tasks"],
     queryFn: async () => {
-      if (focusProject !== "all") {
-        return boardApi.listProjectTasks(focusProject);
-      }
       const lists = await Promise.all(projects.map((p) => boardApi.listProjectTasks(p.id)));
       return lists.flat();
     },
@@ -255,6 +275,18 @@ export function BoardPage() {
     for (const t of surfaceTasks) for (const tag of t.tags) counts.set(tag, (counts.get(tag) ?? 0) + 1);
     return [...counts.entries()].sort((a, b) => b[1] - a[1]).slice(0, 12).map(([tag]) => tag);
   }, [surfaceTasks]);
+
+  // #1964 r1 (review minor): a live tag filter must keep its chip —
+  // allTags draws from the ACTIVE surface only, so once the tag's
+  // lane archives (this session or cross-context) the chip vanishes
+  // from the toolbar while filteredTasks kept applying it: rows
+  // silently hidden with no visible chip to clear. Drop the filter
+  // with its chip.
+  useEffect(() => {
+    if (tagFilter !== null && !allTags.includes(tagFilter)) {
+      setTagFilter(null);
+    }
+  }, [tagFilter, allTags]);
 
   // --- Filtering ------------------------------------------------------------------
   // #1964: search arbitrates over the ACTIVE surface (surfaceTasks) —
