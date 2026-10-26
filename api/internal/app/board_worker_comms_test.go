@@ -153,7 +153,7 @@ func newBoardCommsAdapter(t *testing.T, s *stubOpencode) *agentoc.Adapter {
 	})
 	ip := &staticBoardPodIP{ip: parts[0]}
 	return agentoc.NewAdapter(pw, ip, zap.NewNop(),
-		agentoc.WithAdapterHTTPClient(s.Server.Client()),
+		agentoc.WithAdapterHTTPClient(s.Client()),
 		agentoc.WithAdapterPort(port),
 	)
 }
@@ -247,7 +247,7 @@ func TestBoardWorkerComms_Redispatcher_DeadSession_FastFailKeepsFallback(t *test
 // once the fast-fail window expires, the caller (the reviewer's verdict
 // request) must not block on Round 2, and the DETACHED delivery must
 // survive the caller's ctx ending (the send_message WithoutCancel
-// discipline — cancelling the caller must not kill the re-dispatched
+// discipline — canceling the caller must not kill the re-dispatched
 // turn mid-flight).
 func TestBoardWorkerComms_Redispatcher_SlowTurnIsInFlight_NotCallerBlocked(t *testing.T) {
 	restore := boardV1FastFail
@@ -273,7 +273,7 @@ func TestBoardWorkerComms_Redispatcher_SlowTurnIsInFlight_NotCallerBlocked(t *te
 	select {
 	case <-stub.respondedSignal():
 	case <-time.After(5 * time.Second):
-		t.Fatal("the detached V1 delivery did not complete after the caller's ctx was cancelled — the re-dispatched turn died with the request")
+		t.Fatal("the detached V1 delivery did not complete after the caller's ctx was canceled — the re-dispatched turn died with the request")
 	}
 	v1, v2, _ := stub.counts()
 	assert.Equal(t, 1, v1, "the detached delivery must land the V1 POST")
