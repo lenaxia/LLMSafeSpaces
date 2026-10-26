@@ -81,6 +81,13 @@ type Adapter interface {
 	// assistant response. The returned message ID lets the caller
 	// correlate via Stream or GetHistory. Use this for long-running
 	// tasks where the caller will poll.
+	//
+	// DEPRECATED on the opencode 1.18.x floor (#755, CLOSED SEV1): the
+	// V2 queue route this rides is DEAD there — every call 404s (#1959
+	// root cause). Deliver via Send (V1) instead. Remaining callers:
+	// the OPENCODE_V2_DELIVERY outbox regime (proxy_lifecycle.go,
+	// opencode ≥ 1.18.15 only) and the systemnotices pass-through. Do
+	// not add new callers.
 	SendAsync(ctx context.Context, userID, workspaceID, sessionID, text string, opts session.SendOpts) (messageID string, err error)
 
 	// Abort stops any in-flight work on the session. The abort is

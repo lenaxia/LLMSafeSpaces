@@ -434,6 +434,21 @@ func (a *Adapter) SendAsync(ctx context.Context, userID, workspaceID, sessionID,
 	// SendAsync uses opencode's V2 prompt endpoint with delivery:queue
 	// (Epic 63). The response is admit-and-schedule; we return the
 	// admitted message ID so the caller can correlate via Stream.
+	//
+	// DEPRECATED for new callers (#755, CLOSED SEV1 — and #1959's root
+	// cause): on the pinned opencode 1.18.x the v2/ route group was
+	// DELETED (1.18.10), so this POST 404s and the call always errors —
+	// the board bounce re-dispatch rode it and every bounce fell back
+	// to a fresh spawn (fixed: the board seams deliver via the V1 Send
+	// now; see api/internal/app/board_worker_comms.go). The LIVE
+	// delivery path is Send (V1 /session/:id/message). Remaining
+	// production callers, kept intentionally:
+	//   - api/internal/handlers/proxy_lifecycle.go — the
+	//     OPENCODE_V2_DELIVERY outbox regime, gated OFF by default and
+	//     requiring opencode ≥ 1.18.15 (where the V2 queue drains);
+	//   - pkg/agent/systemnotices — the pass-through wrapper, reachable
+	//     only through that regime.
+	// Do NOT add new callers on the 1.18.x floor.
 	c, err := a.resolve(ctx, userID, workspaceID)
 	if err != nil {
 		return "", err
