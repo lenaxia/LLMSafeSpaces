@@ -20,6 +20,7 @@ package app
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
@@ -27,6 +28,11 @@ import (
 	"github.com/lenaxia/llmsafespaces/pkg/board"
 	"github.com/lenaxia/llmsafespaces/pkg/session"
 )
+
+// boardV1FastFail bounds how long a delivery seam WAITS for a
+// synchronous delivery verdict before declaring the turn in-flight
+// (package var so the wiring tests can bound it).
+var boardV1FastFail = 10 * time.Second
 
 // haltDirectiveText / resumeDirectiveText render the worker-facing
 // directive messages (the charter envelope's voice).
@@ -41,6 +47,20 @@ func resumeDirectiveText(shortID string) string {
 	return fmt.Sprintf("BOARD RESUME DIRECTIVE: your task %s was resumed — continue working. "+
 		"If your claim lapsed while paused, your next write returns 409 claim_token: re-read the "+
 		"task with board_read; the engine may already have spawned a fresh worker.", shortID)
+}
+
+// boardScopeResolver resolves (owner, target workspace) for a task —
+// the adapter's addressing keys. Injected as a function (not the pool)
+// so the wiring tests drive the production closures end-to-end without
+// a database (the #1959 gap: the fake-adapter pins could not see the
+// HTTP route the production adapter actually rides).
+type boardScopeResolver func(ctx context.Context, taskRef string) (userID, workspaceID string, err error)
+
+// boardScopeFor binds the pool-backed production resolver.
+func boardScopeFor(pool *pgxpool.Pool) boardScopeResolver {
+	return func(ctx context.Context, taskRef string) (string, string, error) {
+		return boardTaskScope(ctx, pool, taskRef)
+	}
 }
 
 // boardTaskScope resolves (owner, target workspace) for a task by id or
@@ -68,9 +88,9 @@ func newBoardAborter(pool *pgxpool.Pool, adapter agent.Adapter) board.WorkerAbor
 // newBoardMessenger builds the halt/resume directive seam (SendAsync —
 // the message queues behind the in-flight turn and lands at its
 // boundary).
-func newBoardMessenger(pool *pgxpool.Pool, adapter agent.Adapter) board.WorkerMessenger {
+func newBoardMessenger(scope boardScopeResolver, adapter agent.Adapter) board.WorkerMessenger {
 	return func(ctx context.Context, sessionID, directive, taskShortID string) error {
-		userID, workspaceID, err := boardTaskScope(ctx, pool, taskShortID)
+		userID, workspaceID, err := scope(ctx, taskShortID)
 		if err != nil {
 			return fmt.Errorf("board: directive scope: %w", err)
 		}
@@ -91,9 +111,9 @@ func newBoardMessenger(pool *pgxpool.Pool, adapter agent.Adapter) board.WorkerMe
 // spawn; the message starts a fresh turn in the target session). A
 // delivery error is the seam's liveness answer (archived/reaped) —
 // pkg/board falls back to a fresh-implementer spawn on it.
-func newBoardRedispatcher(pool *pgxpool.Pool, adapter agent.Adapter) board.BounceRedispatcher {
+func newBoardRedispatcher(scope boardScopeResolver, adapter agent.Adapter) board.BounceRedispatcher {
 	return func(ctx context.Context, sessionID, text, taskShortID string) error {
-		userID, workspaceID, err := boardTaskScope(ctx, pool, taskShortID)
+		userID, workspaceID, err := scope(ctx, taskShortID)
 		if err != nil {
 			return fmt.Errorf("board: re-dispatch scope: %w", err)
 		}
