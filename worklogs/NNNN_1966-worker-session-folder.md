@@ -23,12 +23,22 @@ Worker lane (drafty-echo-reviews), dispatched off issue #1966 (filed by novel-nu
 ## Pins (red-first)
 - `frontend/src/lib/sessionWorker.test.ts` — classifier: worker-origin → folder; parentId → folder; manual/routine/workflow/user → main list.
 - `frontend/src/components/layout/Sidebar.workers.test.tsx` — folder renders collapsed w/ count; worker-origin AND parented sessions folder; user/routine/manual stay main-list; expand on click; auto-expand on worker selection; archived worker → Archived group (archive outranks); query keeps `{ includeArchived: true }` (presentation-only; server-side `q` search composes over the unchanged listing).
-- `api/internal/app/board_spawner_origin_test.go` — happy-path mark (origin/kind/session/ws/title stamps), mark-failure-still-spawns, nil-recorder skip, failed-spawn-records-nothing.
-- All four were RED before implementation (missing module / missing group / signature mismatch), then green.
+- `api/internal/app/board_spawner_origin_test.go` — happy-path mark (origin/kind/session/ws/title stamps), mark-failure-still-spawns, nil-recorder skip, failed-spawn-records-nothing, retention-trigger (prune fires once post-spawn with the spawn's podIP + fresh id as keep).
+- All were RED before implementation (missing module / missing group / signature mismatch), then green.
+
+## Owner-ruling addition: worker-session hard cap (folded pre-approval)
+Ruling (issue #1966 comment 6429460456): past a cap of 50 worker sessions, the OLDEST are hard-deleted oldest-first. Design decisions + justification:
+- **On-create prune, not a sweep**: churn is create-driven (each board claim spawns); the prune runs exactly at the growth boundary, needs no scheduler surface/cadence config, and the spawn's own EnsureActive means the pod-side delete leg hits a warm pod. Limitation accepted: a lowered cap trims on the next create.
+- **Two-level misclassification refusal**: (1) the candidate listing carries RAW signals (origin-worker / parented booleans) and the retainer re-applies the predicate — a user session in the list is refused (pinned: it is never deleted, the next true worker goes instead); (2) every candidate is re-verified by a fresh single-row `IsWorkerSession` read immediately before the delete — a classification that flipped/vanished since the listing refuses (pinned).
+- **Grace floor**: rows updated <1h ago (mid-lease workers) never deleted; the prune never chases past the floor (pinned: over-cap set with only fresh workers → zero deletes).
+- **Hard delete class**: `apiwf.DeleteSessionAuthorized` (exported from the engine — the caller-neutral #1882 core shared with the routine scheduler + DAG reconciler): pod-side delete + platform teardown (tombstone, index row removal, SSE) + origin-mark clean — evicted workers leave no ghost in the folder count or the cap count.
+- **Config**: `LLMSAFESPACES_BOARD_WORKERSESSIONCAP` (default 50), `LLMSAFESPACES_BOARD_WORKERSESSIONGRACESECONDS` (default 3600); ≤0 → ruling defaults. Platform deploy knobs on the Board config section (helm values → env → config chain).
+- Store seam: `pkg/workflows` `ListWorkerSessions` (session_index LEFT JOIN session_origins, deleted_at-filtered, oldest-first) + `IsWorkerSession` (single-row re-verification) — integration test in StoreIntegrationSuite (compile-gated without PG).
+- Retainer pins (born RED): over-cap-create prunes oldest first (exactly to cap); misclassified user session refused; re-verification refusal; grace floor; never-the-just-created; at/under-cap noop; delete-failure continues; listing failure swallowed; defaults 50/1h.
 
 ## Gates
-- frontend: `npm test` 2503/2503 · `tsc --noEmit` clean · `eslint` 0 errors (7 pre-existing warnings: generated protobufs + BoardPage) · `test:e2e` 247 passed / 13 skipped (pre-existing) / 1 first-run flake on the new count assertion (cold dev-server window; hardened with explicit 15s timeouts; 3× clean focused reruns; passes on suite retry).
-- backend: `go vet` + `go test` green on api/internal/app, pkg/types, pkg/workflows (+exprlang, scriptwrap).
+- frontend: `npm test` 2503/2503 · `tsc --noEmit` clean · `eslint` 0 errors (7 pre-existing warnings: generated protobufs + BoardPage) · `test:e2e` 247 passed / 13 skipped (pre-existing) / 1 first-run flake on the new count assertion (cold dev-server window; hardened with explicit 15s timeouts; 3× clean focused reruns; passes on suite retry). Re-run after the ruling addition: unit 2503/2503, typecheck clean, sidebar e2e focused green.
+- backend: `go vet` + `go test` green on api/internal/app, api/internal/config, api/internal/workflows, pkg/types, pkg/workflows (+exprlang, scriptwrap) — re-run after the ruling addition.
 - CI workflows 281913422 / 286282352 on the branch (see PR checks).
 
 ## Rounds
