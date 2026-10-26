@@ -59,7 +59,7 @@ func TestBoardSpawner_RecordsWorkerOriginMark(t *testing.T) {
 	var captured *apiwf.NodeExecRequest
 	exe := stubDispatcher{capture: &captured, session: "sess-fresh-1"}
 	rec := &stubOriginRecorder{}
-	spawner := newBoardSpawner(&act, &exe, rec)
+	spawner := newBoardSpawner(&act, &exe, rec, nil)
 
 	id, err := spawner(context.Background(), originTestClaim())
 	if err != nil || id != "sess-fresh-1" {
@@ -98,7 +98,7 @@ func TestBoardSpawner_OriginMarkFailureStillSpawns(t *testing.T) {
 	var captured *apiwf.NodeExecRequest
 	exe := stubDispatcher{capture: &captured, session: "sess-fresh-2"}
 	rec := &stubOriginRecorder{failWith: errors.New("db down")}
-	spawner := newBoardSpawner(&act, &exe, rec)
+	spawner := newBoardSpawner(&act, &exe, rec, nil)
 
 	id, err := spawner(context.Background(), originTestClaim())
 	if err != nil || id != "sess-fresh-2" {
@@ -113,7 +113,7 @@ func TestBoardSpawner_NilOriginRecorderSkipsMarking(t *testing.T) {
 	act := stubActivator{ip: "10.42.0.7"}
 	var captured *apiwf.NodeExecRequest
 	exe := stubDispatcher{capture: &captured, session: "sess-fresh-3"}
-	spawner := newBoardSpawner(&act, &exe, nil)
+	spawner := newBoardSpawner(&act, &exe, nil, nil)
 
 	id, err := spawner(context.Background(), originTestClaim())
 	if err != nil || id != "sess-fresh-3" {
@@ -128,13 +128,42 @@ func TestBoardSpawner_FailedSpawnRecordsNothing(t *testing.T) {
 	act := stubActivator{ip: "10.42.0.7"}
 	exe := failingDispatcher{}
 	rec := &stubOriginRecorder{}
-	spawner := newBoardSpawner(&act, &exe, rec)
+	spawner := newBoardSpawner(&act, &exe, rec, nil)
 
 	if _, err := spawner(context.Background(), originTestClaim()); err == nil {
 		t.Fatal("expected spawn error")
 	}
 	if rec.calls != 0 {
 		t.Fatalf("failed spawn must not record an origin mark: calls=%d", rec.calls)
+	}
+}
+
+// TestBoardSpawner_TriggeredRetentionPrunesOnCreate (#1966 owner
+// ruling): a successful spawn fires the retention prune exactly once,
+// with the spawn's own activation IP and the fresh session as the keep
+// id — detached from the spawn's return.
+func TestBoardSpawner_TriggeredRetentionPrunesOnCreate(t *testing.T) {
+	act := stubActivator{ip: "10.42.0.7"}
+	var captured *apiwf.NodeExecRequest
+	exe := stubDispatcher{capture: &captured, session: "sess-fresh-4"}
+	rec := &stubOriginRecorder{}
+	pruned := make(chan []string, 4)
+	retain := func(ctx context.Context, workspaceID, podIP, keepSessionID string) {
+		pruned <- []string{workspaceID, podIP, keepSessionID}
+	}
+	spawner := newBoardSpawner(&act, &exe, rec, retain)
+
+	id, err := spawner(context.Background(), originTestClaim())
+	if err != nil || id != "sess-fresh-4" {
+		t.Fatalf("spawn failed: id=%s err=%v", id, err)
+	}
+	select {
+	case got := <-pruned:
+		if got[0] != "ws-1" || got[1] != "10.42.0.7" || got[2] != "sess-fresh-4" {
+			t.Fatalf("retention prune called with wrong args: %v", got)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("retention prune never ran after a successful spawn")
 	}
 }
 
