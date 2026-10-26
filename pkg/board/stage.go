@@ -168,7 +168,8 @@ func (s *Service) moveStageTx(ctx context.Context, tx pgx.Tx, actor Actor, taskI
 	switch {
 	case from == StageInProgress && toStage == StageInReview:
 		// Forward exit: work done, awaiting review — nothing is leased.
-		// The identity is retained (the bounce/RC2 consumer, §4.1).
+		// The identity is retained (the RC2 drift consumer; §4.1 — the
+		// BOUNCE no longer reads it, see the capture note below).
 		// #1813: a completed turn is SUCCESS — the failure overlay and
 		// its consecutive count reset here.
 		//
@@ -485,9 +486,9 @@ func bounceImplementer(cur *Task) string {
 // guarded spawn-stamp then records the fresh identity.
 func (s *Service) bounceTx(ctx context.Context, tx pgx.Tx, taskID, implementer string, actor Actor) (string, nudge, error) {
 	token := uuidNew()
-	var assignee any
+	var assignee *string // nil = the fresh-worker fallback's unstamped shape
 	if implementer != "" {
-		assignee = implementer
+		assignee = &implementer
 	}
 	tag, err := tx.Exec(ctx, `
 		UPDATE tasks SET stage='in_progress', stage_entered_at=now(),

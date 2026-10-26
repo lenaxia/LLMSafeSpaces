@@ -345,4 +345,73 @@ func (s *BoardSuite) TestBounce1959_NoIdentityFallsBackToFreshSpawn() {
 	s.Require().Len(spawner.claims, spawnsBefore+1, "the fallback spawns a FRESH implementer")
 }
 
+// TestBounce1959_Round2RecapturesImplementer — the repeat-bounce
+// convergence: after a re-dispatched ORIGINAL implementer works the
+// bounce round and moves the row back to in_review, the forward exit
+// recaptures implementer_session (=assignee_session, which the bounce
+// mint itself stamped) — the second fail verdict re-dispatches the
+// same original again. The fresh-worker takeover path converges the
+// same way (the fresh worker's stamp is what gets captured).
+func (s *BoardSuite) TestBounce1959_Round2RecapturesImplementer() {
+	ctx := context.Background()
+	ws := s.seedWorkspace()
+	p := s.seedProject(ws, 2)
+	e := s.seedEpic(p, board.EpicActive)
+	task := s.seedTask(e, "bounce-round2", nil, false)
+
+	spawner := &windowSpawner{}
+	redispatch := &redispatchCapture{}
+	svc := board.NewService(s.pool, s.cfg,
+		board.WithWorkerSpawner(spawner.Spawn),
+		board.WithBounceRedispatcher(redispatch.Deliver),
+		board.WithTurnEvidenceSource(turnsEvidence{turns: 3}),
+	)
+	s.setStagePersonas(svc, p, map[string]board.PersonaConfig{"in_review": {Name: "reviewer"}})
+
+	implementer, reviewerToken := s.armRearmWindow1959(svc, spawner, task, ws)
+
+	// Round 1 bounce: re-dispatched to the original.
+	_, v, err := svc.RecordVerdict(ctx, s.agent("reviewer-session", reviewerToken), "", task.ShortID, board.VerdictInput{
+		Verdict: board.VerdictFail, Reviewer: "rev-round2",
+		Findings: []board.VerdictFinding{{Severity: board.SeverityMajor, Pointer: "round 1: no evidence"}},
+	}, "")
+	s.Require().NoError(err)
+	s.Require().True(v.Applied)
+	s.Require().Equal(implementer, redispatch.to[len(redispatch.to)-1], "round 1 re-dispatched the original")
+	bounceToken := s.rawTask(task.ID).ClaimToken
+	s.Require().NotNil(bounceToken)
+
+	// The re-dispatched implementer works the round and moves back to
+	// in_review (its agent-surface token is the bounce mint).
+	_, err = svc.MoveStage(ctx, s.agent(implementer, *bounceToken), "", task.ShortID, board.StageInReview, "file:///ws/bounce-final.txt", "")
+	s.Require().NoError(err)
+
+	// The forward exit recaptured: implementer_session = the assignee
+	// the bounce mint stamped (the original). No lapse intervened, so
+	// assignee_session is RETAINED (= the implementer) through the
+	// reviewer mint — the mint→stamp NULL window is the post-LAPSE
+	// shape, not this one; either way the bounce reads the capture.
+	retained := s.rawTask(task.ID).Assignee
+	s.Require().NotNil(retained)
+	s.Require().Equal(implementer, *retained, "the reviewer mint preserves the re-dispatched implementer's identity")
+	round2ReviewerToken := s.rawTask(task.ID).ClaimToken
+	s.Require().NotNil(round2ReviewerToken)
+
+	// Round 2 fail: re-dispatches the SAME original (the capture
+	// converged, not stranded on round 0's mint identity).
+	redispatch.to = nil
+	redispatch.texts = nil
+	_, v2, err := svc.RecordVerdict(ctx, s.agent("reviewer-session-2", *round2ReviewerToken), "", task.ShortID, board.VerdictInput{
+		Verdict: board.VerdictFail, Reviewer: "rev-round2",
+		Findings: []board.VerdictFinding{{Severity: board.SeverityMajor, Pointer: "round 2: still no evidence"}},
+	}, "")
+	s.Require().NoError(err)
+	s.Require().True(v2.Applied)
+	s.Require().Len(redispatch.to, 1, "round 2 delivered exactly one re-dispatch")
+	s.Require().Equal(implementer, redispatch.to[0], "the recaptured identity is the ORIGINAL implementer (convergence)")
+	chainText := redispatch.texts[0]
+	s.Require().Contains(chainText, "round 1: no evidence", "the round-2 message embeds the full verdict chain")
+	s.Require().Contains(chainText, "round 2: still no evidence")
+}
+
 func intPtr1959(i int) *int { return &i }

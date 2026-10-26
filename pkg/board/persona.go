@@ -106,14 +106,16 @@ func (s *Service) stagePersona(ctx context.Context, p *Project, stage string) *P
 	return personaForStage(eff, stage)
 }
 
-// personaClaimSQL is the re-claim-class persona mint (the same column
-// discipline as reclaimTx): fresh token + lease, attempts untouched
-// (flag=false), progress watermark stamped now. The recorded identity
-// is deliberately PRESERVED (not cleared): the forward exit retains it
-// for the bounce/RC2 consumer today, and the persona worker's guarded
-// spawn-stamp OVERWRITES it under the fresh token — between mint and
-// stamp the bounce path still sees a recorded assignee (its
-// never-token-less-in_progress invariant). #1946: the mint stamps its
+// personaClaimSQL is the re-claim-class persona mint: fresh token +
+// lease, attempts untouched (flag=false), progress watermark stamped
+// now. The recorded identity columns are deliberately PRESERVED (not
+// cleared): #1959 split the two consumers — assignee_session keeps
+// its live-claim lifecycle (the persona worker's guarded spawn-stamp
+// OVERWRITES it under the fresh token; the #1947 lapse pass clears it
+// on death), while implementer_session (the bounce's identity input,
+// captured at the forward exit) rides through the mint untouched and
+// keeps the bounce targetable across the whole review lifecycle even
+// while the reviewer's stamp is in flight. #1946: the mint stamps its
 // PROVENANCE on the row (claim_persona=$4, the configured persona
 // name) — the durable seam a reviewer-persona claim is distinguished
 // from a task-worker claim on; every non-persona mint and every
