@@ -5,6 +5,7 @@ package board_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 
 	"github.com/lenaxia/llmsafespaces/pkg/board"
@@ -28,10 +29,13 @@ import (
 // windowSpawner stamps the IMPLEMENTER grant normally but returns ""
 // for every reviewer-persona spawn — the live mint→stamp window: the
 // persona claim is minted and the reviewer session exists, but its
-// assignee stamp has not landed on the row.
+// assignee stamp has not landed on the row. Non-persona spawns get
+// UNIQUE per-spawn ids (the fixture must distinguish the original
+// implementer's session from any fallback fresh-worker spawn).
 type windowSpawner struct {
 	mu     sync.Mutex
 	claims []*board.Claim
+	n      int
 }
 
 func (w *windowSpawner) Spawn(_ context.Context, c *board.Claim) (string, error) {
@@ -42,7 +46,8 @@ func (w *windowSpawner) Spawn(_ context.Context, c *board.Claim) (string, error)
 	if c.Persona != nil {
 		return "", nil // the reviewer's spawn-stamp never lands (the window)
 	}
-	return "sess-impl-" + c.ShortID, nil
+	w.n++
+	return "sess-impl-" + c.ShortID + "-" + /* #1959 unique */ fmt.Sprint(w.n), nil
 }
 
 // armRearmWindow1959 drives a task into the LIVE refusal state: an
@@ -111,6 +116,7 @@ func (s *BoardSuite) TestBounce1959_VerdictFiresInsideMintStampWindow() {
 	s.setStagePersonas(svc, p, map[string]board.PersonaConfig{"in_review": {Name: "reviewer"}})
 
 	implementer, reviewerToken := s.armRearmWindow1959(svc, spawner, task, ws)
+	_ = implementer // the no-seam arm below exercises the fresh-worker fallback, not the re-dispatch target
 	attempts := s.rawTask(task.ID).Attempts
 
 	// The reviewer's fail verdict (live shape: agent surface, the row's
@@ -134,8 +140,7 @@ func (s *BoardSuite) TestBounce1959_VerdictFiresInsideMintStampWindow() {
 	bounced := s.rawTask(task.ID)
 	s.Require().NotNil(bounced.ClaimToken, "a fresh claim was minted")
 	s.Require().NotEqual(reviewerToken, *bounced.ClaimToken, "the reviewer's token died with its verdict")
-	s.Require().NotNil(bounced.Assignee, "the bounced row records its implementer (never a token-less in_progress row)")
-	s.Require().Equal(implementer, *bounced.Assignee, "the bounce re-dispatch targets the ORIGINAL implementer")
+	s.Require().NotNil(bounced.Assignee, "the bounced row records a live identity (never a token-less in_progress row)")
 	s.Require().Equal(attempts, bounced.Attempts, "a bounce is an iteration inside the verdict chain, never an attempt")
 }
 
@@ -156,12 +161,13 @@ func (s *BoardSuite) TestBounce1959_ManualBounceInsideMintStampWindow() {
 	s.setStagePersonas(svc, p, map[string]board.PersonaConfig{"in_review": {Name: "reviewer"}})
 
 	implementer, reviewerToken := s.armRearmWindow1959(svc, spawner, task, ws)
+	_ = implementer // the no-seam arm below exercises the fresh-worker fallback, not the re-dispatch target
 
 	out, err := svc.MoveStage(ctx, s.agent("reviewer-session", reviewerToken), "", task.ShortID, board.StageInProgress, "", "")
 	s.Require().NoError(err, "the manual review bounce must fire inside the window (live: 409 'bounce requires a recorded assignee')")
 	s.Require().Equal(board.StageInProgress, out.Stage)
 	bounced := s.rawTask(task.ID)
-	s.Require().Equal(implementer, *bounced.Assignee, "the manual bounce re-dispatch targets the ORIGINAL implementer")
+	s.Require().NotNil(bounced.Assignee, "the manual bounce records a live identity too (no redispatch seam here: the fresh-worker fallback stamps)")
 }
 
 // redispatchCapture records the #1959 re-dispatch deliveries (the
@@ -229,6 +235,12 @@ func (s *BoardSuite) TestBounce1959_RedispatchReachesOriginalImplementer() {
 	s.Require().Contains(redispatch.texts[0], *freshToken, "the re-dispatch carries the FRESH bounce claim token")
 	s.Require().Contains(redispatch.texts[0], "TOKEN-INITIAL", "the re-dispatch embeds the verdict chain's findings")
 	s.Require().Contains(redispatch.texts[0], task.ShortID, "the re-dispatch identifies the task")
+	// The mint stamps the implementer IN the statement (never a
+	// token-less in_progress row — and never the fallback's fresh id,
+	// which would mean the re-dispatch arm silently degraded).
+	stamped := s.rawTask(task.ID).Assignee
+	s.Require().NotNil(stamped)
+	s.Require().Equal(implementer, *stamped, "the bounce mint stamps the ORIGINAL implementer as the row's identity")
 	s.Require().Len(spawner.claims, spawnsBefore, "no fresh spawn when the original implementer is live")
 }
 
@@ -269,7 +281,9 @@ func (s *BoardSuite) TestBounce1959_FallbackOnDeadOriginal() {
 		fresh := spawner.claims[len(spawner.claims)-1]
 		s.Require().Nil(fresh.Persona, "the fallback is the implementer class (no reviewer persona)")
 		s.Require().Equal(board.StageInProgress, fresh.Stage)
-		s.Require().Equal(s.rawTask(task.ID).ClaimToken, fresh.ClaimToken, "the fresh worker receives the bounce's minted token")
+		rowAfter := s.rawTask(task.ID)
+		s.Require().NotNil(rowAfter.ClaimToken)
+		s.Require().Equal(*rowAfter.ClaimToken, fresh.ClaimToken, "the fresh worker receives the bounce's minted token")
 	})
 
 	// Arm 2: delivery failure (archived/reaped) — the fallback spawns.

@@ -49,6 +49,10 @@ func TestMintUniqueOwnerWideLadder(t *testing.T) {
 
 	cleanup := func() {
 		_, _ = pool.Exec(ctx, `TRUNCATE TABLE board_events, board_transitions, board_dependencies, board_sweeps, tasks, epics, projects CASCADE`)
+		// The fixed-UUID workspace row must go too — a second run on the
+		// same database collides on workspaces_pkey otherwise (the
+		// run-twice flake; CI's fresh container hid it).
+		_, _ = pool.Exec(ctx, `DELETE FROM workspaces WHERE id='11111111-1111-4111-8111-111111111111'`)
 		_, _ = pool.Exec(ctx, `INSERT INTO users (id, username, email, password_hash, active, role)
 			VALUES ('phrase-arb-user', 'phrase-arb-user', 'phrase-arb@example.com', 'hash', true, 'user')
 			ON CONFLICT (id) DO NOTHING`)
