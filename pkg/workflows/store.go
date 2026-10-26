@@ -1317,7 +1317,7 @@ func (s *Store) ListWorkerSessions(ctx context.Context, workspaceID string) ([]W
 		       si.updated_at
 		FROM session_index si
 		LEFT JOIN session_origins so
-		       ON so.session_id = si.session_id AND so.workspace_id = si.workspace_id
+		       ON so.session_id = si.session_id AND so.workspace_id::text = si.workspace_id
 		WHERE si.workspace_id = $1
 		  AND si.deleted_at IS NULL
 		  AND (COALESCE(so.origin, '') = 'worker' OR COALESCE(si.parent_session_id, '') <> '')
@@ -1349,7 +1349,7 @@ func (s *Store) IsWorkerSession(ctx context.Context, workspaceID, sessionID stri
 		SELECT EXISTS (
 			SELECT 1 FROM session_index si
 			LEFT JOIN session_origins so
-			       ON so.session_id = si.session_id AND so.workspace_id = si.workspace_id
+			       ON so.session_id = si.session_id AND so.workspace_id::text = si.workspace_id
 			WHERE si.workspace_id = $1
 			  AND si.session_id = $2
 			  AND si.deleted_at IS NULL
