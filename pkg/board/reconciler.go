@@ -288,7 +288,7 @@ func (s *Service) rc1Reclaims(ctx context.Context) (int, error) {
 		// existing cooldown candidacy gate; never a stage).
 		tag, err := tx.Exec(ctx, `
 			UPDATE tasks SET stage='backlog', stage_entered_at=now(),
-				claim_token=NULL, lease_expires_at=NULL, assignee_session=NULL,
+				claim_token=NULL, lease_expires_at=NULL, assignee_session=NULL, implementer_session=NULL,
 				claim_incremented_attempts=false, claim_persona=NULL,
 				last_attempt_failed=true, failure_count=failure_count+1, last_failure_at=now(),
 				cooldown_until=now()+make_interval(secs=>$2::float8)
@@ -426,11 +426,13 @@ func (s *Service) rc1PersonaClaims(ctx context.Context) (personaReclaim, error) 
 		// heartbeat carrying the FRESH token consults the row's assignee
 		// — the dead prior worker — and its zero-turn evidence refuses
 		// the renewal (the live 03:49Z finding: every re-armed claimant
-		// unrenewable, churning forever). The identity's other consumer
-		// (the bounce's never-token-less guard) is unaffected where it
-		// matters: a STAMPED reviewer claim records its own identity,
-		// and the unclaimed no-persona shape below keeps today's
-		// retain-identity semantics.
+		// unrenewable, churning forever). #1959: this clear is now
+		// bounce-SAFE by construction — the bounce's identity input is
+		// implementer_session (captured at the forward exit), which this
+		// pass deliberately does NOT touch: the reviewer's death cannot
+		// strand the row un-bounceable the way it emptied
+		// assignee_session (the #1959 live refusals were verdicts landing
+		// in exactly that emptied window).
 		tag, err := tx.Exec(ctx, `
 			UPDATE tasks SET claim_token=NULL, lease_expires_at=NULL, assignee_session=NULL, claim_persona=NULL,
 				last_attempt_failed=true, failure_count=failure_count+1, last_failure_at=now(),

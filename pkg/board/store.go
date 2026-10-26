@@ -55,7 +55,7 @@ func (q txQ) QueryRow(ctx context.Context, sql string, args ...any) pgx.Row {
 
 const taskColumns = `t.id, t.project_id, t.epic_id, t.short_id, t.title, t.description,
 	t.stage, t.pending_origin, t.project_name, t.epic_name, t.tags,
-	t.acceptance_criteria, t.is_blocked, t.paused, t.assignee_session, t.claim_token::text,
+	t.acceptance_criteria, t.is_blocked, t.paused, t.assignee_session, t.implementer_session, t.claim_token::text,
 	t.claim_persona,
 	t.lease_expires_at, t.last_progress_at, t.attempts, t.claim_incremented_attempts,
 	t.last_attempt_failed, t.failure_count, t.last_failure_at,
@@ -64,10 +64,10 @@ const taskColumns = `t.id, t.project_id, t.epic_id, t.short_id, t.title, t.descr
 func scanTask(row pgx.Row) (*Task, error) {
 	var t Task
 	var criteria []byte
-	var token, assignee, persona *string
+	var token, assignee, implementer, persona *string
 	err := row.Scan(&t.ID, &t.ProjectID, &t.EpicID, &t.ShortID, &t.Title, &t.Description,
 		&t.Stage, &t.PendingOrigin, &t.ProjectName, &t.EpicName, &t.Tags,
-		&criteria, &t.IsBlocked, &t.Paused, &assignee, &token,
+		&criteria, &t.IsBlocked, &t.Paused, &assignee, &implementer, &token,
 		&persona,
 		&t.LeaseExpiresAt, &t.LastProgressAt, &t.Attempts, &t.ClaimIncremented,
 		&t.LastAttemptFailed, &t.FailureCount, &t.LastFailureAt,
@@ -80,6 +80,9 @@ func scanTask(row pgx.Row) (*Task, error) {
 	}
 	if assignee != nil {
 		t.AssigneeSession = *assignee
+	}
+	if implementer != nil {
+		t.ImplementerSession = *implementer
 	}
 	if persona != nil {
 		t.ClaimPersona = *persona

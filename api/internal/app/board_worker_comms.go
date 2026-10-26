@@ -82,3 +82,22 @@ func newBoardMessenger(pool *pgxpool.Pool, adapter agent.Adapter) board.WorkerMe
 		return err
 	}
 }
+
+// newBoardRedispatcher builds the #1959 bounce re-dispatch seam: the
+// re-dispatch turn (fresh bounce claim token + embedded verdict chain,
+// engine-rendered) delivered to the ORIGINAL implementer's EXISTING
+// session — SendAsync on the same orchestrator↔worker machinery as the
+// pause directives (existing-session delivery, never a session:new
+// spawn; the message starts a fresh turn in the target session). A
+// delivery error is the seam's liveness answer (archived/reaped) —
+// pkg/board falls back to a fresh-implementer spawn on it.
+func newBoardRedispatcher(pool *pgxpool.Pool, adapter agent.Adapter) board.BounceRedispatcher {
+	return func(ctx context.Context, sessionID, text, taskShortID string) error {
+		userID, workspaceID, err := boardTaskScope(ctx, pool, taskShortID)
+		if err != nil {
+			return fmt.Errorf("board: re-dispatch scope: %w", err)
+		}
+		_, err = adapter.SendAsync(ctx, userID, workspaceID, sessionID, text, session.SendOpts{})
+		return err
+	}
+}

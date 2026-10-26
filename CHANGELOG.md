@@ -12,6 +12,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`TestUsageBridgeStreamResynced_NonBlockingAndCoalesced` — the #1927 recurrence, closed structurally** (test-side; `api/internal/handlers`). The v0.44.1-era CI red (`expected: 1, actual: 2`, 0.11 s) was the shared-key TOCTOU #1927's marker-clear could not close: every harness in the package shared ONE workspace id (`busySnapWS`), the flight-coalescing marker (`busyFlightsInFlight`) is keyed by workspace id, and a leaked predecessor flight's deferred marker `Delete` (which runs strictly after its final publish — potentially after its test returned) deleted the KEY while the successor's first cue had already `LoadOrStore`d its own marker under it, unlocking the successor's rapid re-cues to spawn a second authority fetch. Fix: each harness mints a UNIQUE workspace id (`busySnapWS-<seq>`) — a leaked flight's deferred Delete can now only ever remove its own harness's key; the #1927 construction-time clear stays as a loud guard, and `TestBusySnapHarness_MarkerKeysPerHarness` pins the uniqueness so the shared-key channel cannot be reintroduced silently. Red-first: a planted exact-leak simulation reddens pre-fix main deterministically with the byte-identical CI signature (0.11 s, `expected: 1, actual: 2`); green ×5 post-fix under the same plant.
 - **`TestWorkflowExecute_ScriptForwardTimeoutMaps504` — client-side timeout classification made deterministic** (production, `cmd/workspace-agentd`; `controlClient.ScriptExec`). The release-run red (`got 200 script_env_unavailable … read script_exec: read tcp …: i/o timeout`) was the two-clock race UploadApply's §3.3 classification was built to avoid: when the conn arm is DERIVED from the caller's ctx deadline, the parked read's `os.ErrDeadlineExceeded` and the ctx timer fire at the same absolute instant — classifying by `ctx.Err()` alone lets a loaded runner surface the read error while the timer callback has not run, misreading the script-timeout class as transport (HTTP 200 instead of the 504 the mux contract promises). Fix: adopt UploadApply's discipline — `callDeadline`'s `deadlineFired` on a derived arm IS the timeout class by construction; the `ctx.Err()` leg remains for timer-first wakeups. New pin `TestScriptExec_ClassifiesDerivedDeadlineAsTimeout` (accept-but-never-answer supervisor + 300 ms budget) holds the contract.
 - **`TestUploadApply_ConcurrentWallTime` — wall-ratio discriminator replaced by seam overlap** (test-side; `cmd/workspace-agentd`). The 20:53Z CI red (`concurrent 4 applies took 195.8ms — near the serialized baseline 231.4ms`) false-failed on a runner whose -race CPU contention slowed the four concurrent 1 MiB copies ~4× while the applies were in fact fully parallel — the ratio bound made the serialized and concurrent phases load-biased in OPPOSITE directions. The pin now measures what it exists to prove: the rename seam's CONCURRENCY high-water mark (each apply holds the seam 50 ms — pure timer parking, no CPU), which is exactly 1 under the #1539 applyMu serialization signature and ≥2 when applies overlap, immune to copy-speed scaling. Mutation-verified: re-adding a serialization lock around `Apply` reddens deterministically (`max concurrent seams: 1`).
+### Fixed — board bounce round-trip (#1959)
+
+- **Verdict-driven bounce refusal (mint→stamp window)**: a fail verdict on an
+  in_review row holding a live reviewer-persona claim returned
+  `applied:false, refused:stage_transition` whenever it fired before the reviewer's
+  async assignee spawn-stamp landed (~90s in prod) — and since the #1947 lapse-clear
+  that window recurs on every reviewer lapse→re-arm cycle, so prompt reviewers (the
+  normal case) NEVER bounced. The manual in_review→in_progress move refused through
+  the same guard. The bounce now reads `tasks.implementer_session` (migration
+  000051): the ORIGINAL implementer captured at the in_progress→in_review forward
+  exit, preserved through the whole review lifecycle, immune to the reviewer
+  claim's mint/stamp/lapse churn.
+- **Bounce-target semantics (owner ruling)**: a fail verdict re-dispatches the
+  ORIGINAL worker — the fresh claim token + the embedded verdict chain (findings as
+  iteration history) delivered to the implementer's EXISTING session via the
+  session-message seam (`board.WithBounceRedispatcher`, SendAsync — never a
+  session:new spawn). A fresh-implementer spawn fires ONLY when the original is
+  gone/unresponsive: never-turned (zero turn evidence), delivery failure
+  (archived/reaped), or no captured identity. The mint stamps the implementer in
+  the same statement (never a token-less in_progress row); attempts stay unchanged
+  (a bounce is an iteration, not a failure). #1958's episode-unique RunIDs hold
+  across bounce rounds (pinned).
 
 ## [0.41.0] - 2026-10-23
 

@@ -53,7 +53,7 @@ func (s *Service) RearmTask(ctx context.Context, actor Actor, taskID, shortIDOrI
 		pre := cur.Attempts
 		tag, err := tx.Exec(ctx, `
 			UPDATE tasks SET stage='backlog', stage_entered_at=now(),
-				claim_token=NULL, lease_expires_at=NULL, assignee_session=NULL,
+				claim_token=NULL, lease_expires_at=NULL, assignee_session=NULL, implementer_session=NULL,
 				claim_incremented_attempts=false, claim_persona=NULL, pending_origin=NULL,
 				attempts=0, failure_count=0, last_attempt_failed=false, last_failure_at=NULL,
 				cooldown_until=NULL

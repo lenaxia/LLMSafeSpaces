@@ -1616,6 +1616,12 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 				// transport).
 				board.WithWorkerAborter(newBoardAborter(boardPool, agentAdapter)),
 				board.WithWorkerMessenger(newBoardMessenger(boardPool, agentAdapter)),
+				// #1959: the bounce re-dispatch seam — a fail verdict's
+				// fresh claim delivered to the ORIGINAL implementer's
+				// existing session (the ruling's bounce-target
+				// semantics); delivery failure falls back to a
+				// fresh-implementer spawn inside pkg/board.
+				board.WithBounceRedispatcher(newBoardRedispatcher(boardPool, agentAdapter)),
 				// #1832 WS4: the stillborn guard's evidence source —
 				// the session index's message_count (positive-zero
 				// refuses heartbeat extension; errors fail open).

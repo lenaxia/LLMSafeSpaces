@@ -317,6 +317,17 @@ type WorkerAborter func(ctx context.Context, taskID, assigneeSession string) err
 // default.
 type WorkerMessenger func(ctx context.Context, sessionID, directive, taskShortID string) error
 
+// BounceRedispatcher delivers the #1959 bounce re-dispatch turn to the
+// ORIGINAL implementer's EXISTING session (the owner ruling's
+// bounce-target semantics: the session that did the work holds the
+// context). The payload text is engine-rendered (fresh bounce claim
+// token + embedded verdict chain); delivery rides the same
+// session-message machinery as WorkerMessenger (existing-session
+// delivery — never a session:new spawn). A delivery error means the
+// original is gone/unresponsive: the engine falls back to a
+// fresh-implementer spawn.
+type BounceRedispatcher func(ctx context.Context, sessionID, text, taskShortID string) error
+
 // PRState is the external-truth drift source's answer for one PR anchor.
 type PRState struct {
 	Merged bool

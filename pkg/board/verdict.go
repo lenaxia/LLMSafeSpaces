@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -211,6 +212,36 @@ func (s *Service) RecordVerdict(ctx context.Context, actor Actor, taskID, shortI
 	// #1922: the verdict echo rides the read-edge phrase translation.
 	s.translateTaskReads(ctx, out)
 	return out, &v, nil
+}
+
+// RenderVerdictChain renders the charter/message-shared iteration
+// history block: every prior verdict + its findings. The fresh-spawn
+// charter (app/board_spawner.go) and the #1959 bounce re-dispatch
+// message (bounceRedispatchText) render the SAME block — the original
+// implementer sees byte-equivalent findings whether it is re-dispatched
+// or replaced.
+func RenderVerdictChain(verdicts []Verdict) string {
+	if len(verdicts) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString("PRIOR REVIEW VERDICTS (address every outstanding finding):\n")
+	for _, v := range verdicts {
+		fmt.Fprintf(&b, "  - %s by %s", v.Verdict, v.Reviewer)
+		if !v.Applied {
+			fmt.Fprintf(&b, " (transition refused: %s)", v.Transition)
+		}
+		fmt.Fprintln(&b)
+		for _, f := range v.Findings {
+			crit := ""
+			if f.CriterionIndex != nil {
+				crit = fmt.Sprintf(" [criterion %d]", *f.CriterionIndex)
+			}
+			fmt.Fprintf(&b, "      %s: %s%s\n", f.Severity, f.Pointer, crit)
+		}
+	}
+	b.WriteString("\n")
+	return b.String()
 }
 
 // TaskVerdicts renders the task's ordered verdict chain (the record

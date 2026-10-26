@@ -7,6 +7,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -167,9 +168,18 @@ func (s *Service) moveStageTx(ctx context.Context, tx pgx.Tx, actor Actor, taskI
 	switch {
 	case from == StageInProgress && toStage == StageInReview:
 		// Forward exit: work done, awaiting review — nothing is leased.
-		// The identity is retained (the bounce/RC2 consumer, §4.1).
+		// The identity is retained (the RC2 drift consumer; §4.1 — the
+		// BOUNCE no longer reads it, see the capture note below).
 		// #1813: a completed turn is SUCCESS — the failure overlay and
 		// its consecutive count reset here.
+		//
+		// #1959: the forward exit also CAPTURES the bounce-consumer
+		// identity — implementer_session=assignee_session (the SET
+		// reads the pre-update column: the worker that did the work and
+		// moved the row here). assignee_session itself keeps its
+		// live-claim lifecycle (the reviewer persona's spawn-stamp
+		// overwrites it, the #1947 lapse pass clears it); the bounce no
+		// longer reads it — see the bounce arm below.
 		//
 		// Stage-persona claim-then-spawn: with a persona configured for
 		// in_review the ENTRY mints the persona claim (fresh token +
@@ -183,7 +193,8 @@ func (s *Service) moveStageTx(ctx context.Context, tx pgx.Tx, actor Actor, taskI
 			// then the persona mint layers the reviewer-class claim on
 			// top — one transaction, claim-before-spawn.
 			resulting, err = s.updateStageTx(ctx, tx, taskID, from, toStage,
-				`claim_token=NULL, lease_expires_at=NULL, claim_incremented_attempts=false, claim_persona=NULL`+reset_overlay, evidenceURL, actor)
+				`claim_token=NULL, lease_expires_at=NULL, claim_incremented_attempts=false, claim_persona=NULL,
+				 implementer_session=assignee_session`+reset_overlay, evidenceURL, actor)
 			if err == nil {
 				var token string
 				token, err = s.personaClaimMintTx(ctx, tx, taskID, StageInReview, entryPersona.Name)
@@ -199,7 +210,8 @@ func (s *Service) moveStageTx(ctx context.Context, tx pgx.Tx, actor Actor, taskI
 			}
 		} else {
 			resulting, err = s.updateStageTx(ctx, tx, taskID, from, toStage,
-				`claim_token=NULL, lease_expires_at=NULL, claim_incremented_attempts=false, claim_persona=NULL`+reset_overlay, evidenceURL, actor)
+				`claim_token=NULL, lease_expires_at=NULL, claim_incremented_attempts=false, claim_persona=NULL,
+				 implementer_session=assignee_session`+reset_overlay, evidenceURL, actor)
 		}
 
 	case from == StageInProgress && toStage == StageDone:
@@ -219,18 +231,27 @@ func (s *Service) moveStageTx(ctx context.Context, tx pgx.Tx, actor Actor, taskI
 			`pending_origin='worker'`, evidenceURL, actor)
 
 	case from == StageInReview && toStage == StageInProgress:
-		// The bounce: re-claim for the recorded assignee — fresh token +
-		// lease minted in the same statement, flag=false (its 429 never
-		// decrements), attempts unchanged. No identity → refuse (a
-		// token-less in_progress row is never created). A paused row
-		// refuses the MINT (#1747: no re-entry while paused).
+		// The bounce (#1959): re-claim for the ORIGINAL IMPLEMENTER —
+		// fresh token + lease minted in the same statement, flag=false
+		// (its 429 never decrements), attempts unchanged, and
+		// assignee_session stamped with the implementer IN the mint
+		// (never a token-less in_progress row — the identity is known,
+		// not awaited from an async stamp). The re-dispatch turn is
+		// delivered to the implementer's EXISTING session post-commit
+		// (nudge.redispatch); a gone/unresponsive original (never-turned,
+		// delivery failure, or no captured identity) falls back to a
+		// fresh-implementer spawn. The pre-#1959 guard — refuse on
+		// assignee_session == "" — read the LIVE-CLAIM identity, which
+		// the reviewer lifecycle empties for the whole mint→stamp window
+		// (the live refusals: prompt reviewers verdict before their own
+		// async stamp lands); it is gone: the bounce's identity input is
+		// implementer_session (captured at the forward exit, preserved
+		// through the review lifecycle). A paused row still refuses the
+		// MINT (#1747: no re-entry while paused).
 		if cur.Paused {
 			return res, nudge{}, &GuardError{Code: GuardPaused, Detail: "the task is paused — the bounce re-claim refuses until resume"}
 		}
-		if cur.AssigneeSession == "" {
-			return res, nudge{}, &GuardError{Code: GuardStage, Detail: "bounce requires a recorded assignee (no token-less in_progress rows)"}
-		}
-		resulting, postNudge, err = s.reclaimTx(ctx, tx, taskID, cur.AssigneeSession, actor, "bounce")
+		resulting, postNudge, err = s.bounceTx(ctx, tx, taskID, bounceImplementer(cur), actor)
 
 	case from == StageInReview && toStage == StageDone:
 		if err := s.doneGuard(cur, evidenceURL); err != nil {
@@ -262,7 +283,7 @@ func (s *Service) moveStageTx(ctx context.Context, tx pgx.Tx, actor Actor, taskI
 			resulting, reclaimed, postNudge, err = s.exitPendingReclaim(ctx, tx, actor, cur)
 		} else {
 			resulting, err = s.updateStageTx(ctx, tx, taskID, from, StageBacklog,
-				`claim_token=NULL, lease_expires_at=NULL, assignee_session=NULL, claim_persona=NULL,
+				`claim_token=NULL, lease_expires_at=NULL, assignee_session=NULL, implementer_session=NULL, claim_persona=NULL,
 				 claim_incremented_attempts=false, attempts=0, failure_count=0, last_attempt_failed=false, last_failure_at=NULL`, evidenceURL, actor)
 		}
 
@@ -282,7 +303,11 @@ func (s *Service) moveStageTx(ctx context.Context, tx pgx.Tx, actor Actor, taskI
 // semantics the delivery is a SPAWN of the fresh worker that receives
 // the token in its charter (optionally aborting a superseded live
 // session first — the interrupt seam); there are no nudges to dead
-// sessions anywhere. events carries nested settle events (the #1832
+// sessions anywhere. #1959 adds the re-dispatch arm: the bounce's
+// fresh claim delivered to the ORIGINAL implementer's EXISTING session
+// (redispatch target) — the ruling's bounce-target semantics; the
+// fresh-spawn arm remains the fallback for a gone/unresponsive
+// original. events carries nested settle events (the #1832
 // review-complete/park coupling) for post-commit SSE publication;
 // pokeProjects carries settle-touched projects for the dispatch drive
 // (a settled review may live in a SIBLING project of the subject —
@@ -292,6 +317,7 @@ type nudge struct {
 	taskID, token string
 	spawn         bool
 	abortAssignee string
+	redispatch    string // #1959: existing-session re-dispatch target (the ORIGINAL implementer)
 	events        []Event
 	pokeProjects  []string
 }
@@ -303,6 +329,10 @@ func (n nudge) fire(ctx context.Context, s *Service) {
 	for _, pid := range n.pokeProjects {
 		s.pokeDrive(pid)
 	}
+	if n.redispatch != "" {
+		s.redispatchBounce(ctx, n.taskID, n.token, n.redispatch)
+		return
+	}
 	if !n.spawn {
 		return
 	}
@@ -310,6 +340,66 @@ func (n nudge) fire(ctx context.Context, s *Service) {
 		_ = s.aborter(ctx, n.taskID, n.abortAssignee)
 	}
 	s.spawnFor(ctx, n.taskID, n.token)
+}
+
+// redispatchBounce delivers the #1959 bounce re-dispatch turn to the
+// ORIGINAL implementer's existing session: the fresh bounce claim
+// token + the embedded verdict chain (findings as iteration history).
+// Fallback to a fresh-implementer spawn (the merged design's re-spawn
+// semantics) fires ONLY when the original is gone/unresponsive: no
+// delivery seam installed (the inert-engine shape), zero turn evidence
+// (never-turned), or a delivery error (archived/reaped — the seam's
+// own liveness answer).
+func (s *Service) redispatchBounce(ctx context.Context, taskID, token, implementer string) {
+	if s.redispatcher == nil {
+		s.spawnFor(ctx, taskID, token) // no delivery seam: the fresh-worker fallback
+		return
+	}
+	if s.turnEvidence != nil {
+		if turns, err := s.turnEvidence.SessionTurnEvidence(ctx, implementer); err == nil && turns <= 0 {
+			slog.WarnContext(ctx, "board: bounce re-dispatch skipped — original implementer never turned; falling back to a fresh worker",
+				"task_id", taskID, "implementer", implementer)
+			s.spawnFor(ctx, taskID, token)
+			return
+		}
+	}
+	t := s.mustTask(ctx, taskID)
+	if t == nil {
+		return
+	}
+	text := bounceRedispatchText(t, token, s.claimVerdictChain(ctx, t.ProjectID, taskID))
+	if err := s.redispatcher(ctx, implementer, text, t.ShortID); err != nil {
+		slog.WarnContext(ctx, "board: bounce re-dispatch delivery failed — falling back to a fresh worker",
+			"task_id", taskID, "implementer", implementer, "err", err.Error())
+		s.spawnFor(ctx, taskID, token)
+	}
+}
+
+// bounceRedispatchText renders the re-dispatch turn's message: the
+// fresh bounce claim token (the prior token died with the verdict),
+// the task addressing, and the embedded verdict chain — the same
+// iteration-history block the fresh-spawn charter carries
+// (RenderVerdictChain), so the original worker sees byte-equivalent
+// findings whether it is re-dispatched or replaced.
+func bounceRedispatchText(t *Task, token string, verdicts []Verdict) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "BOARD BOUNCE RE-DISPATCH: your task %s failed review (verdict: fail) and was bounced back to in_progress.\n", t.ShortID)
+	fmt.Fprintf(&b, "You are the ORIGINAL implementer — you hold the work's context. Address every outstanding finding below,\n")
+	fmt.Fprintf(&b, "then move the task back to in_review with evidence. Report progress via board heartbeats.\n\n")
+	fmt.Fprintf(&b, "Your FRESH claim token: %s (your prior token is void; this token authorizes your in-flight writes for this task only).\n\n", token)
+	if len(t.AcceptanceCriteria) > 0 {
+		b.WriteString("Acceptance criteria (all must be met before done, with evidence):\n")
+		for _, crit := range t.AcceptanceCriteria {
+			mark := " "
+			if crit.Met {
+				mark = "x"
+			}
+			fmt.Fprintf(&b, "  [%s] %s\n", mark, crit.Text)
+		}
+		b.WriteString("\n")
+	}
+	b.WriteString(RenderVerdictChain(verdicts))
+	return b.String()
 }
 
 // doneGuard: Done = ALL acceptance criteria met + evidence (ruling R2).
@@ -365,27 +455,56 @@ func (s *Service) updateStageTx(ctx context.Context, tx pgx.Tx, taskID, from, to
 	return toStage, nil
 }
 
-// reclaimTx mints a re-claim-class token+lease with the recorded identity
-// CLEARED (the merged design's re-spawn semantics: "the recorded identity
-// is cleared at mint and the fresh identity stamped by the guarded
-// spawn-stamp"; flag=false — the throttle never rolls these back). The
-// fresh worker is spawned after commit via spawnAfter — "there are no
-// nudges to dead sessions anywhere".
-func (s *Service) reclaimTx(ctx context.Context, tx pgx.Tx, taskID, assignee string, actor Actor, class string) (string, nudge, error) {
+// bounceImplementer resolves the bounce's re-dispatch target (#1959):
+// the ORIGINAL IMPLEMENTER. implementer_session is the forward exit's
+// capture (the worker that moved the row to in_review) and survives the
+// whole review lifecycle. The fallback preserves the LEGACY no-persona
+// retain semantics for pre-migration rows (their retained
+// assignee_session IS the implementer — a live persona claim means the
+// column holds the reviewer's identity or the mint→stamp window's NULL,
+// neither of which is a legal bounce target). "" = no original known:
+// the bounce falls back to a fresh-implementer spawn.
+func bounceImplementer(cur *Task) string {
+	if cur.ImplementerSession != "" {
+		return cur.ImplementerSession
+	}
+	if cur.ClaimPersona == "" && cur.AssigneeSession != "" {
+		return cur.AssigneeSession
+	}
+	return ""
+}
+
+// bounceTx mints the #1959 bounce re-claim: fresh token + lease,
+// attempts untouched (flag=false — the throttle never rolls it back),
+// claim persona cleared (the bounced claim is implementer-class), and —
+// when the original implementer is known — assignee_session stamped
+// with it IN the mint statement (the never-token-less invariant holds
+// by construction; no async stamp is awaited). The returned nudge
+// carries either the re-dispatch target (existing-session delivery
+// post-commit) or the fresh-spawn arm (no identity). implementer=""
+// mints assignee_session=NULL for the fallback's fresh worker, whose
+// guarded spawn-stamp then records the fresh identity.
+func (s *Service) bounceTx(ctx context.Context, tx pgx.Tx, taskID, implementer string, actor Actor) (string, nudge, error) {
 	token := uuidNew()
+	var assignee *string // nil = the fresh-worker fallback's unstamped shape
+	if implementer != "" {
+		assignee = &implementer
+	}
 	tag, err := tx.Exec(ctx, `
 		UPDATE tasks SET stage='in_progress', stage_entered_at=now(),
 			claim_token=$2, lease_expires_at=now()+make_interval(secs=>$3::float8), last_progress_at=now(),
-			assignee_session=NULL, claim_incremented_attempts=false, claim_persona=NULL, pending_origin=NULL
+			assignee_session=$4, claim_incremented_attempts=false, claim_persona=NULL, pending_origin=NULL
 		WHERE id=$1 AND NOT paused`,
-		taskID, token, s.cfg.LeaseDuration.Seconds())
+		taskID, token, s.cfg.LeaseDuration.Seconds(), assignee)
 	if err != nil {
 		return "", nudge{}, err
 	}
 	if tag.RowsAffected() == 0 {
 		return "", nudge{}, &GuardError{Code: GuardStage, Detail: "row is terminal — the write is a no-op (RC5)"}
 	}
-	_ = assignee
+	if implementer != "" {
+		return StageInProgress, nudge{taskID: taskID, token: token, redispatch: implementer}, nil
+	}
 	return StageInProgress, nudge{taskID: taskID, token: token, spawn: true}, nil
 }
 
@@ -399,7 +518,7 @@ func (s *Service) exitPendingReclaim(ctx context.Context, tx pgx.Tx, actor Actor
 	tag, err := tx.Exec(ctx, `
 		UPDATE tasks SET stage='in_progress', stage_entered_at=now(),
 			claim_token=$2, lease_expires_at=now()+make_interval(secs=>$3::float8), last_progress_at=now(),
-			assignee_session=NULL, claim_incremented_attempts=false, claim_persona=NULL, pending_origin=NULL, attempts=0,
+			assignee_session=NULL, implementer_session=NULL, claim_incremented_attempts=false, claim_persona=NULL, pending_origin=NULL, attempts=0,
 			failure_count=0, last_attempt_failed=false, last_failure_at=NULL
 		WHERE id=$1 AND stage='pending_input'`,
 		cur.ID, token, s.cfg.LeaseDuration.Seconds())
@@ -538,7 +657,7 @@ func (s *Service) ReportThrottle(ctx context.Context, actor Actor, taskID, short
 		tag, err := tx.Exec(ctx, `
 			UPDATE tasks SET stage='backlog', stage_entered_at=now(),
 				cooldown_until=now()+make_interval(secs=>$2::float8),
-				claim_token=NULL, lease_expires_at=NULL, assignee_session=NULL,
+				claim_token=NULL, lease_expires_at=NULL, assignee_session=NULL, implementer_session=NULL,
 				claim_incremented_attempts=false, claim_persona=NULL,
 				attempts = attempts - CASE WHEN claim_incremented_attempts THEN 1 ELSE 0 END
 			WHERE id=$1 AND stage='in_progress' AND claim_token=$3`,
