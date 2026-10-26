@@ -3,23 +3,44 @@
 
 package app
 
-// board_worker_comms.go — the #1747 worker-directive seams, wired on the
-// SAME delivery machinery the platform already uses (the pkg/agent
-// adapter's session routes — no new transport):
+// board_worker_comms.go — the #1747/#1959 worker-directive seams, wired
+// on the V1 delivery path (adapter.Send — opencode POST
+// /session/:id/message), the SAME live route the platform's own
+// session-message machinery (llmsafespaces_send_message) rides:
 //
 //   - Aborter (delete of an in-flight claim): adapter.Abort — the V1
 //     session abort, the only interrupt endpoint.
-//   - Messenger (pause-must-pause): adapter.SendAsync delivers the
-//     halt/resume directive as a session message; it lands at the
-//     worker's current turn boundary (finish the thought, then stop) —
-//     never a mid-generation cut.
+//   - Messenger (pause-must-pause): V1 Send of the halt/resume
+//     directive, fired DETACHED — a busy target queues the POST
+//     server-side and lands it at the turn boundary ("finish the
+//     current thought, then stop" — never a mid-generation cut) — so
+//     the pause/resume request never blocks on the worker's turn.
+//   - BounceRedispatcher (#1959): V1 Send of the re-dispatch turn to
+//     the ORIGINAL implementer's EXISTING session (never a session:new
+//     spawn; the message starts a fresh turn there), detached with a
+//     BOUNDED fast-fail wait: an error observed within the window is
+//     the seam's synchronous liveness answer (dead/reaped session →
+//     immediate 4xx → pkg/board's fresh-worker fallback); a window
+//     expiry means the turn is running in-flight — the reviewer's
+//     verdict request never blocks on Round 2.
 //
-// Both resolve the task's (owner, target workspace) from the board rows
-// — the adapter's addressing keys.
+// #755 (CLOSED SEV1) / #1959 root cause: these seams previously rode
+// adapter.SendAsync — opencode's V2 prompt route
+// (POST /api/session/:sid/prompt, delivery:queue) — which is DEAD on
+// the pinned opencode 1.18.x: the entire v2/ route group was deleted
+// in 1.18.10, so every V2 admission 404s and every bounce re-dispatch
+// deterministically fell back to a fresh spawn (the owner's token-drain
+// concern). The seams are now pinned to V1 STRUCTURALLY: boardV1Sender
+// exposes only the V1-carrying method, so the dead queue path cannot
+// be rewired into these constructors by accident — the wiring-level
+// pin the fake-based TestBounce1959_* suites could not be (they faked
+// the adapter and never saw the HTTP route).
 
 import (
 	"context"
 	"fmt"
+	"log/slog"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
@@ -27,6 +48,91 @@ import (
 	"github.com/lenaxia/llmsafespaces/pkg/board"
 	"github.com/lenaxia/llmsafespaces/pkg/session"
 )
+
+// boardV1Sender is the delivery dependency of the worker-comms seams:
+// the adapter's V1 synchronous Send (opencode POST /session/:id/message
+// — the live route on the pinned opencode 1.18.x). Deliberately NARROW
+// (#755/#1959 wiring pin): agent.Adapter satisfies it structurally,
+// but the seams can only reach the V1-carrying method — the dead V2
+// queue (SendAsync) is out of the constructors' sight, and a revert
+// fails to COMPILE, not just a test.
+type boardV1Sender interface {
+	Send(ctx context.Context, userID, workspaceID, sessionID, text string, opts session.SendOpts) (*session.Message, error)
+}
+
+// The production adapter interface satisfies the narrow seam
+// (compile-time assertion — every agent.Adapter, wrapped or not,
+// carries the V1 Send).
+var _ boardV1Sender = agent.Adapter(nil)
+
+// Delivery knobs (package vars so the wiring tests can bound them):
+//
+//   - boardV1FastFail bounds how long the re-dispatch seam WAITS for a
+//     synchronous delivery verdict before declaring the turn
+//     in-flight. A dead/reaped session 4xx's in well under a second
+//     (pod resolve + one POST), so 10s is generous headroom for a slow
+//     k8s resolve; a live session's re-dispatch turn routinely
+//     outlasts it — the caller (the reviewer's verdict request) must
+//     not block on Round 2.
+//   - boardV1DeliveryBudget bounds the DETACHED send itself: a worker
+//     turn — or a busy-target queue wait at the turn boundary — can
+//     run tens of minutes; the budget exists only so a wedged POST
+//     cannot leak the goroutine forever.
+var (
+	boardV1FastFail       = 10 * time.Second
+	boardV1DeliveryBudget = 30 * time.Minute
+)
+
+// deliverBoardTextV1 delivers text to an existing session over the V1
+// route, DETACHED — the llmsafespaces_send_message discipline (the
+// seam the platform itself proved live through #755): the V1 POST
+// queues server-side on a busy target and lands at the turn boundary,
+// and context.WithoutCancel keeps the delivery alive after the caller
+// returns. The alternative — a synchronous Send in the caller's ctx —
+// would both block the caller for the whole delivered turn (the
+// reviewer's verdict request hanging on Round 2; the pause request
+// hanging on the worker's turn) and CANCEL the delivered turn
+// mid-flight when that request ends. This mirrors pkg/board's own
+// delivery detachment (engine.go's spawn/nudge goroutines): a delivery
+// that never lands heals by lease lapse.
+//
+// fastFail > 0 waits that long for a delivery verdict: an error
+// observed in the window is returned synchronously (the seam's
+// liveness answer — pkg/board's fresh-worker fallback keys on it); a
+// window expiry — or the caller's ctx ending — returns nil (in-flight;
+// never a fallback on a timing artifact). fastFail <= 0 is pure
+// fire-and-forget (the directive messenger's shape: every caller
+// discards the error).
+func deliverBoardTextV1(ctx context.Context, sender boardV1Sender, what, userID, workspaceID, sessionID, text string, fastFail time.Duration) error {
+	done := make(chan error, 1)
+	go func() { //nolint:gosec,contextcheck // G118/contextcheck: deliberate — the delivered turn outlives the caller's request context by design (pkg/board engine.go's delivery detachment; lease lapse heals)
+		sctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), boardV1DeliveryBudget)
+		defer cancel()
+		_, err := sender.Send(sctx, userID, workspaceID, sessionID, text, session.SendOpts{})
+		if err != nil {
+			// Observability for the arms whose caller is gone by now
+			// (fire-and-forget directives; window-expired deliveries).
+			// The re-dispatch fallback decision itself is pkg/board's,
+			// keyed on the synchronous return below.
+			slog.WarnContext(sctx, "board: detached V1 delivery failed",
+				"what", what, "task_scope", workspaceID, "session", sessionID, "err", err.Error())
+		}
+		done <- err
+	}()
+	if fastFail <= 0 {
+		return nil
+	}
+	timer := time.NewTimer(fastFail)
+	defer timer.Stop()
+	select {
+	case err := <-done:
+		return err
+	case <-timer.C:
+		return nil // the turn is running — delivery in-flight
+	case <-ctx.Done():
+		return nil // the caller left; the detached delivery carries on
+	}
+}
 
 // haltDirectiveText / resumeDirectiveText render the worker-facing
 // directive messages (the charter envelope's voice).
@@ -41,6 +147,20 @@ func resumeDirectiveText(shortID string) string {
 	return fmt.Sprintf("BOARD RESUME DIRECTIVE: your task %s was resumed — continue working. "+
 		"If your claim lapsed while paused, your next write returns 409 claim_token: re-read the "+
 		"task with board_read; the engine may already have spawned a fresh worker.", shortID)
+}
+
+// boardScopeResolver resolves (owner, target workspace) for a task —
+// the adapter's addressing keys. Injected as a function (not the pool)
+// so the wiring tests drive the production closures end-to-end without
+// a database (the #1959 gap: the fake-adapter pins could not see the
+// HTTP route the production adapter actually rides).
+type boardScopeResolver func(ctx context.Context, taskRef string) (userID, workspaceID string, err error)
+
+// boardScopeFor binds the pool-backed production resolver.
+func boardScopeFor(pool *pgxpool.Pool) boardScopeResolver {
+	return func(ctx context.Context, taskRef string) (string, string, error) {
+		return boardTaskScope(ctx, pool, taskRef)
+	}
 }
 
 // boardTaskScope resolves (owner, target workspace) for a task by id or
@@ -65,12 +185,16 @@ func newBoardAborter(pool *pgxpool.Pool, adapter agent.Adapter) board.WorkerAbor
 	}
 }
 
-// newBoardMessenger builds the halt/resume directive seam (SendAsync —
-// the message queues behind the in-flight turn and lands at its
-// boundary).
-func newBoardMessenger(pool *pgxpool.Pool, adapter agent.Adapter) board.WorkerMessenger {
+// newBoardMessenger builds the halt/resume directive seam: the V1 Send
+// fires DETACHED (fire-and-forget) — a busy worker queues the POST
+// server-side and sees the directive at its turn boundary, exactly the
+// pause-must-pause contract; the pause/resume request returns without
+// waiting on any worker's turn (the callers' best-effort contract
+// keeps every error discarded — delivery failures surface as the
+// detached goroutine's warn line, never a blocked or failed pause).
+func newBoardMessenger(scope boardScopeResolver, sender boardV1Sender) board.WorkerMessenger {
 	return func(ctx context.Context, sessionID, directive, taskShortID string) error {
-		userID, workspaceID, err := boardTaskScope(ctx, pool, taskShortID)
+		userID, workspaceID, err := scope(ctx, taskShortID)
 		if err != nil {
 			return fmt.Errorf("board: directive scope: %w", err)
 		}
@@ -78,26 +202,25 @@ func newBoardMessenger(pool *pgxpool.Pool, adapter agent.Adapter) board.WorkerMe
 		if directive == board.DirectiveHalt {
 			text = haltDirectiveText(taskShortID)
 		}
-		_, err = adapter.SendAsync(ctx, userID, workspaceID, sessionID, text, session.SendOpts{})
-		return err
+		return deliverBoardTextV1(ctx, sender, directive+" directive", userID, workspaceID, sessionID, text, 0)
 	}
 }
 
 // newBoardRedispatcher builds the #1959 bounce re-dispatch seam: the
 // re-dispatch turn (fresh bounce claim token + embedded verdict chain,
 // engine-rendered) delivered to the ORIGINAL implementer's EXISTING
-// session — SendAsync on the same orchestrator↔worker machinery as the
-// pause directives (existing-session delivery, never a session:new
-// spawn; the message starts a fresh turn in the target session). A
-// delivery error is the seam's liveness answer (archived/reaped) —
-// pkg/board falls back to a fresh-implementer spawn on it.
-func newBoardRedispatcher(pool *pgxpool.Pool, adapter agent.Adapter) board.BounceRedispatcher {
+// session over the V1 route — detached with a bounded fast-fail wait.
+// An immediate V1 4xx on a dead session (archived/reaped) is returned
+// synchronously — the seam's liveness answer pkg/board's
+// fresh-implementer fallback keys on — while a live session's Round-2
+// turn runs in-flight, never blocking the reviewer's verdict request
+// and never dying with it.
+func newBoardRedispatcher(scope boardScopeResolver, sender boardV1Sender) board.BounceRedispatcher {
 	return func(ctx context.Context, sessionID, text, taskShortID string) error {
-		userID, workspaceID, err := boardTaskScope(ctx, pool, taskShortID)
+		userID, workspaceID, err := scope(ctx, taskShortID)
 		if err != nil {
 			return fmt.Errorf("board: re-dispatch scope: %w", err)
 		}
-		_, err = adapter.SendAsync(ctx, userID, workspaceID, sessionID, text, session.SendOpts{})
-		return err
+		return deliverBoardTextV1(ctx, sender, "bounce re-dispatch", userID, workspaceID, sessionID, text, boardV1FastFail)
 	}
 }
