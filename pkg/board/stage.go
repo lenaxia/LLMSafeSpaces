@@ -11,6 +11,8 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+
+	"github.com/lenaxia/llmsafespaces/pkg/shortid"
 )
 
 // stage.go — the stage machine (design §4.1 "Stage semantics"):
@@ -472,6 +474,43 @@ func bounceImplementer(cur *Task) string {
 		return cur.AssigneeSession
 	}
 	return ""
+}
+
+// resolveImplementerRef maps a PHRASE-form implementer identity to the
+// raw harness id (#1959c — the consumption-side resolution feeding both
+// raw-keyed bounce consumers; see redispatchBounce). Raw/legacy refs
+// pass through unchanged and consult nothing (the #1663 lesson:
+// resolution never makes an id unaddressable); a phrase resolves via
+// the platform registry (session_index) scoped to the task's project's
+// target workspace. Best-effort by the read edge's degraded posture:
+// an unresolved phrase keeps the stored ref — the turn-evidence
+// consult's zero then drives the fresh-worker fallback, the honest
+// verdict for an original no live session holds.
+func (s *Service) resolveImplementerRef(ctx context.Context, taskID, ref string) string {
+	if !shortid.IsShortIDForm(ref) {
+		return ref
+	}
+	var ws string
+	_ = s.q().QueryRow(ctx,
+		`SELECT p.target_workspace_id::text FROM tasks t JOIN projects p ON p.id = t.project_id
+		 WHERE t.id::text = $1`, taskID).Scan(&ws)
+	if ws == "" {
+		slog.WarnContext(ctx, "board: bounce implementer phrase unresolved — task workspace unknown; keeping the stored ref",
+			"task_id", taskID, "implementer", ref)
+		return ref
+	}
+	raw, err := LookupSessionIDByPhrase(ctx, s.q(), ws, ref)
+	if err != nil {
+		slog.WarnContext(ctx, "board: bounce implementer phrase lookup failed — keeping the stored ref",
+			"task_id", taskID, "implementer", ref, "err", err.Error())
+		return ref
+	}
+	if raw == "" {
+		slog.WarnContext(ctx, "board: bounce implementer phrase resolves to no live session — keeping the stored ref (the evidence consult's zero drives the fallback)",
+			"task_id", taskID, "implementer", ref)
+		return ref
+	}
+	return raw
 }
 
 // bounceTx mints the #1959 bounce re-claim: fresh token + lease,

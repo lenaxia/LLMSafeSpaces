@@ -136,3 +136,20 @@ func TestTranslatePayloadAssignees(t *testing.T) {
 		t.Errorf("cold snapshot must carry assignee_session_deprecated=true, got %v", snap["assignee_session_deprecated"])
 	}
 }
+
+// TestResolveImplementerRef_RawGateIsConsultFree — the #1959c gate:
+// RAW (ses_…) and legacy refs pass through unchanged WITHOUT consulting
+// the registry (the #1663 lesson — resolution never makes a live
+// session unaddressable, and raw consults are free). The service is
+// built on a nil pool on purpose: any consult on this path would panic
+// the test, pinning consult-freedom structurally. Phrase-form refs take
+// the consult leg and are covered by the integration tier (real
+// session_index rows).
+func TestResolveImplementerRef_RawGateIsConsultFree(t *testing.T) {
+	s := NewService(nil, DefaultEngineConfig())
+	for _, ref := range []string{"ses_raw_implementer", "sess-legacy", "", "oc-ab12cd34"} {
+		if got := s.resolveImplementerRef(context.Background(), "task-1", ref); got != ref {
+			t.Errorf("raw/legacy ref %q must pass through unchanged, got %q", ref, got)
+		}
+	}
+}

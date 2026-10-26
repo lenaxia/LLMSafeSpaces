@@ -155,3 +155,96 @@ assertions unchanged).
   (stash@{0} pre-1962-merge) untouched.
 - Live re-verification (owner-side probe: the re-dispatch turn arriving in
   the ORIGINAL session's transcript) is post-merge validation, as in 1959b.
+
+## 9. Review r1 (CHANGES_REQUESTED @ffd7590a2) — F1 resolved at the layer the evidence consult indicts
+
+The review's blocking F1 (both branches verified against the tree by this
+lane, independently of the review):
+
+- **Branch (A) — CONFIRMED**: `redispatchBounce` consults the turn-evidence
+  source BEFORE the delivery seam (stage.go:358-364), and the production
+  source (`boardTurnEvidence`) is raw-keyed with `ErrNoRows → (0, nil)` —
+  a PHRASE-form implementer reads "never indexed = never turned" and the
+  bounce falls back to a fresh spawn WITHOUT the api-side resolver ever
+  running. The seam-only fix was defeated upstream.
+- **Branch (B) — CONFIRMED**: the tree's only non-clearing
+  `assignee_session` writer is the spawn stamp (engine.go:529), which
+  stores agentd's node-exec `sessionId` — opencode's own RAW id
+  (`git log --all -S emitID -- cmd/workspace-agentd/workflow_execute.go`
+  is empty: no phrase emission ever existed there). THIS tree cannot
+  produce a phrase-valued row; the live 0.44.3 phrase-in-row cause is not
+  reproducible from the tree (deployed-stack drift remains unproven
+  either way — honestly recorded, not asserted).
+
+### The fix (this round)
+
+**Engine-side resolution — `pkg/board`:**
+- `LookupSessionIDByPhrase` (phrase_read.go): phrase→raw over
+  session_index — FindSessionByShortID's exact consult, the reverse of
+  LookupSessionPhrases, over the existing PhraseQueryer seam.
+- `redispatchBounce` (stage.go) resolves the implementer ref BEFORE the
+  evidence consult, feeding BOTH raw-keyed consumers (evidence + delivery
+  seam) the RAW id — the ordering defect fixed at the layer the evidence
+  indicts. Best-effort by the read edge's degraded posture: an
+  unresolved phrase keeps the stored ref and the evidence consult's
+  honest zero drives the fallback (a dead original's correct verdict).
+  Raw refs consult nothing (free passthrough, the #1663 lesson — pinned
+  unit-tier by TestResolveImplementerRef_RawGateIsConsultFree on a nil
+  pool: any consult would panic the test).
+
+**Robustness (review r1)**: `boardPhraseLookupFor` translates pgx
+`ErrNoRows` → `("", nil)` — the documented miss contract, so the miss
+branch (`resolves to no live session`) is the branch production takes.
+
+### The pins (this round)
+
+- `TestIntegrationBoardPhraseBounceProductionWiring` (api/internal/app,
+  self-skipping, CI secrets-integration): THE decisive missing-test 1 —
+  production `boardTurnEvidence` + production
+  `newBoardRedispatcher(newBoardResolvingSender(adapter,
+  boardPhraseLookupFor(pool)))` wired into a real `board.Service`, real
+  schema, phrase-valued implementer_session, live registry row
+  (message_count 2) → fail verdict → bounce → the V1 POST lands on the
+  RAW id exactly once, no fresh spawn. Born-RED against the seam-only
+  tree (the evidence arm's zero fires the fallback; zero POSTs) —
+  CI-side verification (no local Postgres in this environment; the
+  reviewer's scratch-worktree method applies, as it did in round 1).
+- `TestBounce1959Phrase_EvidenceAndDeliveryReceiveRawID` +
+  `TestBounce1959Phrase_UnresolvablePhraseFallsBack` (pkg/board
+  BoardSuite, kill-tests step): the engine leg — the evidence consult
+  and the delivery each receive the RAW id; the degraded posture
+  preserved (unresolvable phrase → honest zero → fresh-worker fallback).
+- `TestIntegrationBoardPhraseLookupBinding` (missing-test 2): the
+  PRODUCTION registry binding over a real DB — happy resolve,
+  case-insensitivity, ErrNoRows miss → ("", nil), wrong-workspace
+  no-resolve, and the wrapper's miss branch (the liveness error naming
+  the phrase).
+- `TestBoardWorkerComms_PhraseResolution_AborterUnresolvablePhrase_Errors`
+  (missing-test 3): the interrupt leg's unhappy path — dead phrase →
+  loud error, zero abort POSTs.
+- Workflow: secrets-integration.yml grows the step running the
+  api/internal/app integration pins (the pkg/board legs ride the
+  existing kill-tests step).
+
+### Pre-registered live-probe discriminators (Rule 7 — correct the record)
+
+The worklog §2 line "live evidence is that this stored value is the
+PHRASE" was an assertion inherited from the issue's root-cause comment,
+not a tree-validated fact — corrected here: the tree's writers store RAW;
+the live phrase-in-row remains unexplained by this tree. The post-merge
+owner probe now discriminates:
+1. phrase-valued row → BOTH arms resolve (engine + seam); the original's
+   transcript receives the re-dispatch turn;
+2. raw-valued row + STILL a fallback with no V1 POST in the original's
+   pod → the turn-evidence arm's "never indexed = never turned" reading —
+   a session_index REGISTRATION GAP for the implementer's session (the
+   row itself missing), a defect OUTSIDE this lane's charter, to be filed
+   with the probe evidence.
+
+### Suites (this round)
+
+- `go build ./...`, `go vet ./api/... ./pkg/...`, `gofmt -l api pkg` — clean.
+- `go vet -tags=integration ./pkg/board/` — clean.
+- `go test -short ./pkg/... ./api/...` — GREEN (full sweep; the new
+  integration tests self-skip without a DB, handlers-lane pattern).
+- Unit/race legs for the touched families — green.

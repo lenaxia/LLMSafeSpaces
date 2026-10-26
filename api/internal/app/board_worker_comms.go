@@ -38,10 +38,12 @@ package app
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/lenaxia/llmsafespaces/pkg/agent"
@@ -90,13 +92,22 @@ var _ boardV1Sender = (*boardResolvingSender)(nil)
 // HTTP self-hop, so the resolver leg binds HERE.
 type boardPhraseLookup func(ctx context.Context, workspaceID, phrase string) (rawID string, err error)
 
-// boardPhraseLookupFor binds the pool-backed registry consult.
+// boardPhraseLookupFor binds the pool-backed registry consult. The pgx
+// ErrNoRows miss translates to ("", nil) — the documented miss contract
+// ("" = no live session holds the phrase), so ResolveSessionRef's miss
+// branch (the "resolves to no live session" liveness error) is the
+// branch production actually takes; a raw wrapped ErrNoRows would
+// bypass it with an opaque "no rows in result set" (review r1
+// Robustness).
 func boardPhraseLookupFor(pool *pgxpool.Pool) boardPhraseLookup {
 	return func(ctx context.Context, workspaceID, phrase string) (string, error) {
 		var raw string
 		err := pool.QueryRow(ctx,
 			`SELECT session_id FROM session_index WHERE workspace_id=$1 AND lower(short_id)=$2`,
 			workspaceID, shortid.Normalize(phrase)).Scan(&raw)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return "", nil
+		}
 		return raw, err
 	}
 }

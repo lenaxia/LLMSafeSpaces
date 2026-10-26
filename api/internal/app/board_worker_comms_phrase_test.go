@@ -351,3 +351,23 @@ func TestBoardWorkerComms_PhraseResolution_RawRefsStillDeliver(t *testing.T) {
 	assert.Empty(t, registry.recorded(),
 		"raw-shaped refs must not consult the phrase registry (passthrough is free)")
 }
+
+// TestBoardWorkerComms_PhraseResolution_AborterUnresolvablePhrase_Errors
+// pins the interrupt leg's unhappy path (review r1 missing-test 3): a
+// phrase NO live session holds must return error (the interrupt is
+// observable as failed, never silently vanished) with no abort POST
+// attempted against the phrase.
+func TestBoardWorkerComms_PhraseResolution_AborterUnresolvablePhrase_Errors(t *testing.T) {
+	stub := newStubRealOpencode(t, implRaw)
+	adapter := newBoardCommsAdapter(t, stub.Server)
+	registry := &stubPhraseRegistry{byPhrase: map[string]string{implPhrase: implRaw}}
+
+	aborter := newBoardAborter((&stubScope{}).resolve, newBoardResolvingSender(adapter, registry.lookup))
+
+	err := aborter(context.Background(), phraseShort, deadPhrase)
+	require.Error(t, err, "an unresolvable phrase must fail the abort loudly — a silent miss is an interrupt that never lands")
+	assert.Contains(t, err.Error(), deadPhrase)
+	_, aborted, _, messageReqs := stub.snapshot()
+	assert.Empty(t, aborted, "no abort POST may fire for an unresolvable phrase")
+	assert.Equal(t, 0, messageReqs)
+}
