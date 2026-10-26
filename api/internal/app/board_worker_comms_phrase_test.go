@@ -122,7 +122,7 @@ func newStubRealOpencode(t *testing.T, live ...string) *stubRealOpencode {
 				if i > 0 {
 					b.WriteString(",")
 				}
-				b.WriteString(fmt.Sprintf(`{"id":%q,"title":"session %s"}`, id, id))
+				fmt.Fprintf(&b, `{"id":%q,"title":"session %s"}`, id, id)
 			}
 			b.WriteString("]")
 			w.Header().Set("Content-Type", "application/json")
