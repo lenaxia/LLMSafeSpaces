@@ -17,6 +17,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
@@ -566,10 +567,21 @@ func (c *countingReadCloser) Read(p []byte) (int, error) {
 func (c *countingReadCloser) Close() error { return nil } //nolint:staticcheck // the wrapped file's Close rides the test lifetime
 
 // TestUploadApply_ConcurrentWallTime pins #1539: N concurrent applies
-// (uuid-independent targets, 1 MiB real files) must complete in
-// PARALLEL — the injected 50ms rename seam makes each apply's duration
-// observable; the wall bound (< 3/4 of N × duration) catches the
-// global-lock regression where every apply queues (wall ≥ N × duration).
+// (uuid-independent targets) must run in PARALLEL. The discriminator is
+// the rename seam's CONCURRENCY, not a wall-clock ratio: the seam
+// injects a fixed 50ms hold per apply, and the max number of
+// simultaneously-held seams is 1 iff some lock serializes applies
+// (the #1539 applyMu class held the whole Apply, rename included),
+// ≥2 when they overlap — immune to the -race/load scaling that
+// false-failed the old wall-ratio shape (the 2026-10-25 20:53Z CI red:
+// concurrent 195.8ms vs serialized 231.4ms on a runner whose CPU
+// contention slowed the four concurrent 1 MiB copies ~4× while the
+// applies were in fact fully parallel). The 50ms holds are pure
+// wall-clock parking — no CPU — so four goroutines that reach the seam
+// within a few ms of each other (the copies are single-digit-ms)
+// deterministically overlap; a missed overlap would require the runner
+// to leave a runnable goroutine unscheduled for 50ms+ while the
+// others sleep and the CPUs sit idle.
 func TestUploadApply_ConcurrentWallTime(t *testing.T) {
 	if testing.Short() {
 		t.Skip("concurrent wall-time pin needs real filesystem timing")
@@ -579,18 +591,29 @@ func TestUploadApply_ConcurrentWallTime(t *testing.T) {
 	// N independent staged objects (uuid-shaped names, distinct targets).
 	const n = 4
 	ids := make([]string, n)
-	payload := strings.Repeat("x", 1<<20) // 1 MiB: the copy takes measurable wall time per apply
+	payload := strings.Repeat("x", 1<<20) // 1 MiB: the staged object the copy streams
 	for i := range ids {
 		ids[i] = fmt.Sprintf("0000000%d-0000-4000-8000-00000000000%d", i, i)
 		stageTestObject(t, staging, ids[i], payload)
 	}
 
-	// The rename seam injects a measurable per-apply duration: with the
-	// lock removed, N applies overlap their 50ms renames (wall ≈ 50ms);
-	// with the lock, they serialize (wall ≥ N×50ms). This makes the
-	// serialization signature observable without a large fixture.
+	// The rename seam is the observable: each apply holds the seam for
+	// 50ms (pure wall-clock — a timer park, not CPU work), and the
+	// seam-concurrency high-water mark discriminates the two worlds
+	// directly. With the #1539 lock, applies queue end-to-end and the
+	// high-water mark is exactly 1 (no two renames can be in flight);
+	// without it, the four holds overlap.
+	var seamInFlight, seamMax int32
 	e.rename = func(oldpath, newpath string) error {
+		cur := atomic.AddInt32(&seamInFlight, 1)
+		for {
+			m := atomic.LoadInt32(&seamMax)
+			if cur <= m || atomic.CompareAndSwapInt32(&seamMax, m, cur) {
+				break
+			}
+		}
 		time.Sleep(50 * time.Millisecond)
+		atomic.AddInt32(&seamInFlight, -1)
 		return os.Rename(oldpath, newpath)
 	}
 
@@ -602,29 +625,16 @@ func TestUploadApply_ConcurrentWallTime(t *testing.T) {
 		return aerr
 	}
 
-	// Baseline: one apply (the concurrent bound uses the injected duration directly).
+	// Baseline: one apply must succeed through the real copy+rename
+	// path (the fixture works; the seam fires).
 	if aerr := applyOne(ids[0]); aerr != nil {
 		t.Fatalf("baseline: %v", aerr)
 	}
-
-	// Serialized baseline: the same N applies run sequentially, measured
-	// in THIS test run. Host load scales both baselines and the
-	// concurrent measurement together (observed: parallel runs of
-	// 235–329ms on a loaded host vs a fixed 200ms bound — absolute
-	// thresholds false-fail), so the load-robust discriminator is the
-	// RATIO of concurrent wall to serialized wall, not an absolute bound.
-	start := time.Now()
-	for i := range ids {
-		if aerr := applyOne(ids[i]); aerr != nil {
-			t.Fatalf("serialized baseline apply %d: %v", i, aerr)
-		}
+	if atomic.LoadInt32(&seamMax) != 1 {
+		t.Fatalf("baseline single apply must hold the seam exactly once, got %d", atomic.LoadInt32(&seamMax))
 	}
-	serializedWall := time.Since(start)
 
-	// Concurrent: N applies in parallel. With the global lock removed,
-	// wall ≈ one apply's duration (they overlap); with the lock,
-	// wall ≈ serializedWall (they serialize end-to-end).
-	start = time.Now()
+	// Concurrent: N applies in parallel; their seam holds must overlap.
 	var wg sync.WaitGroup
 	errs := make([]*applyError, n)
 	for i := range ids {
@@ -635,7 +645,6 @@ func TestUploadApply_ConcurrentWallTime(t *testing.T) {
 		}(i)
 	}
 	wg.Wait()
-	concurrentWall := time.Since(start)
 
 	for i, aerr := range errs {
 		if aerr != nil {
@@ -643,13 +652,13 @@ func TestUploadApply_ConcurrentWallTime(t *testing.T) {
 		}
 	}
 
-	// The lock's signature is wall ≈ serializedWall (each apply waits
-	// for the previous). Parallel overlap lands near 1/N of it. Assert
-	// concurrent < 3/4 of the measured serialized baseline: well clear
-	// of the serialized signature, tolerant of scheduler noise on both
-	// sides because both measurements suffer the same load.
-	if concurrentWall > serializedWall*3/4 {
-		t.Fatalf("concurrent %d applies took %v — near the serialized baseline %v: the #1539 applyMu serialization signature (parallel should be ~1/N of it)",
-			n, concurrentWall, serializedWall)
+	// THE #1539 signature: max seam concurrency of 1 means every apply
+	// waited for the previous one's rename — the serialized (locked)
+	// world; ≥2 proves the concurrent applies overlapped inside Apply.
+	// (4 is the expected value; ≥2 keeps the pin about the serialization
+	// property rather than scheduler packing.)
+	if got := atomic.LoadInt32(&seamMax); got < 2 {
+		t.Fatalf("concurrent %d applies never overlapped at the rename seam (max concurrent seams: %d) — the #1539 applyMu serialization signature (serialized world: exactly 1)",
+			n, got)
 	}
 }

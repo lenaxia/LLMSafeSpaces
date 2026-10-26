@@ -51,10 +51,28 @@ import (
 
 const busySnapWS = "ws-busy"
 
+// busySnapWSSeq mints each harness a UNIQUE workspace id (the
+// busySnapWS prefix plus a per-process sequence). #1927's recurrence
+// (the v0.44.1-era CI red, "expected 1, actual 2" in
+// TestUsageBridgeStreamResynced_NonBlockingAndCoalesced): the
+// flight-coalescing marker (busyFlightsInFlight) is keyed by workspace
+// id, and every harness in this package shared ONE id — so a
+// predecessor's leaked flight goroutine (its marker Delete runs in a
+// defer AFTER its final publish, which can strictly follow its test's
+// return) deleted the KEY while the NEXT test's cue had already
+// LoadOrStore'd its own marker under it. That TOCTOU unlocked the
+// test's rapid re-cues to spawn a second authority fetch. Clearing the
+// stale marker at construction (#1927) cannot close a channel that
+// opens any time AFTER construction; unique per-harness keys remove the
+// shared state entirely — a leaked flight's deferred Delete can only
+// ever remove its own harness's key.
+var busySnapWSSeq atomic.Uint64
+
 // busySnapHarness wires a StreamUserEvents handler whose snapshot path
-// sees one Active workspace (busySnapWS) whose statusz answers from the
-// given test server. httpClient uses the rewritingTransport so the
-// fixed admin port in the statusz URL is routed to the stub regardless.
+// sees one Active workspace (its unique ws id — see busySnapWSSeq)
+// whose statusz answers from the given test server. httpClient uses
+// the rewritingTransport so the fixed admin port in the statusz URL is
+// routed to the stub regardless.
 type busySnapHarness struct {
 	broker   *eventbroker.UserEventBroker
 	handler  *ProxyHandler
@@ -62,6 +80,7 @@ type busySnapHarness struct {
 	statusz  *httptest.Server
 	wsMock   *k8smocks.MockWorkspaceInterface
 	statuszN func() int // calls received by the statusz stub
+	ws       string     // this harness's unique workspace id
 }
 
 // resetLoopbackSSEBudget clears the per-IP SSE connection budget's
@@ -85,20 +104,17 @@ func resetLoopbackSSEBudget() {
 func newBusySnapHarness(t *testing.T, userID string, statuszHandler http.HandlerFunc, si interfaces.SessionIndexService) *busySnapHarness {
 	t.Helper()
 
-	// #1927 cross-test isolation of the flight-coalescing marker:
-	// busyFlightsInFlight is package-global and keyed by the shared
-	// busySnapWS id, while its Delete runs in the flight goroutine's
-	// defer — AFTER the flight's final publish. A predecessor whose
-	// flight goroutine outlived its test (ConnectPath returns on the
-	// JOINER's complete while the on-demand flight is still finishing;
-	// every flight test returns on a complete that strictly precedes
-	// its marker Delete) leaves a stale marker that would swallow THIS
-	// harness's first on-demand cue as a no-op coalesce — the
-	// "resync flight incomplete before deadline" red. The stale marker
-	// belongs to a torn-down harness (its markers publish into a dead
-	// broker), so clearing it here is pure state hygiene: this
-	// harness's cues deterministically start their own flights.
-	busyFlightsInFlight.Delete(busySnapWS)
+	ws := fmt.Sprintf("%s-%d", busySnapWS, busySnapWSSeq.Add(1))
+
+	// #1927 cross-test isolation of the flight-coalescing marker,
+	// belt-and-suspenders leg: busyFlightsInFlight is package-global
+	// and keyed by workspace id. The unique per-harness id (see
+	// busySnapWSSeq) already makes a leaked predecessor flight's
+	// deferred marker Delete structurally unable to touch this
+	// harness's key — the recurrence root cause — so this Delete is a
+	// no-op today; it stays as a loud guard for any future harness
+	// shape that reuses an id across tests.
+	busyFlightsInFlight.Delete(ws)
 
 	// #1927 the same isolation for the SSE connect budget: this
 	// harness's tests will consume loopback connects; wipe that
@@ -130,10 +146,10 @@ func newBusySnapHarness(t *testing.T, userID string, statuszHandler http.Handler
 	wsMock.On("List", mock.Anything, mock.MatchedBy(func(opts metav1.ListOptions) bool {
 		return opts.LabelSelector == labelUserID+"="+userID
 	})).Return(&v1.WorkspaceList{
-		Items: []v1.Workspace{{ObjectMeta: metav1.ObjectMeta{Name: busySnapWS}}},
+		Items: []v1.Workspace{{ObjectMeta: metav1.ObjectMeta{Name: ws}}},
 	}, nil)
-	wsMock.On("Get", mock.Anything, busySnapWS, mock.Anything).Return(&v1.Workspace{
-		ObjectMeta: metav1.ObjectMeta{Name: busySnapWS, Namespace: "default"},
+	wsMock.On("Get", mock.Anything, ws, mock.Anything).Return(&v1.Workspace{
+		ObjectMeta: metav1.ObjectMeta{Name: ws, Namespace: "default"},
 		Status: v1.WorkspaceStatus{
 			Phase: v1.WorkspacePhaseActive,
 			PodIP: "10.0.0.9",
@@ -142,7 +158,7 @@ func newBusySnapHarness(t *testing.T, userID string, statuszHandler http.Handler
 
 	watcher, err := workspace.NewWatcher(k8sMock, &testLogger{}, "default", func(*v1.Workspace) {})
 	require.NoError(t, err)
-	watcher.SetKnownPhase(busySnapWS, "Active")
+	watcher.SetKnownPhase(ws, "Active")
 
 	h := &ProxyHandler{
 		k8sClient:  k8sMock,
@@ -158,8 +174,8 @@ func newBusySnapHarness(t *testing.T, userID string, statuszHandler http.Handler
 	if si != nil {
 		h.SetSessionIndex(si)
 	}
-	h.SetCachedPasswordForTest(busySnapWS, "test-password")
-	broker.RecordWorkspaceOwner(busySnapWS, userID)
+	h.SetCachedPasswordForTest(ws, "test-password")
+	broker.RecordWorkspaceOwner(ws, userID)
 
 	router := gin.New()
 	router.GET("/api/v1/events", func(c *gin.Context) {
@@ -174,6 +190,7 @@ func newBusySnapHarness(t *testing.T, userID string, statuszHandler http.Handler
 		statusz:  srv,
 		wsMock:   wsMock,
 		statuszN: func() int { return int(statuszCalls.Load()) },
+		ws:       ws,
 	}
 }
 
@@ -182,6 +199,29 @@ func busyStatuszBody() string {
 		{"id":"ses-busy","status":"busy"},
 		{"id":"ses-idle","status":"idle"}
 	]}`
+}
+
+// The #1927-recurrence guard: every harness must mint its OWN workspace
+// id, so the package-global flight-coalescing marker (busyFlightsInFlight,
+// keyed by workspace id) can never be shared across tests. The v0.44.1-era
+// CI red ("expected 1, actual 2" in NonBlockingAndCoalesced) was exactly a
+// shared key: a leaked predecessor flight's deferred marker Delete landed
+// mid-test and unlocked the current test's re-cues to spawn a second
+// authority fetch. Re-sharing one id across harnesses resurrects that
+// channel — this pin reddens the moment someone does.
+func TestBusySnapHarness_MarkerKeysPerHarness(t *testing.T) {
+	mk := func() *busySnapHarness {
+		return newBusySnapHarness(t, "user-uniq", func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			fmt.Fprint(w, busyStatuszBody())
+		}, nil)
+	}
+	first := mk()
+	second := mk()
+	require.NotEqual(t, first.ws, second.ws,
+		"harnesses must not share a workspace id — a shared busyFlightsInFlight key reopens the cross-test marker channel")
+	require.NotEqual(t, first.ws, busySnapWS,
+		"the harness id must not be the raw shared constant (prefix-only)")
 }
 
 // collectSSE connects (optionally with Last-Event-ID) and collects
@@ -309,7 +349,7 @@ func TestStreamUserEvents_BusySnapshotOnConnect_RestoresBusy(t *testing.T) {
 	// published at least one event for the user.
 	hs.broker.PublishToUser("user-t11", apitypes.WorkspaceSSEEvent{
 		Type:        "workspace.phase",
-		WorkspaceID: busySnapWS,
+		WorkspaceID: hs.ws,
 		Phase:       "Active",
 	})
 
@@ -342,7 +382,7 @@ func TestStreamUserEvents_BusySnapshotOnConnect_RestoresBusy(t *testing.T) {
 	assert.False(t, idleDerived, "ses-idle must carry derived_busy=false")
 
 	assert.Equal(t, begin.SnapshotID, snap.SnapshotID, "the snapshot frame must carry the flight id for client-side staging")
-	assert.Equal(t, busySnapWS, snap.WorkspaceID)
+	assert.Equal(t, hs.ws, snap.WorkspaceID)
 }
 
 // T1.2 — authority failure must read "keep your state" (ok=false),
@@ -380,7 +420,7 @@ func TestStreamUserEvents_BusySnapshotAfterReplayGap_Resync(t *testing.T) {
 	for i := 0; i < 130; i++ {
 		hs.broker.PublishToUser("user-t13", apitypes.WorkspaceSSEEvent{
 			Type:        "workspace.phase",
-			WorkspaceID: busySnapWS,
+			WorkspaceID: hs.ws,
 			Phase:       "Active",
 		})
 	}
@@ -422,9 +462,9 @@ func TestStreamUserEvents_BusySnapshotFlight_DoesNotDuplicateDeltas(t *testing.T
 			}
 			time.Sleep(5 * time.Millisecond)
 		}
-		hs.broker.PublishToUser("user-t14", apitypes.WorkspaceSSEEvent{Type: "session.status", WorkspaceID: busySnapWS, SessionID: "ses-busy", Status: "busy"})
-		hs.broker.PublishToUser("user-t14", apitypes.WorkspaceSSEEvent{Type: "session.status", WorkspaceID: busySnapWS, SessionID: "ses-busy", Status: "idle"})
-		hs.broker.PublishToUser("user-t14", apitypes.WorkspaceSSEEvent{Type: "session.status", WorkspaceID: busySnapWS, SessionID: "ses-busy", Status: "busy"})
+		hs.broker.PublishToUser("user-t14", apitypes.WorkspaceSSEEvent{Type: "session.status", WorkspaceID: hs.ws, SessionID: "ses-busy", Status: "busy"})
+		hs.broker.PublishToUser("user-t14", apitypes.WorkspaceSSEEvent{Type: "session.status", WorkspaceID: hs.ws, SessionID: "ses-busy", Status: "idle"})
+		hs.broker.PublishToUser("user-t14", apitypes.WorkspaceSSEEvent{Type: "session.status", WorkspaceID: hs.ws, SessionID: "ses-busy", Status: "busy"})
 	}()
 	evts := collectSSE(t, hs, "", func(evts []apitypes.WorkspaceSSEEvent) bool {
 		return findEvent(evts, "session.status.snapshot_complete") != nil && countType(evts, "session.status") >= 3
@@ -454,7 +494,6 @@ func TestStreamUserEvents_BusySnapshotFlight_DoesNotDuplicateDeltas(t *testing.T
 // deprecated (never worse).
 func TestStreamUserEvents_BusySnapshotRows_PhraseKeyed(t *testing.T) {
 	si := newMockSessionIndex()
-	si.phrases[busySnapWS+"/ses-known"] = "phrase-one"
 
 	hs := newBusySnapHarness(t, "user-t15", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -463,6 +502,9 @@ func TestStreamUserEvents_BusySnapshotRows_PhraseKeyed(t *testing.T) {
 			{"id":"ses-unknown","status":"busy"}
 		]}`)
 	}, si)
+	// The phrase map is read lazily at Register time, so keying it by
+	// the harness's unique ws id after construction is race-free.
+	si.phrases[hs.ws+"/ses-known"] = "phrase-one"
 
 	evts := collectSSE(t, hs, "", func(evts []apitypes.WorkspaceSSEEvent) bool {
 		return findEvent(evts, "session.status.snapshot_complete") != nil
@@ -494,7 +536,6 @@ func TestStreamUserEvents_BusySnapshotRows_PhraseKeyed(t *testing.T) {
 // Register seam entirely and rode the harness key.
 func TestStreamUserEvents_BusySnapshotIdleRows_PhraseKeyed(t *testing.T) {
 	si := newMockSessionIndex()
-	si.phrases[busySnapWS+"/ses-known"] = "phrase-one"
 
 	hs := newBusySnapHarness(t, "user-t17", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -502,6 +543,7 @@ func TestStreamUserEvents_BusySnapshotIdleRows_PhraseKeyed(t *testing.T) {
 			{"id":"ses-known","status":"idle"}
 		]}`)
 	}, si)
+	si.phrases[hs.ws+"/ses-known"] = "phrase-one"
 
 	evts := collectSSE(t, hs, "", func(evts []apitypes.WorkspaceSSEEvent) bool {
 		return findEvent(evts, "session.status.snapshot_complete") != nil
@@ -539,7 +581,7 @@ func TestRequestSessionStatusSnapshot_FiresFlight(t *testing.T) {
 	srv := httptest.NewServer(hs.router)
 	defer srv.Close()
 
-	resp, err := http.Post(srv.URL+"/api/v1/workspaces/"+busySnapWS+"/sessions/status-snapshot", "", nil)
+	resp, err := http.Post(srv.URL+"/api/v1/workspaces/"+hs.ws+"/sessions/status-snapshot", "", nil)
 	require.NoError(t, err)
 	defer resp.Body.Close()
 	assert.Equal(t, http.StatusAccepted, resp.StatusCode)
@@ -690,7 +732,7 @@ func TestRequestSessionStatusSnapshot_Coalesces(t *testing.T) {
 
 	client := &http.Client{Timeout: 5 * time.Second}
 	postTrigger := func() bool {
-		resp, err := client.Post(srv.URL+"/api/v1/workspaces/"+busySnapWS+"/sessions/status-snapshot", "", nil)
+		resp, err := client.Post(srv.URL+"/api/v1/workspaces/"+hs.ws+"/sessions/status-snapshot", "", nil)
 		if err != nil {
 			return false
 		}
@@ -790,7 +832,7 @@ func TestStreamUserEvents_ConnectPathFlightNotCoalesced(t *testing.T) {
 	// Fire the on-demand trigger; wait until its fetch STARTED — its
 	// begin marker is provably already on the wire, so the joiner below
 	// cannot see it.
-	go hs.handler.requestSessionStatusSnapshotSync(busySnapWS)
+	go hs.handler.requestSessionStatusSnapshotSync(hs.ws)
 	select {
 	case <-fetched:
 	case <-time.After(2 * time.Second):

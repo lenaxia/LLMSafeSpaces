@@ -52,7 +52,7 @@ func TestUsageBridgeStreamResynced_FiresBusySnapshotFlight(t *testing.T) {
 	defer hs.broker.UnsubscribeUser("user-r1", sub)
 
 	// The consumer's non-initial-seed cue.
-	(&usageBridge{h: hs.handler}).StreamResynced(busySnapWS)
+	(&usageBridge{h: hs.handler}).StreamResynced(hs.ws)
 
 	deadline := time.After(3 * time.Second)
 	seq := []string{}
@@ -118,7 +118,7 @@ func TestUsageBridgeStreamResynced_NonBlockingAndCoalesced(t *testing.T) {
 	// return immediately — the fold goroutine must never stall on the
 	// flight.
 	started := time.Now()
-	br.StreamResynced(busySnapWS)
+	br.StreamResynced(hs.ws)
 	assert.Less(t, int64(time.Since(started)), int64(500*time.Millisecond),
 		"StreamResynced must be non-blocking — the flight is detached from the fold goroutine")
 
@@ -130,7 +130,7 @@ func TestUsageBridgeStreamResynced_NonBlockingAndCoalesced(t *testing.T) {
 	// Rapid re-cues (a flapping stream): while the first flight's
 	// marker holds, every further cue is a no-op.
 	for i := 0; i < 3; i++ {
-		br.StreamResynced(busySnapWS)
+		br.StreamResynced(hs.ws)
 	}
 
 	// Let the held flight complete.
@@ -265,7 +265,7 @@ func TestUsageStreamReconnectE2E_ResyncFlightHealsUserStream(t *testing.T) {
 		Retry:     5 * time.Millisecond,
 	})
 	t.Cleanup(c.CloseAll)
-	c.Open(busySnapWS)
+	c.Open(hs.ws)
 	select {
 	case <-fc.connected:
 	case <-time.After(2 * time.Second):
@@ -339,7 +339,7 @@ func TestUsageBridgeStreamResynced_AuthorityFailureHoldsUnknown(t *testing.T) {
 	require.NoError(t, err)
 	defer hs.broker.UnsubscribeUser("user-r3", sub)
 
-	(&usageBridge{h: hs.handler}).StreamResynced(busySnapWS)
+	(&usageBridge{h: hs.handler}).StreamResynced(hs.ws)
 
 	deadline := time.After(3 * time.Second)
 	for {

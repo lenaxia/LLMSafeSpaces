@@ -262,6 +262,55 @@ func TestControlSocketScriptExec_TransportTyped(t *testing.T) {
 	}
 }
 
+// The v0.44.1 release-blocking red, pinned: a supervisor that ACCEPTS
+// but never answers, with the caller's ctx deadline expiring mid-read.
+// The conn arm is DERIVED from that same deadline, so the parked read's
+// os.ErrDeadlineExceeded and the ctx timer fire at the same absolute
+// instant — classifying by ctx.Err() alone races the two clocks, and
+// under runner load the read error can surface while the timer callback
+// has not run (the CI shape: "read script_exec: read tcp ...: i/o
+// timeout" misread as script_env_unavailable → HTTP 200 instead of the
+// 504 script_timeout the mux contract promises). The deterministic
+// classification (UploadApply §3.3's deadlineFired discipline): a
+// deadline expiry on a derived arm IS the timeout class by
+// construction, regardless of which clock wakes first.
+func TestScriptExec_ClassifiesDerivedDeadlineAsTimeout(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer ln.Close()
+	go func() {
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			// Hold every connection open, never answering — the read
+			// parks until its deadline.
+			go func(c net.Conn) {
+				buf := make([]byte, 1024)
+				for {
+					if _, err := c.Read(buf); err != nil {
+						return
+					}
+				}
+			}(conn)
+		}
+	}()
+
+	client := newControlClient(ln.Addr().String())
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel()
+	outcome, werr := client.ScriptExec(ctx, map[string]any{"language": "python", "handler": "x"})
+	if werr == nil {
+		t.Fatalf("a never-answering supervisor with an expiring budget must fail, got outcome %+v", outcome)
+	}
+	if werr.Code != scriptExecErrTimeout {
+		t.Fatalf("a deadline firing mid-read on a ctx-derived arm is the timeout class (the 504 script_timeout shape), got %q: %s", werr.Code, werr.Message)
+	}
+}
+
 // --- #1878 review r2 F-B: the production composition roots are pinned ---
 
 // buildSidecarDeps must wire the scriptExecForwarder: its silent

@@ -220,11 +220,27 @@ type scriptExecForwarder func(ctx context.Context, params map[string]any) (*scri
 // loud script_env_unavailable.
 func (c *controlClient) ScriptExec(ctx context.Context, params map[string]any) (*scriptExecOutcome, *scriptExecWireError) {
 	timeout := c.timeout
+	ctxDerived := false
 	if dl, ok := ctx.Deadline(); ok {
 		timeout = time.Until(dl)
+		ctxDerived = true
 	}
-	res, err, _ := c.callDeadline(ctx, "script_exec", params, timeout)
+	res, err, deadlineFired := c.callDeadline(ctx, "script_exec", params, timeout)
 	if err != nil {
+		// Deterministic classification (UploadApply §3.3's discipline,
+		// adopted after the v0.44.1 release-blocking red): when the conn
+		// arm was DERIVED from the caller's ctx deadline, the two fire
+		// at the same absolute instant — a parked read can surface its
+		// os.ErrDeadlineExceeded while the ctx timer's callback has not
+		// run yet, and checking ctx.Err() alone races the two clocks
+		// (the CI shape: "read script_exec: read tcp ...: i/o timeout"
+		// misread as script_env_unavailable instead of the 504
+		// script_timeout). deadlineFired on a derived arm IS the
+		// timeout class by construction — the conn deadline and the
+		// caller's budget are the same clock arm.
+		if ctxDerived && deadlineFired {
+			return nil, &scriptExecWireError{scriptExecErrTimeout, "script execution timed out or was canceled"}
+		}
 		if ctx.Err() != nil {
 			// The CALLER's deadline fired — the script (or the round
 			// trip it dominates) outlived its budget. That is the
