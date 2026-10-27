@@ -543,7 +543,11 @@ func execAgentNode(ctx context.Context, password string, w http.ResponseWriter, 
 		// manager gate anymore (the #1747 §5 grant is repealed, ruling
 		// 2026-10-27 / tsk-copper-refectory-generates); the record now
 		// feeds exactly one refusal, the task-worker self-certification
-		// pin on board_update_task's token-less setCriteriaMet shape.
+		// pin — every met-flag-writing manager shape refuses for a
+		// spawned worker (board_update_task's inline setCriteriaMet
+		// check-off and patchFile criteria replace, plus pre-met
+		// criteria on board_create_task/board_import_plan; #1946's
+		// grant stays reviewer-persona-only).
 		if req.NodeID == "board-worker" {
 			boardWorkerSessions.record(sessionID)
 		}

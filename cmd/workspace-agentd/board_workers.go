@@ -12,8 +12,10 @@ package main
 // the FULL manager set like every other in-workspace session, with
 // ONE surviving refusal this registry owns: the reviewer-grant
 // widening (boardWorkerSelfCertificationPin — a spawned worker may
-// not check off its own work's criteria through the token-less
-// manager shape; #1946's grant stays reviewer-persona-only).
+// not self-certify its own work through ANY met-flag-writing manager
+// shape: the setCriteriaMet check-off, a patchFile criteria replace,
+// and pre-met criteria on create/import; #1946's grant stays
+// reviewer-persona-only).
 //
 // Storage: an append-only JSON-lines file beside the pod's other
 // agentd state (the restart-marker pattern; env-overridable path).
