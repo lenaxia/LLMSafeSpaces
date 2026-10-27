@@ -42,7 +42,13 @@ Ruling (issue #1966 comment 6429460456): past a cap of 50 worker sessions, the O
 - CI workflows 281913422 / 286282352 on the branch (see PR checks).
 
 ## Rounds
-(logged as review lands)
+- r1 (bot CHANGES_REQUESTED @ ceef2fd4): two red gates on the reviewed head — Lint ST1020 (doc-comment form on ListWorkerSessions) and the e2e count-badge assertion (failed attempt AND retry). The e2e red exposed a REAL product race, not a flake: the origins merge lived in the Sidebar's queryFn for the `['sessions', wsId]` cache key SHARED with ChatPage's merge-less queryFn — whichever mounted first defined the cache's fetch; a cold-boot ChatPage win left worker origins unmerged forever (folder miscounts, worker rows top-level). Fixed structurally (b3bb3530): both queryFns now identical (no merge); origins ride their own `['session-origins', wsId]` cache and merge at the consumer. Full e2e 248 passed / 0 flakes post-fix (the previously-flaky spec now deterministic).
+- r1 while-there + advisories (same push):
+  - Stale docs fixed: sessionTree.ts orphans comment (the group no longer renders), types.ts origin vocabulary (+ worker).
+  - Review r2 (archived shield): archived workers neither count toward the cap nor evict — SQL filter (`archived = false` in listing + re-verification), `Archived` on WorkerSessionRow, retainer guard, fake-level pin + integration pin. Matches the UI's "retirement outranks the worker class".
+  - Review r3 (audit label): retention evictions' transient carrier marks now carry origin='worker' (`originForPurpose` worker arm, prefixed purpose const) — pinned.
+  - Review r1 (concurrent prunes can over/under-shoot): ACCEPTED limitation — no per-workspace serialization; blast radius bounded to worker-signaled, >1h-stale, non-archived rows; under-shoot self-corrects next create. Follow-up if churn demands it.
+  - Review r4/r5: recorded interpretations (level-2 re-verification guards staleness, not a persistently wrong mark — only the spawner writes worker marks; failed mark writes escape folder+cap, pre-agreed best-effort).
 
 ## Blast radius
 Frontend sidebar only for rendering; backend adds one best-effort DB write per board spawn (no API shape change, no session behavior change). LLM-facing surface unchanged.

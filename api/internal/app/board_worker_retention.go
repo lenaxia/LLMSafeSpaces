@@ -98,11 +98,17 @@ func (r *boardWorkerRetainer) prune(ctx context.Context, workspaceID, podIP, kee
 	// the worker predicate to the RAW signals of each row — a user or
 	// orchestrator session (neither signal) can only be present through
 	// misclassification and is refused here, whatever the caller fed the
-	// listing. The grace floor and the keep guard ride the same pass.
+	// listing. Archived rows refuse alongside (review r2: the user's
+	// deliberate retirement outranks retention — belt and braces with
+	// the SQL's archived filter). The grace floor and the keep guard
+	// ride the same pass.
 	eligible := make([]wf.WorkerSessionRow, 0, len(rows))
 	for _, row := range rows {
 		if row.SessionID == keepSessionID {
 			continue
+		}
+		if row.Archived {
+			continue // user-archived: retirement outranks retention
 		}
 		if !row.OriginWorker && !row.Parented {
 			slog.WarnContext(ctx, "board: worker retention: refusing non-worker row in candidate list",

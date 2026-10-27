@@ -192,6 +192,31 @@ func TestBoardWorkerRetention_NeverDeletesJustCreatedSession(t *testing.T) {
 	}
 }
 
+// Review r2 pin: archived workers are the user's deliberate retirement
+// — they neither evict nor block the prune (a live worker goes instead).
+func TestBoardWorkerRetention_ArchivedWorkerIsShielded(t *testing.T) {
+	rows := []retentionRow{
+		{SessionID: "w-archived", OriginWorker: true, LastActivity: ago(96 * time.Hour), UpdatedAt: ago(95 * time.Hour), Archived: true},
+		row("w-live", true, false, 48*time.Hour, 47*time.Hour),
+		row("w-mid", true, false, 24*time.Hour, 23*time.Hour),
+		row("w-just-created", true, false, 1*time.Minute, 30*time.Second),
+	}
+	lister := &stubRetentionLister{rows: rows, verify: verifiedAll(rows)}
+	var deleted []string
+	r := newTestRetainer(lister, &deleted, nil)
+
+	r.prune(context.Background(), "ws-1", "10.42.0.7", "w-just-created")
+
+	for _, id := range deleted {
+		if id == "w-archived" {
+			t.Fatal("an ARCHIVED worker was hard-deleted — retirement outranks retention")
+		}
+	}
+	if len(deleted) != 1 || deleted[0] != "w-live" {
+		t.Fatalf("expected the oldest LIVE worker instead, got %v", deleted)
+	}
+}
+
 // At or under the cap: no deletes at all (the common case).
 func TestBoardWorkerRetention_AtOrUnderCapIsNoop(t *testing.T) {
 	rows := []retentionRow{

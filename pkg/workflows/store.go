@@ -1293,6 +1293,11 @@ type WorkerSessionRow struct {
 	SessionID    string
 	OriginWorker bool
 	Parented     bool
+	// Archived mirrors session_index.archived — the retainer refuses
+	// archived rows (review r2: the user's deliberate retirement
+	// outranks retention; archived workers neither count toward the
+	// cap nor evict).
+	Archived bool
 	// LastActivity drives oldest-first eviction order.
 	LastActivity time.Time
 	// UpdatedAt drives the grace floor (never delete rows updated
@@ -1309,14 +1314,17 @@ type WorkerSessionRow struct {
 // domain and session_origins to the workflows domain; both live in the
 // same database this store's pool serves. The join is read-only.
 
-// ListWorkerSessions returns the workspace's worker-signaled sessions
-// (#1966 retention projection) — origin-class workers and parented
-// subagents, oldest-activity first, death-marked rows excluded.
+// ListWorkerSessions returns the workspace's LIVE worker-signaled
+// sessions (#1966 retention projection) — origin-class workers and
+// parented subagents, oldest-activity first. Death-marked and ARCHIVED
+// rows are excluded: archived workers are the user's deliberate
+// retirement (review r2) and neither count toward the cap nor evict.
 func (s *Store) ListWorkerSessions(ctx context.Context, workspaceID string) ([]WorkerSessionRow, error) {
 	rows, err := s.pool.Query(ctx, `
 		SELECT si.session_id,
 		       COALESCE(so.origin, '') = 'worker' AS origin_worker,
 		       COALESCE(si.parent_session_id, '') <> '' AS parented,
+		       si.archived,
 		       COALESCE(si.last_message_at, si.created_at) AS last_activity,
 		       si.updated_at
 		FROM session_index si
@@ -1324,6 +1332,7 @@ func (s *Store) ListWorkerSessions(ctx context.Context, workspaceID string) ([]W
 		       ON so.session_id = si.session_id AND so.workspace_id::text = si.workspace_id
 		WHERE si.workspace_id = $1
 		  AND si.deleted_at IS NULL
+		  AND si.archived = false
 		  AND (COALESCE(so.origin, '') = 'worker' OR COALESCE(si.parent_session_id, '') <> '')
 		ORDER BY COALESCE(si.last_message_at, si.created_at) ASC
 	`, workspaceID)
@@ -1334,7 +1343,7 @@ func (s *Store) ListWorkerSessions(ctx context.Context, workspaceID string) ([]W
 	var out []WorkerSessionRow
 	for rows.Next() {
 		var r WorkerSessionRow
-		if err := rows.Scan(&r.SessionID, &r.OriginWorker, &r.Parented, &r.LastActivity, &r.UpdatedAt); err != nil {
+		if err := rows.Scan(&r.SessionID, &r.OriginWorker, &r.Parented, &r.Archived, &r.LastActivity, &r.UpdatedAt); err != nil {
 			return nil, err
 		}
 		out = append(out, r)
@@ -1347,6 +1356,8 @@ func (s *Store) ListWorkerSessions(ctx context.Context, workspaceID string) ([]W
 // it"): a fresh single-row read of the same predicate, taken
 // immediately before a hard delete, so a classification that flipped
 // or vanished between the listing and the delete refuses the eviction.
+// Archived rows refuse alongside the dead — the archived shield and
+// the re-verification leg agree.
 func (s *Store) IsWorkerSession(ctx context.Context, workspaceID, sessionID string) (bool, error) {
 	var isWorker bool
 	err := s.pool.QueryRow(ctx, `
@@ -1357,6 +1368,7 @@ func (s *Store) IsWorkerSession(ctx context.Context, workspaceID, sessionID stri
 			WHERE si.workspace_id = $1
 			  AND si.session_id = $2
 			  AND si.deleted_at IS NULL
+			  AND si.archived = false
 			  AND (COALESCE(so.origin, '') = 'worker' OR COALESCE(si.parent_session_id, '') <> '')
 		)
 	`, workspaceID, sessionID).Scan(&isWorker)

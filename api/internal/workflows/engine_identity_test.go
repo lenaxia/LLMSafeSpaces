@@ -201,3 +201,19 @@ func TestHTTPAgentExecutor_MarshalsIdentityFields(t *testing.T) {
 	require.Equal(t, "wf-9", got["workflowId"], "wire key must be workflowId (agentd decodes that spelling)")
 	require.Equal(t, "run-9", got["runId"], "wire key must be runId (agentd decodes that spelling)")
 }
+
+// TestOriginForPurpose_WorkerRetention (#1966 review r3): retention
+// evictions' transient carrier marks carry the WORKER origin — the
+// audit label must name the class that actually deleted the session.
+func TestOriginForPurpose_WorkerRetention(t *testing.T) {
+	got := originForPurpose("board worker retention cap (#1966)")
+	if got != types.SessionOriginWorker {
+		t.Fatalf("retention eviction carrier mark origin = %q, want worker", got)
+	}
+	if got := originForPurpose(deletePurposeNodeRetry); got != types.SessionOriginWorkflow {
+		t.Fatalf("node-retry origin drifted: %q", got)
+	}
+	if got := originForPurpose("superseded retry attempt"); got != types.SessionOriginRoutine {
+		t.Fatalf("routine default origin drifted: %q", got)
+	}
+}

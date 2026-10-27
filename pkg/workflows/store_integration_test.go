@@ -1528,8 +1528,11 @@ func (s *StoreIntegrationSuite) TestListWorkerSessions_IsWorkerSession() {
 	seed("ses_ret_worker", "", &old)
 	seed("ses_ret_sub", "ses_ret_parent", &old)
 	seed("ses_ret_user", "", &old)
-	seed("ses_ret_dead", "", &old) // death-marked: invisible even if signaled
+	seed("ses_ret_dead", "", &old)     // death-marked: invisible even if signaled
+	seed("ses_ret_archived", "", &old) // user-archived worker: shielded (review r2)
 	_, err := s.pool.Exec(ctx, `UPDATE session_index SET deleted_at = now() WHERE workspace_id = $1 AND session_id = 'ses_ret_dead'`, wsID)
+	s.Require().NoError(err)
+	_, err = s.pool.Exec(ctx, `UPDATE session_index SET archived = true WHERE workspace_id = $1 AND session_id = 'ses_ret_archived'`, wsID)
 	s.Require().NoError(err)
 
 	s.Require().NoError(s.store.RecordSessionOrigin(ctx, &SessionOriginRow{
@@ -1540,6 +1543,10 @@ func (s *StoreIntegrationSuite) TestListWorkerSessions_IsWorkerSession() {
 		SessionID: "ses_ret_dead", WorkspaceID: wsID,
 		Origin: "worker", Kind: "session", Title: "tsk-dead", CreatedAt: now,
 	}))
+	s.Require().NoError(s.store.RecordSessionOrigin(ctx, &SessionOriginRow{
+		SessionID: "ses_ret_archived", WorkspaceID: wsID,
+		Origin: "worker", Kind: "session", Title: "tsk-arch", CreatedAt: now,
+	}))
 
 	rows, err := s.store.ListWorkerSessions(ctx, wsID)
 	require.NoError(s.T(), err)
@@ -1548,7 +1555,10 @@ func (s *StoreIntegrationSuite) TestListWorkerSessions_IsWorkerSession() {
 		got[r.SessionID] = r
 	}
 	assert.Len(s.T(), rows, 2,
-		"only the origin-marked worker and the parented subagent list; the user row and the death-marked row are invisible")
+		"only the origin-marked worker and the parented subagent list; the user, death-marked, and ARCHIVED rows are invisible")
+	for _, r := range rows {
+		assert.False(s.T(), r.Archived)
+	}
 	assert.True(s.T(), got["ses_ret_worker"].OriginWorker)
 	assert.False(s.T(), got["ses_ret_worker"].Parented)
 	assert.True(s.T(), got["ses_ret_sub"].Parented)
@@ -1561,7 +1571,7 @@ func (s *StoreIntegrationSuite) TestListWorkerSessions_IsWorkerSession() {
 		require.NoError(s.T(), err)
 		assert.True(s.T(), ok, "re-verification must agree for %s", id)
 	}
-	for _, id := range []string{"ses_ret_user", "ses_ret_dead", "ses_ret_absent"} {
+	for _, id := range []string{"ses_ret_user", "ses_ret_dead", "ses_ret_archived", "ses_ret_absent"} {
 		ok, err := s.store.IsWorkerSession(ctx, wsID, id)
 		require.NoError(s.T(), err)
 		assert.False(s.T(), ok, "re-verification must refuse %s", id)
