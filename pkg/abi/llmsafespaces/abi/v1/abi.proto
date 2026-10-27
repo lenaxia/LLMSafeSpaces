@@ -62,8 +62,9 @@ service HarnessABIService {
 // ReseedNotice inside the replayed range is delivered in seq position
 // (the mandatory re-snapshot rule applies to it as on any
 // connection). When the cursor is outside that range — below the
-// low-water mark (or the ring is empty, e.g. after a process
-// restart), or ahead of the current seq (the client's fold is newer
+// low-water mark (an empty ring floors it at the current seq, so
+// after a process restart every held cursor short of caught-up is
+// below it), or ahead of the current seq (the client's fold is newer
 // than the authority's — a superseded primary or a reused client
 // across authority generations) — the request degrades honestly to
 // the snapshot-first behavior: the first frame being a SnapshotFrame

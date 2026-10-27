@@ -99,10 +99,11 @@ func frameSeq(f *abiv1.StreamFrame) uint64 {
 }
 
 // lowWater is the smallest since the ring can serve exactly: with
-// frames retained, any since >= oldest-1 replays from the oldest frame
-// (seqs are contiguous — one seq per published frame); with an empty
-// ring (boot, post-eviction of everything, or after a process restart)
-// the trivially servable floor is the authority's current seq, since
+// frames retained, every since in [oldest-1, cur] is servable (seqs
+// are contiguous — one seq per published frame; a since at oldest-1
+// replays from the oldest frame); with an empty ring (boot,
+// post-eviction of everything, or after a process restart) the
+// trivially servable floor is the authority's current seq, since
 // there is nothing before it left to miss. cur is the authority's seq
 // under the same lock hold.
 func (r *replayRing) lowWater(cur uint64) uint64 {

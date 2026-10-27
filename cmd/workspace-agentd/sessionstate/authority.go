@@ -757,8 +757,9 @@ func (a *Authority) dropSub(sub *subscriber) {
 // StreamSince is the design-0069 Events resume path. since is the
 // caller's last applied seq. Two outcomes:
 //
-//   - resumed=true: since >= the ring's low-water mark. The stream does
-//     NOT open with a snapshot frame; it opens with the retained frames
+//   - resumed=true: since is INSIDE the ring's servable range —
+//     low-water <= since <= the current seq. The stream does NOT
+//     open with a snapshot frame; it opens with the retained frames
 //     seq > since in publish order, then continues live. Gapless and
 //     duplicate-free by construction: the replay copy and the live
 //     subscriber registration happen under ONE a.mu hold — every frame
@@ -767,17 +768,20 @@ func (a *Authority) dropSub(sub *subscriber) {
 //     never in the copy). This is the same lock discipline that makes
 //     the stamped snapshot's atomic cut exact (I2); the ring's
 //     contiguity (one frame per published seq, appended in
-//     fanoutLocked) is what makes any since >= low-water exact.
+//     fanoutLocked) is what makes every in-range since exact.
 //     A ReseedNotice inside the replayed range is delivered in seq
 //     position — the client's mandatory re-snapshot rule applies to it
 //     as on any connection.
 //
-//   - resumed=false: since < low-water (cursor too old, or the ring is
-//     empty — always the case after a process restart: the ring is
-//     memory, the seq counter is the durable thing). The honest
-//     fallback: a plain snapshot-first Stream (today's behavior,
-//     byte-identical); the caller detects it by the returned flag (the
-//     wire-level signal is the SnapshotFrame first frame).
+//   - resumed=false: since is OUTSIDE the servable range — below
+//     low-water (cursor too old; an empty ring floors low-water AT
+//     the current seq, so after a process restart — the ring is
+//     memory, the seq counter is the durable thing — every held
+//     cursor short of caught-up is below it), or beyond the current
+//     seq (the client-ahead guard, below). The honest fallback: a
+//     plain snapshot-first Stream (today's behavior, byte-identical);
+//     the caller detects it by the returned flag (the wire-level
+//     signal is the SnapshotFrame first frame).
 //
 // Cursor bounds: since == a.seq is the legitimate caught-up resume —
 // empty replay, then live. since > a.seq is ALSO a fallback (the

@@ -70,9 +70,11 @@ func (a *Authority) auth(next http.Handler) http.Handler {
 //     range — low-water <= since <= the current seq — replays the
 //     retained frames with seq > since first (no snapshot frame),
 //     then live, gapless by construction (StreamSince's one-lock
-//     registration). Outside that range (below low-water, ring
-//     empty, or client-ahead of the current seq) ⇒ the honest
-//     fallback: today's snapshot-first stream. The first frame on
+//     registration). Outside that range — below low-water (an empty
+//     ring floors low-water AT the current seq, so after a process
+//     restart only a caught-up cursor stays servable) or client-ahead
+//     of the current seq — ⇒ the honest fallback: today's
+//     snapshot-first stream. The first frame on
 //     the wire disambiguates for the client — SnapshotFrame means
 //     "resume not honored, apply the stamp's discard rule"; anything
 //     else means "replaying from your cursor".

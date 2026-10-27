@@ -28,8 +28,9 @@ Three pieces against the audit's verdict table:
   low-water or (review r1 guard) beyond the current seq.
 - **P1b (L3, the consumer half)** — `abiclient` persists its fold on
   the `Client` and presents `since = fold.Seq` on every reconnect;
-  first-frame disambiguation makes pre-0069 agentds and below-low-water
-  cursors fall back to snapshot-first with zero version negotiation;
+  first-frame disambiguation makes pre-0069 agentds and unservable
+  cursors (below-low-water or client-ahead) fall back to
+  snapshot-first with zero version negotiation;
   reseed-in-replay redials snapshot-first without looping; the
   usagestream gate reuses one client per endpoint so run-loop retries
   resume too; `WithResumed` suppresses the #1884 seed machinery on
