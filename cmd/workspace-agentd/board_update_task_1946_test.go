@@ -19,8 +19,10 @@ import (
 // board_update_task's dispatcher (mirroring board_move_stage's #1832
 // WS2 shape): a claim-token-carrying call rides the worker projection's
 // scoped set-criteria-met route; a token-less call keeps the manager
-// path byte-identically (session gate + registry refusal — the
-// task-worker self-certification pin, unchanged).
+// path byte-identically — open to any in-workspace session (ruling
+// 2026-10-27 / tsk-copper-refectory-generates) EXCEPT the registry's
+// self-certification pin: a spawned worker's token-less setCriteriaMet
+// refuses (#1946's grant does not widen).
 
 // TestMCPBoard_UpdateTaskDualRoute_1946: routing + wire shape.
 func TestMCPBoard_UpdateTaskDualRoute_1946(t *testing.T) {
@@ -59,7 +61,7 @@ func TestMCPBoard_UpdateTaskDualRoute_1946(t *testing.T) {
 		assert.JSONEq(t, `"tok-rev"`, string(wire["claimToken"]))
 	})
 
-	t.Run("token-less → the manager route, byte-identical (#1747 §5)", func(t *testing.T) {
+	t.Run("token-less → the manager route, byte-identical (open to any session)", func(t *testing.T) {
 		api, rec := newAutomationAPI(t, 200, `{"id":"t-1"}`)
 		setupRenameWorkspaceEnv(t, api)
 
@@ -78,7 +80,7 @@ func TestMCPBoard_UpdateTaskDualRoute_1946(t *testing.T) {
 		assert.JSONEq(t, `"sessi-2feellha"`, string(wire["sessionId"]), "the manager identity stamp rides")
 	})
 
-	t.Run("spawned worker, token-less → the §5 tier-1 refusal, unchanged", func(t *testing.T) {
+	t.Run("spawned worker, token-less → the self-certification pin, unchanged", func(t *testing.T) {
 		api, rec := newAutomationAPI(t, 200, `{}`)
 		setupRenameWorkspaceEnv(t, api)
 		boardWorkerSessions.record("ses_spawnedselfcert")
@@ -87,8 +89,8 @@ func TestMCPBoard_UpdateTaskDualRoute_1946(t *testing.T) {
 			"taskId": "tsk-aaaa1111", "setCriteriaMet": map[string]any{"index": 0, "met": true},
 			"lsp_injected_session": "ses_spawnedselfcert"})
 		require.Error(t, err, "a task worker self-certifying through the manager shape stays refused")
-		assert.Contains(t, err.Error(), "user-collaborator")
-		assert.Contains(t, err.Error(), "#1747")
+		assert.Contains(t, err.Error(), "self-certification")
+		assert.Contains(t, err.Error(), "#1946")
 		assert.Empty(t, rec.method, "no wire call for the refused call")
 	})
 }
