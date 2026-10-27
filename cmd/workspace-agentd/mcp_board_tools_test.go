@@ -23,6 +23,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -72,6 +74,9 @@ func TestMCPBoard_RegistryShape(t *testing.T) {
 		// #1836 sibling: the bulk delete (delete_task's batch form —
 		// delete IS a manager action; only claim/create are owner-only).
 		"board_delete_tasks",
+		// design 0070: the local, advisory pre-submit payload check
+		// (the file-crud cutover's companion tool).
+		"board_validate_file",
 	}
 	require.Len(t, board, len(want), "exactly the worker + #1747 manager board tools; got %v", board)
 	for _, name := range want {
@@ -376,13 +381,17 @@ func mcpToolsList(t *testing.T) map[string]map[string]any {
 // route with the pod SA token + the workspace/session stamps, and the
 // caller's fields pass through verbatim (the mcpAutomation discipline).
 func TestMCPBoard_ManagerWireContract(t *testing.T) {
-	t.Run("board_create_task wire", func(t *testing.T) {
+	t.Run("board_create_task wire (file-backed payload, design 0070)", func(t *testing.T) {
 		api, rec := newAutomationAPI(t, 200, `{"short_id":"tsk-cccc3333"}`)
 		setupRenameWorkspaceEnv(t, api)
 
+		path := filepath.Join(t.TempDir(), "task.json")
+		payload := `{"title":"T1","description":"do","dependsOn":["tsk-aaaa1111"],` +
+			`"acceptanceCriteria":[{"text":"done","met":false}]}`
+		require.NoError(t, os.WriteFile(path, []byte(payload), 0o600))
+
 		out, err := mcpAutomation(context.Background(), mcpTestPassword, "board_create_task", map[string]any{
-			"epicId": "epc-bbbb2222", "title": "T1", "description": "do",
-			"dependsOn":            []any{"tsk-aaaa1111"},
+			"epicId": "epc-bbbb2222", "bodyFile": path,
 			"lsp_injected_session": "ses_workercaller1",
 		})
 		require.NoError(t, err)
@@ -392,9 +401,10 @@ func TestMCPBoard_ManagerWireContract(t *testing.T) {
 
 		var wire map[string]json.RawMessage
 		require.NoError(t, json.Unmarshal([]byte(rec.body), &wire))
-		assert.JSONEq(t, `"T1"`, string(wire["title"]), "caller fields reach the wire verbatim")
+		assert.JSONEq(t, `"T1"`, string(wire["title"]), "the payload file's fields reach the wire verbatim")
 		assert.JSONEq(t, `"do"`, string(wire["description"]))
-		assert.NotEmpty(t, wire["dependsOn"], "inline dependsOn reaches the wire")
+		assert.NotEmpty(t, wire["dependsOn"], "dependsOn rides the payload file")
+		assert.NotContains(t, wire, "bodyFile")
 		assert.JSONEq(t, `"ws-1"`, string(wire["workspaceID"]), "the workspace stamp")
 		assert.JSONEq(t, `"ses_workercaller1"`, string(wire["sessionId"]),
 			"the injected session identity rides the wire (audit attribution + the seam belt)")
@@ -438,18 +448,24 @@ func TestMCPBoard_ManagerWireContract(t *testing.T) {
 		assert.Contains(t, rec.query, "force=true")
 	})
 
-	t.Run("board_import_plan wire (dry-run)", func(t *testing.T) {
+	t.Run("board_import_plan wire (dry-run, file-backed plan)", func(t *testing.T) {
 		api, rec := newAutomationAPI(t, 200, `{"dry_run":true}`)
 		setupRenameWorkspaceEnv(t, api)
 
+		path := filepath.Join(t.TempDir(), "plan.json")
+		payload := `{"epic":{"title":"E"},"tasks":[{"key":"k1","title":"T","description":"d","acceptanceCriteria":[{"text":"c"}]}]}`
+		require.NoError(t, os.WriteFile(path, []byte(payload), 0o600))
+
 		_, err := mcpAutomation(context.Background(), mcpTestPassword, "board_import_plan", map[string]any{
-			"projectId": "prj-aaaa1111", "epicTitle": "E", "dryRun": true,
+			"projectId": "prj-aaaa1111", "dryRun": true, "planFile": path,
 			"lsp_injected_session": "ses-1"})
 		require.NoError(t, err)
 		assert.Equal(t, "/internal/v1/automation/board/projects/prj-aaaa1111/import-plan", rec.path)
 		var wire map[string]json.RawMessage
 		require.NoError(t, json.Unmarshal([]byte(rec.body), &wire))
 		assert.JSONEq(t, `true`, string(wire["dryRun"]))
+		assert.JSONEq(t, `{"title":"E"}`, string(wire["epic"]), "the unified plan doc's epic arm rides the wire verbatim")
+		assert.NotContains(t, wire, "planFile")
 	})
 
 	t.Run("board_delete_tasks wire (#1836 sibling)", func(t *testing.T) {
@@ -551,8 +567,10 @@ func TestMCPBoard_ManagerGrantGate(t *testing.T) {
 		api, rec := newAutomationAPI(t, 200, `{}`)
 		setupRenameWorkspaceEnv(t, api)
 
+		path := filepath.Join(t.TempDir(), "epic.json")
+		require.NoError(t, os.WriteFile(path, []byte(`{"title":"E"}`), 0o600))
 		_, err := mcpAutomation(context.Background(), mcpTestPassword, "board_create_epic", map[string]any{
-			"projectId": "prj-aaaa1111", "title": "E",
+			"projectId": "prj-aaaa1111", "bodyFile": path,
 			"sessionId": "ses_spawnedworker", "lsp_injected_session": "sessi-2feellha"})
 		require.NoError(t, err, "the harness-attested injection is authoritative (the send_message pattern)")
 		assert.Equal(t, "/internal/v1/automation/board/projects/prj-aaaa1111/epics", rec.path)
@@ -605,9 +623,12 @@ func TestMCPBoard_ManagerDeclaredPhraseResolves(t *testing.T) {
 	api, rec := newAutomationAPI(t, 200, `{"short_id":"tsk-dddd4444"}`)
 	setupRenameWorkspaceEnv(t, api)
 
+	path := filepath.Join(t.TempDir(), "task.json")
+	require.NoError(t, os.WriteFile(path, []byte(`{"title":"T-phrase","description":"d","acceptanceCriteria":[{"text":"c"}]}`), 0o600))
+
 	out, err := mcpAutomation(context.Background(), mcpTestPassword, "board_create_task", map[string]any{
 		"epicId":    "epc-bbbb2222",
-		"title":     "T-phrase",
+		"bodyFile":  path,
 		"sessionId": "amber-falcon-glides", // declared fallback, phrase form
 	})
 	require.NoError(t, err)

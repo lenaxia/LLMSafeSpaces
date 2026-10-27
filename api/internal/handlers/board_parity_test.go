@@ -238,6 +238,14 @@ var boardParityMatrix = []parityRow{
 		externalMCP: liveCell, extTools: []string{"board_import_plan"}, agent: liveCell,
 		agentTools: []string{"board_import_plan"},
 		denyErr:    &board.DependencyError{Code: "cycle", Detail: "would create a cycle"}, denyCode: http.StatusConflict},
+	// design 0070: the local, advisory pre-submit payload check — an
+	// AGENT-SURFACE-ONLY companion to the file-backed payload cutover
+	// (zero wire calls; the platform stays the authority). Declared
+	// absent on REST/external MCP: their inline surfaces are
+	// programmatic, not model-emitted (no file params, #1837 ruling).
+	{action: "validate_payload", rest: absentCell,
+		externalMCP: absentCell, agent: liveCell,
+		agentTools: []string{"board_validate_file"}},
 	// #1832 item 6 config rows: the config system's read/write surfaces
 	// are the owner's REST projection (user-scoped board-wide defaults
 	// per the R7 ruling on PR #1840 + owner-scoped per-project
@@ -674,6 +682,10 @@ func TestBoardParity_ExternalMCPColumn(t *testing.T) {
 		case "get_user_board_config", "set_user_board_config", "get_project_board_config", "set_project_board_config":
 			assert.Equal(t, "absent", row.externalMCP.kind,
 				"%s: #1832 config rows — the board config surface is the owner's REST/UI projection (user-scoped board-wide defaults on /me/board/config + owner-scoped per-project, all /me routes); external MCP tools are future work, pinned absent by design", row.action)
+			assert.Empty(t, row.extTools, "%s: absent cells name no tools", row.action)
+		case "validate_payload":
+			assert.Equal(t, "absent", row.externalMCP.kind,
+				"%s: design 0070 — the local pre-submit payload check is agent-surface-only (file params never leave the in-workspace agent, #1837 ruling); external MCP/REST stay inline and programmatic", row.action)
 			assert.Empty(t, row.extTools, "%s: absent cells name no tools", row.action)
 		default:
 			assert.Equal(t, "live", row.externalMCP.kind, "%s: external MCP cell", row.action)

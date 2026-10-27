@@ -338,13 +338,28 @@ type PlanTaskInput struct {
 	DependsOn          []string              `json:"dependsOn"`
 }
 
-// PlanInput is the import_plan payload: one epic + its tasks + edges,
-// materialized atomically (all-or-nothing) or validated dry-run (#1747:
-// the user's plan-approval moment).
+// PlanEpicSpec is the unified plan document's new-epic arm (design
+// 0070 §1a): the epic definition an import CREATES — the structured
+// spelling of the legacy epicTitle/outcome/tags triple the REST/external
+// surfaces keep using.
+type PlanEpicSpec struct {
+	Title   string   `json:"title"`
+	Outcome string   `json:"outcome,omitempty"`
+	Tags    []string `json:"tags,omitempty"`
+}
+
+// PlanInput is the import_plan payload: ONE epic arm — a new epic (the
+// Epic object, or the legacy EpicTitle spelling) OR an existing epic
+// (EpicID, §3's attach mode) — plus 1..N tasks + edges, materialized
+// atomically (all-or-nothing) or validated dry-run (#1747: the user's
+// plan-approval moment). Exactly one epic arm per payload (both/neither
+// is a 400 at the arm resolver, never a silent pick).
 type PlanInput struct {
-	EpicTitle string          `json:"epicTitle"`
-	Outcome   string          `json:"outcome"`
-	Tags      []string        `json:"tags"`
+	Epic      *PlanEpicSpec   `json:"epic,omitempty"`
+	EpicID    string          `json:"epicId,omitempty"`
+	EpicTitle string          `json:"epicTitle,omitempty"`
+	Outcome   string          `json:"outcome,omitempty"`
+	Tags      []string        `json:"tags,omitempty"`
 	Tasks     []PlanTaskInput `json:"tasks"`
 }
 
