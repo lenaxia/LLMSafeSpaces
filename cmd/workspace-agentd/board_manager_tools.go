@@ -81,45 +81,72 @@ func logBoardAttributionLoss(name, ref string, err error) {
 // manager-grant gate is gone — every manager tool opens to any
 // in-workspace session, spawned workers included — EXCEPT the
 // reviewer-grant widening this pin refuses: a spawned board worker
-// self-certifying its own work through the token-less manager shape
-// of board_update_task, in BOTH shapes — the inline setCriteriaMet
-// check-off AND a patchFile whose acceptanceCriteria replace rewrites
-// met flags (Service.UpdateTask replaces the set wholesale with no
-// persona guard; PR review r3 finding A). #1946's grant stays
-// reviewer-persona-only (the engine's persona tier refuses the worker
-// route; this refuses the manager detour around it).
-func boardWorkerSelfCertificationPin(ctx context.Context, password, name string, body map[string]any) error {
-	// The SAME unwrap dispatch honors — the full wrapper key set. A
-	// pin reading a narrower shape than the dispatcher is bypassable
-	// by wrapper-key argument shaping ({"plan": {…setCriteriaMet…}},
-	// PR review r2 finding 2); the two key sets must never diverge.
-	args := boardArgs(body, "project", "epic", "task", "plan")
-	_, inlineCheckOff := args["setCriteriaMet"]
-	// The criteria-replacement door: the pin must ALSO see what the
-	// patchFile carries — acceptanceCriteria is a legal
-	// update_task_patch property whose replace semantics would rewrite
-	// met flags with no persona guard. Manager-sourced replaces stay
-	// legal; only the WORKER-sourced shape refuses.
-	criteriaReplace := false
-	if pf, ok := args["patchFile"].(string); ok && strings.TrimSpace(pf) != "" {
-		if fields, _, ferr := resolveBoardPayloadFile("patchFile", pf); ferr == nil {
-			_, criteriaReplace = fields["acceptanceCriteria"]
-		}
-		// An unreadable/invalid file is dispatch's own refusal (the
-		// CRUD gate rejects it before any wire call) — nothing to
-		// guard here.
-	}
-	if !inlineCheckOff && !criteriaReplace {
-		return nil
-	}
-	sid := boardManagerSession(ctx, password, name, body)
+// self-certifying its own work through ANY manager shape that writes
+// met flags — the board_update_task inline setCriteriaMet check-off,
+// a board_update_task patchFile acceptanceCriteria replace (met flags
+// ride the replace; Service.UpdateTask rewrites the set wholesale
+// with no persona guard), and the CREATE shapes (board_create_task
+// bodyFile, board_import_plan planFile task items) whose pre-met
+// criteria would author done-ready rows with zero reviewer
+// involvement (PR review rounds r2–r4: the pin must watch every
+// shape the dispatch surface executes — wrapper keys, sibling
+// fields, sibling tools). #1946's grant stays reviewer-persona-only.
+// Non-worker pre-met creates stay legal (the platform surface
+// deliberately supports importing completed work). The update-side
+// replace arm is PRESENCE-based — a worker's met:false-only rewording
+// refuses too (fail-closed over-breadth, accepted for a pin).
+//
+// Runs INSIDE dispatchBoardManagerTool on the post-file-merge args —
+// one parse shared between pin and wire body (no TOCTOU window
+// between a pin read and the dispatch read), with the caller's
+// already-resolved identity (no double resolve).
+func boardWorkerSelfCertificationPin(name, sid string, args map[string]any) error {
 	if sid == "" || !boardWorkerSessions.isWorker(sid) {
 		return nil
 	}
-	if inlineCheckOff {
-		return fmt.Errorf("%s failed: task-worker self-certification stays refused — criteria-met recording is the reviewer-persona claim's scoped grant (issue #1946); a spawned board worker may not check off its own work through the manager shape (ruling 2026-10-27, tsk-copper-refectory-generates)", name)
+	switch name {
+	case "board_update_task":
+		if _, ok := args["setCriteriaMet"]; ok {
+			return fmt.Errorf("%s failed: task-worker self-certification stays refused — criteria-met recording is the reviewer-persona claim's scoped grant (issue #1946); a spawned board worker may not check off its own work through the manager shape (ruling 2026-10-27, tsk-copper-refectory-generates)", name)
+		}
+		if _, ok := args["acceptanceCriteria"]; ok {
+			return fmt.Errorf("%s failed: task-worker self-certification stays refused — a patchFile acceptanceCriteria replace rewrites met flags with no persona guard (issue #1946); a spawned board worker may not re-write its own criteria through the manager shape (ruling 2026-10-27, tsk-copper-refectory-generates)", name)
+		}
+	case "board_create_task":
+		if anyCriterionMetTrue(args["acceptanceCriteria"]) {
+			return fmt.Errorf("%s failed: task-worker self-certification stays refused — a pre-met criterion authors a done-ready row with no reviewer involvement (issue #1946); a spawned board worker may not create its own work pre-certified (ruling 2026-10-27, tsk-copper-refectory-generates)", name)
+		}
+	case "board_import_plan":
+		tasks, _ := args["tasks"].([]any)
+		for _, t := range tasks {
+			task, ok := t.(map[string]any)
+			if !ok {
+				continue
+			}
+			if anyCriterionMetTrue(task["acceptanceCriteria"]) {
+				return fmt.Errorf("%s failed: task-worker self-certification stays refused — a pre-met criterion authors a done-ready row with no reviewer involvement (issue #1946); a spawned board worker may not import its own work pre-certified (ruling 2026-10-27, tsk-copper-refectory-generates)", name)
+			}
+		}
 	}
-	return fmt.Errorf("%s failed: task-worker self-certification stays refused — a patchFile acceptanceCriteria replace rewrites met flags with no persona guard (issue #1946); a spawned board worker may not re-write its own criteria through the manager shape (ruling 2026-10-27, tsk-copper-refectory-generates)", name)
+	return nil
+}
+
+// anyCriterionMetTrue reports whether a criteria array carries any
+// explicit met:true entry (the pre-met create shapes; absent/false
+// flags are ordinary backlog criteria and stay legal).
+func anyCriterionMetTrue(v any) bool {
+	criteria, ok := v.([]any)
+	if !ok {
+		return false
+	}
+	for _, c := range criteria {
+		if m, ok := c.(map[string]any); ok {
+			if met, _ := m["met"].(bool); met {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // boardArgs unwraps the documented flat argument form, tolerating the
@@ -329,6 +356,13 @@ func dispatchBoardManagerTool(ctx context.Context, client *opencode.Client, pass
 	consumedPath, err := resolveBoardToolFileArgs(name, args)
 	if err != nil {
 		return nil, fmt.Errorf("%s failed: %w", name, err)
+	}
+
+	// The #1946 pin, on the post-merge args: every met-flag-writing
+	// shape (update check-off/replace, create/import pre-met) refuses
+	// for spawned workers — see boardWorkerSelfCertificationPin.
+	if err := boardWorkerSelfCertificationPin(name, sessionID, args); err != nil {
+		return nil, err
 	}
 
 	wire := boardWireBody(args)

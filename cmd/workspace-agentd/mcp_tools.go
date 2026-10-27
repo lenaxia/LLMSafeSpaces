@@ -2134,14 +2134,13 @@ func mcpAutomation(ctx context.Context, password, name string, body map[string]a
 		// token-less caller rides the manager path, open to any
 		// in-workspace session (the #1747 §5 gate is repealed, ruling
 		// 2026-10-27 / tsk-copper-refectory-generates), EXCEPT the
-		// self-certification pin: a spawned worker's token-less
-		// setCriteriaMet refuses (#1946's grant does not widen).
+		// self-certification pin inside dispatch (post-file-merge, so
+		// every met-flag-writing shape is watched — inline
+		// setCriteriaMet, patchFile criteria replace, and the create
+		// shapes' pre-met payloads; #1946's grant does not widen).
 		if tok, _ := boardToolArgs(body)["claimToken"].(string); strings.TrimSpace(tok) != "" {
 			res, err = client.BoardSetCriteriaMet(ctx, saToken, workspaceID, passThroughBody(body, "task"))
 		} else {
-			if err := boardWorkerSelfCertificationPin(ctx, password, name, body); err != nil {
-				return "", err
-			}
 			res, err = dispatchBoardManagerTool(ctx, client, password, name, body, saToken, workspaceID)
 		}
 

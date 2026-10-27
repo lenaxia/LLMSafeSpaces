@@ -145,4 +145,66 @@ func TestMCPBoard_UpdateTaskDualRoute_1946(t *testing.T) {
 		assert.Equal(t, http.MethodPatch, rec.method)
 		assert.Contains(t, rec.body, "acceptanceCriteria", "the replace rides the wire for non-workers")
 	})
+
+	// PR review r4 finding 1: the CREATE shapes — a spawned worker's
+	// bodyFile/planFile carrying met:true criteria authors done-ready
+	// rows with zero reviewer involvement; the pin (now inside
+	// dispatch, post-merge) refuses every met-flag-writing shape.
+	t.Run("spawned worker, create_task bodyFile pre-met criteria → refused", func(t *testing.T) {
+		api, rec := newAutomationAPI(t, 200, `{}`)
+		setupRenameWorkspaceEnv(t, api)
+		boardWorkerSessions.record("ses_premetcreate")
+
+		path := filepath.Join(t.TempDir(), "body.json")
+		require.NoError(t, os.WriteFile(path, []byte(`{"title":"T","description":"d","acceptanceCriteria":[{"text":"done","met":true}]}`), 0o600))
+		_, err := mcpAutomation(context.Background(), mcpTestPassword, "board_create_task", map[string]any{
+			"epicId": "epc-aaaa1111", "bodyFile": path,
+			"lsp_injected_session": "ses_premetcreate"})
+		require.Error(t, err, "a worker creating its own work pre-certified is self-certification")
+		assert.Contains(t, err.Error(), "#1946")
+		assert.Empty(t, rec.method, "no wire call for the refused call")
+	})
+
+	t.Run("spawned worker, import_plan planFile pre-met task → refused", func(t *testing.T) {
+		api, rec := newAutomationAPI(t, 200, `{}`)
+		setupRenameWorkspaceEnv(t, api)
+		boardWorkerSessions.record("ses_premetimport")
+
+		path := filepath.Join(t.TempDir(), "plan.json")
+		require.NoError(t, os.WriteFile(path, []byte(`{"epic":{"title":"E"},"tasks":[{"key":"a","title":"T","description":"d","acceptanceCriteria":[{"text":"done","met":true}]}]}`), 0o600))
+		_, err := mcpAutomation(context.Background(), mcpTestPassword, "board_import_plan", map[string]any{
+			"projectId": "prj-aaaa1111", "planFile": path,
+			"lsp_injected_session": "ses_premetimport"})
+		require.Error(t, err, "a worker importing its own work pre-certified is self-certification")
+		assert.Contains(t, err.Error(), "#1946")
+		assert.Empty(t, rec.method, "no wire call for the refused call")
+	})
+
+	t.Run("spawned worker, create_task ordinary unmet criteria → legal", func(t *testing.T) {
+		api, rec := newAutomationAPI(t, 200, `{"id":"t-1"}`)
+		setupRenameWorkspaceEnv(t, api)
+		boardWorkerSessions.record("ses_plaincreate")
+
+		path := filepath.Join(t.TempDir(), "body.json")
+		require.NoError(t, os.WriteFile(path, []byte(`{"title":"T","description":"d","acceptanceCriteria":[{"text":"done"}]}`), 0o600))
+		_, err := mcpAutomation(context.Background(), mcpTestPassword, "board_create_task", map[string]any{
+			"epicId": "epc-aaaa1111", "bodyFile": path,
+			"lsp_injected_session": "ses_plaincreate"})
+		require.NoError(t, err, "ordinary backlog criteria (no met flags) are a worker's legal create")
+		assert.Equal(t, http.MethodPost, rec.method)
+	})
+
+	t.Run("non-worker, create_task pre-met criteria → legal (importing completed work)", func(t *testing.T) {
+		api, rec := newAutomationAPI(t, 200, `{"id":"t-1"}`)
+		setupRenameWorkspaceEnv(t, api)
+
+		path := filepath.Join(t.TempDir(), "body.json")
+		require.NoError(t, os.WriteFile(path, []byte(`{"title":"T","description":"d","acceptanceCriteria":[{"text":"done","met":true}]}`), 0o600))
+		_, err := mcpAutomation(context.Background(), mcpTestPassword, "board_create_task", map[string]any{
+			"epicId": "epc-aaaa1111", "bodyFile": path,
+			"lsp_injected_session": "ses_orchestrator"})
+		require.NoError(t, err, "the platform surface deliberately supports manager-sourced pre-met creates")
+		assert.Equal(t, http.MethodPost, rec.method)
+		assert.Contains(t, rec.body, `"met":true`, "the pre-met create rides the wire for non-workers")
+	})
 }
