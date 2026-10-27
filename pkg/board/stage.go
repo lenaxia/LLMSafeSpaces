@@ -11,6 +11,8 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+
+	"github.com/lenaxia/llmsafespaces/pkg/shortid"
 )
 
 // stage.go — the stage machine (design §4.1 "Stage semantics"):
@@ -350,11 +352,28 @@ func (n nudge) fire(ctx context.Context, s *Service) {
 // delivery seam installed (the inert-engine shape), zero turn evidence
 // (never-turned), or a delivery error (archived/reaped — the seam's
 // own liveness answer).
+//
+// #1959c: the stored implementer identity is resolved to the RAW
+// harness id BEFORE either consumer runs — the turn-evidence consult
+// and the delivery seam are both raw-keyed (session_index.session_id;
+// opencode's routes), and the row may hold the platform PHRASE (the
+// durable identity, #1850/#1816 — the form the live 0.44.3 probe
+// indicted). Unresolved upstream of the pre-check, a phrase reads
+// "never indexed = never turned" at the evidence arm and the bounce
+// falls back to a fresh spawn WITHOUT the delivery seam ever running —
+// the ordering defect review F1 pinned (PR #1967 r1). Resolution is
+// best-effort by the read edge's degraded posture (resolveImplementerRef):
+// a phrase no live session holds keeps the stored ref, and the evidence
+// consult's honest zero drives the fallback (a dead original's verdict).
 func (s *Service) redispatchBounce(ctx context.Context, taskID, token, implementer string) {
 	if s.redispatcher == nil {
 		s.spawnFor(ctx, taskID, token) // no delivery seam: the fresh-worker fallback
 		return
 	}
+	// #1959c: resolve the stored identity BEFORE the evidence consult —
+	// see the function header (both raw-keyed consumers receive the raw
+	// id; unresolved phrases degrade honestly).
+	implementer = s.resolveImplementerRef(ctx, taskID, implementer)
 	if s.turnEvidence != nil {
 		if turns, err := s.turnEvidence.SessionTurnEvidence(ctx, implementer); err == nil && turns <= 0 {
 			slog.WarnContext(ctx, "board: bounce re-dispatch skipped — original implementer never turned; falling back to a fresh worker",
@@ -472,6 +491,50 @@ func bounceImplementer(cur *Task) string {
 		return cur.AssigneeSession
 	}
 	return ""
+}
+
+// resolveImplementerRef maps a PHRASE-form implementer identity to the
+// raw harness id (#1959c — the consumption-side resolution feeding both
+// raw-keyed bounce consumers; see redispatchBounce). Raw/legacy refs
+// pass through unchanged and consult nothing (the #1663 lesson:
+// resolution never makes an id unaddressable); a phrase resolves via
+// the platform registry (session_index) scoped to the task's project's
+// target workspace. Best-effort by the read edge's degraded posture:
+// an unresolved phrase keeps the stored ref — the turn-evidence
+// consult's zero then drives the fresh-worker fallback, the honest
+// verdict for an original no live session holds.
+func (s *Service) resolveImplementerRef(ctx context.Context, taskID, ref string) string {
+	if !shortid.IsShortIDForm(ref) {
+		return ref
+	}
+	var ws string
+	if err := s.q().QueryRow(ctx,
+		`SELECT p.target_workspace_id::text FROM tasks t JOIN projects p ON p.id = t.project_id
+		 WHERE t.id::text = $1`, taskID).Scan(&ws); err != nil {
+		// Transient DB error and genuinely-unknown workspace share the
+		// degraded posture (stored ref kept), but the log names which
+		// one fired — never misattribute an outage (review r2 minor).
+		slog.WarnContext(ctx, "board: bounce implementer phrase unresolved — task workspace lookup failed; keeping the stored ref",
+			"task_id", taskID, "implementer", ref, "err", err.Error())
+		return ref
+	}
+	if ws == "" {
+		slog.WarnContext(ctx, "board: bounce implementer phrase unresolved — task workspace unknown; keeping the stored ref",
+			"task_id", taskID, "implementer", ref)
+		return ref
+	}
+	raw, err := LookupSessionIDByPhrase(ctx, s.q(), ws, ref)
+	if err != nil {
+		slog.WarnContext(ctx, "board: bounce implementer phrase lookup failed — keeping the stored ref",
+			"task_id", taskID, "implementer", ref, "err", err.Error())
+		return ref
+	}
+	if raw == "" {
+		slog.WarnContext(ctx, "board: bounce implementer phrase resolves to no live session — keeping the stored ref (the evidence consult's zero drives the fallback)",
+			"task_id", taskID, "implementer", ref)
+		return ref
+	}
+	return raw
 }
 
 // bounceTx mints the #1959 bounce re-claim: fresh token + lease,

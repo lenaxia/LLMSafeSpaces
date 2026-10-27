@@ -215,15 +215,19 @@ export function seedBoard(tasks: BoardTask[] = defaultTasks(), projects: BoardPr
   return tasks;
 }
 
-export function renderBoard(): RenderResult {
+export function renderBoard(): RenderResult & { queryClient: QueryClient } {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
-  return render(
+  const utils = render(
     <QueryClientProvider client={qc}>
       <MemoryRouter initialEntries={["/board"]}>
         <BoardPage />
       </MemoryRouter>
     </QueryClientProvider>,
   );
+  // #1964 r1: the client rides along so tests can simulate the
+  // board.event/window-focus refetch trigger (invalidateQueries
+  // ["board"]) — the cross-context update path.
+  return { ...utils, queryClient: qc };
 }
 
 /** Builds the board ApiClientError shape (404+suggestions / 409+code). */

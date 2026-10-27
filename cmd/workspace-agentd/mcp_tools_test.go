@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -2697,9 +2698,14 @@ func newAutomationAPI(t *testing.T, status int, reply string) (*httptest.Server,
 	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		rec.method, rec.path, rec.query, rec.auth = r.Method, r.URL.Path, r.URL.RawQuery, r.Header.Get("Authorization")
 		if r.Body != nil && r.ContentLength > 0 {
-			buf := make([]byte, r.ContentLength)
-			_, _ = r.Body.Read(buf)
-			rec.body = string(buf)
+			// Read the body FULLY: a single Read into a ContentLength
+			// buffer can return short (chunked transfers), leaving NUL
+			// padding that breaks later JSON assertions on large bodies
+			// (the >4KB file-backed payloads, design 0070).
+			buf, rerr := io.ReadAll(r.Body)
+			if rerr == nil {
+				rec.body = string(buf)
+			}
 		}
 		w.WriteHeader(status)
 		_, _ = w.Write([]byte(reply))

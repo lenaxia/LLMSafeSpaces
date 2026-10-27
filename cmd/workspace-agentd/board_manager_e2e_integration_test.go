@@ -388,7 +388,7 @@ func TestIntegrationBoardManagerE2E(t *testing.T) {
 	resp, err = dispatchBoardManagerTool(ctx, client, e2eMCPPassword, "board_create_epic", map[string]any{
 		"lsp_injected_session": mgrSession,
 		"projectId":            proj.ShortID,
-		"title":                "E2E Epic",
+		"bodyFile":             e2ePayloadFile(t, `{"title":"E2E Epic"}`),
 	}, "sa-token", wsPod)
 	require.NoError(t, err)
 	require.Equal(t, http.StatusCreated, resp.Status)
@@ -401,9 +401,8 @@ func TestIntegrationBoardManagerE2E(t *testing.T) {
 	resp, err = dispatchBoardManagerTool(ctx, client, e2eMCPPassword, "board_create_task", map[string]any{
 		"lsp_injected_session": mgrSession,
 		"epicId":               epic.ShortID,
-		"title":                "E2E Task",
-		"description":          "charter",
-		"acceptanceCriteria":   []any{map[string]any{"text": "e2e criterion met", "met": false}},
+		"bodyFile": e2ePayloadFile(t, `{"title":"E2E Task","description":"charter",`+
+			`"acceptanceCriteria":[{"text":"e2e criterion met","met":false}]}`),
 	}, "sa-token", wsPod)
 	require.NoError(t, err)
 	require.Equal(t, http.StatusCreated, resp.Status)
@@ -428,7 +427,7 @@ func TestIntegrationBoardManagerE2E(t *testing.T) {
 	before := boardE2EEventCount(t, ctx, pool)
 	_, err = dispatchBoardManagerTool(ctx, client, e2eMCPPassword, "board_create_epic", map[string]any{
 		"projectId": proj.ShortID,
-		"title":     "x",
+		"bodyFile":  e2ePayloadFile(t, `{"title":"x"}`),
 	}, "sa-token", wsPod)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "identity")
@@ -450,9 +449,8 @@ func TestIntegrationBoardManagerE2E(t *testing.T) {
 	_, err = dispatchBoardManagerTool(ctx, client, e2eMCPPassword, "board_create_task", map[string]any{
 		"lsp_injected_session": claim.Assignee,
 		"epicId":               epic.ShortID,
-		"title":                "worker power grab",
-		"description":          "seeded charter",
-		"acceptanceCriteria":   []any{map[string]any{"text": "c", "met": false}},
+		"bodyFile": e2ePayloadFile(t, `{"title":"worker power grab","description":"seeded charter",`+
+			`"acceptanceCriteria":[{"text":"c","met":false}]}`),
 	}, "sa-token", wsPod)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "403")
@@ -466,7 +464,7 @@ func TestIntegrationBoardManagerE2E(t *testing.T) {
 	_, err = dispatchBoardManagerTool(ctx, client, e2eMCPPassword, "board_create_epic", map[string]any{
 		"lsp_injected_session": mgrSession,
 		"projectId":            foreign.ShortID,
-		"title":                "nope",
+		"bodyFile":             e2ePayloadFile(t, `{"title":"nope"}`),
 	}, "sa-token", wsPod)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "403")
@@ -527,15 +525,14 @@ func e2eFileBackedCharterSections(t *testing.T, ctx context.Context, client *ope
 	}
 	content := charter.String()
 	require.Greater(t, len(content), 4096)
-	path := filepath.Join(t.TempDir(), "charter.md")
-	require.NoError(t, os.WriteFile(path, []byte(content), 0o600))
+	charterJSON, err := json.Marshal(content)
+	require.NoError(t, err)
 
 	resp, err := dispatchBoardManagerTool(ctx, client, e2eMCPPassword, "board_create_task", map[string]any{
 		"lsp_injected_session": mgrSession,
 		"epicId":               epic.ShortID,
-		"title":                "file-backed charter",
-		"description_file":     path,
-		"acceptanceCriteria":   []any{map[string]any{"text": "byte-identical storage", "met": false}},
+		"bodyFile": e2ePayloadFile(t, `{"title":"file-backed charter","description":`+string(charterJSON)+`,`+
+			`"acceptanceCriteria":[{"text":"byte-identical storage","met":false}]}`),
 	}, "sa-token", wsPod)
 	require.NoError(t, err)
 	require.Equal(t, http.StatusCreated, resp.Status)
@@ -549,29 +546,43 @@ func e2eFileBackedCharterSections(t *testing.T, ctx context.Context, client *ope
 		`SELECT description FROM tasks WHERE id=$1`, fileTask.ID).Scan(&storedDesc))
 	require.Equal(t, content, storedDesc, "file bytes → wire → PG row, byte-identical")
 
-	// --- H0 (#1849, the noted full-chain arm): a seedless create through
-	// the real dispatch chain refuses with the seed-contract class —
-	// the shape the model actually experiences.
+	// --- H0 (#1849 + design 0070): a seedless create through the real
+	// dispatch chain now refuses LOCALLY at the CRUD-time validation
+	// gate — the same findings board_validate_file returns; nothing
+	// reaches the engine.
 	_, err = dispatchBoardManagerTool(ctx, client, e2eMCPPassword, "board_create_task", map[string]any{
 		"lsp_injected_session": mgrSession,
 		"epicId":               epic.ShortID,
-		"title":                "seedless",
+		"bodyFile":             e2ePayloadFile(t, `{"title":"seedless"}`),
 	}, "sa-token", wsPod)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "400")
-	assert.Contains(t, err.Error(), "description is required at create")
+	assert.Contains(t, err.Error(), "local validation")
+	assert.Contains(t, err.Error(), "description")
+	assert.Contains(t, err.Error(), `"rule":"required"`)
 
 	// --- F: composed corruption refusal — nothing stored ------------------------
 	// --- H: composed corruption refusal — nothing stored ------------------------
 	before := boardE2EEventCount(t, ctx, pool)
+	corruptJSON, err := json.Marshal("prefix " + strings.Repeat("Retry the loop step and continue. ", 50) + " suffix")
+	require.NoError(t, err)
 	_, err = dispatchBoardManagerTool(ctx, client, e2eMCPPassword, "board_create_task", map[string]any{
 		"lsp_injected_session": mgrSession,
 		"epicId":               epic.ShortID,
-		"title":                "corrupted",
-		"description":          "prefix " + strings.Repeat("Retry the loop step and continue. ", 50) + " suffix",
+		"bodyFile": e2ePayloadFile(t, `{"title":"corrupted","description":`+string(corruptJSON)+`,`+
+			`"acceptanceCriteria":[{"text":"c","met":false}]}`),
 	}, "sa-token", wsPod)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "400")
 	assert.Contains(t, err.Error(), board.GuardTextRejected)
 	assert.Equal(t, before, boardE2EEventCount(t, ctx, pool), "a refused write stores nothing")
+}
+
+// e2ePayloadFile writes one JSON payload file (the file-crud cutover's
+// fixture helper — every payload-bearing dispatch rides a file now,
+// design 0070).
+func e2ePayloadFile(t *testing.T, payload string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "payload.json")
+	require.NoError(t, os.WriteFile(path, []byte(payload), 0o600))
+	return path
 }

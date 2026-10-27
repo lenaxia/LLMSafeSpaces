@@ -1506,3 +1506,74 @@ func (s *StoreIntegrationSuite) TestSessionOrigins_KindDiscriminatesCarrierMarks
 	assert.NotContains(s.T(), marks, "ses_int_carrier",
 		"the conflict leg must update kind — a stale carrier verdict must not survive a re-mark")
 }
+
+// TestListWorkerSessions_IsWorkerSession (#1966): the retention
+// projection lists ONLY worker-signaled sessions (origin-class worker
+// or parented) with the raw signals + activity timestamps, and the
+// single-row re-verification agrees row-by-row. A user session
+// (neither signal) is invisible to both — the deleter's refusal floor.
+func (s *StoreIntegrationSuite) TestListWorkerSessions_IsWorkerSession() {
+	ctx := context.Background()
+	wsID := s.newWorkspaceID()
+	now := time.Now().UTC()
+
+	seed := func(id, parent string, lastMsg *time.Time) {
+		_, err := s.pool.Exec(ctx, `
+			INSERT INTO session_index (workspace_id, session_id, parent_session_id, last_message_at, created_at, updated_at)
+			VALUES ($1, $2, NULLIF($3, ''), $4, now(), now())`,
+			wsID, id, parent, lastMsg)
+		s.Require().NoError(err)
+	}
+	old := now.Add(-48 * time.Hour)
+	seed("ses_ret_worker", "", &old)
+	seed("ses_ret_sub", "ses_ret_parent", &old)
+	seed("ses_ret_user", "", &old)
+	seed("ses_ret_dead", "", &old)     // death-marked: invisible even if signaled
+	seed("ses_ret_archived", "", &old) // user-archived worker: shielded (review r2)
+	_, err := s.pool.Exec(ctx, `UPDATE session_index SET deleted_at = now() WHERE workspace_id = $1 AND session_id = 'ses_ret_dead'`, wsID)
+	s.Require().NoError(err)
+	_, err = s.pool.Exec(ctx, `UPDATE session_index SET archived = true WHERE workspace_id = $1 AND session_id = 'ses_ret_archived'`, wsID)
+	s.Require().NoError(err)
+
+	s.Require().NoError(s.store.RecordSessionOrigin(ctx, &SessionOriginRow{
+		SessionID: "ses_ret_worker", WorkspaceID: wsID,
+		Origin: "worker", Kind: "session", Title: "tsk-x", CreatedAt: now,
+	}))
+	s.Require().NoError(s.store.RecordSessionOrigin(ctx, &SessionOriginRow{
+		SessionID: "ses_ret_dead", WorkspaceID: wsID,
+		Origin: "worker", Kind: "session", Title: "tsk-dead", CreatedAt: now,
+	}))
+	s.Require().NoError(s.store.RecordSessionOrigin(ctx, &SessionOriginRow{
+		SessionID: "ses_ret_archived", WorkspaceID: wsID,
+		Origin: "worker", Kind: "session", Title: "tsk-arch", CreatedAt: now,
+	}))
+
+	rows, err := s.store.ListWorkerSessions(ctx, wsID)
+	require.NoError(s.T(), err)
+	got := map[string]WorkerSessionRow{}
+	for _, r := range rows {
+		got[r.SessionID] = r
+	}
+	assert.Len(s.T(), rows, 2,
+		"only the origin-marked worker and the parented subagent list; the user, death-marked, and ARCHIVED rows are invisible")
+	for _, r := range rows {
+		assert.False(s.T(), r.Archived)
+	}
+	assert.True(s.T(), got["ses_ret_worker"].OriginWorker)
+	assert.False(s.T(), got["ses_ret_worker"].Parented)
+	assert.True(s.T(), got["ses_ret_sub"].Parented)
+	assert.False(s.T(), got["ses_ret_sub"].OriginWorker)
+	assert.False(s.T(), got["ses_ret_worker"].LastActivity.IsZero(),
+		"activity timestamp must project for eviction ordering")
+
+	for _, id := range []string{"ses_ret_worker", "ses_ret_sub"} {
+		ok, err := s.store.IsWorkerSession(ctx, wsID, id)
+		require.NoError(s.T(), err)
+		assert.True(s.T(), ok, "re-verification must agree for %s", id)
+	}
+	for _, id := range []string{"ses_ret_user", "ses_ret_dead", "ses_ret_archived", "ses_ret_absent"} {
+		ok, err := s.store.IsWorkerSession(ctx, wsID, id)
+		require.NoError(s.T(), err)
+		assert.False(s.T(), ok, "re-verification must refuse %s", id)
+	}
+}

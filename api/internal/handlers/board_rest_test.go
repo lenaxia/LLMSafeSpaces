@@ -37,6 +37,7 @@ type fakeBoardManager struct {
 	lastSearchQuery   string
 	lastSearchFilters board.SearchFilters
 	lastHealthUser    string
+	lastPlan          board.PlanInput
 
 	projects     []board.Project
 	epics        []board.Epic
@@ -390,7 +391,7 @@ func (f *fakeBoardManager) ResumeTask(_ context.Context, actor board.Actor, _, _
 func (f *fakeBoardManager) ImportPlan(_ context.Context, actor board.Actor, _, _ string, in board.PlanInput, dryRun bool, requestID string) (*board.ImportResult, error) {
 	f.call("import_plan")
 	f.lastActor, f.lastRequestID = actor, requestID
-	_ = in
+	f.lastPlan = in
 	if err := f.errFor["import_plan"]; err != nil {
 		return nil, err
 	}
@@ -749,6 +750,54 @@ func TestBoardREST_RequestIDThreadsThrough(t *testing.T) {
 		`{"toStage":"in_review","requestId":"11111111-1111-1111-1111-111111111111"}`)
 	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
 	assert.Equal(t, "11111111-1111-1111-1111-111111111111", svc.lastRequestID)
+}
+
+// TestBoardREST_ImportPlanBindsUnifiedPlanDoc (design 0070 §1a/§3,
+// review round 1's missing-case note): the REST handler binds BOTH
+// epic arms of the unified plan document — the epic OBJECT (create)
+// and epicId (attach) — alongside the legacy epicTitle spelling, and
+// the typed board.PlanInput carries them to the service intact.
+func TestBoardREST_ImportPlanBindsUnifiedPlanDoc(t *testing.T) {
+	t.Run("epic object arm", func(t *testing.T) {
+		svc := newFakeBoardManager()
+		r := newBoardRESTRouter(t, svc)
+		w := doBoardREST(t, r, http.MethodPost, "/api/v1/me/projects/prj-aaaa1111/import-plan",
+			`{"epic":{"title":"E","outcome":"o","tags":["x"]},`+
+				`"tasks":[{"key":"k","title":"T","description":"d","acceptanceCriteria":[{"text":"c"}]}],`+
+				`"requestId":"plan-epic-obj"}`)
+		require.Equal(t, http.StatusOK, w.Code, w.Body.String())
+		require.NotNil(t, svc.lastPlan.Epic, "the epic object binds")
+		assert.Equal(t, "E", svc.lastPlan.Epic.Title)
+		assert.Equal(t, "o", svc.lastPlan.Epic.Outcome)
+		assert.Equal(t, []string{"x"}, svc.lastPlan.Epic.Tags)
+		require.Len(t, svc.lastPlan.Tasks, 1)
+		assert.Equal(t, "k", svc.lastPlan.Tasks[0].Key)
+		assert.Empty(t, svc.lastPlan.EpicID, "the attach arm stays unset")
+		assert.Equal(t, "plan-epic-obj", svc.lastRequestID)
+	})
+
+	t.Run("epicId arm", func(t *testing.T) {
+		svc := newFakeBoardManager()
+		r := newBoardRESTRouter(t, svc)
+		w := doBoardREST(t, r, http.MethodPost, "/api/v1/me/projects/prj-aaaa1111/import-plan",
+			`{"epicId":"epc-bbbb2222",`+
+				`"tasks":[{"key":"k","title":"T","description":"d","acceptanceCriteria":[{"text":"c"}]}]}`)
+		require.Equal(t, http.StatusOK, w.Code, w.Body.String())
+		assert.Equal(t, "epc-bbbb2222", svc.lastPlan.EpicID, "the attach arm binds")
+		assert.Nil(t, svc.lastPlan.Epic, "the create arm stays unset")
+	})
+
+	t.Run("legacy epicTitle arm still binds", func(t *testing.T) {
+		svc := newFakeBoardManager()
+		r := newBoardRESTRouter(t, svc)
+		w := doBoardREST(t, r, http.MethodPost, "/api/v1/me/projects/prj-aaaa1111/import-plan",
+			`{"epicTitle":"Legacy","outcome":"o",`+
+				`"tasks":[{"key":"k","title":"T","description":"d","acceptanceCriteria":[{"text":"c"}]}]}`)
+		require.Equal(t, http.StatusOK, w.Code, w.Body.String())
+		assert.Equal(t, "Legacy", svc.lastPlan.EpicTitle)
+		assert.Nil(t, svc.lastPlan.Epic)
+		assert.Empty(t, svc.lastPlan.EpicID)
+	})
 }
 
 // TestBoardREST_ReadsAreOwnerScoped: the read perimeter never discloses

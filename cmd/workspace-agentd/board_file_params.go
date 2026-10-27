@@ -3,145 +3,243 @@
 
 package main
 
-// board_file_params.go — #1837 P1a: file-backed long fields on the
-// agent manager surface. The emission-corruption class (#1832 dogfood)
-// lives in >2KB INLINE string arguments; a workspace file path is a
-// short argument whose CONTENT rides to the platform verbatim. The
-// external MCP and REST surfaces deliberately do NOT get *_file params
-// (the #1837 review ruling: only the in-workspace agent can resolve a
-// workspace path — the loadImages precedent).
+// board_file_params.go — the file-backed board payload discipline.
+// #1837 P1a established the read half (long STRING fields via file
+// params, the loadImages discipline); the file-crud cutover  (design
+// 0070) extends it to the whole structured payload: on the five
+// payload-bearing manager tools (create/update task+epic,
+// import_plan) the payload file (bodyFile/patchFile/planFile) is the
+// ONLY payload path — inline payload arguments are refused at
+// dispatch and removed from the tool schemas (the unsafe shape is
+// unexpressible, not merely discouraged). The external MCP and REST
+// surfaces stay file-free and inline (the #1837 ruling: only the
+// in-workspace agent can resolve a workspace path — and their inline
+// surface is programmatic, not model-emitted).
 //
 // The file-read discipline is loadImages' (PR #1364 review): regular
 // files only (O_NONBLOCK open defeats the FIFO wedge), stat AND read
-// caps (TOCTOU), plus UTF-8 validation — the wire is JSON and Postgres
-// text; non-UTF-8 could not round-trip byte-identically, so it is
-// refused loudly rather than silently replaced.
+// caps (TOCTOU), plus UTF-8 validation — the wire is JSON and
+// Postgres text; non-UTF-8 could not round-trip byte-identically, so
+// it is refused loudly rather than silently replaced.
+//
+// The #1837 single-field params (descriptionFile/outcomeFile and
+// their resolver) are DELETED by the same cutover: a body/patch file
+// already carries the long content they existed to carry.
 
 import (
+	"bytes"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
 	"syscall"
 	"unicode/utf8"
+
+	"github.com/lenaxia/llmsafespaces/pkg/agentd"
 )
 
-// boardFileFieldMaxBytes caps one file-backed field's content. It
-// matches the service's largest text cap (MaxDescriptionBytes, 128
-// KiB): the platform-side cap stays the single authority.
-const boardFileFieldMaxBytes = 128 << 10
+// boardPayloadFileMaxBytes caps one payload file. 256 KiB total
+// payload: the platform's largest single text cap is
+// MaxDescriptionBytes (128 KiB); the doubling is documented headroom
+// for a whole structured payload (title + tags + criteria +
+// description) — each FIELD's own cap stays platform-authoritative.
+const boardPayloadFileMaxBytes = 256 << 10
 
-// resolveBoardFileArgs resolves the <field>File param into the inline
-// <field> string on args, consuming the file spelling (no file
-// spelling ever reaches the wire — the platform API has no such key).
-// targetField is the ONE field this tool admits (descriptionFile on
-// task create/update; outcomeFile on epic create/update); an empty
-// targetField admits NO file param at all. Any file-suffixed key for
-// another field — or on a no-file tool — is a caller mistake, refused
-// loudly; never silently dropped onto the wire. #1849 casing pass:
-// the camelCase descriptionFile/outcomeFile spellings are canonical;
-// the legacy snake_case *_file spellings still resolve (one-release
-// alias) but are never advertised.
-func resolveBoardFileArgs(args map[string]any, targetField string) error {
-	// canonical (camelCase) and legacy (snake_case) spellings of the
-	// ONE admitted field; both are consumed so neither ever reaches
-	// the wire.
-	canonical := targetField + "File"
-	legacy := targetField + "_file"
-	if targetField == "" {
-		canonical, legacy = "\x00", "\x00" // no admitted spelling: every file key is foreign
+// boardFileWorkspaceRoot anchors RELATIVE file-param paths. Live
+// failure class (the cwd bug): a relative path such as
+// "reports/charters/p1a.md" opened against agentd's PROCESS cwd —
+// agentd runs from its own bin dir, so the workspace-relative path
+// never resolved. Relative paths now resolve against the workspace
+// root (the PVC mount); absolute paths pass through. A var (not the
+// const) so tests can pin the anchoring without touching /workspace.
+var boardFileWorkspaceRoot = agentd.WorkspacePath
+
+// boardFileNotFoundHint is the missing-file error's second half: the
+// auto-cleanup hook deletes consumed payload files after a successful
+// CRUD call, so a RETRY of an already-landed call finds no file. The
+// hint names the cause and both exits (re-write; confirm the landing
+// before re-submitting). "payloads are file-only" closes the door on
+// the inline fallback the cutover removed.
+const boardFileNotFoundHint = "file not found — files are deleted after a successful CRUD call; " +
+	"if you already submitted it, re-write it; payloads are file-only " +
+	"(if this was a retry, check board_list / board_read to confirm the create landed before re-submitting)"
+
+// anchorBoardFilePath resolves one file-param path against the
+// workspace root: absolute paths pass through, relative paths join
+// the PVC mount (never the process cwd).
+func anchorBoardFilePath(path string) string {
+	if filepath.IsAbs(path) {
+		return path
 	}
-	for k := range args {
-		// A file-suffixed key for another field is a caller mistake,
-		// refused loudly — never silently dropped onto the wire (a null
-		// value included: "I mentioned the param" is still a mention).
-		if (strings.HasSuffix(k, "_file") || strings.HasSuffix(k, "File")) && k != canonical && k != legacy {
-			return fmt.Errorf("%s is not admitted here (this tool accepts %s) — refusing rather than silently dropping it", k, canonical)
-		}
-	}
-	// Both spellings present is ambiguous precedence — refused loudly,
-	// the same contract as the inline-vs-file refusal below.
-	_, hasCanonical := args[canonical]
-	_, hasLegacy := args[legacy]
-	if hasCanonical && hasLegacy {
-		return fmt.Errorf("%s and %s are the same param in two spellings — send exactly one", canonical, legacy)
-	}
-	raw, present := args[canonical]
-	if !present {
-		raw, present = args[legacy] // legacy snake_case alias
-	}
-	if !present {
-		return nil
-	}
-	if raw == nil {
-		// A null mention is still a mention of the param — consume it
-		// (BOTH spellings) so no file spelling ever reaches the wire.
-		delete(args, canonical)
-		delete(args, legacy)
-		return nil
-	}
-	path, ok := raw.(string)
-	if !ok || strings.TrimSpace(path) == "" {
-		return fmt.Errorf("%s must be a non-empty workspace file path", canonical)
-	}
-	// Ambiguity is refused: an inline field alongside its file param
-	// would silently resolve to whichever wins — exactly the silent-
-	// corruption class this param exists to kill.
-	if inline, ok := args[targetField]; ok {
-		switch v := inline.(type) {
-		case string:
-			if v != "" {
-				return fmt.Errorf("%s and %s are mutually exclusive — send one or the other", targetField, canonical)
-			}
-		case nil:
-			// absent/JSON-null: the file wins
-		default:
-			return fmt.Errorf("%s and %s are mutually exclusive (the inline %s is neither string nor null)", targetField, canonical, targetField)
-		}
-	}
-	content, err := readBoardFileField(path)
-	if err != nil {
-		return fmt.Errorf("%s: %w", canonical, err)
-	}
-	args[targetField] = content
-	// Consume BOTH spellings: the resolved one and its alias — no file
-	// spelling ever reaches the wire (the platform API has no such
-	// key, and a stale legacy key would ride verbatim).
-	delete(args, canonical)
-	delete(args, legacy)
-	return nil
+	return filepath.Join(boardFileWorkspaceRoot, path)
 }
 
-// readBoardFileField reads one workspace file under the loadImages
+// isBoardFileParamKey reports whether an argument key is a
+// file-param spelling (camelCase "…File" or legacy snake "…_file")
+// — the stray-key guard's predicate. A file spelling on a tool that
+// does not admit it is a caller mistake, refused loudly; never
+// silently dropped onto the wire (a null value included: "I mentioned
+// the param" is still a mention).
+func isBoardFileParamKey(k string) bool {
+	return strings.HasSuffix(k, "File") || strings.HasSuffix(k, "_file")
+}
+
+// boardReadFileField reads one workspace file under the loadImages
 // discipline: O_NONBLOCK open (FIFO wedge), regular-file gate, stat
-// AND read caps, UTF-8 validation.
-func readBoardFileField(path string) (string, error) {
-	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NONBLOCK, 0) //nolint:gosec // agent-supplied workspace path, gated below
+// AND read caps (TOCTOU), UTF-8 validation. key names the file param
+// in error prose; the return carries the CONSUMED (anchored) path for
+// the cleanup hook — what was read is what gets deleted.
+func boardReadFileField(key, path string, maxBytes int64) (string, string, error) {
+	anchored := anchorBoardFilePath(path)
+	f, err := os.OpenFile(anchored, os.O_RDONLY|syscall.O_NONBLOCK, 0) //nolint:gosec // agent-supplied workspace path, gated below
 	if err != nil {
-		return "", fmt.Errorf("unreadable: %w", err)
+		return "", "", boardFileReadError(key, err)
 	}
 	defer func() { _ = f.Close() }()
 	info, err := f.Stat()
 	if err != nil {
-		return "", fmt.Errorf("unreadable: %w", err)
+		return "", "", fmt.Errorf("%s: unreadable: %w", key, err)
 	}
 	if !info.Mode().IsRegular() {
-		return "", fmt.Errorf("%s is not a regular file (FIFOs, devices, and sockets are refused)", filepath.Base(path))
+		return "", "", fmt.Errorf("%s: %s is not a regular file (FIFOs, devices, and sockets are refused)", key, filepath.Base(anchored))
 	}
-	if info.Size() > boardFileFieldMaxBytes {
-		return "", fmt.Errorf("exceeds the %d KiB cap", boardFileFieldMaxBytes>>10)
+	if info.Size() > maxBytes {
+		return "", "", fmt.Errorf("%s: exceeds the %d KiB cap", key, maxBytes>>10)
 	}
 	// Cap the READ, not just the stat: stat-then-read is a TOCTOU.
-	data, err := io.ReadAll(io.LimitReader(f, boardFileFieldMaxBytes+1))
+	data, err := io.ReadAll(io.LimitReader(f, maxBytes+1))
 	if err != nil {
-		return "", fmt.Errorf("unreadable: %w", err)
+		return "", "", fmt.Errorf("%s: unreadable: %w", key, err)
 	}
-	if len(data) > boardFileFieldMaxBytes {
-		return "", fmt.Errorf("exceeds the %d KiB cap", boardFileFieldMaxBytes>>10)
+	if int64(len(data)) > maxBytes {
+		return "", "", fmt.Errorf("%s: exceeds the %d KiB cap", key, maxBytes>>10)
 	}
 	if !utf8.Valid(data) {
-		return "", fmt.Errorf("content is not valid UTF-8 — byte-identical storage is impossible (binary files are refused)")
+		return "", "", fmt.Errorf("%s: content is not valid UTF-8 — byte-identical storage is impossible (binary files are refused)", key)
 	}
-	return string(data), nil
+	return string(data), anchored, nil
+}
+
+// boardFileReadError renders an open failure, special-casing the
+// not-found class with the cleanup hint (a retry after a successful
+// call finds the file deleted — the message must say so instead of a
+// bare ENOENT).
+func boardFileReadError(key string, err error) error {
+	if errors.Is(err, fs.ErrNotExist) {
+		return fmt.Errorf("%s: %s", key, boardFileNotFoundHint)
+	}
+	return fmt.Errorf("%s: unreadable: %w", key, err)
+}
+
+// decodeBoardPayloadJSON strict-decodes one payload file: a single
+// JSON document (no trailing bytes), duplicate keys refused at EVERY
+// object depth (the emission-corruption class #1832 dogfooded is
+// duplicated argument fragments — silently taking the last duplicate
+// would store a payload the caller never reviewed), and the top level
+// must be a JSON object. Numbers decode as json.Number so merged
+// fields re-marshal byte-identically onto the wire.
+func decodeBoardPayloadJSON(data []byte) (map[string]any, error) {
+	if err := refuseDuplicateJSONKeys(data); err != nil {
+		return nil, err
+	}
+	dec := json.NewDecoder(bytes.NewReader(data))
+	dec.UseNumber()
+	var fields map[string]any
+	if err := dec.Decode(&fields); err != nil {
+		// Only top-level shape errors reach here (syntax and duplicate
+		// keys already died in the walk): a non-object document.
+		return nil, fmt.Errorf("the top level must be a JSON object: %w", err)
+	}
+	if _, err := dec.Token(); err != io.EOF {
+		if err != nil {
+			return nil, fmt.Errorf("trailing bytes after JSON value: %w", err)
+		}
+		return nil, errors.New("trailing bytes after JSON value")
+	}
+	if fields == nil {
+		// JSON null (or an empty document) decodes to a nil map — a
+		// payload file must BE an object.
+		return nil, errors.New("the top level must be a JSON object")
+	}
+	return fields, nil
+}
+
+// refuseDuplicateJSONKeys token-walks one JSON document and refuses
+// duplicate object keys at every depth. encoding/json silently keeps
+// the LAST duplicate; a payload the caller cannot see whole is
+// exactly the silent-corruption class this file exists to kill.
+func refuseDuplicateJSONKeys(data []byte) error {
+	dec := json.NewDecoder(bytes.NewReader(data))
+	var walk func() error
+	walk = func() error {
+		tok, err := dec.Token()
+		if err != nil {
+			return err
+		}
+		delim, ok := tok.(json.Delim)
+		if !ok {
+			return nil // scalar
+		}
+		switch delim {
+		case '{':
+			seen := make(map[string]bool)
+			for dec.More() {
+				keyTok, err := dec.Token()
+				if err != nil {
+					return err
+				}
+				key, _ := keyTok.(string)
+				if seen[key] {
+					return fmt.Errorf("duplicate key %q — the JSON object carries two spellings of one field; emit each field exactly once", key)
+				}
+				seen[key] = true
+				if err := walk(); err != nil {
+					return err
+				}
+			}
+			_, err := dec.Token() // consume the closing brace
+			return err
+		case '[':
+			for dec.More() {
+				if err := walk(); err != nil {
+					return err
+				}
+			}
+			_, err := dec.Token() // consume the closing bracket
+			return err
+		}
+		return nil
+	}
+	if err := walk(); err != nil {
+		return err
+	}
+	// Exactly one document: the walk must land at EOF.
+	if _, err := dec.Token(); err != io.EOF {
+		if err != nil {
+			return fmt.Errorf("trailing bytes after JSON value: %w", err)
+		}
+		return errors.New("trailing bytes after JSON value")
+	}
+	return nil
+}
+
+// resolveBoardPayloadFile reads and strict-decodes one payload file
+// (key names the file param in error prose). It does NOT touch args —
+// the dispatcher owns the admission/required/inline guards and the
+// merge; this returns the parsed fields plus the consumed (anchored)
+// path for the cleanup hook.
+func resolveBoardPayloadFile(key, path string) (map[string]any, string, error) {
+	content, consumed, err := boardReadFileField(key, path, boardPayloadFileMaxBytes)
+	if err != nil {
+		return nil, "", err
+	}
+	fields, err := decodeBoardPayloadJSON([]byte(content))
+	if err != nil {
+		return nil, "", fmt.Errorf("%s: %w", key, err)
+	}
+	return fields, consumed, nil
 }

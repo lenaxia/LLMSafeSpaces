@@ -135,7 +135,7 @@ describe("Sidebar — Force Stop kebab menu item", () => {
     alertSpy.mockRestore();
   });
 
-  it("nested child session Force Stop uses the parent workspace ID", async () => {
+  it("foldered child session Force Stop uses the parent workspace ID (#1966)", async () => {
     (workspacesApi.getSessions as ReturnType<typeof vi.fn>).mockResolvedValue([
       { id: "parent", title: "Parent task", messageCount: 1, status: "idle" },
       { id: "child", title: "Subtask child", parentId: "parent", messageCount: 1, status: "idle" },
@@ -145,7 +145,8 @@ describe("Sidebar — Force Stop kebab menu item", () => {
 
     await waitFor(() => expect(screen.getByText("Parent task")).toBeInTheDocument());
 
-    fireEvent.click(screen.getByLabelText("Expand subtasks"));
+    // #1966: the subtask lives in the Workers folder.
+    fireEvent.click(screen.getByLabelText("Expand worker sessions"));
     expect(screen.getByText("Subtask child")).toBeInTheDocument();
 
     // [0] = workspace kebab, [1] = parent session kebab, [2] = child session kebab.

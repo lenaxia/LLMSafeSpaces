@@ -319,6 +319,8 @@ type Config struct {
 	//   LLMSAFESPACES_BOARD_GLOBALCLAIMCAP      (default 64 — #1747 per-instance concurrent-claim cap)
 	//   LLMSAFESPACES_BOARD_MAXEDGESPERNODE     (default 16 — #1747 DAG blast-radius bound)
 	//   LLMSAFESPACES_BOARD_MAXNODESPEREPIC     (default 64 — #1747 DAG blast-radius bound)
+	//   LLMSAFESPACES_BOARD_WORKERSESSIONCAP    (default 50 — #1966 worker-session hard cap per workspace)
+	//   LLMSAFESPACES_BOARD_WORKERSESSIONGRACESECONDS (default 3600 — #1966 retention grace floor)
 	Board struct {
 		Enabled                bool `mapstructure:"enabled"`
 		AttemptsCap            int  `mapstructure:"attemptsCap"`
@@ -331,6 +333,13 @@ type Config struct {
 		GlobalClaimCap         int  `mapstructure:"globalClaimCap"`
 		MaxEdgesPerNode        int  `mapstructure:"maxEdgesPerNode"`
 		MaxNodesPerEpic        int  `mapstructure:"maxNodesPerEpic"`
+		// #1966 worker retention: hard cap on worker sessions per
+		// workspace (oldest hard-deleted past it) and the grace floor
+		// (never delete a worker session updated more recently than
+		// this). <=0 falls back to the ruling defaults (50 / 3600s) at
+		// the retainer.
+		WorkerSessionCap       int `mapstructure:"workerSessionCap"`
+		WorkerSessionGraceSecs int `mapstructure:"workerSessionGraceSeconds"`
 	} `mapstructure:"board"`
 
 	// ImageFactory holds the image-factory config (design/0046).
@@ -921,6 +930,12 @@ func applyBoardEnvOverrides(config *Config) {
 	}
 	if n, ok := envInt("LLMSAFESPACES_BOARD_MAXNODESPEREPIC"); ok {
 		config.Board.MaxNodesPerEpic = n
+	}
+	if n, ok := envInt("LLMSAFESPACES_BOARD_WORKERSESSIONCAP"); ok {
+		config.Board.WorkerSessionCap = n
+	}
+	if n, ok := envInt("LLMSAFESPACES_BOARD_WORKERSESSIONGRACESECONDS"); ok {
+		config.Board.WorkerSessionGraceSecs = n
 	}
 }
 

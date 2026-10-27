@@ -284,6 +284,118 @@ func boardInjectCleanupWarning(res *opencode.AutomationResponse, path string, rm
 }
 
 // dispatchBoardManagerTool routes one manager tool to its seam call.
+func dispatchBoardManagerTool(ctx context.Context, client *opencode.Client, password, name string, body map[string]any, saToken, workspaceID string) (*opencode.AutomationResponse, error) {
+	sessionID, err := boardManagerSession(ctx, password, name, body)
+	if err != nil {
+		return nil, err
+	}
+	return boardFileSpec{}
+}
+
+// admittedFileKeys prose names a tool's admitted file params for the
+// stray-key refusal (never a bare "no" — the caller learns the shape).
+func (s boardFileSpec) admittedFileKeys() string {
+	if s.fileKey == "" {
+		return "no file params"
+	}
+	return s.fileKey
+}
+
+// resolveBoardToolFileArgs enforces one manager tool's payload-file
+// contract on args and merges the file's fields in for the verbatim
+// wire body:
+//
+//   - stray file keys refused on EVERY tool (a *File/*_file spelling
+//     the tool does not admit is a caller mistake — refused loudly,
+//     never silently dropped onto the wire);
+//   - on the five payload-bearing tools the payload file is REQUIRED
+//     (absence → the write→validate→submit workflow hint) and inline
+//     PAYLOAD keys are refused (routing + control-plane + identity
+//     keys are the inline vocabulary);
+//   - the payload file's JSON is strict-decoded (single document,
+//     duplicate keys refused, object top level), then runs THE SAME
+//     validator as board_validate_file — any severity=error finding
+//     refuses the wire call locally, embedding the identical report
+//     (nested file keys, routing/control keys in the file, unknown
+//     fields, shape and cap violations are the schema's findings).
+//
+// The consumed (anchored) path returns for the cleanup hook; "" when
+// no file was consumed.
+func resolveBoardToolFileArgs(name string, args map[string]any) (string, error) {
+	spec := boardToolFileSpec(name)
+	// Deterministic refusal order: sorted keys, never map order.
+	for _, k := range slices.Sorted(maps.Keys(args)) {
+		if isBoardFileParamKey(k) && k != spec.fileKey {
+			return "", fmt.Errorf("%s is not admitted here (this tool accepts %s) — refusing rather than silently dropping it", k, spec.admittedFileKeys())
+		}
+	}
+	if spec.fileKey == "" {
+		return "", nil // small-scalar tool: no payload file support
+	}
+	// The cutover's core guarantee: payload structure NEVER rides
+	// inline — only routing, control-plane, and identity keys may.
+	for _, k := range slices.Sorted(maps.Keys(args)) {
+		if k == spec.fileKey || slices.Contains(spec.inline, k) || slices.Contains(boardIdentityInlineKeys, k) {
+			continue
+		}
+		return "", fmt.Errorf("%s no longer rides inline — payload fields ride in %s: write the JSON payload to a workspace file (write tool), check it with board_validate_file, then pass its path", k, spec.fileKey)
+	}
+	raw, present := args[spec.fileKey]
+	// The bare criteria check-off is the one inline write that is NOT
+	// payload structure (#1946/#1837 P2b: {index, met} is small,
+	// index-addressed control-plane) — board_update_task admits it
+	// without a patch file; every other call needs the file.
+	controlPlaneOnly := name == "board_update_task" && args["setCriteriaMet"] != nil
+	if !present || raw == nil {
+		if controlPlaneOnly {
+			return "", nil
+		}
+		return "", fmt.Errorf("%s is required — write the JSON payload to a workspace file (write tool), check it with board_validate_file, then pass its path; payload fields no longer ride inline", spec.fileKey)
+	}
+	path, ok := raw.(string)
+	if !ok || strings.TrimSpace(path) == "" {
+		return "", fmt.Errorf("%s must be a non-empty workspace file path", spec.fileKey)
+	}
+	delete(args, spec.fileKey) // consumed: no file spelling ever reaches the wire
+	fields, consumed, err := resolveBoardPayloadFile(spec.fileKey, path)
+	if err != nil {
+		return "", err
+	}
+	// THE CRUD-TIME GATE (second amendment): the same validator
+	// board_validate_file runs, on every payload file, before the wire
+	// call. Error findings refuse locally — the refusal embeds the
+	// identical report the tool would have returned; warnings do not
+	// block. Validate-first is UX, not correctness.
+	report := validateBoardPayload(boardOpForTool(name), fields)
+	if report.hasErrors() {
+		return "", fmt.Errorf("%s failed local validation — fix the payload file and re-submit (board_validate_file with op %q returns the same findings): %s",
+			spec.fileKey, report.Op, boardValidateReportJSON(report))
+	}
+	for k, v := range fields {
+		args[k] = v
+	}
+	return consumed, nil
+}
+
+// boardInjectCleanupWarning folds a failed payload-file deletion into
+// the SUCCEEDED call's result as a "cleanup_warning" field — a delete
+// failure warns, it never fails the call (the CRUD already landed).
+func boardInjectCleanupWarning(res *opencode.AutomationResponse, path string, rmErr error) {
+	warning := fmt.Sprintf("the call succeeded but its payload file could not be deleted: %v — remove %s yourself; the platform write has landed", rmErr, path)
+	var obj map[string]any
+	if err := json.Unmarshal([]byte(res.Body), &obj); err == nil && obj != nil {
+		obj["cleanup_warning"] = warning
+		if b, mErr := json.Marshal(obj); mErr == nil {
+			res.Body = string(b)
+			return
+		}
+	}
+	// Non-object (or empty) platform body: wrap, never drop the warning.
+	out, _ := json.Marshal(map[string]any{"status": res.Status, "body": res.Body, "cleanup_warning": warning})
+	res.Body = string(out)
+}
+
+// dispatchBoardManagerTool routes one manager tool to its seam call.
 // The manager set is open to ANY in-workspace session (the #1747 §5
 // manager grant is repealed, ruling 2026-10-27 /
 // tsk-copper-refectory-generates); the resolved identity is audit

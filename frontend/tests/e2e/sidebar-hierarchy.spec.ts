@@ -1,12 +1,14 @@
 /**
- * E2E test for sidebar hierarchy: subagent (subtask) sessions render
- * nested under their parent, expand/collapse works, and orphaned sessions
- * appear in the synthetic group.
+ * E2E test for the sidebar session list, post-#1966: subagent (subtask)
+ * sessions no longer nest under their parent — they live in the
+ * collapsed Workers folder alongside board/engine-spawned workers
+ * (origin-class 'worker'), keeping the main list user-facing. The
+ * synthetic 'Orphaned subtasks' group is gone (orphaned subagents row
+ * under Workers too).
  *
- * This is the user-facing scenario for the parent_session_id migration
- * (worklog 0123). Without this fix, subagent sessions appear as flat
- * top-level entries and the user can't tell which were spawned by which
- * `task` invocation.
+ * Historical note: this spec originally pinned the parent_session_id
+ * nesting UX (worklog 0123); #1966 superseded it — the folder replaces
+ * the nesting as the answer to subagent clutter.
  */
 import { test, expect } from "@playwright/test";
 import type { Page, Route } from "@playwright/test";
@@ -16,6 +18,7 @@ const WORKSPACE_ID = "ws-hierarchy-e2e";
 const ROOT_SESSION = "ses_root";
 const CHILD_SESSION = "ses_child";
 const ORPHAN_SESSION = "ses_orphan";
+const WORKER_SESSION = "ses_board_worker";
 const API_PREFIX = "**/api/v1";
 
 async function setupAPIMocks(page: Page) {
@@ -41,7 +44,17 @@ async function setupAPIMocks(page: Page) {
         { id: ROOT_SESSION, title: "Main task", messageCount: 5, status: "idle" },
         { id: CHILD_SESSION, title: "Find files (@explore)", parentId: ROOT_SESSION, messageCount: 3, status: "idle" },
         { id: ORPHAN_SESSION, title: "Orphaned task", parentId: "ses_deleted_parent", messageCount: 1, status: "idle" },
+        { id: WORKER_SESSION, title: "lane-1966 charter worker", messageCount: 8, status: "idle" },
       ]),
+    });
+  });
+  // #1966: the origins endpoint carries the worker marks — the board
+  // spawner stamps origin='worker' on every engine spawn.
+  await page.route(`${API_PREFIX}/workspaces/${WORKSPACE_ID}/session-origins`, async (route: Route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ origins: [{ sessionId: WORKER_SESSION, origin: "worker" }] }),
     });
   });
   // Sessions default to empty body for GET history; not relevant to this test.
@@ -57,49 +70,56 @@ async function setupAPIMocks(page: Page) {
   await mockIdleContractStream(page, `${API_PREFIX}/workspaces/${WORKSPACE_ID}/contract-events`, ROOT_SESSION);
 }
 
-test.describe("Sidebar hierarchy", () => {
+test.describe("Sidebar workers folder (#1966)", () => {
   test.beforeEach(async ({ page }) => {
     await setupAPIMocks(page);
   });
 
-  test("subtask child is auto-expanded when navigating to parent; chevron collapses and re-expands it", async ({ page }) => {
+  test("subtasks and workers live in the collapsed Workers folder; the main list stays user-facing", async ({ page }) => {
     await page.goto(`/chat/${WORKSPACE_ID}/${ROOT_SESSION}`);
 
     await expect(page.getByText("Main task")).toBeVisible({ timeout: 10_000 });
-    // autoExpandChildren=true (default): navigating to a parent auto-expands its children.
-    await expect(page.getByText("Find files (@explore)")).toBeVisible();
 
-    // Click the chevron to collapse the subtree.
-    await page.getByLabel("Collapse subtasks").first().click();
+    // The Workers folder renders with a count badge (parented subtask +
+    // orphan + board worker = 3) and is collapsed by default: none of
+    // the worker titles is visible. Explicit timeout: cold-start
+    // (dev-server compile) can exceed the 5s default on the first run.
+    const folder = page.getByTestId("workers-group");
+    await expect(folder).toBeVisible({ timeout: 15_000 });
+    await expect(folder.getByText("3")).toBeVisible({ timeout: 15_000 });
     await expect(page.getByText("Find files (@explore)")).not.toBeVisible();
+    await expect(page.getByText("lane-1966 charter worker")).not.toBeVisible();
+    await expect(page.getByText("Orphaned task")).not.toBeVisible();
 
-    // Click again to expand.
-    await page.getByLabel("Expand subtasks").first().click();
+    // One click expands the folder; every worker rows inside.
+    await page.getByLabel("Expand worker sessions").click();
     await expect(page.getByText("Find files (@explore)")).toBeVisible();
+    await expect(page.getByText("lane-1966 charter worker")).toBeVisible();
+    await expect(page.getByText("Orphaned task")).toBeVisible();
+
+    // Collapsing hides them again.
+    await page.getByLabel("Collapse worker sessions").click();
+    await expect(page.getByText("Find files (@explore)")).not.toBeVisible();
   });
 
-  test("navigating directly to a subtask auto-expands its parent", async ({ page }) => {
+  test("navigating directly to a foldered session auto-expands the Workers folder", async ({ page }) => {
     await page.goto(`/chat/${WORKSPACE_ID}/${CHILD_SESSION}`);
 
     await expect(page.getByText("Main task")).toBeVisible({ timeout: 10_000 });
-    // Without auto-expand the user couldn't see where they are in the
-    // tree. The parent must be expanded so the child is visible.
+    // The active session must be visible — the folder auto-expands for
+    // it (the tree's auto-expand-the-active-chain precedent).
     await expect(page.getByText("Find files (@explore)")).toBeVisible();
   });
 
-  test("orphaned subtasks appear in the 'Orphaned subtasks' group", async ({ page }) => {
+  test("the synthetic 'Orphaned subtasks' group no longer renders", async ({ page }) => {
     await page.goto(`/chat/${WORKSPACE_ID}/${ROOT_SESSION}`);
 
-    await expect(page.getByText("Orphaned subtasks")).toBeVisible({ timeout: 10_000 });
-    // Group is collapsed; orphan is hidden.
-    await expect(page.getByText("Orphaned task")).not.toBeVisible();
-
-    await page.getByLabel("Expand orphaned subtasks").click();
-    await expect(page.getByText("Orphaned task")).toBeVisible();
+    await expect(page.getByText("Main task")).toBeVisible({ timeout: 10_000 });
+    await expect(page.getByText("Orphaned subtasks")).not.toBeVisible();
   });
 
-  test("orphans group is hidden when there are no orphans", async ({ page }) => {
-    // Override the default mock with a list that has no orphans.
+  test("no Workers folder when every session is user-facing", async ({ page }) => {
+    // Override the default mock with a worker-free list.
     await page.route(`${API_PREFIX}/workspaces/${WORKSPACE_ID}/sessions?*`, async (route: Route) => {
       await route.fulfill({
         status: 200,
@@ -113,6 +133,6 @@ test.describe("Sidebar hierarchy", () => {
     await page.goto(`/chat/${WORKSPACE_ID}/${ROOT_SESSION}`);
 
     await expect(page.getByText("Main task")).toBeVisible({ timeout: 10_000 });
-    await expect(page.getByText("Orphaned subtasks")).not.toBeVisible();
+    await expect(page.getByTestId("workers-group")).not.toBeVisible();
   });
 });
