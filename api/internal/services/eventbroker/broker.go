@@ -117,7 +117,13 @@ func (rb *replayBuffer) appendLocked(evt apitypes.WorkspaceSSEEvent) uint64 {
 
 func (rb *replayBuffer) sinceLocked(lastID uint64) ([]ReplayEntry, bool) {
 	if rb.count == 0 {
-		return nil, false
+		// An EMPTY ring with a presented cursor is the client-ahead
+		// window at its narrowest: this replica published nothing for
+		// the user (fresh after a roll, or quiet since), so the cursor
+		// is from an id space this replica never wrote — a gap, never a
+		// silent empty replay. lastID == 0 (first-ever connect) is not
+		// a gap: nothing was missed.
+		return nil, lastID > 0
 	}
 
 	oldestID := rb.nextID - uint64(rb.count) //nolint:gosec // count is always [0, replayBufferSize]

@@ -776,17 +776,31 @@ func (a *Authority) dropSub(sub *subscriber) {
 //     byte-identical); the caller detects it by the returned flag (the
 //     wire-level signal is the SnapshotFrame first frame).
 //
-// A since at or beyond the current seq is served as resumed with an
-// empty replay — the client believes it is fully caught up (or ahead;
-// the fsync'd cursor makes ahead-of-authority cursors impossible from
-// this authority) and simply goes live.
+// Cursor bounds: since == a.seq is the legitimate caught-up resume —
+// empty replay, then live. since > a.seq is ALSO a fallback (the
+// client-ahead guard): a cursor beyond the current seq cannot come from
+// this seq space, and serving it as an empty resume would make the
+// client's discard rule silently drop the whole renumbered stream —
+// the silent-gap class this design exists to close.
 func (a *Authority) StreamSince(ctx context.Context, since uint64) (<-chan *abiv1.StreamFrame, bool, func(), error) {
 	subCtx, cancel := context.WithCancel(context.WithoutCancel(ctx))
 	sub := &subscriber{ch: make(chan *abiv1.StreamFrame, streamBuffer), cancel: cancel}
 
 	a.mu.Lock()
 	low := a.ring.lowWater(a.seq)
-	if since < low {
+	// Client-ahead guard: a cursor BEYOND the authority's current seq
+	// cannot come from this seq space — it means the client's fold was
+	// built against a DIFFERENT authority generation (a lost/reset
+	// cursor file under a stable endpoint, a wiped platform dir). The
+	// durable cursor makes that practically impossible from a healthy
+	// authority, but "practically impossible" is not a code guarantee,
+	// and serving it as an empty resume would make the client's discard
+	// rule silently drop the entire renumbered stream — the exact
+	// silent-gap class design 0069 exists to close (and the L4a P0 fix
+	// closes on the browser leg). Fall back honestly: the snapshot
+	// re-seeds the fold. since == a.seq stays a legitimate caught-up
+	// resume (empty replay, then live).
+	if since < low || since > a.seq {
 		a.replayFallbacks++
 		a.mu.Unlock()
 		cancel()

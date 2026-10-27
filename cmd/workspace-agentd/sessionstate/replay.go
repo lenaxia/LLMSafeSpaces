@@ -59,7 +59,20 @@ type replayRing struct {
 // and lowWater() would otherwise advance past a seq that was never
 // evicted for cause. The empty-slot nil keeps evicted frames
 // collectable while the backing array is reused.
+//
+// Belt (review r1): a frame carrying no seq is NOT ringed. Both
+// fanoutLocked call sites publish seq'd frames (events, reseed
+// notices), so this is unreachable today; if a future frame kind
+// without a seq ever reaches fanout, ringing it would corrupt the
+// ring's contiguity premise and silently poison lowWater (a 0-seq
+// head would underflow to ^uint64(0)). Skipping keeps the ring
+// seq-contiguous — the frame still reaches live subscribers; it is
+// simply not replay-addressable, which for a seq-less frame is the
+// honest answer.
 func (r *replayRing) append(frame *abiv1.StreamFrame) {
+	if frameSeq(frame) == 0 {
+		return
+	}
 	size := proto.Size(frame)
 	r.frames = append(r.frames, frame)
 	r.bytes += size

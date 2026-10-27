@@ -498,6 +498,57 @@ func TestReplayResumeUnderConcurrentFloodRace(t *testing.T) {
 	wg.Wait()
 }
 
+// TestReplayCursorBoundsCaughtUpAndAhead: the cursor-bounds truth table
+// (the review-r1 guard). since == a.seq is the legitimate caught-up
+// resume — empty replay, then live from seq+1. since > a.seq is the
+// client-ahead window: a cursor beyond the authority's seq space cannot
+// come from this authority (a lost/reset cursor file under a stable
+// endpoint), and serving it as an empty resume would make the client's
+// discard rule silently drop the whole renumbered stream — the exact
+// silent-gap class design 0069 exists to close. It must fall back
+// honestly (snapshot first frame), counted.
+func TestReplayCursorBoundsCaughtUpAndAhead(t *testing.T) {
+	a := newAuthority(t, replayConfig(t, 0, 0))
+	for i := 0; i < 3; i++ {
+		a.IngestForTest(deltaEvent("s1", 8))
+	}
+
+	// Caught-up: since == current seq (3) resumes with an EMPTY replay
+	// and goes live — the next published frame is the first delivery.
+	frames, resumed, cancel, err := a.StreamSince(context.Background(), 3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cancel()
+	if !resumed {
+		t.Fatal("since == a.seq is the legitimate caught-up resume — must not fall back")
+	}
+	a.IngestForTest(deltaEvent("s1", 8)) // seq 4, live
+	got := drainUntil(t, frames, 4)
+	if first := got[0]; seqOf(first) != 4 {
+		t.Fatalf("caught-up resume must open at the next live seq 4, got %d (replay was not empty)", seqOf(first))
+	}
+
+	// Client-ahead: since > a.seq honestly falls back — snapshot first
+	// frame, resumed=false, and the fallback counter moves.
+	before := a.Metrics().ReplayFallbacks
+	frames2, resumed2, cancel2, err := a.StreamSince(context.Background(), 99)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cancel2()
+	if resumed2 {
+		t.Fatal("since > a.seq must fall back to the snapshot — an empty resume would silently wedge the client's discard rule on a foreign seq space")
+	}
+	first := <-frames2
+	if first.GetSnapshot() == nil {
+		t.Fatalf("client-ahead fallback must open with a snapshot frame, got %+v", first.Frame)
+	}
+	if after := a.Metrics().ReplayFallbacks; after != before+1 {
+		t.Fatalf("ReplayFallbacks %d → %d, want +1 (the client-ahead arm counts like any fallback)", before, after)
+	}
+}
+
 // TestEventsSinceOnWire: the ABI handler end-to-end — absent since
 // opens with a snapshot frame (today's behavior, pinned); present
 // since (served) opens with the replayed event seq=since+1 and NO
