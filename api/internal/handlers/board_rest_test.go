@@ -59,10 +59,10 @@ type fakeBoardManager struct {
 
 	errFor map[string]error
 
-	// #1747 seam arms: the grant-belt answer (IsWorkerSession), the
-	// create-project input capture, and the pressure sample sink.
-	workerSession          string
-	beltErr                error
+	// #1747 seam arms: the create-project input capture and the
+	// pressure sample sink (the #1747 §5 grant belt arms are gone —
+	// the manager-grant concept is repealed, ruling 2026-10-27 /
+	// tsk-copper-refectory-generates).
 	lastCreateProjectInput *board.ProjectInput
 	lastPressureSample     *board.PressureSample
 
@@ -157,13 +157,6 @@ func (f *fakeBoardManager) BulkMoveStage(_ context.Context, actor board.Actor, r
 		out = append(out, board.BulkItemResult{Ref: ref, Status: board.BulkDone})
 	}
 	return out, nil
-}
-
-func (f *fakeBoardManager) IsWorkerSession(_ context.Context, sessionID string) (bool, error) {
-	if f.beltErr != nil {
-		return false, f.beltErr
-	}
-	return sessionID != "" && sessionID == f.workerSession, nil
 }
 
 // #1837 P2a: the agent surface's workspace-scoped projections.

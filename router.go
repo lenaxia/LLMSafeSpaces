@@ -1,0 +1,2445 @@
+// Copyright (C) 2026 Michael Kao
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
+package server
+
+import (
+	"context"
+	"errors"
+	"log"
+	"net/http"
+	"net/http/pprof"
+	"os"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/gin-gonic/gin"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
+
+	apierrors "github.com/lenaxia/llmsafespaces/api/internal/errors"
+	"github.com/lenaxia/llmsafespaces/api/internal/handlers"
+	"github.com/lenaxia/llmsafespaces/api/internal/interfaces"
+	apilogger "github.com/lenaxia/llmsafespaces/api/internal/logger"
+	"github.com/lenaxia/llmsafespaces/api/internal/middleware"
+	"github.com/lenaxia/llmsafespaces/api/internal/services/auth"
+	"github.com/lenaxia/llmsafespaces/api/internal/services/sessionindex"
+	"github.com/lenaxia/llmsafespaces/api/internal/services/workspace"
+	"github.com/lenaxia/llmsafespaces/api/internal/utilities"
+	"github.com/lenaxia/llmsafespaces/pkg/settings"
+	"github.com/lenaxia/llmsafespaces/pkg/shortid"
+	"github.com/lenaxia/llmsafespaces/pkg/types"
+	"github.com/lenaxia/llmsafespaces/pkg/version"
+)
+
+// TurnstileRouterConfig is the routing-side view of Cloudflare Turnstile
+// CAPTCHA configuration used by the /register handler. Only the three
+// fields the router needs at wire-up time; registerAuthRoutes constructs
+// the fuller middleware.TurnstileConfig from this by dropping in a
+// production HTTP client and logger.
+//
+// This is kept separate from middleware.TurnstileConfig (rather than
+// re-using that type here) because middleware.TurnstileConfig contains
+// an *http.Client field that's only meaningful for tests. Exposing that
+// on RouterConfig — and therefore on every app.go call site that builds
+// a router — would invite confusion about whether operators are meant
+// to plug an httptrace-instrumented client, a custom timeout, etc. The
+// separation costs us one mapping step (app.go:911-914); the
+// alternative would cost us a "please just leave this nil unless
+// you're writing a test" caveat at every call site.
+//
+// When Enabled is true, SecretKey must be non-empty (config.Load
+// enforces this at startup, fail-closed). VerifyURL defaults to
+// Cloudflare's production siteverify endpoint if empty.
+type TurnstileRouterConfig struct {
+	Enabled   bool
+	SecretKey string
+	VerifyURL string
+}
+
+// RouterConfig defines configuration for the router
+type RouterConfig struct {
+	// Debug enables debug mode
+	Debug bool
+
+	// TrustedProxies is the list of trusted proxy IP ranges/CIDRs.
+	// If nil, trusts nobody (X-Forwarded-For is ignored). This
+	// prevents IP-spoofing attacks on lockout and rate-limiting (#757).
+	TrustedProxies []string
+
+	// LoggingConfig is the configuration for the logging middleware
+	LoggingConfig middleware.LoggingConfig
+
+	// RateLimitConfig is the configuration for the rate limiting middleware
+	RateLimitConfig middleware.RateLimitConfig
+
+	// PerRouteRateLimitConfig is the configuration for stricter per-route
+	// rate limits applied on top of the global RateLimitConfig. Covers
+	// G41 (/secrets/:id/reveal) — endpoints
+	// that take credentials as direct input and therefore warrant a
+	// tighter cap than the global 100/min/IP. Defaults to enabled with
+	// sensible limits; operators can disable by setting Enabled=false.
+	PerRouteRateLimitConfig middleware.PerRouteRateLimitConfig
+
+	// SecurityConfig is the configuration for the security middleware
+	SecurityConfig middleware.SecurityConfig
+
+	// TracingConfig is the configuration for the tracing middleware
+	TracingConfig middleware.TracingConfig
+
+	// SettingsHandler is the optional settings handler for admin/user settings routes
+	SettingsHandler *handlers.SettingsHandler
+
+	// InstanceSettings provides access to instance settings for feature flags
+	InstanceSettings *settings.InstanceService
+
+	// SecretsHandler is the handler for secret management endpoints (optional)
+	SecretsHandler *handlers.SecretsHandler
+
+	// ModelsHandler handles model listing and selection (optional).
+	// Extracted from SecretsHandler (US-29.5).
+	ModelsHandler *handlers.ModelsHandler
+
+	// WorkspaceEnvHandler is the handler for workspace env-var endpoints (optional).
+	// Extracted from SecretsHandler (US-29.4).
+	WorkspaceEnvHandler *handlers.WorkspaceEnvHandler
+
+	// AdminProviderCredentialsHandler handles admin credential CRUD (optional)
+	AdminProviderCredentialsHandler *handlers.AdminProviderCredentialsHandler
+
+	// UserProviderCredentialsHandler handles user credential CRUD (optional)
+	UserProviderCredentialsHandler *handlers.UserProviderCredentialsHandler
+
+	// ImageFactoryHandler serves the consumer-facing image-factory endpoints
+	// (catalog, configs). Optional; nil when image-factory is disabled.
+	ImageFactoryHandler *handlers.ImageFactoryHandler
+	// ImageFactoryAdminHandler serves the platform-owner admin endpoints.
+	ImageFactoryAdminHandler *handlers.ImageFactoryAdminHandler
+
+	// UnlockDEKHandler is the soft-unlock endpoint for re-deriving the
+	// DEK without forcing logout (Epic 56). Optional — when nil the
+	// /auth/unlock-dek route is not registered, which is appropriate
+	// for tests that don't exercise key material.
+	UnlockDEKHandler *handlers.UnlockDEKHandler
+
+	// OrgsHandler handles org CRUD routes (optional)
+	OrgsHandler *handlers.OrgsHandler
+
+	// OrgCredentialsHandler handles org credential routes (optional)
+	OrgCredentialsHandler *handlers.OrgCredentialsHandler
+
+	// TerminalHandler is the handler for WebSocket terminal proxy (optional)
+	TerminalHandler *handlers.TerminalHandler
+
+	// DevPreviewHandler is the handler for the authenticated HTTP/WS tunnel
+	// to in-workspace dev servers (Epic 66, optional). nil when disabled.
+	DevPreviewHandler *handlers.DevPreviewHandler
+
+	// PreviewOriginHandler serves <uuid>-preview.<baseDomain> hosts
+	// (Epic 66 Phase 1, optional). nil when preview origins are disabled —
+	// in that case NO engine middleware is registered and the API behaves
+	// exactly as before. When non-nil, its middleware runs BEFORE the API
+	// middleware chain: preview hosts bypass API CORS/rate policy and can
+	// never match /api/* routes (T5).
+	PreviewOriginHandler *handlers.PreviewOriginHandler
+
+	// AgentReloadHandler handles POST /api/v1/workspaces/:id/agent/reload (optional)
+	AgentReloadHandler *handlers.AgentReloadHandler
+	// DiskRecoverHandler handles POST /api/v1/workspaces/:id/disk-recover
+	// (#1601 mechanical disk recovery; optional wiring like reload).
+	DiskRecoverHandler *handlers.DiskRecoverHandler
+	// FsAuditHandler handles POST /api/v1/workspaces/:id/fs-audit
+	// (#1808 zero-fill corruption audit; optional wiring like reload).
+	FsAuditHandler *handlers.FsAuditHandler
+
+	// BulkReloadHandler handles POST /api/v1/users/me/agents/reload (optional)
+	BulkReloadHandler *handlers.BulkReloadHandler
+
+	UsageHandler         *handlers.UsageHandler
+	WebhookHandler       *handlers.StripeWebhookHandler
+	InvitationsHandler   *handlers.InvitationsHandler
+	EmailHandler         *handlers.EmailHandler
+	EmailVerifyHandler   *handlers.EmailVerifyHandler
+	PasswordResetHandler *handlers.PasswordResetHandler
+	PolicyHandler        *handlers.PolicyHandler
+	PromptHandler        *handlers.PromptHandler
+	AgentRoleHandler     *handlers.AgentRoleHandler
+	AuditHandler         *handlers.AuditHandler
+
+	// RelayAdminHandler handles relay admin setup + status endpoints (optional)
+	RelayAdminHandler *handlers.RelayAdminHandler
+
+	// PlatformInfoHandler serves the admin "Versions" display — running
+	// component versions read from deployed Deployment image tags. Optional.
+	PlatformInfoHandler *handlers.PlatformInfoHandler
+
+	// AuthorityFlipHandler serves the flip gate's operator endpoints
+	// (US-69.13): park/unpark with mode_transition + the ledger in-flight
+	// drain signal (optional).
+	AuthorityFlipHandler *handlers.AuthorityFlipHandler
+	// AdminSessionHandler handles admin-only session recovery endpoints (optional).
+	// US-44.11: force-abort a workspace session stuck in activeSess after the
+	// workspace pod was deleted/unreachable.
+	AdminSessionHandler *handlers.AdminSessionHandler
+
+	// PlatformAdminHandler handles platform-admin org/user suspension
+	// endpoints (US-43.19, D19/D20). Mounted behind AuthMiddleware + AdminGuard.
+	PlatformAdminHandler *handlers.PlatformAdminHandler
+
+	// InternalOrgStatusHandler, when non-nil, registers the cluster-internal
+	// GET /api/v1/internal/orgs/:orgID/status endpoint that the controller
+	// polls to drive org-suspension of workspaces (D20). It is intentionally
+	// NOT behind AuthMiddleware; access is gated by a mandatory X-Internal-Token
+	// shared-secret header (see InternalOrgStatusHandler — the endpoint FAILS
+	// CLOSED with 403 when LLMSAFESPACES_INTERNAL_TOKEN is unset). An optional
+	// API NetworkPolicy (chart value networkPolicy.apiIngressRestricted) adds
+	// L3/L4 defense-in-depth; the token is the load-bearing control.
+	InternalOrgStatusHandler *handlers.InternalOrgStatusHandler
+
+	// InternalLLMProvidersHandler, when non-nil, registers the
+	// cluster-internal GET
+	// /api/v1/internal/workspaces/:workspaceID/llm-providers endpoint the
+	// controller's relay staging polls (US-72.3, design 0058 §4.1 hop 1) to
+	// obtain decrypted BYO provider credentials for sealing. Same auth
+	// contract as InternalOrgStatusHandler (mandatory X-Internal-Token,
+	// fail-closed 403 when unset) — but it returns credential material, so
+	// it MUST never be ingress-exposed; every reveal is audited
+	// server-side.
+	InternalLLMProvidersHandler *handlers.InternalLLMProvidersHandler
+
+	// PodBootstrapHandler, when non-nil, registers POST /internal/v1/pod-bootstrap
+	// — the secretless credential injection endpoint (Epic 35). The workspace
+	// init container presents a projected SA token; the handler validates it via
+	// TokenReview and returns decrypted secrets. NOT behind AuthMiddleware (the
+	// init container has no user identity); auth is the TokenReview itself.
+	PodBootstrapHandler *handlers.PodBootstrapHandler
+
+	// PodWorkspaceRenameHandler, when non-nil, registers
+	// /internal/v1/workspace-rename — the pod-identity path the agentd
+	// rename_workspace MCP tool calls. Same TokenReview auth contract as
+	// PodBootstrapHandler: the SA must be workspace-<id> in the expected
+	// namespace, so a pod can only rename its own workspace.
+	PodWorkspaceRenameHandler *handlers.PodWorkspaceRenameHandler
+
+	// PodAutomationHandler, when non-nil, registers the pod-identity
+	// trigger + workflow CRUD surface the agentd automation MCP tools
+	// call — TokenReview-gated like the rename endpoint, delegating to
+	// the existing user handlers under the pod's resolved owner.
+	PodAutomationHandler *handlers.PodAutomationHandler
+
+	// PodSessionArchiveHandler, when non-nil, registers the pod-identity
+	// session archive/delete surface the agentd #1627 MCP tools call —
+	// TokenReview-gated like the rename endpoint.
+	PodSessionArchiveHandler *handlers.PodSessionArchiveHandler
+	// PodSessionRegistryHandler: pod-identity short-id registry
+	// (agentd replica pulls + create_session registration).
+	PodSessionRegistryHandler *handlers.PodSessionRegistryHandler
+
+	// MCPServersHandler handles external MCP server CRUD for all three
+	// scopes (platform/org/user). Optional — when nil, no MCP routes are
+	// registered (Epic 53).
+	AdminMCPServersHandler *handlers.MCPServersHandler
+	OrgMCPServersHandler   *handlers.MCPServersHandler
+	UserMCPServersHandler  *handlers.MCPServersHandler
+	UserPromptsHandler     *handlers.UserPromptsHandler
+
+	CookieName string
+
+	// CookieDomain (Epic 54, US-54.3): when non-empty, set as the Domain
+	// attribute on the lsp_session cookie so the session survives root→subdomain
+	// redirects under wildcard subdomain routing. When empty (default), the
+	// cookie is host-only — current behavior, single-host deploys.
+	CookieDomain string
+
+	// OrgSubdomainBaseDomain (design 0064, #1669): auth.orgSubdomainRouting.
+	// baseDomain. When non-empty, GET /auth/config derives an optional
+	// orgContext {slug, name} from a <slug>.<base> request Host for
+	// SSO-configured orgs — display-only, fail-soft (omitted on every miss).
+	OrgSubdomainBaseDomain string
+
+	// SSOHandler handles org-admin SSO config CRUD + the public OIDC login flow
+	// (start/callback) and claimed-domain discovery (US-43.10, D17).
+	SSOHandler *handlers.SSOHandler
+
+	// LoginDiscoveryHandler handles POST /api/v1/auth/lookup — the email-led
+	// login discovery endpoint (Epic 54, US-54.1). Returns a single redirectUrl
+	// pointing the browser at the user's org subdomain (or direct SSO start URL
+	// when subdomain routing is disabled). Enumeration-safe: uniform 200 +
+	// uniform body shape across all non-validation branches; DB errors masked.
+	LoginDiscoveryHandler *handlers.LoginDiscoveryHandler
+
+	// PasskeyHandler handles WebAuthn passkey registration + login ceremonies
+	// (Epic 59). Public routes (no auth middleware) — the ceremony itself is
+	// the authentication. Nil when passkey support is not configured (no RPID).
+	PasskeyHandler *handlers.PasskeyHandler
+	// PasskeyDefaultSignup, when true, tells the frontend to default to passkey
+	// enrollment at registration with "use password" as the explicit opt-in.
+	PasskeyDefaultSignup bool
+
+	// Turnstile, when Enabled is true, gates POST /auth/register with a
+	// Cloudflare Turnstile CAPTCHA middleware. The middleware fails
+	// closed: any of {missing token, verify request fails, verify
+	// response says not-success} → 401. When Enabled is false, the
+	// route runs without the middleware.
+	//
+	// SecretKey must be non-empty when Enabled is true (config.Load
+	// enforces this at startup, fail-closed). VerifyURL defaults to
+	// Cloudflare's production siteverify endpoint if empty.
+	Turnstile TurnstileRouterConfig
+
+	// Epic 64: Workflow + trigger handlers (optional — nil when not wired).
+	UserWorkflowsHandler   *handlers.WorkflowsHandler
+	OrgWorkflowsHandler    *handlers.WorkflowsHandler
+	UserTriggersHandler    *handlers.TriggersHandler
+	OrgTriggersHandler     *handlers.TriggersHandler
+	WebhookReceiverHandler *handlers.WebhookReceiverHandler
+
+	// BoardHandler is the Task Board's REST projection (design 0067
+	// §4.3a, #1699): /api/v1/me/projects|epics|tasks, user-level only
+	// (ruling R7). Nil when the board engine is not wired (cfg.Board
+	// disabled) — the route group gates on it.
+	BoardHandler *handlers.BoardHandler
+
+	// FaultInjectionRules, when non-empty, installs the deterministic
+	// fault-injection middleware (Epic 70 US-70.0). Populated at app
+	// wire-up from LLMSAFESPACES_FAULT_INJECTION — a malformed value fails
+	// startup there. Empty means the feature is absent: no middleware is
+	// registered and the chain is byte-identical to before.
+	FaultInjectionRules []middleware.FaultInjectionRule
+}
+
+// cookieName returns the session cookie name, falling back to "lsp_session" when empty.
+func (r RouterConfig) cookieName() string {
+	if r.CookieName == "" {
+		return "lsp_session"
+	}
+	return r.CookieName
+}
+
+// DefaultRouterConfig returns the default router configuration
+func DefaultRouterConfig() RouterConfig {
+	rlCfg := middleware.DefaultRateLimitConfig()
+	// The /events SSE endpoint is a long-lived connection, not a per-request
+	// API call. Exempt it from the token-bucket rate limiter so reconnects
+	// after network drops don't trigger 429s.
+	//
+	// Health probes (#1825): /livez is k8s liveness traffic — a 429
+	// there restarts healthy pods; /readyz is readiness — a 429
+	// de-services the pod (removed from endpoints, not restarted;
+	// monitoring.md's probe semantics). The SDK canaries pin
+	// "not rate-limited" for both. They only passed pre-#1825 by
+	// refill-boundary luck (the canary's readyz-then-livez sequence after
+	// a 12-request login burst): any exhausted per-IP budget 429s them.
+	rlCfg.ExemptPaths = []string{"/events", "/session-events", "/livez", "/readyz"}
+	return RouterConfig{
+		Debug:           false,
+		LoggingConfig:   middleware.DefaultLoggingConfig(),
+		RateLimitConfig: rlCfg,
+		PerRouteRateLimitConfig: middleware.PerRouteRateLimitConfig{
+			Enabled: true,
+			Routes: map[string]middleware.RouteRateLimit{
+				// G41/G6: /secrets/:id/reveal takes the user's password
+				// as input to re-authenticate before decrypting. The
+				// endpoint is a credential-bearing target — without a
+				// per-endpoint cap, the global 100/min/IP limiter lets
+				// a single IP attempt 100 password guesses per minute.
+				// 5/min/burst-5 matches the password-verify rate a
+				// legitimate user would produce (re-reveal a few
+				// secrets in quick succession) while making brute-force
+				// impractical (5 attempts/min → 7,200/day; bcrypt cost
+				// 12 makes each attempt ~250ms, so 30min of CPU per
+				// 7,200 guesses — well below practical brute-force
+				// thresholds for strong passwords).
+				"/api/v1/secrets/:id/reveal": {
+					Limit:  5,
+					Burst:  5,
+					Window: time.Minute,
+				},
+				// Epic 59: passkey login/finish is a credential-bearing
+				// target (assertion verification + potential recovery-code
+				// brute-force). 10/min matches a legitimate user retrying
+				// after a failed assertion, while capping automated
+				// guessing well below the global 100/min.
+				"/api/v1/auth/passkey/login/finish": {
+					Limit:  10,
+					Burst:  5,
+					Window: time.Minute,
+				},
+				// Password login is a credential-bearing target (bcrypt
+				// password verification). Without a per-route cap, the
+				// global 100/min/burst-20 limiter allows ~100 password
+				// guesses per minute from a single IP. 10/min/burst-10
+				// matches the passkey login pattern and makes automated
+				// brute-force impractical (10 attempts/min → 14,400/day;
+				// bcrypt cost 12 makes each attempt ~250ms, so ~1hr of
+				// CPU per 14,400 guesses).
+				"/api/v1/auth/login": {
+					Limit:  10,
+					Burst:  10,
+					Window: time.Minute,
+				},
+				// Recovery codes are bcrypt-hashed shared secrets — the one
+				// phishable factor. Without a per-route cap, the global
+				// 100/min/IP limiter allows ~100 recovery-code guesses per
+				// minute. 5/min/burst-5 matches the /secrets/:id/reveal
+				// credential-brute-force pattern.
+				"/api/v1/auth/passkey/recover": {
+					Limit:  5,
+					Burst:  5,
+					Window: time.Minute,
+				},
+				// #1652 item 2: /auth/register is a DB-write endpoint (a user
+				// row + welcome/verification email per request). With Turnstile
+				// off it is an account-spam vector under the global 100/min/IP
+				// limiter alone. 10/min/burst-5 leaves a legitimate signup's
+				// retry headroom (validation errors, taken usernames) while
+				// capping spray an order of magnitude below the global budget.
+				"/api/v1/auth/register": {
+					Limit:  10,
+					Burst:  5,
+					Window: time.Minute,
+				},
+				// #1652 item 2: password-reset request writes a token row and
+				// sends an email per call — an email-spray / token-table-flood
+				// vector under the global limiter alone. 5/min/burst-5 matches
+				// the credential-bearing pattern (a user requests a reset a
+				// handful of times at most before reading their inbox).
+				"/api/v1/auth/password-reset/request": {
+					Limit:  5,
+					Burst:  5,
+					Window: time.Minute,
+				},
+				// #1652 item 2: password-reset confirm verifies a bearer token
+				// (the reset token IS the credential for this route).
+				// 5/min/burst-5 caps brute-force attempts at the token space;
+				// token entropy already makes success infeasible, this bounds
+				// the attempt rate cheaply.
+				"/api/v1/auth/password-reset/confirm": {
+					Limit:  5,
+					Burst:  5,
+					Window: time.Minute,
+				},
+				// #1652 item 2: verify-email verifies a single-use bearer token.
+				// Same rationale as password-reset confirm.
+				"/api/v1/auth/verify-email": {
+					Limit:  5,
+					Burst:  5,
+					Window: time.Minute,
+				},
+				// #1652 item 2: verify-email resend sends an email per call —
+				// the spray vector. 5/min/burst-5 matches reset-request.
+				"/api/v1/auth/verify-email/resend": {
+					Limit:  5,
+					Burst:  5,
+					Window: time.Minute,
+				},
+			},
+		},
+		SecurityConfig: middleware.DefaultSecurityConfig(),
+		TracingConfig:  middleware.DefaultTracingConfig(),
+	}
+}
+
+// configureTrustedProxies restricts which proxy IPs can set
+// X-Forwarded-For. Without this, gin trusts all IPs (0.0.0.0/0) and
+// c.ClientIP() honors attacker-controlled headers, bypassing IP-based
+// lockout and rate-limiting (#757).
+func configureTrustedProxies(router *gin.Engine, trustedProxies []string, logger *apilogger.Logger) {
+	if trustedProxies == nil {
+		trustedProxies = []string{} // trust nobody by default
+	}
+	if err := router.SetTrustedProxies(trustedProxies); err != nil {
+		logger.Error("Failed to set trusted proxies", err)
+	}
+}
+
+// NewRouter creates a new Gin router with all routes configured.
+// proxyHandler may be nil — proxy routes are not registered in that case.
+func NewRouter(services interfaces.Services, logger *apilogger.Logger, proxyHandler *handlers.ProxyHandler, config ...RouterConfig) *gin.Engine {
+	// Use default config if none provided
+	cfg := DefaultRouterConfig()
+	if len(config) > 0 {
+		cfg = config[0]
+	}
+
+	// Set Gin mode
+	if cfg.Debug {
+		gin.SetMode(gin.DebugMode)
+	} else {
+		gin.SetMode(gin.ReleaseMode)
+	}
+
+	router := gin.New()
+	configureTrustedProxies(router, cfg.TrustedProxies, logger)
+
+	router.Use(middleware.RecoveryMiddleware(logger))
+	router.Use(middleware.TracingMiddleware(logger, cfg.TracingConfig))
+
+	// Epic 66 Phase 1: preview-origin interception, deliberately before
+	// Security/CORS/RateLimit — preview hosts must not receive the API
+	// CORS policy, consume the API rate budget, or match /api/* routes.
+	// Aborts every request it handles; API traffic passes through.
+	if cfg.PreviewOriginHandler != nil {
+		router.Use(cfg.PreviewOriginHandler.Middleware())
+	}
+
+	// Epic 70 US-70.0 (#1182): deterministic fault injection for the e2e
+	// chaos harness. Registered only when the env parsed to at least one
+	// rule (app wire-up), engine-level so root-registered routes like
+	// POST /internal/v1/pod-bootstrap are covered, and before rate
+	// limiting/logging so harness retries neither consume the rate budget
+	// nor interleave with request logs — the middleware's own warn line is
+	// the one log entry per injected failure.
+	if len(cfg.FaultInjectionRules) > 0 {
+		router.Use(middleware.FaultInjectionMiddleware(logger, cfg.FaultInjectionRules))
+	}
+
+	router.Use(middleware.SecurityMiddleware(logger, cfg.SecurityConfig))
+	router.Use(middleware.LoggingMiddleware(logger, cfg.LoggingConfig))
+	router.Use(middleware.MetricsMiddleware(services.GetMetrics()))
+	router.Use(middleware.RateLimitMiddleware(services.GetRateLimiter(), logger, cfg.RateLimitConfig, cfg.InstanceSettings))
+	// G35: stricter per-route limits applied AFTER the global limiter so
+	// the global budget is consumed first (defense-in-depth — both
+	// middleware must allow the request). The per-route buckets are
+	// keyed separately (see PerRouteRateLimitMiddleware doc), so a user
+	// hitting /recover cannot deplete the budget for /secrets/:id/reveal
+	// or vice versa.
+	router.Use(middleware.PerRouteRateLimitMiddleware(services.GetRateLimiter(), logger, cfg.PerRouteRateLimitConfig))
+	router.Use(middleware.ErrorHandlerMiddleware(logger))
+
+	if services.GetMetering() != nil {
+		router.Use(middleware.NewMeteringMiddleware(services.GetMetering()).Handler())
+	}
+
+	// F1.1.4 (Epic 17): the previous `/api/v1/workspaces/:id/stream`
+	// group had middleware attached but no handlers — dead code that
+	// existed only because an earlier API design wired SSE here. The
+	// current session SSE endpoint is `/api/v1/workspaces/:id/session-events`
+	// registered below; the user-scoped event stream is at `/api/v1/events`.
+	// The actual WebSocket terminal endpoint is
+	// `/api/v1/workspaces/:id/terminal/...` which gets the WebSocket
+	// security middleware via its own router group.
+	_ = router // wsGroup removal — kept the var to avoid unused-import warnings if a future commit re-adds /stream.
+
+	// Auth routes (public — no auth middleware)
+	authGroup := router.Group("/api/v1/auth")
+	registerAuthRoutes(authGroup, services, cfg.InstanceSettings, logger, cfg.cookieName(), cfg.CookieDomain, cfg.OrgSubdomainBaseDomain, cfg.SSOHandler, cfg.Turnstile, cfg.PasskeyHandler != nil, cfg.PasskeyDefaultSignup)
+
+	// US-49.5: Password reset via email (public — the token IS the credential
+	// for confirm; request is always 202 with no enumeration).
+	if cfg.PasswordResetHandler != nil {
+		authGroup.POST("/password-reset/request", cfg.PasswordResetHandler.Request)
+		authGroup.POST("/password-reset/confirm", cfg.PasswordResetHandler.Confirm)
+	}
+
+	// US-49.6: Email verification (public — the token IS the credential).
+	if cfg.EmailVerifyHandler != nil {
+		authGroup.POST("/verify-email", cfg.EmailVerifyHandler.Verify)
+		authGroup.POST("/verify-email/resend", cfg.EmailVerifyHandler.Resend)
+	}
+
+	// Epic 54, US-54.1: Email-led login discovery (public — enumeration-safe).
+	// Resolves an email to a single redirectUrl pointing at the user's org.
+	// Always returns 200 with { redirectUrl } on valid input; DB errors masked.
+	if cfg.LoginDiscoveryHandler != nil {
+		authGroup.POST("/lookup", cfg.LoginDiscoveryHandler.Lookup)
+	}
+
+	// Epic 59: WebAuthn passkey registration + login (public — the ceremony IS
+	// the authentication). Nil when passkey support is not configured.
+	// Signup routes carry the #1650 registration gate; login/recovery do not
+	// (existing users must keep working on closed-signup instances).
+	if cfg.PasskeyHandler != nil {
+		pg := authGroup.Group("/passkey")
+		pg.POST("/register/begin", registrationGateMiddleware(cfg.InstanceSettings), cfg.PasskeyHandler.RegisterBegin)
+		pg.POST("/register/finish", registrationGateMiddleware(cfg.InstanceSettings), cfg.PasskeyHandler.RegisterFinish)
+		pg.POST("/login/begin", cfg.PasskeyHandler.LoginBegin)
+		pg.POST("/login/finish", cfg.PasskeyHandler.LoginFinish)
+		pg.POST("/recover", cfg.PasskeyHandler.Recover)
+	}
+
+	// Authenticated workspace routes
+	workspaceGroup := router.Group("/api/v1/workspaces")
+	workspaceGroup.Use(services.GetAuth().AuthMiddleware())
+
+	// Design 0041 D1/D3: every /:id workspace route funnels through
+	// WorkspaceAccessMiddleware, the single ownership gate (D5 creator-membership
+	// + D6 org-admin). List/Create have no :id and stay on workspaceGroup.
+	idGroup := workspaceGroup.Group("/:id")
+	// #1757: the workspace phrase (2 words + 1 digit) is the canonical
+	// :id address — resolved to the UUID BEFORE the access gate so
+	// ownership/authorization see the canonical key. UUIDs pass
+	// through byte-identical; unambiguous NAMES rewrite too (the
+	// one-release deprecation window).
+	idGroup.Use(workspaceRefMiddleware(services))
+	idGroup.Use(middleware.WorkspaceAccessMiddleware(services.GetWorkspace()))
+
+	// sessionRefMiddleware is design 0066's edge resolution layer,
+	// backed by the database service (nil when absent — disabled).
+	registerWorkspaceRoutes(workspaceGroup, idGroup, services, proxyHandler, cfg, sessionRefMiddleware(services))
+	// Epic 27b: Bulk agent reload across all pending workspaces.
+	if cfg.BulkReloadHandler != nil {
+		userGroup := router.Group("/api/v1/users/me")
+		userGroup.Use(services.GetAuth().AuthMiddleware())
+		userGroup.POST("/agents/reload", cfg.BulkReloadHandler.BulkReload)
+	}
+
+	// Epic 59: Authenticated passkey account settings (list/delete/regenerate).
+	registerPasskeySettingsRoutes(router, services, cfg.PasskeyHandler)
+
+	// Sessions/active endpoint — needs proxyHandler for active session data.
+	// Registered on idGroup so it inherits WorkspaceAccessMiddleware.
+	if proxyHandler != nil {
+		idGroup.GET("/sessions/active", func(c *gin.Context) {
+			userID := services.GetAuth().GetUserID(c)
+			if userID == "" {
+				c.JSON(http.StatusUnauthorized, gin.H{"error": "authentication required"})
+				return
+			}
+			workspaceID := c.Param("id")
+			// Ground-truth active sessions from statusz (#792 Pattern 1).
+			activeSet := proxyHandler.GetAuthoritativeActiveSessions(c.Request.Context(), workspaceID)
+			active := make([]string, 0, len(activeSet))
+			for id := range activeSet {
+				active = append(active, id)
+			}
+			c.JSON(http.StatusOK, types.ActiveSessionsResponse{
+				Active:    active,
+				MaxActive: getMaxActiveSessions(c.Request.Context(), cfg.InstanceSettings),
+			})
+		})
+	}
+
+	// Authenticated workspace CRUD routes (Create, List, Get, Delete, Status).
+	// List/Create have no :id and intentionally bypass WorkspaceAccessMiddleware;
+	// Get/Delete/etc. are registered on idGroup inside registerWorkspaceRoutes
+	// and therefore inherit the middleware.
+	// Proxy routes — registered on idGroup when a ProxyHandler is provided.
+	if proxyHandler != nil {
+		registerProxyRoutes(idGroup, proxyHandler, sessionRefMiddleware(services))
+
+		// S28.3: User-scoped SSE stream (authenticated, rate-limit exempt)
+		eventsGroup := router.Group("/api/v1")
+		eventsGroup.Use(services.GetAuth().AuthMiddleware())
+		eventsGroup.GET("/events", proxyHandler.StreamUserEvents)
+	}
+
+	// Active runs + session origins — on idGroup so they inherit WorkspaceAccessMiddleware.
+	registerWorkspaceWorkflowRoutes(idGroup, cfg)
+
+	// Terminal proxy routes (WebSocket terminal to sandbox pod)
+	if cfg.TerminalHandler != nil {
+		// Ticket endpoint — on idGroup so WorkspaceAccessMiddleware runs first.
+		// The handler keeps its existing label-based check (Story 2 removes it).
+		idGroup.POST("/terminal/ticket", cfg.TerminalHandler.HandleTicket)
+		// WebSocket endpoint — on the ROOT router (auth via one-time ticket, not JWT).
+		// Ticket-based auth is by design (design 0041 edge case 3); the ticket was
+		// issued after middleware verification, so it inherits the ownership check.
+		router.GET("/api/v1/workspaces/:id/terminal", cfg.TerminalHandler.HandleTerminal)
+	}
+
+	// Dev preview routes (Epic 66 — authenticated HTTP/WS tunnel to dev servers).
+	// On idGroup so WorkspaceAccessMiddleware + AuthMiddleware run first.
+	if cfg.DevPreviewHandler != nil {
+		idGroup.GET("/dev-preview/*portPath", cfg.DevPreviewHandler.HandleDevPreview)
+
+		// Phase 1: owner-authenticated (idGroup chain) bootstrap → 302 to
+		// <ws>-preview.<baseDomain>/<port>/?t=<one-time token>. Only the
+		// API origin serves this route; preview hosts 404 /api/* (T5).
+		// Sibling path, not a sub-path: gin's router cannot register a
+		// static segment under the /dev-preview/* wildcard. The bare
+		// /dev-preview-bootstrap (no :port) variant reads ?port= — it
+		// backs the preview-origin landing page's no-JS form.
+		if cfg.PreviewOriginHandler != nil {
+			idGroup.GET("/dev-preview-bootstrap/:port", cfg.PreviewOriginHandler.HandleBootstrap)
+			idGroup.GET("/dev-preview-bootstrap", cfg.PreviewOriginHandler.HandleBootstrap)
+		}
+	}
+
+	// Settings routes (admin + user)
+	if cfg.SettingsHandler != nil {
+		registerSettingsRoutes(router, services, cfg.SettingsHandler)
+	}
+
+	// Auth-gated pprof (#901 G6): goroutine/heap/trace dumps for live
+	// incident diagnosis (2026-08-16: stacks required SIGQUIT-ing a
+	// production replica). Admin-guarded like every other /admin surface —
+	// profile data leaks internals and is never public.
+	if services.GetAuth() != nil {
+		// Self-contained pprof mux (review rounds 1-3 on #906): a blank
+		// net/http/pprof import registers on http.DefaultServeMux at
+		// init — but import-hygiene tooling can (and did) strip the blank
+		// import, silently leaving DefaultServeMux empty and every
+		// profile 404ing. Registering explicitly on our own mux has no
+		// such failure mode. pprof.Index dispatches the named profiles
+		// (goroutine/heap/allocs/block/mutex/threadcreate) under its
+		// subtree; the four specials get their exact handlers.
+		pprofMux := http.NewServeMux()
+		pprofMux.HandleFunc("/debug/pprof/", pprof.Index)
+		pprofMux.HandleFunc("/debug/pprof/cmdline", pprof.Cmdline)
+		pprofMux.HandleFunc("/debug/pprof/profile", pprof.Profile)
+		pprofMux.HandleFunc("/debug/pprof/symbol", pprof.Symbol)
+		pprofMux.HandleFunc("/debug/pprof/trace", pprof.Trace)
+		pprofHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			r.URL.Path = "/debug/pprof" + strings.TrimPrefix(r.URL.Path, "/api/v1/admin/debug/pprof")
+			pprofMux.ServeHTTP(w, r)
+		})
+		debug := router.Group("/api/v1/admin/debug/pprof", services.GetAuth().AuthMiddleware(), middleware.AdminGuard())
+		debug.Any("/*path", gin.WrapH(pprofHandler))
+	}
+
+	// Admin provider credentials routes (Epic 30)
+	if cfg.AdminProviderCredentialsHandler != nil {
+		adminCreds := router.Group("/api/v1/admin/provider-credentials")
+		adminCreds.Use(services.GetAuth().AuthMiddleware())
+		adminCreds.Use(middleware.AdminGuard())
+		adminCreds.POST("", cfg.AdminProviderCredentialsHandler.Create)
+		adminCreds.GET("", cfg.AdminProviderCredentialsHandler.List)
+		adminCreds.GET("/:id", cfg.AdminProviderCredentialsHandler.Get)
+		adminCreds.PUT("/:id", cfg.AdminProviderCredentialsHandler.Update)
+		adminCreds.DELETE("/:id", cfg.AdminProviderCredentialsHandler.Delete)
+		adminCreds.GET("/:id/models", cfg.AdminProviderCredentialsHandler.ProbeModels)
+		adminCreds.POST("/:id/auto-apply", cfg.AdminProviderCredentialsHandler.CreateAutoApply)
+		adminCreds.GET("/:id/auto-apply", cfg.AdminProviderCredentialsHandler.ListAutoApply)
+		adminCreds.DELETE("/:id/auto-apply/:targetType/:targetId", cfg.AdminProviderCredentialsHandler.DeleteAutoApply)
+	}
+
+	// Anon credential probe — authenticated but credential-free.
+	// Used by the user credential form to fetch models before saving.
+	{
+		probeGroup := router.Group("/api/v1/probe-models")
+		probeGroup.Use(services.GetAuth().AuthMiddleware())
+		probeGroup.POST("", handlers.ProbeModelsAnon)
+	}
+
+	// User provider credentials routes (Epic 30)
+	if cfg.UserProviderCredentialsHandler != nil {
+		userCreds := router.Group("/api/v1/provider-credentials")
+		userCreds.Use(services.GetAuth().AuthMiddleware())
+		userCreds.POST("", cfg.UserProviderCredentialsHandler.Create)
+		userCreds.GET("", cfg.UserProviderCredentialsHandler.List)
+		userCreds.GET("/:id", cfg.UserProviderCredentialsHandler.Get)
+		userCreds.GET("/:id/models", cfg.UserProviderCredentialsHandler.ProbeModels)
+		userCreds.DELETE("/:id", cfg.UserProviderCredentialsHandler.Delete)
+		userCreds.GET("/:id/bindings", cfg.UserProviderCredentialsHandler.ListBindings)
+		userCreds.POST("/:id/bind/:workspaceId", cfg.UserProviderCredentialsHandler.Bind)
+		userCreds.DELETE("/:id/bind/:workspaceId", cfg.UserProviderCredentialsHandler.Unbind)
+	}
+	registerImageFactoryRoutes(router, services, cfg.ImageFactoryHandler, cfg.OrgsHandler)
+	registerImageFactoryAdminRoutes(router, services, cfg.ImageFactoryAdminHandler)
+	if cfg.UsageHandler != nil {
+		usage := router.Group("/api/v1/usage")
+		usage.Use(services.GetAuth().AuthMiddleware())
+		usage.GET("", cfg.UsageHandler.GetUsage)
+		usage.GET("/workspaces/:id", cfg.UsageHandler.GetWorkspaceUsage)
+		usage.GET("/quota", cfg.UsageHandler.GetQuotaStatus)
+
+		adminUsage := router.Group("/api/v1/admin/usage")
+		adminUsage.Use(services.GetAuth().AuthMiddleware())
+		adminUsage.Use(middleware.AdminGuard())
+		adminUsage.GET("/:ownerId", cfg.UsageHandler.AdminGetUsage)
+
+		adminBilling := router.Group("/api/v1/admin/billing")
+		adminBilling.Use(services.GetAuth().AuthMiddleware())
+		adminBilling.Use(middleware.AdminGuard())
+		adminBilling.GET("/status", cfg.UsageHandler.AdminBillingStatus)
+		adminBilling.GET("/dlq", cfg.UsageHandler.AdminGetDLQ)
+		adminBilling.POST("/dlq/:id/retry", cfg.UsageHandler.AdminRetryDLQ)
+		adminBilling.POST("/dlq/:id/discard", cfg.UsageHandler.AdminDiscardDLQ)
+	}
+
+	if cfg.WebhookHandler != nil {
+		router.POST("/api/v1/webhooks/stripe", cfg.WebhookHandler.HandleWebhook)
+	}
+
+	// Relay admin routes (Epic 43)
+	if cfg.RelayAdminHandler != nil {
+		relayAdmin := router.Group("/api/v1/admin/relay")
+		relayAdmin.Use(services.GetAuth().AuthMiddleware())
+		relayAdmin.Use(middleware.AdminGuard())
+		relayAdmin.GET("/setup", cfg.RelayAdminHandler.GetSetup)
+		relayAdmin.GET("/status", cfg.RelayAdminHandler.GetStatus)
+		relayAdmin.POST("/oci-creds", cfg.RelayAdminHandler.SaveOCICreds)
+		relayAdmin.POST("/gcp-creds", cfg.RelayAdminHandler.SaveGCPCreds)
+		relayAdmin.POST("/aws-creds", cfg.RelayAdminHandler.SaveAWSCreds)
+		relayAdmin.POST("/deploy", cfg.RelayAdminHandler.Deploy)
+		relayAdmin.POST("/rotate/:id", cfg.RelayAdminHandler.Rotate)
+		relayAdmin.POST("/pause", cfg.RelayAdminHandler.Pause)
+		relayAdmin.POST("/resume", cfg.RelayAdminHandler.Resume)
+	}
+
+	// Platform info — running component versions for the admin "Versions" tab.
+	if cfg.PlatformInfoHandler != nil {
+		platformInfo := router.Group("/api/v1/admin/platform-info")
+		platformInfo.Use(services.GetAuth().AuthMiddleware())
+		platformInfo.Use(middleware.AdminGuard())
+		platformInfo.GET("", cfg.PlatformInfoHandler.GetPlatformInfo)
+	}
+
+	// Admin session recovery routes (US-44.11)
+	if cfg.AdminSessionHandler != nil {
+		adminSessions := router.Group("/api/v1/admin/workspaces/:workspaceId/sessions")
+		adminSessions.Use(services.GetAuth().AuthMiddleware())
+		adminSessions.Use(middleware.AdminGuard())
+		adminSessions.POST("/:sessionId/force-abort", sessionRefMiddleware(services), cfg.AdminSessionHandler.ForceAbortSession)
+	}
+
+	// US-69.13: the authority flip gate (park / unpark / in-flight).
+	if cfg.AuthorityFlipHandler != nil {
+		authority := router.Group("/api/v1/admin/authority")
+		authority.Use(services.GetAuth().AuthMiddleware())
+		authority.Use(middleware.AdminGuard())
+		authority.POST("/park", cfg.AuthorityFlipHandler.Park)
+		authority.POST("/unpark", cfg.AuthorityFlipHandler.Unpark)
+		authority.GET("/inflight/:workspaceId", cfg.AuthorityFlipHandler.InFlight)
+	}
+
+	// US-43.20: Cross-org audit view (platform admin only).
+	if cfg.AuditHandler != nil {
+		platformAudit := router.Group("/api/v1/admin/audit")
+		platformAudit.Use(services.GetAuth().AuthMiddleware())
+		platformAudit.Use(middleware.AdminGuard())
+		platformAudit.GET("", cfg.AuditHandler.ListCrossOrg)
+	}
+
+	// Platform-admin system prompt (agent customization, Phase 1).
+	if cfg.PromptHandler != nil {
+		promptAdmin := router.Group("/api/v1/admin/prompt")
+		promptAdmin.Use(services.GetAuth().AuthMiddleware())
+		promptAdmin.Use(middleware.AdminGuard())
+		promptAdmin.GET("", cfg.PromptHandler.GetPlatform)
+		promptAdmin.PUT("", cfg.PromptHandler.SetPlatform)
+	}
+
+	if cfg.AgentRoleHandler != nil {
+		roleAdmin := router.Group("/api/v1/admin/agent-roles")
+		roleAdmin.Use(services.GetAuth().AuthMiddleware())
+		roleAdmin.Use(middleware.AdminGuard())
+		roleAdmin.GET("", cfg.AgentRoleHandler.ListPlatform)
+		roleAdmin.POST("", cfg.AgentRoleHandler.CreatePlatform)
+		roleAdmin.GET("/:id", cfg.AgentRoleHandler.GetPlatform)
+		roleAdmin.PUT("/:id", cfg.AgentRoleHandler.UpdatePlatform)
+		roleAdmin.DELETE("/:id", cfg.AgentRoleHandler.DeletePlatform)
+	}
+
+	// Epic 53: MCP server routes (all three scopes).
+	registerMCPRoutes(router, services, cfg)
+	registerWorkflowRoutes(router, services, cfg)
+
+	// AuthMiddleware + AdminGuard so only users.role='admin' can call them.
+	// US-43.18: the same group also hosts the dashboard list endpoints
+	// (GET /admin/orgs, GET /admin/users).
+	if cfg.PlatformAdminHandler != nil {
+		suspendGrp := router.Group("/api/v1/admin")
+		suspendGrp.Use(services.GetAuth().AuthMiddleware())
+		suspendGrp.Use(middleware.AdminGuard())
+		suspendGrp.GET("/orgs", cfg.PlatformAdminHandler.ListOrgs)
+		suspendGrp.GET("/users", cfg.PlatformAdminHandler.ListUsers)
+		suspendGrp.POST("/orgs/:id/suspend", cfg.PlatformAdminHandler.SuspendOrg)
+		suspendGrp.POST("/orgs/:id/unsuspend", cfg.PlatformAdminHandler.UnsuspendOrg)
+		suspendGrp.POST("/users/:id/suspend", cfg.PlatformAdminHandler.SuspendUser)
+		suspendGrp.POST("/users/:id/unsuspend", cfg.PlatformAdminHandler.UnsuspendUser)
+	}
+
+	// Epic 49 US-49.4: Admin email test-send. Registered independently of
+	// settings so it does not silently vanish if SettingsHandler becomes
+	// conditional. Admin-only (AuthMiddleware + AdminGuard).
+	if cfg.EmailHandler != nil {
+		emailAdmin := router.Group("/api/v1/admin/email")
+		emailAdmin.Use(services.GetAuth().AuthMiddleware())
+		emailAdmin.Use(middleware.AdminGuard())
+		emailAdmin.POST("/test", cfg.EmailHandler.TestSend)
+	}
+
+	// US-43.19 / D20: cluster-internal org-status endpoint polled by the
+	// workspace controller. NOT behind AuthMiddleware (the controller has no
+	// user identity); gated by a mandatory X-Internal-Token shared-secret
+	// header (fail-closed 403 when unset). An optional API NetworkPolicy adds
+	// L3/L4 defense-in-depth.
+	if cfg.InternalOrgStatusHandler != nil {
+		router.GET("/api/v1/internal/orgs/:orgID/status", cfg.InternalOrgStatusHandler.GetOrgStatus)
+	}
+
+	// US-72.3 (design 0058 §4.1): cluster-internal decrypted-provider
+	// endpoint polled by the controller's relay staging. NOT behind
+	// AuthMiddleware; gated by the mandatory X-Internal-Token shared
+	// secret (fail-closed 403 when unset) — see handler docs.
+	if cfg.InternalLLMProvidersHandler != nil {
+		router.GET("/api/v1/internal/workspaces/:workspaceID/llm-providers", cfg.InternalLLMProvidersHandler.GetLLMProviders)
+	}
+
+	registerInternalPodRoutes(router, cfg)
+
+	// Secret management routes (Epic 10)
+	if cfg.SecretsHandler != nil {
+		secretsGroup := router.Group("/api/v1/secrets")
+		secretsGroup.Use(services.GetAuth().AuthMiddleware())
+		secretsGroup.POST("", cfg.SecretsHandler.CreateSecret)
+		secretsGroup.GET("", cfg.SecretsHandler.ListSecrets)
+		secretsGroup.GET("/audit", cfg.SecretsHandler.GetAuditLog)
+		secretsGroup.GET("/:id", cfg.SecretsHandler.GetSecret)
+		secretsGroup.PUT("/:id", cfg.SecretsHandler.UpdateSecret)
+		secretsGroup.DELETE("/:id", cfg.SecretsHandler.DeleteSecret)
+		secretsGroup.POST("/:id/reveal", cfg.SecretsHandler.RevealSecret)
+		secretsGroup.GET("/:id/bindings", cfg.SecretsHandler.GetSecretBindings)
+
+		// Secrets/models routes — registered on idGroup so they inherit
+		// WorkspaceAccessMiddleware. Story 2 removes the now-redundant
+		// SecretService.verifyWorkspaceOwner + handler-level meta.UserID checks.
+		// Env routes are registered via WorkspaceEnvHandler below (US-29.4).
+		idGroup.PUT("/bindings", cfg.SecretsHandler.SetBindings)
+		idGroup.GET("/bindings", cfg.SecretsHandler.GetBindings)
+		idGroup.POST("/reload-secrets", cfg.SecretsHandler.ReloadSecrets)
+	}
+
+	// Model routes (US-29.5: extracted from SecretsHandler)
+	// Registered on idGroup so they inherit WorkspaceAccessMiddleware.
+	if cfg.ModelsHandler != nil {
+		idGroup.GET("/models", cfg.ModelsHandler.ListModels)
+		idGroup.PUT("/model", cfg.ModelsHandler.SetModel)
+	}
+
+	// Workspace env-var routes (US-29.4: extracted from SecretsHandler).
+	// Registered on idGroup so they inherit WorkspaceAccessMiddleware.
+	if cfg.WorkspaceEnvHandler != nil {
+		idGroup.PUT("/env", cfg.WorkspaceEnvHandler.SetWorkspaceEnv)
+		idGroup.GET("/env", cfg.WorkspaceEnvHandler.GetWorkspaceEnv)
+		idGroup.DELETE("/env/:name", cfg.WorkspaceEnvHandler.DeleteWorkspaceEnv)
+	}
+
+	// Key rotation endpoints removed — the password DEK tier is gone
+	// (server-KEK-only). Key rotation is now operator-side via rotate-kek CLI.
+
+	// Soft-unlock endpoint (Epic 56). Behind AuthMiddleware so the
+	// middleware stashes the session jti and the JWT's remaining
+	// lifetime on the gin context — the handler re-derives the DEK
+	// server-side and re-caches it under that jti.
+	if cfg.UnlockDEKHandler != nil {
+		unlockGroup := router.Group("/api/v1/auth")
+		unlockGroup.Use(services.GetAuth().AuthMiddleware())
+		unlockGroup.POST("/unlock-dek", cfg.UnlockDEKHandler.Unlock)
+	}
+
+	// Org CRUD routes (Epic 11)
+	if cfg.OrgsHandler != nil {
+		registerOrgRoutes(router, services, cfg.OrgsHandler, cfg.OrgCredentialsHandler, cfg.InvitationsHandler, cfg.PolicyHandler, cfg.PromptHandler, cfg.AgentRoleHandler, cfg.AuditHandler, cfg.SSOHandler)
+	}
+	// Metrics endpoint.
+	//
+	// F1.1.3 (Epic 17): pre-fix /metrics was unauthenticated, leaking
+	// internal counters (request rates per route, error rates, etc.)
+	// to any pod that could route to the API service. We now require
+	// `Authorization: Bearer <token>` if the env var
+	// LLMSAFESPACES_METRICS_TOKEN is set. Operators who want
+	// Prometheus to scrape unauthenticated should leave the env unset
+	// (matching the pre-fix behavior with explicit opt-in).
+	router.GET("/metrics", func(c *gin.Context) {
+		token := os.Getenv("LLMSAFESPACES_METRICS_TOKEN")
+		if token != "" && c.GetHeader("Authorization") != "Bearer "+token {
+			c.Header("WWW-Authenticate", `Bearer realm="metrics"`)
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+			return
+		}
+		promhttp.Handler().ServeHTTP(c.Writer, c.Request)
+	})
+
+	// Liveness probe — always returns 200 if the process is responding.
+	// Use this for Kubernetes livenessProbe. Includes the build version so
+	// operators can verify which version is running via a simple curl.
+	registerHealthRoutes(router, services, logger)
+
+	return router
+}
+
+func registerHealthRoutes(router *gin.Engine, services interfaces.Services, logger *apilogger.Logger) {
+	livenessHandler := func(c *gin.Context) {
+		c.JSON(http.StatusOK, gin.H{
+			"status":  "ok",
+			"version": version.Version,
+		})
+	}
+	router.GET("/livez", livenessHandler)
+	router.GET("/health", livenessHandler)
+
+	router.GET("/readyz", func(c *gin.Context) {
+		ctx, cancel := context.WithTimeout(c.Request.Context(), 2*time.Second)
+		defer cancel()
+
+		var failures []string
+
+		db := services.GetDatabase()
+		if db == nil {
+			failures = append(failures, "database: not configured")
+		} else if err := db.Ping(ctx); err != nil {
+			logger.Warn("/readyz: database ping failed", "error", err.Error())
+			failures = append(failures, "database: unreachable")
+		}
+
+		cache := services.GetCache()
+		if cache == nil {
+			failures = append(failures, "cache: not configured")
+		} else if err := cache.Ping(ctx); err != nil {
+			logger.Warn("/readyz: cache ping failed", "error", err.Error())
+			failures = append(failures, "cache: unreachable")
+		}
+
+		if len(failures) > 0 {
+			c.JSON(http.StatusServiceUnavailable, gin.H{
+				"status":   "unhealthy",
+				"failures": failures,
+			})
+			return
+		}
+
+		c.JSON(http.StatusOK, gin.H{"status": "ready"})
+	})
+}
+
+const (
+	maxAuthBodyBytes  = 1 << 20 // 1 MiB max for auth request bodies
+	authRatePerMinute = 20
+	authRateBurst     = 5
+)
+
+// sanitizeBindError returns a user-safe error message for binding failures
+// without leaking internal struct details.
+func sanitizeBindError(err error) string {
+	return "invalid request body"
+}
+
+// setSessionCookie sets the HttpOnly session cookie on the response.
+// maxAge is in seconds and must match the JWT's TTL.
+// cookieName is the cookie name from RouterConfig (defaults to "lsp_session").
+// cookieDomain is the Domain attribute (empty = host-only; set when wildcard
+// subdomain routing is enabled so the cookie is visible across subdomains).
+func setSessionCookie(c *gin.Context, token string, maxAge int, cookieName, cookieDomain string) {
+	c.SetSameSite(http.SameSiteLaxMode)
+	c.SetCookie(cookieName, token, maxAge, "/", cookieDomain, true, true)
+}
+
+// registrationGateMiddleware enforces the auth.registrationEnabled instance
+// setting on account-creation routes (#1650). The toggle was previously
+// advertised by GET /auth/config (hiding the frontend signup link) but never
+// enforced — POST /auth/register and passkey signup stayed open on closed
+// instances.
+//
+// Semantics:
+//   - 403 + a constant message. Registration-disabled is INSTANCE state, not
+//     per-account state, so the response is not an enumeration oracle; 403
+//     (not 404) keeps the documented route contract honest.
+//   - Fail-open on settings read errors (nil service, DB/type errors) —
+//     identical to /auth/config's GetBool fallback, so advertisement and
+//     enforcement can never disagree, and a settings-store outage never locks
+//     out the first-user bootstrap (registry default true, pinned by
+//     TestRegister_RegistrationEnabledByDefault_BootstrapKept).
+//   - Scope: local account CREATION only (password register + passkey
+//     signup). Passkey login/recovery, authenticated passkey enrollment,
+//     SSO auto-provision, and org invitations are intentionally NOT gated —
+//     they serve EXISTING users or are independently controlled by org
+//     admins (pinned by TestPasskeyLoginRecover_NotGatedByRegistrationToggle).
+func registrationGateMiddleware(instanceSettings *settings.InstanceService) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if instanceSettings == nil {
+			c.Next()
+			return
+		}
+		v, err := instanceSettings.GetBool(c.Request.Context(), settings.KeyAuthRegistrationEnabled.Name())
+		if err == nil && !v {
+			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "registration is disabled"})
+			return
+		}
+		c.Next()
+	}
+}
+
+// API key management routes.
+func registerAuthRoutes(rg *gin.RouterGroup, services interfaces.Services, instanceSettings *settings.InstanceService, logger *apilogger.Logger, cookieName, cookieDomain, subdomainBaseDomain string, ssoHandler *handlers.SSOHandler, turnstile TurnstileRouterConfig, passkeyEnabled, passkeyDefaultSignup bool) {
+	authSvc := services.GetAuth()
+
+	// Public: feature flag discovery
+	rg.GET("/config", func(c *gin.Context) {
+		regEnabled := true // default
+		instanceName := "LLMSafeSpaces"
+		motd := ""
+		if instanceSettings != nil {
+			if v, err := instanceSettings.GetBool(c.Request.Context(), settings.KeyAuthRegistrationEnabled.Name()); err == nil {
+				regEnabled = v
+			}
+			if v, err := instanceSettings.GetString(c.Request.Context(), settings.KeyInstanceName.Name()); err == nil && v != "" {
+				instanceName = v
+			}
+			if v, err := instanceSettings.GetString(c.Request.Context(), settings.KeyInstanceMOTD.Name()); err == nil {
+				motd = v
+			}
+		}
+		// OIDCEnabled is true when at least one org has configured SSO. Falls
+		// back to false on DB error or when SSO is not wired.
+		oidcEnabled := false
+		if ssoHandler != nil {
+			oidcEnabled = ssoHandler.OIDCEnabled(c.Request.Context())
+		}
+		// orgContext (design 0064, #1669): on an org subdomain, name the org
+		// this login surface is scoped to. Display-only; omitted on every
+		// miss (unknown slug / no SSO / routing disabled / store error) — the
+		// fail-soft posture of this endpoint, never a 5xx.
+		var orgContext *types.AuthConfigOrgContext
+		if ssoHandler != nil {
+			orgContext = ssoHandler.OrgContextForHost(c.Request.Context(), c.Request.Host, subdomainBaseDomain)
+		}
+		c.JSON(http.StatusOK, types.AuthConfig{
+			RegistrationEnabled:  regEnabled,
+			OIDCEnabled:          oidcEnabled,
+			PasskeyEnabled:       passkeyEnabled,
+			PasskeyDefaultSignup: passkeyDefaultSignup,
+			InstanceName:         instanceName,
+			MOTD:                 motd,
+			OrgContext:           orgContext,
+		})
+	})
+
+	// US-43.10: public OIDC SSO endpoints. Start + callback carry the org slug
+	// in the path; domains powers login-page discovery. All three are anonymous.
+	if ssoHandler != nil {
+		rg.GET("/sso/domains", ssoHandler.Domains)
+		rg.GET("/sso/:orgSlug/start", ssoHandler.Start)
+		rg.GET("/sso/:orgSlug/callback", ssoHandler.Callback)
+	}
+
+	// #1650: gate account-creation routes on the registration toggle (see
+	// registrationGateMiddleware). Runs FIRST so a closed instance neither
+	// burns Turnstile verifications nor reaches CreateUser.
+
+	// Build the /register handler chain. When Turnstile is enabled, the
+	// registration gate runs first (#1650), then the Turnstile middleware
+	// (fails-closed on any token issue), and only then the register handler.
+	// When disabled, we register the same handler behind the gate alone.
+	registerHandler := func(c *gin.Context) {
+		c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, maxAuthBodyBytes)
+		var req types.RegisterRequest
+		if err := c.ShouldBindJSON(&req); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": sanitizeBindError(err)})
+			return
+		}
+		resp, err := authSvc.Register(c.Request.Context(), req)
+		if err != nil {
+			respondWithError(c, err)
+			return
+		}
+		maxAge := int(resp.TokenTTL.Seconds())
+		if maxAge <= 0 {
+			maxAge = 86400 // safe fallback: matches default tokenDuration
+		}
+		setSessionCookie(c, resp.Token, maxAge, cookieName, cookieDomain)
+		c.JSON(http.StatusCreated, resp)
+	}
+	if turnstile.Enabled {
+		rg.POST("/register", registrationGateMiddleware(instanceSettings), middleware.Turnstile(middleware.TurnstileConfig{
+			SecretKey: turnstile.SecretKey,
+			VerifyURL: turnstile.VerifyURL,
+			Logger:    logger.ZapLogger(),
+		}), registerHandler)
+	} else {
+		rg.POST("/register", registrationGateMiddleware(instanceSettings), registerHandler)
+	}
+
+	rg.POST("/login", func(c *gin.Context) {
+		c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, maxAuthBodyBytes)
+		var req types.LoginRequest
+		if err := c.ShouldBindJSON(&req); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": sanitizeBindError(err)})
+			return
+		}
+		// G13: propagate client IP through context so the lockout
+		// logic can key on email+IP, preventing an attacker who knows
+		// the victim's email from locking them out from a different IP.
+		loginCtx := auth.WithClientIP(c.Request.Context(), c.ClientIP())
+		resp, err := authSvc.Login(loginCtx, req)
+		if err != nil {
+			if errors.Is(err, auth.ErrEmailNotVerified) {
+				c.JSON(http.StatusForbidden, gin.H{"error": err.Error(), "emailVerified": false})
+				return
+			}
+			c.JSON(http.StatusUnauthorized, gin.H{"error": err.Error()})
+			return
+		}
+		maxAge := int(resp.TokenTTL.Seconds())
+		if maxAge <= 0 {
+			maxAge = 86400 // safe fallback: matches default tokenDuration
+		}
+		setSessionCookie(c, resp.Token, maxAge, cookieName, cookieDomain)
+		c.JSON(http.StatusOK, resp)
+	})
+
+	// Public: logout
+	//
+	// G18 (Epic 17 Phase 4 RT-4.13): the JWT must be added to the
+	// revocation cache so subsequent ValidateToken calls reject it.
+	// Pre-fix this handler only cleared the cookie, leaving the token
+	// replayable by anyone who captured it (including via Authorization
+	// header re-supply).
+	//
+	// Token sources, in priority order:
+	//   1. Authorization: Bearer <jwt> header
+	//   2. lsp_session cookie
+	//
+	// Filtering: API keys (lsp_ prefix) are NOT revoked here. Their
+	// lifecycle is /api-keys/:id DELETE; calling RevokeToken on them
+	// would return a JWT-parse error which we'd then have to ignore.
+	// The router uses the literal "lsp_" prefix to match the chart's
+	// default Auth.APIKeyPrefix; operators who change the prefix get
+	// best-effort revoke-and-log on API keys, which is harmless.
+	//
+	// Failure semantics: RevokeToken errors do NOT propagate. Logout
+	// must always succeed from the user's perspective; the cookie is
+	// cleared and 204 returned regardless. Any revocation failure is
+	// logged at Warn for observability.
+	rg.POST("/logout", func(c *gin.Context) {
+		token := utilities.ExtractToken(c, utilities.TokenExtractorConfig{
+			HeaderName: "Authorization",
+			TokenType:  "Bearer",
+			CookieName: cookieName,
+		})
+		if token != "" && !utilities.IsAPIKey(token, "lsp_") {
+			if err := authSvc.RevokeToken(c.Request.Context(), token); err != nil {
+				logger.Warn("auth.logout: RevokeToken failed (proceeding with cookie clear)",
+					"error", err.Error())
+			}
+		}
+		c.SetCookie(cookieName, "", -1, "/", cookieDomain, true, true)
+		c.Status(http.StatusNoContent)
+	})
+
+	// Authenticated: current user info
+	meGroup := rg.Group("")
+	meGroup.Use(authSvc.AuthMiddleware())
+	meGroup.GET("/me", func(c *gin.Context) {
+		userID := authSvc.GetUserID(c)
+		if userID == "" {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "authentication required"})
+			return
+		}
+		user, err := services.GetDatabase().GetUser(c.Request.Context(), userID)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to fetch user"})
+			return
+		}
+		c.JSON(http.StatusOK, user)
+	})
+
+	apiKeyGroup := rg.Group("")
+	apiKeyGroup.Use(authSvc.AuthMiddleware())
+	apiKeyGroup.POST("/api-keys", func(c *gin.Context) {
+		c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, maxAuthBodyBytes)
+		userID := authSvc.GetUserID(c)
+		if userID == "" {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "authentication required"})
+			return
+		}
+		var req types.CreateAPIKeyRequest
+		if err := c.ShouldBindJSON(&req); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": sanitizeBindError(err)})
+			return
+		}
+		sessionID, _ := c.Get("sessionID")
+		sid, _ := sessionID.(string)
+		// Epic 56: forward the matched JWT signing key (nil for API-key
+		// auth) so CreateAPIKey's DEK-wrapping path can rehydrate from
+		// jwt_sessions on Redis miss.
+		var matchedKey []byte
+		if v, ok := c.Get("jwt_signing_key"); ok {
+			matchedKey, _ = v.([]byte)
+		}
+		apiKey, err := authSvc.CreateAPIKey(c.Request.Context(), userID, req, sid, matchedKey)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		c.JSON(http.StatusCreated, apiKey)
+	})
+	apiKeyGroup.GET("/api-keys", func(c *gin.Context) {
+		userID := authSvc.GetUserID(c)
+		if userID == "" {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "authentication required"})
+			return
+		}
+		keys, err := authSvc.ListAPIKeys(c.Request.Context(), userID)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		if keys == nil {
+			keys = []*types.APIKey{}
+		}
+		c.JSON(http.StatusOK, keys)
+	})
+	apiKeyGroup.DELETE("/api-keys/:id", func(c *gin.Context) {
+		userID := authSvc.GetUserID(c)
+		if userID == "" {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "authentication required"})
+			return
+		}
+		if err := authSvc.DeleteAPIKey(c.Request.Context(), userID, c.Param("id")); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		c.Status(http.StatusNoContent)
+	})
+}
+
+// registerWorkspaceRoutes registers the workspace List/Create routes on rg
+// (no :id, intentionally bypassing WorkspaceAccessMiddleware — List is scoped
+// per-user in the service, Create has no target yet) and every /:id route on
+// idGroup (which has AuthMiddleware + WorkspaceAccessMiddleware inherited
+// from its parent).
+//
+// All routes require authentication (the group already has auth middleware applied).
+//
+// proxyHandler may be nil; it is only used to trigger the optional
+// session-parent backfill on the /sessions endpoint and is otherwise unused.
+// registerInternalPodRoutes mounts the pod-identity internal endpoints.
+// Auth is K8s TokenReview per-request (no JWT middleware — init
+// containers and the agent have no user identity); see each handler.
+func registerInternalPodRoutes(router *gin.Engine, cfg RouterConfig) {
+	// Epic 35 US-35.3: pod bootstrap endpoint.
+	if cfg.PodBootstrapHandler != nil {
+		router.POST("/internal/v1/pod-bootstrap", cfg.PodBootstrapHandler.Bootstrap)
+	}
+	// Pod-identity workspace rename (agentd rename_workspace MCP tool).
+	if cfg.PodWorkspaceRenameHandler != nil {
+		router.POST("/internal/v1/workspace-rename", cfg.PodWorkspaceRenameHandler.Rename)
+	}
+
+	// Pod-identity short-id registry (agentd replica pulls + the
+	// create_session registration half — design 0066 §4.3).
+	if cfg.PodSessionRegistryHandler != nil {
+		router.GET("/internal/v1/session-registry", cfg.PodSessionRegistryHandler.List)
+		router.POST("/internal/v1/session-register", cfg.PodSessionRegistryHandler.Register)
+	}
+
+	// Pod-identity session archive/delete (agentd #1627 MCP tools).
+	if cfg.PodSessionArchiveHandler != nil {
+		router.POST("/internal/v1/session-archive", cfg.PodSessionArchiveHandler.Archive)
+		router.POST("/internal/v1/session-delete", cfg.PodSessionArchiveHandler.Delete)
+		router.GET("/internal/v1/session-archived", cfg.PodSessionArchiveHandler.ArchivedSet)
+	}
+
+	// Pod-identity automation CRUD (agentd trigger_/workflow_ MCP tools).
+	registerInternalAutomationRoutes(router, cfg)
+}
+
+// registerInternalAutomationRoutes mounts the pod-identity trigger +
+// workflow surface. TokenReview per-request (no JWT — the agent has no
+// user identity); the owner is resolved from the pod's workspace.
+func registerInternalAutomationRoutes(router *gin.Engine, cfg RouterConfig) {
+	if cfg.PodAutomationHandler == nil {
+		return
+	}
+	h := cfg.PodAutomationHandler
+	t := router.Group("/internal/v1/automation/triggers")
+	t.GET("", h.TriggerList)
+	t.POST("", h.TriggerCreate)
+	t.GET("/:id", h.TriggerGet)
+	t.PUT("/:id", h.TriggerUpdate)
+	t.DELETE("/:id", h.TriggerDelete)
+	t.GET("/:id/fires", h.TriggerFires)
+	t.POST("/:id/rotate-secret", h.TriggerRotateWebhookSecret)
+
+	w := router.Group("/internal/v1/automation/workflows")
+	w.GET("", h.WorkflowList)
+	w.POST("", h.WorkflowCreate)
+	w.GET("/:id", h.WorkflowGet)
+	w.PUT("/:id", h.WorkflowUpdate)
+	w.DELETE("/:id", h.WorkflowDelete)
+	w.POST("/:id/runs", h.WorkflowRun)
+	w.GET("/:id/runs", h.WorkflowRuns)
+
+	// Board seam (design 0067 §4.3c, amended by #1747): the worker's
+	// board_heartbeat / board_report_throttle / board_move_stage /
+	// board_read speak these routes with the pod SA token — AND, since
+	// #1747, the FULL manager set at project/epic/task level (the
+	// collaboration-to-execution loop: an agent creates the epics/tasks,
+	// activates the epic, the engine's claim-then-spawn executes).
+	// claim_next is engine-internal (R9) and never routes; task_start is
+	// dropped from agent surfaces (round-3 #2). The resource-pressure
+	// route carries agentd's backpressure telemetry (#1747 round 3).
+	if h.HasBoard() {
+		b := router.Group("/internal/v1/automation/board")
+		b.GET("/tasks/:id", h.BoardTaskGet)
+		b.GET("/projects/:id/tasks", h.BoardManagerListTasks) // #1837 P2a board_list
+		b.GET("/health", h.BoardManagerHealth)                // #1837 P2a board_health
+		b.POST("/tasks/heartbeat", h.BoardHeartbeat)
+		b.POST("/tasks/throttle", h.BoardReportThrottle)
+		b.POST("/tasks/verdict", h.BoardRecordVerdict) // #1947: the spawned reviewer persona's verdict channel (token-guarded)
+		b.POST("/tasks/move-stage", h.BoardMoveStage)
+		b.POST("/tasks/set-criteria-met", h.BoardSetCriteriaMet)      // #1946: the reviewer-persona claim's scoped criteria-flags write (claim-token-guarded; persona-provenance-guarded at the engine)
+		b.POST("/tasks/move-stage-bulk", h.BoardManagerMoveStageBulk) // #1836: bulk complete (claim stays owner-surface only, round-3 #2)
+		b.POST("/tasks/delete-bulk", h.BoardManagerDeleteTasksBulk)   // #1836 sibling: bulk delete (a manager action's batch twin)
+
+		b.POST("/projects", h.BoardCreateProject)
+		b.PATCH("/projects/:id", h.BoardUpdateProject)
+		b.POST("/projects/:id/archive", h.BoardArchiveProject)
+		b.POST("/projects/:id/unarchive", h.BoardUnarchiveProject)
+		b.POST("/projects/:id/pause", h.BoardPauseProject)
+		b.POST("/projects/:id/resume", h.BoardResumeProject)
+		b.POST("/projects/:id/epics", h.BoardCreateEpic)
+		b.POST("/projects/:id/import-plan", h.BoardImportPlan)
+
+		b.PATCH("/epics/:id", h.BoardUpdateEpic)
+		b.POST("/epics/:id/activate", h.BoardEpicActivate)
+		b.POST("/epics/:id/pause", h.BoardEpicPause)
+		b.POST("/epics/:id/archive", h.BoardEpicArchive)
+		b.POST("/epics/:id/unarchive", h.BoardEpicUnarchive)
+		b.DELETE("/epics/:id", h.BoardDeleteEpic)
+		b.POST("/epics/:id/tasks", h.BoardCreateTask)
+
+		b.PATCH("/tasks/:id", h.BoardUpdateTask)
+		b.POST("/tasks/:id/move-stage", h.BoardManagerMoveStage) // #1832 WS2: the manager-grade move (pending_input exits serviceable by any in-workspace session — the manager-grant gate is repealed, ruling 2026-10-27 / tsk-copper-refectory-generates)
+		b.POST("/tasks/:id/rearm", h.BoardRearmTask)             // #1832 WS3: the attempts-exhaustion re-pool
+		b.POST("/tasks/:id/pause", h.BoardPauseTask)
+		b.POST("/tasks/:id/resume", h.BoardResumeTask)
+		b.DELETE("/tasks/:id", h.BoardDeleteTask)
+		b.POST("/tasks/:id/dependencies", h.BoardAddDependency)
+		b.DELETE("/tasks/:id/dependencies/:dependsOnId", h.BoardRemoveDependency)
+
+		b.POST("/resource-pressure", h.BoardResourcePressure)
+	}
+}
+
+// filterArchivedSessions drops archived rows from a session listing
+// (#1735): archived history is opt-in, excluded by default. Response
+// shape only — callers that need every row (index reconciliation,
+// single-session routes) never route through here.
+func filterArchivedSessions(sessions []types.SessionListItem) []types.SessionListItem {
+	kept := sessions[:0]
+	for _, s := range sessions {
+		if !s.Archived {
+			kept = append(kept, s)
+		}
+	}
+	return kept
+}
+
+// workspaceSessionsListHandler is the GET /sessions route body
+// (extracted from registerWorkspaceRoutes for the gocyclo gate):
+// #1735's archived opt-in, the design 0066 q filter, and the status
+// merge.
+func workspaceSessionsListHandler(c *gin.Context, wsSvc interfaces.WorkspaceService, authSvc interfaces.AuthService, proxyHandler *handlers.ProxyHandler, services interfaces.Services) {
+	userID := authSvc.GetUserID(c)
+	if userID == "" {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "authentication required"})
+		return
+	}
+	workspaceID := c.Param("id")
+	sessions, err := wsSvc.ListWorkspaceSessions(c.Request.Context(), userID, workspaceID)
+	if err != nil {
+		respondWithError(c, err)
+		return
+	}
+	// #1735: archived sessions are opt-in on the listing — the
+	// default response excludes them; include_archived=true restores
+	// the full list. Applied before the q filter so a search composes
+	// with the same visibility the browsing list has (suggestions may
+	// still name archived rows — they are the caller's own).
+	if c.Query("include_archived") != "true" {
+		sessions = filterArchivedSessions(sessions)
+	}
+	// Design 0066 §4.4 search half: an additive, optional q filter
+	// over the same list the caller can already fetch —
+	// case-insensitive title substring, short-id prefix (normalized),
+	// legacy-id prefix. No q ⇒ byte-identical listing.
+	if q := strings.TrimSpace(c.Query("q")); q != "" {
+		sessions = filterSessionsByQuery(sessions, q)
+		if len(sessions) == 0 {
+			// §4.6: an empty result for an id/title-like query
+			// carries the suggestions payload (ruling 8's one
+			// response shape) instead of silence.
+			db := services.GetDatabase()
+			var resolver sessionindex.RefResolver
+			if db != nil {
+				resolver = db
+			}
+			c.JSON(http.StatusNotFound, gin.H{
+				"error":       "session not found",
+				"suggestions": sessionindex.SuggestionsFor(c.Request.Context(), resolver, userID, workspaceID, q),
+			})
+			return
+		}
+	}
+	// Trigger a one-shot async backfill of parent_session_id from the
+	// authoritative opencode /session list. No-op when the workspace
+	// has already been backfilled this process lifetime, so the steady-
+	// state cost is a single map lookup per request. Useful for
+	// sessions that pre-date the parent_session_id migration.
+	// Skipped when proxyHandler is nil (router built without proxy).
+	if proxyHandler != nil {
+		proxyHandler.BackfillSessionParents(c.Request.Context(), workspaceID)
+		// #1340 S5b convergence: TTL-gated diff of the index against
+		// the harness session list — reaps ghost rows the agent
+		// reports absent for N consecutive checks.
+		proxyHandler.ReconcileSessionIndex(c.Request.Context(), workspaceID)
+		// #1880 direction 3: serve the HARNESS count for the drift
+		// class — rows whose message stream never traversed the API
+		// proxy, invisible to both the incremental path and the
+		// present-only rebuild (the #1452 list gap). Bounded walks,
+		// serve-through + persist (self-healing).
+		proxyHandler.ServeHarnessMessageCounts(c.Request.Context(), workspaceID, sessions)
+		// Ground-truth session status (#792 Pattern 1): query
+		// /v1/statusz for authoritative busy/idle instead of the
+		// in-memory activeSess map, which goes stale when SSE
+		// events are missed (the stuck-busy bug).
+		activeSet := proxyHandler.GetAuthoritativeActiveSessions(c.Request.Context(), workspaceID)
+		if len(activeSet) > 0 {
+			for i := range sessions {
+				if activeSet[sessions[i].InternalID] {
+					sessions[i].Status = "active"
+				}
+			}
+		}
+	}
+	c.JSON(http.StatusOK, sessions)
+}
+
+// workspaceRefMiddleware builds #1757's workspace-phrase resolution
+// (nil resolver — disabled — when no database is wired).
+func workspaceRefMiddleware(services interfaces.Services) gin.HandlerFunc {
+	if db := services.GetDatabase(); db != nil {
+		return middleware.WorkspaceRefResolution(db)
+	}
+	return middleware.WorkspaceRefResolution(nil)
+}
+
+// sessionRefMiddleware builds design 0066's edge resolution layer
+// from the services bundle — nil resolver (disabled) when no database
+// is wired, so every ref passes through byte-identical.
+func sessionRefMiddleware(services interfaces.Services) gin.HandlerFunc {
+	if db := services.GetDatabase(); db != nil {
+		return middleware.SessionRefResolution(db)
+	}
+	return middleware.SessionRefResolution(nil)
+}
+
+func registerWorkspaceRoutes(rg *gin.RouterGroup, idGroup *gin.RouterGroup, services interfaces.Services, proxyHandler *handlers.ProxyHandler, cfg RouterConfig, refMW gin.HandlerFunc) {
+	wsSvc := services.GetWorkspace()
+	authSvc := services.GetAuth()
+
+	rg.GET("", func(c *gin.Context) {
+		userID := authSvc.GetUserID(c)
+		if userID == "" {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "authentication required"})
+			return
+		}
+		limit := 20
+		offset := 0
+		if v := c.Query("limit"); v != "" {
+			if n, err := strconv.Atoi(v); err == nil && n > 0 {
+				limit = n
+			}
+		}
+		if v := c.Query("offset"); v != "" {
+			if n, err := strconv.Atoi(v); err == nil && n >= 0 {
+				offset = n
+			}
+		}
+		result, err := wsSvc.ListWorkspaces(c.Request.Context(), userID, types.ListOptions{Limit: limit, Offset: offset})
+		if err != nil {
+			respondWithError(c, err)
+			return
+		}
+		c.JSON(http.StatusOK, result)
+	})
+
+	rg.POST("", func(c *gin.Context) {
+		userID := authSvc.GetUserID(c)
+		if userID == "" {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "authentication required"})
+			return
+		}
+
+		// G32 (Epic 17): per-user workspace quota. When the env var
+		// LLMSAFESPACES_MAX_WORKSPACES_PER_USER is set to a positive
+		// integer, count the user's existing non-deleted workspaces
+		// and reject CreateWorkspace if at or above the limit.
+		// Default unset = unbounded (single-tenant deployments).
+		if maxWS := os.Getenv("LLMSAFESPACES_MAX_WORKSPACES_PER_USER"); maxWS != "" {
+			if cap, parseErr := strconv.Atoi(maxWS); parseErr == nil && cap > 0 {
+				_, page, err := services.GetDatabase().ListWorkspaces(c.Request.Context(), userID, 1, 0)
+				if err == nil && page != nil && page.Total >= cap {
+					c.JSON(http.StatusTooManyRequests, gin.H{
+						"error": "workspace quota exceeded",
+						"limit": cap,
+					})
+					return
+				}
+			}
+		}
+
+		var req types.CreateWorkspaceRequest
+		if err := c.ShouldBindJSON(&req); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+		ctx := c.Request.Context()
+		if sid, exists := c.Get("sessionID"); exists {
+			ctx = workspace.ContextWithSessionID(ctx, sid.(string))
+		}
+		ws, err := wsSvc.CreateWorkspace(ctx, userID, req)
+		if err != nil {
+			respondWithError(c, err)
+			return
+		}
+		c.JSON(http.StatusCreated, ws)
+	})
+
+	idGroup.GET("", func(c *gin.Context) {
+		userID := authSvc.GetUserID(c)
+		if userID == "" {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "authentication required"})
+			return
+		}
+		ws, err := wsSvc.GetWorkspace(c.Request.Context(), userID, c.Param("id"))
+		if err != nil {
+			respondWithError(c, err)
+			return
+		}
+		c.JSON(http.StatusOK, ws)
+	})
+
+	idGroup.PUT("", func(c *gin.Context) {
+		userID := authSvc.GetUserID(c)
+		if userID == "" {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "authentication required"})
+			return
+		}
+		var body struct {
+			Name string `json:"name" binding:"required"`
+		}
+		if err := c.ShouldBindJSON(&body); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "name is required"})
+			return
+		}
+		if err := wsSvc.RenameWorkspace(c.Request.Context(), userID, c.Param("id"), body.Name); err != nil {
+			respondWithError(c, err)
+			return
+		}
+		c.Status(http.StatusNoContent)
+	})
+
+	// Epic 66: Dev Preview toggle. Dedicated endpoint rather than a general
+	// PATCH because the only mutable networkAccess field in v1 is devPreview.
+	idGroup.PUT("/dev-preview", func(c *gin.Context) {
+		userID := authSvc.GetUserID(c)
+		if userID == "" {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "authentication required"})
+			return
+		}
+		var body struct {
+			Enabled bool `json:"enabled"`
+		}
+		if err := c.ShouldBindJSON(&body); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request body"})
+			return
+		}
+		if err := wsSvc.SetDevPreview(c.Request.Context(), userID, c.Param("id"), body.Enabled); err != nil {
+			respondWithError(c, err)
+			return
+		}
+		c.Status(http.StatusNoContent)
+	})
+
+	idGroup.DELETE("", func(c *gin.Context) {
+		userID := authSvc.GetUserID(c)
+		if userID == "" {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "authentication required"})
+			return
+		}
+		if err := wsSvc.DeleteWorkspace(c.Request.Context(), userID, c.Param("id")); err != nil {
+			respondWithError(c, err)
+			return
+		}
+		c.Status(http.StatusNoContent)
+	})
+
+	idGroup.POST("/suspend", func(c *gin.Context) {
+		userID := authSvc.GetUserID(c)
+		if userID == "" {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "authentication required"})
+			return
+		}
+		if err := wsSvc.SuspendWorkspace(c.Request.Context(), userID, c.Param("id")); err != nil {
+			respondWithError(c, err)
+			return
+		}
+		c.Status(http.StatusAccepted)
+	})
+
+	// POST /:id/resume was removed — use POST /:id/activate instead.
+	// activate enforces credential injection before transitioning to Resuming,
+	// which resume did not. Keeping resume would create pods without credentials.
+
+	// Epic 21 Change A — declarative recovery from Failed (and force-restart
+	// from Active). Bumps spec.restartGeneration; controller observes and
+	// transitions back through Pending. Idempotent at the spec layer.
+	idGroup.POST("/restart", func(c *gin.Context) {
+		userID := authSvc.GetUserID(c)
+		if userID == "" {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "authentication required"})
+			return
+		}
+		restartCtx := c.Request.Context()
+		if sid, exists := c.Get("sessionID"); exists {
+			restartCtx = workspace.ContextWithSessionID(restartCtx, sid.(string))
+		}
+		if err := wsSvc.RestartWorkspace(restartCtx, userID, c.Param("id")); err != nil {
+			respondWithError(c, err)
+			return
+		}
+		c.Status(http.StatusAccepted)
+	})
+
+	// Refresh Compute: re-sync the workspace CRD with the platform's current
+	// defaults (resources, security level, storage class, max active sessions)
+	// and bump spec.restartGeneration so the controller rebuilds the pod,
+	// re-resolving spec.runtime to its latest image version.
+	//
+	// #1505 CONTRACT: refresh-compute is the USER-CONSENTED FORCE path.
+	// The generation-keyed force-recycle annotation rides the same write,
+	// so the controller's recycle BYPASSES the #761 session drain — the
+	// pod is deleted immediately even with busy in-flight turns. The UI's
+	// pre-action warning ("in-flight work is lost") is the consent; the
+	// server-side counterpart is this comment + the SessionDrainUserForced
+	// event the controller emits. Automated generation bumpers do NOT set
+	// the marker and keep the polite drain. (The suspend endpoint shares
+	// the single bounded-grace SuspendWorkspace path — #1510/#1507.)
+	idGroup.POST("/refresh-compute", func(c *gin.Context) {
+		userID := authSvc.GetUserID(c)
+		if userID == "" {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "authentication required"})
+			return
+		}
+		ctx := c.Request.Context()
+		if sid, exists := c.Get("sessionID"); exists {
+			ctx = workspace.ContextWithSessionID(ctx, sid.(string))
+		}
+		resp, err := wsSvc.RefreshWorkspaceCompute(ctx, userID, c.Param("id"))
+		if err != nil {
+			respondWithError(c, err)
+			return
+		}
+		c.JSON(http.StatusAccepted, resp)
+	})
+
+	// Epic 27a + #1601: the workspace maintenance actions — explicit
+	// agent reload (disposes opencode without pod restart) and
+	// mechanical disk recovery. Extracted from registerWorkspaceRoutes:
+	// that function rides the gocyclo 65 ceiling and each new
+	// conditional route tips it.
+	registerWorkspaceMaintenanceRoutes(idGroup, cfg)
+
+	idGroup.GET("/status", func(c *gin.Context) {
+		userID := authSvc.GetUserID(c)
+		if userID == "" {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "authentication required"})
+			return
+		}
+		status, err := wsSvc.GetWorkspaceStatus(c.Request.Context(), userID, c.Param("id"))
+		if err != nil {
+			respondWithError(c, err)
+			return
+		}
+		c.JSON(http.StatusOK, status)
+	})
+
+	idGroup.POST("/activate", func(c *gin.Context) {
+		userID := authSvc.GetUserID(c)
+		if userID == "" {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "authentication required"})
+			return
+		}
+		ctx := c.Request.Context()
+		if sid, exists := c.Get("sessionID"); exists {
+			ctx = workspace.ContextWithSessionID(ctx, sid.(string))
+		}
+		resp, err := wsSvc.ActivateWorkspace(ctx, userID, c.Param("id"))
+		if err != nil {
+			respondWithError(c, err)
+			return
+		}
+		c.JSON(http.StatusOK, resp)
+	})
+
+	idGroup.GET("/sessions", func(c *gin.Context) {
+		workspaceSessionsListHandler(c, wsSvc, authSvc, proxyHandler, services)
+	})
+
+	idGroup.POST("/sessions/new", func(c *gin.Context) {
+		userID := authSvc.GetUserID(c)
+		if userID == "" {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "authentication required"})
+			return
+		}
+		resp, err := wsSvc.EnsureSession(c.Request.Context(), userID, c.Param("id"))
+		if err != nil {
+			respondWithError(c, err)
+			return
+		}
+		c.JSON(http.StatusOK, resp)
+	})
+
+	idGroup.PUT("/sessions/:sessionId/title", refMW, func(c *gin.Context) {
+		userID := authSvc.GetUserID(c)
+		if userID == "" {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "authentication required"})
+			return
+		}
+		var body struct {
+			Title string `json:"title" binding:"required"`
+		}
+		if err := c.ShouldBindJSON(&body); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "title is required"})
+			return
+		}
+		wsID := c.Param("id")
+		sID := c.Param("sessionId")
+		if err := wsSvc.RenameSession(c.Request.Context(), userID, wsID, sID, body.Title); err != nil {
+			respondWithError(c, err)
+			return
+		}
+		// Also rename in the opencode agent so the frontend's periodic title
+		// fetch (useSessionTitle hook) doesn't retrieve the old agent-side
+		// title and overwrite the user-assigned one.
+		if proxyHandler != nil {
+			go func() {
+				ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+				defer cancel()
+				if err := proxyHandler.RenameSessionInAgent(ctx, wsID, sID, body.Title); err != nil {
+					// Log-only: the DB rename succeeded; agent rename is best-effort
+					log.Printf("RenameSessionInAgent failed for session %s: %v", sID, err)
+				}
+			}()
+		}
+		c.Status(http.StatusNoContent)
+	})
+
+	idGroup.PUT("/sessions/:sessionId/seen", refMW, func(c *gin.Context) {
+		userID := authSvc.GetUserID(c)
+		if userID == "" {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "authentication required"})
+			return
+		}
+		if err := wsSvc.MarkSessionSeen(c.Request.Context(), userID, c.Param("id"), c.Param("sessionId")); err != nil {
+			respondWithError(c, err)
+			return
+		}
+		c.Status(http.StatusNoContent)
+	})
+
+	// #1627: archive/unarchive. Platform-level marker only — the agent
+	// is untouched; archived sessions are read-only at the proxy layer.
+	// The SSE announcement lets every open tab move the session into/out
+	// of the Archived group without a refetch.
+	idGroup.PUT("/sessions/:sessionId/archived", refMW, func(c *gin.Context) {
+		userID := authSvc.GetUserID(c)
+		if userID == "" {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "authentication required"})
+			return
+		}
+		var body struct {
+			// Pointer so `false` passes the required check — unarchive
+			// is a first-class call, not a missing field.
+			Archived *bool `json:"archived" binding:"required"`
+		}
+		if err := c.ShouldBindJSON(&body); err != nil || body.Archived == nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "archived (boolean) is required"})
+			return
+		}
+		wsID := c.Param("id")
+		sID := c.Param("sessionId")
+		if err := wsSvc.SetSessionArchived(c.Request.Context(), userID, wsID, sID, *body.Archived); err != nil {
+			// Design 0066 §4.6: the update-only 404 (unindexed or
+			// unknown session) carries the did-you-mean payload —
+			// suggestions, never silence.
+			var apiErr *apierrors.APIError
+			if errors.As(err, &apiErr) && apiErr.StatusCode() == http.StatusNotFound {
+				c.JSON(http.StatusNotFound, gin.H{
+					"error":       apiErr.Error(),
+					"suggestions": middleware.SuggestionsFor(c, refResolverOf(services), wsID, sID),
+				})
+				return
+			}
+			respondWithError(c, err)
+			return
+		}
+		if proxyHandler != nil {
+			proxyHandler.PublishSessionArchived(wsID, sID, *body.Archived)
+		}
+		c.Status(http.StatusNoContent)
+	})
+
+	// Agent customization: workspace-level prompt + role selection.
+	// Registered on idGroup so WorkspaceAccessMiddleware runs first.
+	if cfg.PromptHandler != nil {
+		idGroup.GET("/prompt", cfg.PromptHandler.GetWorkspacePrompt)
+		idGroup.PUT("/prompt", cfg.PromptHandler.SetWorkspacePrompt)
+	}
+	if cfg.AgentRoleHandler != nil {
+		idGroup.GET("/agent-role", cfg.AgentRoleHandler.GetWorkspaceRole)
+		idGroup.PUT("/agent-role", cfg.AgentRoleHandler.SetWorkspaceRole)
+		idGroup.DELETE("/agent-role", cfg.AgentRoleHandler.ClearWorkspaceRole)
+		idGroup.GET("/effective-agent-role", cfg.AgentRoleHandler.GetEffectiveWorkspaceRole)
+	}
+}
+
+// registerImageFactoryRoutes adds the image-factory consumer endpoints
+// (design/0046). Authenticated; nil when the handler is not wired.
+// Also registers the internal callback endpoint (token-authed, NOT behind
+// JWT AuthMiddleware — the GH Actions runner authenticates via the
+// per-build callback_token).
+func registerImageFactoryRoutes(router *gin.Engine, services interfaces.Services, h *handlers.ImageFactoryHandler, orgsHandler *handlers.OrgsHandler) {
+	if h == nil {
+		return
+	}
+	ifg := router.Group("/api/v1/image-factory")
+	ifg.Use(services.GetAuth().AuthMiddleware())
+	ifg.GET("/catalog", h.Catalog)
+	ifg.GET("/configs", h.ListConfigs)
+	ifg.GET("/configs/:hash", h.GetConfig)
+	ifg.GET("/resolve/:hash", h.ResolveHash)
+	ifg.POST("/configs", h.CreateConfig)
+	ifg.DELETE("/configs/:hash", h.DeleteConfig)
+	ifg.PATCH("/configs/:hash", h.RenameConfig)
+
+	// Org-scoped config creation: POST /orgs/:id/image-factory/configs.
+	// Behind OrgAdminGuard — only org admins can create org-scoped images.
+	if orgsHandler != nil {
+		orgIfg := router.Group("/api/v1/orgs/:id/image-factory")
+		orgIfg.Use(services.GetAuth().AuthMiddleware())
+		orgIfg.Use(middleware.OrgAdminGuard(orgsHandler))
+		orgIfg.POST("/configs", h.CreateOrgConfig)
+	}
+
+	// Platform-scoped config creation: POST /admin/image-factory/configs.
+	// Behind AdminGuard — only platform admins can create platform images.
+	adminIfg := router.Group("/api/v1/admin/image-factory")
+	adminIfg.Use(services.GetAuth().AuthMiddleware())
+	adminIfg.Use(middleware.AdminGuard())
+	adminIfg.POST("/configs", h.CreatePlatformConfig)
+
+	// Internal callback: NOT behind AuthMiddleware. The handler authenticates
+	// via subtle.ConstantTimeCompare on the per-build callback_token.
+	router.POST("/internal/image-factory/builds/:id/callback", h.Callback)
+}
+
+// registerImageFactoryAdminRoutes adds the platform-owner admin endpoints.
+// All behind AuthMiddleware + AdminGuard (platform owner only).
+func registerImageFactoryAdminRoutes(router *gin.Engine, services interfaces.Services, h *handlers.ImageFactoryAdminHandler) {
+	if h == nil {
+		return
+	}
+	g := router.Group("/api/v1/admin/image-factory")
+	g.Use(services.GetAuth().AuthMiddleware())
+	g.Use(middleware.AdminGuard())
+
+	g.GET("/platform-config", h.GetPlatformConfig)
+	g.PUT("/platform-config", h.SetPlatformConfig)
+
+	g.GET("/bases", h.ListBases)
+	g.POST("/bases", h.UpsertBase)
+	g.DELETE("/bases/:name/:version", h.DeleteBase)
+
+	g.GET("/extensions", h.ListExtensions)
+	g.POST("/extensions", h.PublishExtension)
+	g.DELETE("/extensions/:id", h.RetireExtension)
+
+	g.GET("/known-failures", h.ListKnownFailures)
+	g.PUT("/known-failures/:hash/:baseName", h.SetKnownFailureRetriable)
+	g.DELETE("/known-failures/:hash/:baseName", h.DeleteKnownFailure)
+}
+
+// registerProxyRoutes adds all /api/v1/workspaces/:id proxy routes on the
+// provided idGroup. idGroup already has AuthMiddleware + WorkspaceAccessMiddleware
+// applied, so every proxy handler inherits the single ownership gate.
+func registerProxyRoutes(idGroup *gin.RouterGroup, proxyHandler *handlers.ProxyHandler, refMW gin.HandlerFunc) {
+	// Design 0066 (#1691): every id-taking proxy route resolves the
+	// ref first — short id (case-insensitive), legacy id (byte-
+	// identical passthrough), unambiguous alias; an unresolvable
+	// alias-form ref answers the structured 404 + did-you-mean here.
+	session := idGroup.Group("", refMW)
+	session.POST("/sessions/:sessionId/message", proxyHandler.SendMessage)
+	session.POST("/sessions/:sessionId/prompt", proxyHandler.SendPromptAsync)
+	session.POST("/sessions/:sessionId/queue", proxyHandler.EnqueueMessage)
+
+	session.GET("/sessions/:sessionId/queue", proxyHandler.ListQueue)
+	session.DELETE("/sessions/:sessionId/queue/:messageId", proxyHandler.DeleteQueueMessage)
+	session.POST("/sessions/:sessionId/queue/:messageId/retry", proxyHandler.RetryQueueMessage)
+	session.GET("/sessions/:sessionId/message", proxyHandler.GetHistory)
+	session.GET("/sessions/:sessionId", proxyHandler.GetSession)
+	session.POST("/sessions/:sessionId/abort", proxyHandler.AbortSession)
+	// Epic 69 US-69.9: the typed-actions union (design 0055 M1 op 5) —
+	// forwarded to the pod's Act op when AGENTD_STATE_AUTHORITY is armed
+	// (D4 single regime; 501 NotSupported when the flag is off).
+	session.POST("/sessions/:sessionId/actions", proxyHandler.SessionAction)
+	// Epic 69 US-69.10 (design 0055 S3/D1-B): the API-proxied contract
+	// stream — raw ABI frames; the browser runs the stamped-snapshot
+	// client rule. Behind the authority flag (typed 501 off-regime).
+	idGroup.GET("/contract-events", proxyHandler.ContractEvents)
+	session.DELETE("/sessions/:sessionId", proxyHandler.DeleteSession)
+	idGroup.GET("/session-events", proxyHandler.StreamEvents)
+
+	// D6 (#998): persisted hung-session alerts (reconnect/workflow surface).
+	idGroup.GET("/alerts", proxyHandler.GetWorkspaceAlerts)
+
+	// Question/Permission input request routes (Epic 16)
+	idGroup.GET("/question", proxyHandler.ListQuestions)
+	idGroup.POST("/question/:requestID/reply", proxyHandler.QuestionReply)
+	idGroup.POST("/question/:requestID/reject", proxyHandler.QuestionReject)
+	idGroup.GET("/permission", proxyHandler.ListPermissions)
+	idGroup.POST("/permission/:requestID/reply", proxyHandler.PermissionReply)
+
+	// #1313 (epic-71 / 3a): the inbox dismiss exit — a live ask is
+	// rejected first, the record terminalizes as dismissed (S11).
+	session.DELETE("/sessions/:sessionId/inbox/:requestID", proxyHandler.DismissInboxRecord)
+
+	// D10: on-demand input-snapshot flight (ChatPage arms reconnect mode on
+	// in-workspace switches where no SSE reconnect fires).
+	idGroup.POST("/input-snapshot", proxyHandler.RequestInputSnapshot)
+
+	// #1821 piece 4: on-demand busy-snapshot flight — the frontend busy
+	// lease's authoritative recheck surface (RequestInputSnapshot
+	// pattern: 202 now, the flight lands on the user-event stream).
+	idGroup.POST("/sessions/status-snapshot", proxyHandler.RequestSessionStatusSnapshot)
+
+	// Epic 68 US-68.2: workspace file upload — streaming multipart ingest
+	// through agentd's user-mux PUT /v1/files, behind the same
+	// AuthMiddleware + WorkspaceAccessMiddleware gate as every other
+	// proxied :id route.
+	idGroup.POST("/uploads", proxyHandler.UploadFile)
+}
+
+// respondWithError maps API errors to HTTP responses. It uses errors.As to
+// find an *apierrors.APIError or a *pkgerrors.StatusError anywhere in the
+// error chain (handles both direct returns and fmt.Errorf-wrapped errors),
+// falling back to a duck-typed StatusCode() check, then 500 for plain errors.
+// refResolverOf adapts the services bundle to the resolution surface
+// (nil-safe: a router built without a database disables the layer).
+func refResolverOf(services interfaces.Services) sessionindex.RefResolver {
+	if db := services.GetDatabase(); db != nil {
+		return db
+	}
+	return nil
+}
+
+// filterSessionsByQuery is the design 0066 §4.4 q filter: a pure,
+// case-insensitive filter over the list the caller can already fetch —
+// title substring, short-id prefix (normalized), legacy-id prefix.
+// Ordering is untouched (the list surface's recency order).
+func filterSessionsByQuery(sessions []types.SessionListItem, q string) []types.SessionListItem {
+	norm := shortid.Normalize(q)
+	out := make([]types.SessionListItem, 0, len(sessions))
+	for _, s := range sessions {
+		if strings.Contains(strings.ToLower(s.Title), strings.ToLower(q)) {
+			out = append(out, s)
+			continue
+		}
+		if s.ShortID != "" && strings.HasPrefix(shortid.Normalize(s.ShortID), norm) {
+			out = append(out, s)
+			continue
+		}
+		if strings.HasPrefix(s.InternalID, q) || strings.HasPrefix(s.ID, q) {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
+func respondWithError(c *gin.Context, err error) {
+	var apiErr *apierrors.APIError
+	if errors.As(err, &apiErr) {
+		c.JSON(apiErr.StatusCode(), gin.H{"error": apiErr.Error()})
+		return
+	}
+	var statusErr interface{ StatusCode() int }
+	if errors.As(err, &statusErr) {
+		c.JSON(statusErr.StatusCode(), gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+}
+
+// registerSettingsRoutes adds admin and user settings routes.
+func registerSettingsRoutes(router *gin.Engine, services interfaces.Services, h *handlers.SettingsHandler) {
+	authMW := services.GetAuth().AuthMiddleware()
+
+	// Admin settings (authenticated + admin guard)
+	admin := router.Group("/api/v1/admin/settings")
+	admin.Use(authMW)
+	admin.Use(middleware.AdminGuard())
+	admin.GET("", h.GetAdminSettings)
+	admin.GET("/schema", h.GetAdminSettingsSchema)
+	admin.PUT("/:key", h.SetAdminSetting)
+
+	// User settings (authenticated)
+	user := router.Group("/api/v1/users/me/settings")
+	user.Use(authMW)
+	user.GET("", h.GetUserSettings)
+	user.GET("/schema", h.GetUserSettingsSchema)
+	user.PUT("/:key", h.SetUserSetting)
+}
+
+// registerCredentialRoutes adds admin credential set CRUD routes.
+// getMaxActiveSessions reads the max active sessions setting, falling back to 5.
+func getMaxActiveSessions(ctx context.Context, instanceSettings *settings.InstanceService) int {
+	if instanceSettings != nil {
+		if v, err := instanceSettings.GetInt(ctx, settings.KeyWorkspaceDefaultMaxActiveSessions.Name()); err == nil && v > 0 {
+			return v
+		}
+	}
+	return 5
+}
+
+// registerOrgRoutes adds all /api/v1/orgs routes.
+func registerOrgRoutes(router *gin.Engine, services interfaces.Services, h *handlers.OrgsHandler, credH *handlers.OrgCredentialsHandler, invH *handlers.InvitationsHandler, polH *handlers.PolicyHandler, promptH *handlers.PromptHandler, roleH *handlers.AgentRoleHandler, audH *handlers.AuditHandler, ssoH *handlers.SSOHandler) {
+	authMW := services.GetAuth().AuthMiddleware()
+
+	orgGroup := router.Group("/api/v1/orgs")
+	orgGroup.Use(authMW)
+	orgGroup.POST("", h.Create)
+	orgGroup.GET("", h.List)
+
+	orgIDGroup := orgGroup.Group("/:id")
+	orgIDGroup.Use(middleware.OrgMemberGuard(h))
+	orgIDGroup.GET("", h.Get)
+	orgIDGroup.GET("/workspaces", h.ListWorkspaces)
+	orgIDGroup.GET("/members", h.ListMembers)
+	if invH != nil {
+		orgIDGroup.GET("/invitations", invH.List)
+	}
+
+	orgAdminGroup := orgGroup.Group("/:id")
+	orgAdminGroup.Use(middleware.OrgAdminGuard(h))
+	orgAdminGroup.PUT("", h.Update)
+	orgAdminGroup.DELETE("", h.Delete)
+	orgAdminGroup.POST("/members", h.AddMember)
+	orgAdminGroup.DELETE("/members/:userID", h.RemoveMember)
+	orgAdminGroup.PUT("/members/:userID", h.ChangeMemberRole)
+	orgAdminGroup.POST("/members/:userID/verify", h.VerifyMember)
+	orgAdminGroup.POST("/billing/checkout", h.Checkout)
+	orgAdminGroup.POST("/billing/portal", h.Portal)
+	if invH != nil {
+		orgAdminGroup.POST("/invitations", invH.Create)
+		orgAdminGroup.DELETE("/invitations/:invID", invH.Delete)
+		orgAdminGroup.POST("/invitations/:invID/resend", invH.Resend)
+		// Force-verify the user account associated with a pending
+		// invitation (epic-43 follow-up — the invitee already has an
+		// unverified users row; this admin override sets
+		// users.email_verified=true so they can log in. The invitation
+		// itself stays pending — the user must still click the link
+		// to accept and join the org).
+		orgAdminGroup.POST("/invitations/:invID/verify-user", invH.VerifyUserForInvitation)
+	}
+
+	if credH != nil {
+		orgAdminGroup.POST("/credentials", credH.Create)
+		orgAdminGroup.GET("/credentials", credH.List)
+		orgAdminGroup.PUT("/credentials/:credID", credH.Update)
+		orgAdminGroup.DELETE("/credentials/:credID", credH.Delete)
+		orgAdminGroup.GET("/credentials/:credID/models", credH.ProbeModels)
+		orgAdminGroup.POST("/credentials/:credID/auto-apply", credH.CreateAutoApply)
+		orgAdminGroup.GET("/credentials/:credID/auto-apply", credH.ListAutoApply)
+		orgAdminGroup.DELETE("/credentials/:credID/auto-apply", credH.DeleteAutoApply)
+	}
+
+	if polH != nil {
+		orgAdminGroup.GET("/policies", polH.Get)
+		// Feature-gated policy mutations (Business+ per billing.PlanTiers).
+		// Reads remain open so members can see what's enforced; writes
+		// require the plan to include the policy feature.
+		featurePolicy := orgAdminGroup.Group("", middleware.FeatureGuard(h, "policies"))
+		featurePolicy.PUT("/policies/:key", polH.Put)
+		featurePolicy.DELETE("/policies/:key", polH.Delete)
+	}
+
+	if promptH != nil {
+		orgIDGroup.GET("/prompt", promptH.GetOrg)
+		orgAdminGroup.PUT("/prompt", promptH.SetOrg)
+	}
+
+	if roleH != nil {
+		orgAdminGroup.GET("/agent-roles", roleH.ListOrg)
+		orgAdminGroup.POST("/agent-roles", roleH.CreateOrg)
+		orgAdminGroup.GET("/agent-roles/:roleId", roleH.GetOrg)
+		orgAdminGroup.PUT("/agent-roles/:roleId", roleH.UpdateOrg)
+		orgAdminGroup.DELETE("/agent-roles/:roleId", roleH.DeleteOrg)
+	}
+
+	if audH != nil {
+		// Audit log access requires Business+ plan (per billing.PlanTiers).
+		orgAdminGroup.GET("/audit", middleware.FeatureGuard(h, "audit"), audH.List)
+	}
+
+	// US-43.10: org-admin SSO config CRUD + domain verification (D17 Q-S2).
+	if ssoH != nil {
+		orgAdminGroup.GET("/sso", ssoH.Get)
+		orgAdminGroup.PUT("/sso", ssoH.Put)
+		orgAdminGroup.DELETE("/sso", ssoH.Delete)
+		orgAdminGroup.POST("/sso/domains/:domain/verify", ssoH.VerifyDomain)
+		orgAdminGroup.POST("/sso/verification-token/rotate", ssoH.RotateToken)
+	}
+
+	// Public invitation routes (token is the credential).
+	if invH != nil {
+		publicInv := router.Group("/api/v1/invitations")
+		publicInv.GET("/:token", invH.GetByToken)
+		authedInv := publicInv.Group("", authMW)
+		authedInv.POST("/:token/accept", invH.Accept)
+		authedInv.POST("/:token/decline", invH.Decline)
+	}
+}
+
+// registerPasskeySettingsRoutes registers the authenticated passkey account
+// management endpoints (list/delete/regenerate). Extracted from NewRouter to
+// keep that function under the funlen limit.
+func registerPasskeySettingsRoutes(router *gin.Engine, services interfaces.Services, handler *handlers.PasskeyHandler) {
+	if handler == nil {
+		return
+	}
+	pkSettings := router.Group("/api/v1/account/passkeys")
+	pkSettings.Use(services.GetAuth().AuthMiddleware())
+	pkSettings.GET("", handler.ListPasskeys)
+	pkSettings.DELETE("/:id", handler.DeletePasskey)
+	pkSettings.POST("/recovery-codes/regenerate", handler.RegenerateRecoveryCodes)
+	pkSettings.POST("/enroll/begin", handler.BeginEnrollPasskey)
+	pkSettings.POST("/enroll/finish", handler.FinishEnrollPasskey)
+}
+
+// registerMCPRoutes registers all Epic 53 MCP server routes across the three
+// scopes (admin/org/user). Extracted from NewRouter to keep NewRouter under
+// the funlen limit (350 lines).
+func registerMCPRoutes(router *gin.Engine, services interfaces.Services, cfg RouterConfig) {
+	if cfg.AdminMCPServersHandler != nil {
+		mcpAdmin := router.Group("/api/v1/admin/mcp-servers")
+		mcpAdmin.Use(services.GetAuth().AuthMiddleware())
+		mcpAdmin.Use(middleware.AdminGuard())
+		mcpAdmin.GET("", cfg.AdminMCPServersHandler.AdminList)
+		mcpAdmin.POST("", cfg.AdminMCPServersHandler.AdminCreate)
+		mcpAdmin.GET("/:id", cfg.AdminMCPServersHandler.AdminGet)
+		mcpAdmin.PUT("/:id", cfg.AdminMCPServersHandler.AdminUpdate)
+		mcpAdmin.DELETE("/:id", cfg.AdminMCPServersHandler.AdminDelete)
+		mcpAdmin.POST("/:id/bindings", cfg.AdminMCPServersHandler.Bind)
+		mcpAdmin.DELETE("/:id/bindings/:workspaceId", cfg.AdminMCPServersHandler.Unbind)
+		mcpAdmin.POST("/:id/auto-apply", cfg.AdminMCPServersHandler.CreateAutoApply)
+		mcpAdmin.GET("/:id/auto-apply", cfg.AdminMCPServersHandler.ListAutoApply)
+		mcpAdmin.DELETE("/:id/auto-apply/:targetType/:targetId", cfg.AdminMCPServersHandler.DeleteAutoApply)
+		mcpAdmin.DELETE("/:id/auto-apply/:targetType", cfg.AdminMCPServersHandler.DeleteAutoApply)
+	}
+
+	if cfg.OrgMCPServersHandler != nil && cfg.OrgsHandler != nil {
+		orgMcp := router.Group("/api/v1/orgs/:id/mcp-servers")
+		orgMcp.Use(services.GetAuth().AuthMiddleware())
+		orgMcp.Use(middleware.OrgAdminGuard(cfg.OrgsHandler))
+		orgMcp.GET("", cfg.OrgMCPServersHandler.OrgList)
+		orgMcp.POST("", cfg.OrgMCPServersHandler.OrgCreate)
+		orgMcp.GET("/:serverId", cfg.OrgMCPServersHandler.OrgGet)
+		orgMcp.PUT("/:serverId", cfg.OrgMCPServersHandler.OrgUpdate)
+		orgMcp.DELETE("/:serverId", cfg.OrgMCPServersHandler.OrgDelete)
+		orgMcp.POST("/:serverId/bindings", cfg.OrgMCPServersHandler.Bind)
+		orgMcp.DELETE("/:serverId/bindings/:workspaceId", cfg.OrgMCPServersHandler.Unbind)
+		orgMcp.POST("/:serverId/auto-apply", cfg.OrgMCPServersHandler.CreateAutoApply)
+		orgMcp.GET("/:serverId/auto-apply", cfg.OrgMCPServersHandler.ListAutoApply)
+	}
+
+	// #1499: user-level saved prompts (owner-scoped CRUD) — its own
+	// nil-guarded block, deliberately NOT nested in any sibling
+	// resource's guard (a conditional MCP construction must never
+	// gate an unconditionally-constructed prompts handler).
+	if cfg.UserPromptsHandler != nil {
+		userPrompts := router.Group("/api/v1/me/prompts")
+		userPrompts.Use(services.GetAuth().AuthMiddleware())
+		userPrompts.GET("", cfg.UserPromptsHandler.List)
+		userPrompts.POST("", cfg.UserPromptsHandler.Create)
+		userPrompts.PUT("/:id", cfg.UserPromptsHandler.Update)
+		userPrompts.DELETE("/:id", cfg.UserPromptsHandler.Delete)
+	}
+
+	if cfg.UserMCPServersHandler != nil {
+		userMcp := router.Group("/api/v1/me/mcp-servers")
+		userMcp.Use(services.GetAuth().AuthMiddleware())
+		userMcp.GET("", cfg.UserMCPServersHandler.UserList)
+		userMcp.POST("", cfg.UserMCPServersHandler.UserCreate)
+		userMcp.GET("/:id", cfg.UserMCPServersHandler.UserGet)
+		userMcp.PUT("/:id", cfg.UserMCPServersHandler.UserUpdate)
+		userMcp.DELETE("/:id", cfg.UserMCPServersHandler.UserDelete)
+		userMcp.POST("/:id/bindings", cfg.UserMCPServersHandler.Bind)
+		userMcp.DELETE("/:id/bindings/:workspaceId", cfg.UserMCPServersHandler.Unbind)
+		userMcp.POST("/:id/auto-apply", cfg.UserMCPServersHandler.CreateAutoApply)
+		userMcp.GET("/:id/auto-apply", cfg.UserMCPServersHandler.ListAutoApply)
+	}
+}
+
+// registerWorkflowRoutes registers all Epic 64 workflow/trigger/run routes.
+// registerWorkspaceWorkflowRoutes adds workspace-scoped workflow endpoints
+// to the idGroup, inheriting WorkspaceAccessMiddleware. Handlers read
+// c.Param("id") (the canonical workspace ID param).
+func registerWorkspaceWorkflowRoutes(idGroup *gin.RouterGroup, cfg RouterConfig) {
+	if cfg.UserWorkflowsHandler == nil {
+		return
+	}
+	idGroup.GET("/runs/active", cfg.UserWorkflowsHandler.ListActiveRunsByWorkspace)
+	idGroup.GET("/session-origins", cfg.UserWorkflowsHandler.ListSessionOrigins)
+}
+
+func registerWorkflowRoutes(router *gin.Engine, services interfaces.Services, cfg RouterConfig) {
+	// User-scope workflow routes.
+	if cfg.UserWorkflowsHandler != nil {
+		g := router.Group("/api/v1/me/workflows")
+		g.Use(services.GetAuth().AuthMiddleware())
+		g.GET("", cfg.UserWorkflowsHandler.UserList)
+		g.POST("", cfg.UserWorkflowsHandler.UserCreate)
+		g.GET("/:id", cfg.UserWorkflowsHandler.UserGet)
+		g.PUT("/:id", cfg.UserWorkflowsHandler.UserUpdate)
+		g.DELETE("/:id", cfg.UserWorkflowsHandler.UserDelete)
+		g.POST("/:id/runs", cfg.UserWorkflowsHandler.UserRunWorkflow)
+		g.GET("/:id/runs", cfg.UserWorkflowsHandler.UserListRuns)
+	}
+
+	// Org-scope workflow routes.
+	if cfg.OrgWorkflowsHandler != nil && cfg.OrgsHandler != nil {
+		g := router.Group("/api/v1/orgs/:id/workflows")
+		g.Use(services.GetAuth().AuthMiddleware())
+		g.Use(middleware.OrgAdminGuard(cfg.OrgsHandler))
+		g.GET("", cfg.OrgWorkflowsHandler.OrgList)
+		g.POST("", cfg.OrgWorkflowsHandler.OrgCreate)
+		g.GET("/:workflowId", cfg.OrgWorkflowsHandler.OrgGet)
+		g.PUT("/:workflowId", cfg.OrgWorkflowsHandler.OrgUpdate)
+		g.DELETE("/:workflowId", cfg.OrgWorkflowsHandler.OrgDelete)
+		g.POST("/:workflowId/runs", cfg.OrgWorkflowsHandler.OrgRunWorkflow)
+	}
+
+	// User-scope trigger routes.
+	if cfg.UserTriggersHandler != nil {
+		g := router.Group("/api/v1/me/triggers")
+		g.Use(services.GetAuth().AuthMiddleware())
+		g.GET("", cfg.UserTriggersHandler.UserList)
+		g.POST("", cfg.UserTriggersHandler.UserCreate)
+		g.GET("/:id", cfg.UserTriggersHandler.UserGet)
+		g.PUT("/:id", cfg.UserTriggersHandler.UserUpdate)
+		g.DELETE("/:id", cfg.UserTriggersHandler.UserDelete)
+		g.GET("/:id/fires", cfg.UserTriggersHandler.UserListFires)
+		g.POST("/:id/rotate-secret", cfg.UserTriggersHandler.UserRotateWebhookSecret)
+	}
+
+	// Task Board REST routes (design 0067 §4.3a, #1699 Lane 2):
+	// user-level only (ruling R7 — no org routes, no scope switcher);
+	// item addressing by short id (prj-/epc-/tsk-, case-insensitive —
+	// word-phrase form since #1831, e.g. tsk-amber-falcon-glides;
+	// legacy random tsk-XXXXXXXX forms still resolve through the
+	// dual-accept window) or UUID. Registered only when the board engine is wired (nil handler
+	// = feature off, matching the internal automation seam's gating).
+	// Board-wide search + health ride the /me/board group (#1699 seams).
+	if cfg.BoardHandler != nil {
+		b := cfg.BoardHandler
+		p := router.Group("/api/v1/me/projects")
+		p.Use(services.GetAuth().AuthMiddleware())
+		p.GET("", b.ListProjects)
+		p.POST("", b.CreateProject)
+		p.GET("/:id", b.GetProject)
+		p.PATCH("/:id", b.UpdateProject)
+		p.POST("/:id/archive", b.ArchiveProject)
+		p.POST("/:id/unarchive", b.UnarchiveProject)
+		p.POST("/:id/pause", b.PauseProject)
+		p.POST("/:id/resume", b.ResumeProject)
+		p.GET("/:id/tasks", b.ListProjectTasks)
+		p.POST("/:id/epics", b.CreateEpic)
+		p.POST("/:id/import-plan", b.ImportPlan)
+		p.GET("/:id/epics", b.ListProjectEpics)
+		// #1832 item 6: per-project config overrides (overrides +
+		// effective merged config; REPLACE-semantics writes).
+		p.GET("/:id/config", b.GetProjectBoardConfig)
+		p.PUT("/:id/config", b.SetProjectBoardConfig)
+
+		bb := router.Group("/api/v1/me/board")
+		bb.Use(services.GetAuth().AuthMiddleware())
+		bb.GET("/search", b.BoardSearch)
+		bb.GET("/health", b.BoardHealth)
+		// #1832 item 6: board-wide config defaults are USER-scoped (R7
+		// ruling on PR #1840: boards are user-level, so "board-wide" =
+		// the acting user's boards) — the /me surface, no admin gate.
+		bb.GET("/config", b.GetUserBoardConfig)
+		bb.PUT("/config", b.SetUserBoardConfig)
+
+		e := router.Group("/api/v1/me/epics")
+		e.Use(services.GetAuth().AuthMiddleware())
+		e.GET("/:id", b.GetEpic)
+		e.PATCH("/:id", b.UpdateEpic)
+		e.POST("/:id/activate", b.ActivateEpic)
+		e.POST("/:id/pause", b.PauseEpic)
+		e.POST("/:id/archive", b.ArchiveEpic)
+		e.POST("/:id/unarchive", b.UnarchiveEpic)
+		e.DELETE("/:id", b.DeleteEpic)
+		e.POST("/:id/tasks", b.CreateEpicTask)
+
+		k := router.Group("/api/v1/me/tasks")
+		k.Use(services.GetAuth().AuthMiddleware())
+		k.GET("/:id", b.GetTask)
+		k.GET("/:id/events", b.TaskEvents)
+		k.PATCH("/:id", b.UpdateTask)
+		k.POST("/:id/move-stage", b.MoveStageTask)
+		k.POST("/:id/verdict", b.RecordTaskVerdict)
+		k.GET("/:id/verdicts", b.ListTaskVerdicts)
+		k.POST("/:id/start", b.StartTask)
+		k.POST("/:id/rearm", b.RearmTask)
+		k.POST("/:id/pause", b.PauseTask)
+		k.POST("/:id/resume", b.ResumeTask)
+		k.DELETE("/:id", b.DeleteTask)
+		k.POST("/:id/dependencies", b.AddDependency)
+		k.DELETE("/:id/dependencies/:dependsOnId", b.RemoveDependency)
+		// #1836: the bulk claim/complete projections — engine batch
+		// seams; static siblings of the /:id routes (gin routes
+		// statics first, so both trees resolve).
+		k.POST("/bulk-start", b.StartTasksBulk)
+		k.POST("/bulk-move-stage", b.MoveStageBulk)
+		k.POST("/bulk-delete", b.DeleteTasksBulk) // #1836 sibling: delete_task(s) batch
+	}
+
+	// Org-scope trigger routes.
+	if cfg.OrgTriggersHandler != nil && cfg.OrgsHandler != nil {
+		g := router.Group("/api/v1/orgs/:id/triggers")
+		g.Use(services.GetAuth().AuthMiddleware())
+		g.Use(middleware.OrgAdminGuard(cfg.OrgsHandler))
+		g.GET("", cfg.OrgTriggersHandler.OrgList)
+		g.POST("", cfg.OrgTriggersHandler.OrgCreate)
+		g.GET("/:triggerId", cfg.OrgTriggersHandler.OrgGet)
+		g.PUT("/:triggerId", cfg.OrgTriggersHandler.OrgUpdate)
+		g.DELETE("/:triggerId", cfg.OrgTriggersHandler.OrgDelete)
+	}
+
+	// Run management (shared — run IDs are unguessable UUIDs).
+	if cfg.UserWorkflowsHandler != nil {
+		runs := router.Group("/api/v1/me/runs")
+		runs.Use(services.GetAuth().AuthMiddleware())
+		runs.GET("/:runId", cfg.UserWorkflowsHandler.GetRun)
+		runs.GET("/:runId/nodes", cfg.UserWorkflowsHandler.GetRunNodes)
+		runs.POST("/:runId/cancel", cfg.UserWorkflowsHandler.CancelRun)
+	}
+
+	// Webhook receiver — public route, no JWT (signature IS the credential).
+	if cfg.WebhookReceiverHandler != nil {
+		router.POST("/api/v1/hooks/:webhookId", cfg.WebhookReceiverHandler.HandleWebhook)
+	}
+}
+
+// registerWorkspaceMaintenanceRoutes wires the workspace-scoped
+// maintenance actions: agent reload (Epic 27a) and mechanical disk
+// recovery (#1601 — owner-only via idGroup's AuthMiddleware +
+// WorkspaceAccessMiddleware; dryRun=true renders report-before-free).
+// Both are optional wirings: absent handlers simply do not register.
+func registerWorkspaceMaintenanceRoutes(idGroup *gin.RouterGroup, cfg RouterConfig) {
+	if cfg.AgentReloadHandler != nil {
+		idGroup.POST("/agent/reload", cfg.AgentReloadHandler.Reload)
+	}
+	if cfg.DiskRecoverHandler != nil {
+		idGroup.POST("/disk-recover", cfg.DiskRecoverHandler.Recover)
+	}
+	if cfg.FsAuditHandler != nil {
+		idGroup.POST("/fs-audit", cfg.FsAuditHandler.Audit)
+	}
+}

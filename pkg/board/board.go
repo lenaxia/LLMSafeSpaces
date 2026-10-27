@@ -143,7 +143,7 @@ const (
 	SurfaceREST         = "rest"          // (a) REST for UI + SDKs
 	SurfaceExternalMCP  = "external_mcp"  // (b) customer-facing platform MCP
 	SurfaceAgent        = "agent"         // (c) agent-internal registry (workers)
-	SurfaceAgentManager = "agent_manager" // (c-manager) the pod seam's manager projection (#1832 WS2: orchestrator-class in-workspace sessions)
+	SurfaceAgentManager = "agent_manager" // (c-manager) the pod seam's manager projection (#1832 WS2; open to any in-workspace session — the manager-grant gate is repealed, ruling 2026-10-27 / tsk-copper-refectory-generates)
 	SurfaceReconciler   = "reconciler"    // system actor, engine-internal
 )
 

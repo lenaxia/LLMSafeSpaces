@@ -77,20 +77,20 @@ func TestBoardSetCriteriaMet_LoudVocabulary(t *testing.T) {
 }
 
 // TestBoardSetCriteriaMet_GuardClassMapping: the grant's guard classes
-// render through the shared parity mapping — the #1747 §5 refusal
+// render through the shared parity mapping — the persona-tier refusal
 // carries its class (manager_surface) and text verbatim (the same
-// render as the pending_input worker-exit §5 refusal), the claim-token
+// render as the pending_input worker-exit refusal), the claim-token
 // class 409s.
 func TestBoardSetCriteriaMet_GuardClassMapping(t *testing.T) {
 	svc := newFakeBoardService()
 	svc.setCritErr = &board.GuardError{Code: board.GuardManagerSurface,
-		Detail: "criteria-met recording is the reviewer-persona claim's scoped grant (issue #1946) — manager board tools attach to user-collaborator sessions only (ruling #1747 §5)"}
+		Detail: "criteria-met recording is the reviewer-persona claim's scoped grant (issue #1946) — no persona claim, no grant; task-worker self-certification remains forbidden (ruling 2026-10-27, tsk-copper-refectory-generates)"}
 	r := newBoardAutomationRouter(t, svc)
 	w := doBoard(t, r, http.MethodPost, "/internal/v1/automation/board/tasks/set-criteria-met",
 		`{"workspaceID":"ws-1","taskId":"t-1","claimToken":"tok-impl","setCriteriaMet":{"index":0,"met":true}}`)
-	require.Equal(t, http.StatusConflict, w.Code, "the §5 class renders through the shared guard mapping (the pending_input §5 refusal renders the same)")
+	require.Equal(t, http.StatusConflict, w.Code, "the persona-tier class renders through the shared guard mapping (the pending_input refusal renders the same)")
 	assert.Contains(t, w.Body.String(), board.GuardManagerSurface)
-	assert.Contains(t, w.Body.String(), "#1747")
+	assert.Contains(t, w.Body.String(), "tsk-copper-refectory-generates")
 
 	svc.setCritErr = &board.GuardError{Code: board.GuardClaimToken, Detail: "criteria-met writes require the row's live persona-claim token"}
 	w = doBoard(t, r, http.MethodPost, "/internal/v1/automation/board/tasks/set-criteria-met",

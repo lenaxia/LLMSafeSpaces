@@ -348,25 +348,6 @@ func (s *Service) decorateProject(p *Project) {
 	}
 }
 
-// --- grant differentiation belt ---------------------------------------------------
-
-// IsWorkerSession reports whether the session currently holds a board
-// worker role (assignee of a live/pending row) — the seam's manager
-// route belt (#1747 §5: spawned workers must not reach manager actions;
-// agentd's spawn-time registry is the first gate, this is the
-// engine-authoritative second).
-func (s *Service) IsWorkerSession(ctx context.Context, sessionID string) (bool, error) {
-	if sessionID == "" {
-		return false, nil
-	}
-	var live bool
-	err := s.q().QueryRow(ctx, `
-		SELECT EXISTS(SELECT 1 FROM tasks
-			WHERE assignee_session = $1
-			  AND stage IN ('in_progress','in_review','pending_input'))`, sessionID).Scan(&live)
-	return live, err
-}
-
 // taskProjectForActor resolves a task + its project through the actor's
 // scope (agent surface: workspace-scoped resolution, r1-S1) and stamps
 // the manager guards (R7 ownership + the #1747 workspace binding).

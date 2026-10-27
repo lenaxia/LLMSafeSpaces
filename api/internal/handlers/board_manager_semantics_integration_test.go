@@ -6,9 +6,10 @@
 package handlers
 
 // board_manager_semantics_integration_test.go — #1747 r2 (the review's
-// integration-gap fix): the manager seam pinned END-TO-END — the REAL
-// BoardService (Postgres arbitration, no fakes on the action path)
-// behind the REAL pod-identity seam (resolve: TokenReview → SA
+// integration-gap fix), re-pinned by ruling 2026-10-27 /
+// tsk-copper-refectory-generates: the manager seam pinned END-TO-END —
+// the REAL BoardService (Postgres arbitration, no fakes on the action
+// path) behind the REAL pod-identity seam (resolve: TokenReview → SA
 // principal → workspace pin → delegated owner) — the manager-surface
 // mirror of TestIntegrationBoardWorkerSemantics. Pinned:
 //
@@ -18,9 +19,13 @@ package handlers
 //     the actorViewOf embedding the fake tier could not observe)
 //   - the workspace binding: a foreign-workspace project refuses with
 //     the 403 class through the real guards
-//   - the grant belt against a REAL live assignee: IsWorkerSession
-//     answers from Postgres (a claimed row's assignee is refused 403;
-//     the omission arm is pinned handler-side)
+//   - the #1747 §5 grant belt is REPEALED: a session holding a LIVE
+//     board worker role (real claimed assignee) reaches the manager
+//     routes — its identity still attributes the audit trail
+//   - the REGRESSION for tonight's live failure: the session that
+//     CREATED the board can RE-ARM its own attempts-exhausted parked
+//     task through the manager seam (the old §5 gate refused it and
+//     stranded the row at pending_input)
 //
 // Runs against TEST_DATABASE_URL (skips when unreachable); the schema
 // is expected to exist (migrations applied by the CI job).
@@ -117,6 +122,7 @@ func TestIntegrationBoardManagerSemantics(t *testing.T) {
 	b.POST("/epics/:id/tasks", h.BoardCreateTask)
 	b.POST("/epics/:id/activate", h.BoardEpicActivate)
 	b.POST("/tasks/:id/pause", h.BoardPauseTask)
+	b.POST("/tasks/:id/rearm", h.BoardRearmTask)
 
 	call := func(method, path, body string) *httptest.ResponseRecorder {
 		t.Helper()
@@ -181,7 +187,7 @@ func TestIntegrationBoardManagerSemantics(t *testing.T) {
 	assert.Equal(t, http.StatusForbidden, w.Code, "requireManagerAction: the pod's workspace is not the project's target")
 	assert.Contains(t, w.Body.String(), board.GuardWorkspaceBinding)
 
-	// --- 3: the grant belt against a REAL live assignee ----------------------------
+	// --- 3: the grant belt's repeal against a REAL live assignee -------------------
 	// The collaboration-to-execution loop's publish lever: the
 	// collaborator activates the epic through the seam (draft → active;
 	// candidateSQL requires active — the r2.1 fix), THEN the engine
@@ -191,25 +197,56 @@ func TestIntegrationBoardManagerSemantics(t *testing.T) {
 	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
 
 	// Claim the task through the engine (a spawned worker exists),
-	// then attempt a manager action AS that worker's session: the belt
-	// answers from Postgres and refuses.
+	// then make a manager call AS that worker's session: the #1747 §5
+	// belt is REPEALED (ruling 2026-10-27 /
+	// tsk-copper-refectory-generates) — a live worker session reaches
+	// the manager routes like any other, and its identity still
+	// attributes the audit trail.
 	claim, err := svc.ClaimNext(ctx, "worker-integration", wsPod)
 	require.NoError(t, err)
 	require.False(t, claim.Escalated)
 	require.Equal(t, task.ID, claim.TaskID)
-	live, err := svc.IsWorkerSession(ctx, claim.Assignee)
-	require.NoError(t, err)
-	require.True(t, live, "the stamped assignee is a live worker")
 
 	w = call(http.MethodPost, "/internal/v1/automation/board/epics/"+epic.ID+"/tasks",
-		fmt.Sprintf(`{"workspaceID":%q,"sessionId":%q,"title":"injection"}`, wsPod, claim.Assignee))
-	assert.Equal(t, http.StatusForbidden, w.Code, "the belt refuses a live worker session (real IsWorkerSession)")
-	assert.Contains(t, w.Body.String(), board.GuardManagerSurface)
+		fmt.Sprintf(`{"workspaceID":%q,"sessionId":%q,"title":"worker session open",`+
+			`"description":"d","acceptanceCriteria":[{"text":"c","met":false}]}`, wsPod, claim.Assignee))
+	require.Equal(t, http.StatusCreated, w.Code, "the repealed belt: a live worker session reaches the manager routes")
+	var workerTask board.Task
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &workerTask))
+	require.NoError(t, pool.QueryRow(ctx, `
+		SELECT count(*) FROM board_events
+		WHERE item_kind = 'task' AND item_id = $1 AND actor->>'session_id' = $2`,
+		workerTask.ID, claim.Assignee).Scan(&n))
+	assert.Equal(t, 1, n, "the worker session's identity still attributes its manager writes")
 
-	// Pause the claimed task via the manager route (the collaborator
-	// still can — pause is a manager action, not worker-scoped) and
-	// verify the flag lands on the real row.
-	w = call(http.MethodPost, "/internal/v1/automation/board/tasks/"+task.ID+"/pause",
+	// --- 4: the REGRESSION for tonight's live failure (#1747 §5 repeal) ----------
+	// The creating session parked an attempts-exhausted row; the old
+	// gate refused ITS re-arm ("spawned workers and unidentified
+	// callers hold no manager grant") and stranded the row at
+	// pending_input. The creating session re-arms its own task through
+	// the manager seam: backlog, attempts reset, audit attributed.
+	_, err = pool.Exec(ctx, `
+		UPDATE tasks SET stage='pending_input', stage_entered_at=now(),
+			pending_origin='escalated', attempts=$2, claim_token=NULL, lease_expires_at=NULL
+		WHERE id=$1`, task.ID, cfg.AttemptsCap)
+	require.NoError(t, err)
+
+	w = call(http.MethodPost, "/internal/v1/automation/board/tasks/"+task.ID+"/rearm",
+		fmt.Sprintf(`{"workspaceID":%q,"sessionId":%q}`, wsPod, sess))
+	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
+	var rearmed board.Task
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &rearmed))
+	assert.Equal(t, board.StageBacklog, rearmed.Stage, "re-pooled by the creating session")
+	assert.Zero(t, rearmed.Attempts, "the fresh-judgment ledger reset")
+	require.NoError(t, pool.QueryRow(ctx, `
+		SELECT count(*) FROM board_events
+		WHERE project_id = $1 AND action = 'rearm' AND actor->>'session_id' = $2`,
+		proj.ID, sess).Scan(&n))
+	assert.Equal(t, 1, n, "the re-arm attributes to the creating session")
+
+	// Pause the claimed row's sibling via the manager route (any
+	// session can) and verify the flag lands on the real row.
+	w = call(http.MethodPost, "/internal/v1/automation/board/tasks/"+workerTask.ID+"/pause",
 		fmt.Sprintf(`{"workspaceID":%q,"sessionId":%q}`, wsPod, sess))
 	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
 	var paused board.Task

@@ -13,7 +13,6 @@ package handlers
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -318,7 +317,9 @@ func TestBoardAutomation_WorkspaceIdentityMismatch(t *testing.T) {
 	assert.Zero(t, svc.calls["get"], "resolve rejects before the service sees anything")
 }
 
-// --- #1747 manager seam: actor stamping, session attribution, grant belt --------
+// --- #1747 manager seam: actor stamping, session attribution (the
+// grant belt is REPEALED — ruling 2026-10-27 /
+// tsk-copper-refectory-generates) ------------------------------
 
 // TestBoardAutomation_ManagerActorStamping: a manager call stamps the
 // full #1747 delegation — the pod's resolved owner (ws-1 → user-7),
@@ -344,26 +345,38 @@ func TestBoardAutomation_ManagerActorStamping(t *testing.T) {
 	assert.Empty(t, mgr.lastActor.ClaimToken, "manager actions hold no claim token")
 }
 
-// TestBoardAutomation_ManagerGrantBelt (#1747 §5, tier 2): a manager
-// route whose calling session currently holds a board worker role
-// (live assignee) is refused at the seam — the engine-authoritative
-// second gate behind agentd's spawn-time registry.
-func TestBoardAutomation_ManagerGrantBelt(t *testing.T) {
+// TestBoardAutomation_ManagerGrantRepealed (#1747 §5 repeal, ruling
+// 2026-10-27 / tsk-copper-refectory-generates): the manager routes no
+// longer refuse ANY in-workspace session — neither a session that
+// currently holds a board worker role (the old live-assignee belt) nor
+// a caller that omits its session identity entirely. The resolved
+// sessionId rides the actor as audit attribution only.
+func TestBoardAutomation_ManagerGrantRepealed(t *testing.T) {
 	mgr := newFakeBoardManager()
-	mgr.workerSession = "ses_liveworker"
 	r := newBoardAutomationRouterWithManager(t, newFakeBoardService(), mgr)
 
+	// A live worker session (the old belt's refusal class) → CREATED;
+	// the attribution still records the worker's identity.
 	w := doBoard(t, r, http.MethodPost, "/internal/v1/automation/board/epics/epc-bbbb2222/tasks",
 		`{"workspaceID":"ws-1","sessionId":"ses_liveworker","title":"T1"}`)
-	assert.Equal(t, http.StatusForbidden, w.Code, w.Body.String())
-	assert.Contains(t, w.Body.String(), board.GuardManagerSurface, "the refusal names the grant rule")
-	assert.Zero(t, mgr.calls["create_task"], "the manager projection is never reached")
-
-	// The SAME registry stays silent for collaborator sessions.
-	w = doBoard(t, r, http.MethodPost, "/internal/v1/automation/board/epics/epc-bbbb2222/tasks",
-		`{"workspaceID":"ws-1","sessionId":"ses_collaborator","title":"T1"}`)
 	require.Equal(t, http.StatusCreated, w.Code, w.Body.String())
-	assert.Equal(t, 1, mgr.calls["create_task"])
+	assert.Equal(t, 1, mgr.calls["create_task"], "the manager projection serves the worker session")
+	require.NotNil(t, mgr.lastActor)
+	assert.Equal(t, "ses_liveworker", mgr.lastActor.SessionID, "the worker's identity still attributes the audit actor")
+
+	// An identity-LESS call (the old omission 403) → CREATED; the actor
+	// lands unattributed, never refused.
+	w = doBoard(t, r, http.MethodPost, "/internal/v1/automation/board/epics/epc-bbbb2222/tasks",
+		`{"workspaceID":"ws-1","title":"T2"}`)
+	require.Equal(t, http.StatusCreated, w.Code, w.Body.String(), "an omitted sessionId proceeds — attribution-only identity")
+	assert.Equal(t, 2, mgr.calls["create_task"])
+	assert.Empty(t, mgr.lastActor.SessionID, "no identity supplied — unattributed audit actor")
+
+	// DELETE-class routes carried the session on the QUERY — the same
+	// repeal holds (query-carried identity omission proceeds).
+	w = doBoard(t, r, http.MethodDelete, "/internal/v1/automation/board/tasks/tsk-cccc3333?workspaceID=ws-1", "")
+	require.Equal(t, http.StatusOK, w.Code, w.Body.String(), "query-carried identity omission proceeds too")
+	assert.Equal(t, 1, mgr.calls["delete_task"])
 }
 
 // TestBoardAutomation_ManagerCreateProjectScoping: the seam stamps the
@@ -398,30 +411,18 @@ func TestBoardAutomation_ResourcePressureTelemetry(t *testing.T) {
 	assert.InDelta(t, 0.92, mgr.lastPressureSample.DiskRate, 0.001)
 }
 
-// TestBoardAutomation_ManagerBeltFailClosed (r2, the review's Security-1
-// fix pins): the seam belt REFUSES an omitted sessionId (the hostile
-// spawned worker is the caller who lies by omission) and treats a belt
-// ERROR as a refusal — never a pass-through.
-func TestBoardAutomation_ManagerBeltFailClosed(t *testing.T) {
+// TestBoardAutomation_ManagerBeltRemoved (the r2 Security-1 fail-closed
+// posture is REPEALED with the grant itself, ruling 2026-10-27 /
+// tsk-copper-refectory-generates): the seam belt's omitted-session 403
+// and belt-error 503 are gone — an omitted sessionId is empty
+// attribution, not a refusal, and no belt query exists to fail.
+func TestBoardAutomation_ManagerBeltRemoved(t *testing.T) {
 	mgr := newFakeBoardManager()
 	r := newBoardAutomationRouterWithManager(t, newFakeBoardService(), mgr)
 
-	// No sessionId anywhere → 403 fail-closed (previously 201 — the hole).
+	// No sessionId anywhere → the call PROCEEDS (previously 403).
 	w := doBoard(t, r, http.MethodPost, "/internal/v1/automation/board/epics/epc-bbbb2222/tasks",
 		`{"workspaceID":"ws-1","title":"T1"}`)
-	assert.Equal(t, http.StatusForbidden, w.Code, "an unidentified caller holds no manager grant — fail closed")
-	assert.Contains(t, w.Body.String(), board.GuardManagerSurface)
-	assert.Zero(t, mgr.calls["create_task"], "the manager projection is never reached")
-
-	// Belt DB error → 503 refusal (never a silent pass-through).
-	mgr.beltErr = fmt.Errorf("db blip")
-	w = doBoard(t, r, http.MethodPost, "/internal/v1/automation/board/epics/epc-bbbb2222/tasks",
-		`{"workspaceID":"ws-1","sessionId":"ses_anyone","title":"T1"}`)
-	assert.Equal(t, http.StatusServiceUnavailable, w.Code, "a belt error refuses the call (fail closed)")
-	assert.Zero(t, mgr.calls["create_task"])
-
-	// DELETE-class routes carry the session on the QUERY — same rule.
-	mgr.beltErr = nil
-	w = doBoard(t, r, http.MethodDelete, "/internal/v1/automation/board/tasks/tsk-cccc3333?workspaceID=ws-1", "")
-	assert.Equal(t, http.StatusForbidden, w.Code, "query-carried identity omission refuses too")
+	require.Equal(t, http.StatusCreated, w.Code, "an omitted sessionId proceeds — attribution-only identity")
+	assert.Equal(t, 1, mgr.calls["create_task"])
 }

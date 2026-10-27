@@ -105,7 +105,10 @@ func (s *BoardSuite) TestCriteriaMet_1946_ReviewerGrantEndToEnd() {
 // TestCriteriaMet_1946_TaskWorkerSelfCertificationRefused — the
 // back-compat pin: the implementer's in_progress claim (and a
 // token-less caller) never gains the grant; the refusal keeps the
-// #1747 §5 class and text.
+// manager_surface class and the persona-tier text (the #1747 §5
+// manager gate this once shared is repealed, ruling 2026-10-27 /
+// tsk-copper-refectory-generates — the grant itself stays
+// reviewer-persona-only).
 func (s *BoardSuite) TestCriteriaMet_1946_TaskWorkerSelfCertificationRefused() {
 	ctx := context.Background()
 	ws := s.seedWorkspace()
@@ -125,7 +128,7 @@ func (s *BoardSuite) TestCriteriaMet_1946_TaskWorkerSelfCertificationRefused() {
 	guard, ok := err.(*board.GuardError)
 	require.True(s.T(), ok)
 	s.Equal(board.GuardManagerSurface, guard.Code)
-	s.Contains(guard.Detail, "manager board tools attach to user-collaborator sessions only (ruling #1747 §5)")
+	s.Contains(guard.Detail, "no persona claim, no grant")
 	s.Contains(guard.Detail, "task-worker self-certification")
 
 	// Token-less callers hold nothing either.

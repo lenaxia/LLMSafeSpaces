@@ -2115,10 +2115,10 @@ func mcpAutomation(ctx context.Context, password, name string, body map[string]a
 	case "board_move_stage":
 		// #1832 WS2 dual-route: a caller holding a claim token rides
 		// the worker projection (unchanged); a token-less caller rides
-		// the manager-grade path (harness-attested session identity +
-		// the live-assignee worker refusal at both gates — spawned
-		// workers MUST keep sending their charter token; a worker that
-		// omits it is refused manager dispatch, never routed through).
+		// the manager-grade path — open to ANY in-workspace session,
+		// spawned workers included (the #1747 §5 manager gate is
+		// repealed, ruling 2026-10-27 / tsk-copper-refectory-generates;
+		// the claim-token fence remains the real in-flight protection).
 		if tok, _ := boardToolArgs(body)["claimToken"].(string); strings.TrimSpace(tok) != "" {
 			res, err = client.BoardMoveStage(ctx, saToken, workspaceID, passThroughBody(body, "task"))
 		} else {
@@ -2130,23 +2130,28 @@ func mcpAutomation(ctx context.Context, password, name string, body map[string]a
 		// scoped set-criteria-met route — the reviewer persona records
 		// its criterion flags on its OWN claimed row (persona
 		// provenance arbitrated at the engine; an implementer's
-		// token-carrying call refuses there with the #1747 §5 class).
-		// A token-less caller keeps today's manager path byte-identical
-		// (session gate + registry refusal — a spawned worker omitting
-		// its token is refused manager dispatch, never routed through).
+		// token-carrying call refuses there — no persona claim). A
+		// token-less caller rides the manager path, open to any
+		// in-workspace session (the #1747 §5 gate is repealed, ruling
+		// 2026-10-27 / tsk-copper-refectory-generates), EXCEPT the
+		// self-certification pin: a spawned worker's token-less
+		// setCriteriaMet refuses (#1946's grant does not widen).
 		if tok, _ := boardToolArgs(body)["claimToken"].(string); strings.TrimSpace(tok) != "" {
 			res, err = client.BoardSetCriteriaMet(ctx, saToken, workspaceID, passThroughBody(body, "task"))
 		} else {
+			if err := boardWorkerSelfCertificationPin(ctx, password, name, body); err != nil {
+				return "", err
+			}
 			res, err = dispatchBoardManagerTool(ctx, client, password, name, body, saToken, workspaceID)
 		}
 
 	// --- Task Board MANAGER tools (#1747): the full manager set at
 	// project/epic/task level, workspace-scoped by the pod identity,
-	// session-gated (user-collaborator sessions only — spawned workers
-	// hold no manager grant; the fail-closed injection check is the
-	// first tier, the engine's live-assignee belt the second).
-	// #1837 P2a: board_list/board_health join the manager set (the
-	// workspace-scoped overview reads).
+	// open to ANY in-workspace session (the #1747 §5 manager grant is
+	// repealed, ruling 2026-10-27 / tsk-copper-refectory-generates —
+	// the resolved session identity rides the wire as audit
+	// attribution only). #1837 P2a: board_list/board_health join the
+	// manager set (the workspace-scoped overview reads).
 	case "board_create_project", "board_update_project",
 		"board_project_archive", "board_project_unarchive", "board_project_pause", "board_project_resume",
 		"board_create_epic", "board_update_epic",

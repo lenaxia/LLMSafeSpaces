@@ -3,21 +3,21 @@
 
 package handlers
 
-// board_automation_manager.go — the #1747 manager half of the Task
-// Board's internal automation seam: the same pod-identity resolve
-// (TokenReview → SA principal → workspace pin) the worker routes ride,
-// carrying the FULL manager set at project, epic, and task level.
-// Design 0067 §4.3c ("agents are workers, not managers") is superseded
-// in the manager direction: an in-workspace agent manages its OWN
-// workspace's board, scoped structurally by the caller-workspace
-// binding the engine enforces (requireManagerAction).
-//
-// Grant differentiation (#1747 §5), belt tier: agentd's spawn-time
-// worker-session registry is the first gate; here the engine-authoritative
-// second — a manager route called BY a session that currently holds a
-// board worker role (live assignee) is refused. The session id rides
-// the body (sessionId — the harness-attested injected identity, the
-// send_message pattern) and also stamps the audit actor.
+// board_automation_manager.go — the manager half of the Task Board's
+// internal automation seam: the same pod-identity resolve (TokenReview
+// → SA principal → workspace pin) the worker routes ride, carrying the
+// FULL manager set at project, epic, and task level. Design 0067
+// §4.3c's agent/manager surface split is REPEALED in the grant
+// direction (ruling 2026-10-27 / tsk-copper-refectory-generates): a
+// workspace pod is single-tenant and every session shares one
+// credential, so the #1747 §5 manager-grant gate (session-identity
+// requirement + live-assignee worker refusal) is gone — the manager
+// set is open to ANY in-workspace session, still scoped structurally
+// by the caller-workspace binding the engine enforces
+// (requireManagerAction). The session id (the harness-attested
+// injected identity, the send_message pattern) rides the body purely
+// as AUDIT ATTRIBUTION — absent or unknown, the call proceeds with an
+// unattributed actor.
 
 import (
 	"context"
@@ -30,15 +30,10 @@ import (
 	"github.com/lenaxia/llmsafespaces/pkg/board"
 )
 
-// boardGrantBelt is the engine-authoritative worker check (satisfied by
-// *board.Service).
-type boardGrantBelt interface {
-	IsWorkerSession(ctx context.Context, sessionID string) (bool, error)
-}
-
-// boardSessionID extracts the calling session's identity: the query
-// first (body-less DELETEs), then the exact-key body probe (the
-// resolver-spelling discipline: exact key, no case folding).
+// boardSessionID extracts the calling session's identity (audit
+// attribution only, never a gate): the query first (body-less
+// DELETEs), then the exact-key body probe (the resolver-spelling
+// discipline: exact key, no case folding).
 func boardSessionID(c *gin.Context, raw []byte) string {
 	if v := c.Query("sessionId"); v != "" {
 		return v
@@ -59,11 +54,13 @@ func boardSessionID(c *gin.Context, raw []byte) string {
 	return s
 }
 
-// managerActor stamps the #1747 manager delegation: the pod's resolved
-// owner (R7), the MANAGER-GRADE agent surface (#1832 WS2 — a distinct
-// audit vocabulary from the worker projection: the pending_input exits
-// read it as a manager surface), the resolved workspace (the structural
-// binding), and the creating SESSION (audit attribution).
+// managerActor stamps the manager delegation: the pod's resolved owner
+// (R7), the MANAGER-GRADE agent surface (#1832 WS2 — a distinct audit
+// vocabulary from the worker projection: the pending_input exits read
+// it as a manager surface), the resolved workspace (the structural
+// binding), and the calling SESSION (audit attribution — empty when
+// the caller supplied no resolvable identity; never a refusal, ruling
+// 2026-10-27 / tsk-copper-refectory-generates).
 func (h *PodAutomationHandler) managerActor(ownerID, workspaceID, sessionID string) board.Actor {
 	return board.Actor{
 		Kind: board.ActorUser, UserID: ownerID, Surface: board.SurfaceAgentManager,
@@ -71,47 +68,19 @@ func (h *PodAutomationHandler) managerActor(ownerID, workspaceID, sessionID stri
 	}
 }
 
-// resolveManager runs the pod resolve + the grant belt. Writes the
-// refusal itself; ok=false on failure.
-//
-// FAIL-CLOSED (r2, the review's Security-1 fix): a manager route
-// REQUIRES the calling session's identity — an omitted sessionId is a
-// 403, not a pass-through. The hostile caller in ruling §5's threat
-// model is precisely the spawned worker who lies by omission (it holds
-// the same pod SA token the worker tools ride); agentd already refuses
-// identity-less dispatch pre-wire, and the seam now refuses it too
-// instead of trusting the omission. A belt ERROR is likewise a refusal
-// (503): a silent DB blip must not disable the check.
+// resolveManager runs the pod resolve. The #1747 §5 grant belt (the
+// required-session 403 and the live-assignee worker refusal) is
+// REPEALED (ruling 2026-10-27 / tsk-copper-refectory-generates): the
+// manager set is open to any in-workspace session, and the resolved
+// sessionId (query first — body-less DELETEs — then the exact-key body
+// probe) is audit attribution only. ok=false only on the pod-identity
+// resolve failure.
 func (h *PodAutomationHandler) resolveManager(c *gin.Context) (raw []byte, workspaceID, ownerID, sessionID string, ok bool) {
 	raw, workspaceID, ownerID, ok = h.resolve(c)
 	if !ok {
 		return nil, "", "", "", false
 	}
 	sessionID = boardSessionID(c, raw)
-	if sessionID == "" {
-		c.AbortWithStatusJSON(http.StatusForbidden, gin.H{
-			"error": "board manager routes require the calling session's identity (sessionId) — spawned workers and unidentified callers hold no manager grant (ruling #1747 §5)",
-			"code":  board.GuardManagerSurface,
-		})
-		return nil, "", "", "", false
-	}
-	if belt, hasBelt := h.boardMgr.(boardGrantBelt); hasBelt {
-		worker, err := belt.IsWorkerSession(c.Request.Context(), sessionID)
-		if err != nil {
-			c.AbortWithStatusJSON(http.StatusServiceUnavailable, gin.H{
-				"error": "board manager grant check failed — refusing fail-open (ruling #1747 §5)",
-				"code":  board.GuardManagerSurface,
-			})
-			return nil, "", "", "", false
-		}
-		if worker {
-			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{
-				"error": "board manager tools attach to user-collaborator sessions, not spawned workers (ruling #1747 §5)",
-				"code":  board.GuardManagerSurface,
-			})
-			return nil, "", "", "", false
-		}
-	}
 	return raw, workspaceID, ownerID, sessionID, true
 }
 
@@ -353,11 +322,12 @@ func (h *PodAutomationHandler) BoardDeleteEpic(c *gin.Context) {
 // the tsk-3do6n458 incident: an escalated pending_input row froze the
 // dependency chain because the ONLY agent-surface move route is the
 // worker's, and the worker surface is denied the pending_input exits).
-// Rides resolveManager (harness-attested session identity + the
-// live-assignee worker refusal) and the canonical MoveStage — the
+// Rides resolveManager (audit attribution; any in-workspace session —
+// the #1747 §5 gate is repealed, ruling 2026-10-27 /
+// tsk-copper-refectory-generates) and the canonical MoveStage — the
 // stage machine arbitrates exactly as it does for the owner on REST;
 // the actor's manager-grade surface is what unlocks the exits, and the
-// audit carries the orchestrator-class session's identity.
+// audit carries the calling session's identity when supplied.
 func (h *PodAutomationHandler) BoardManagerMoveStage(c *gin.Context) {
 	raw, ws, owner, session, ok := h.resolveManager(c)
 	if !ok {
@@ -638,35 +608,34 @@ func (h *PodAutomationHandler) BoardRemoveDependency(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"task": t})
 }
 
-// BoardImportPlan materializes (dryRun validates) an entire plan.
+// BoardImportPlan materializes (dryRun validates) an entire plan. The
+// unified plan document (design 0070 §1a) carries one epic arm — the
+// `epic` object (create a new epic) or `epicId` (attach to an existing
+// epic, §3) — with the legacy epicTitle/outcome spelling still bound for
+// the REST/external surfaces; exactly-one-of and all atomicity live in
+// the canonical BoardService.
 func (h *PodAutomationHandler) BoardImportPlan(c *gin.Context) {
 	raw, ws, owner, session, ok := h.resolveManager(c)
 	if !ok {
 		return
 	}
 	var req struct {
-		EpicTitle string `json:"epicTitle"`
-		Outcome   string `json:"outcome"`
-		DryRun    bool   `json:"dryRun"`
-		Tasks     []struct {
-			Key                string                      `json:"key"`
-			Title              string                      `json:"title"`
-			Description        string                      `json:"description"`
-			Tags               []string                    `json:"tags"`
-			AcceptanceCriteria []board.AcceptanceCriterion `json:"acceptanceCriteria"`
-			DependsOn          []string                    `json:"dependsOn"`
-		} `json:"tasks"`
-		RequestID string `json:"requestId"`
+		Epic      *board.PlanEpicSpec   `json:"epic"`
+		EpicID    string                `json:"epicId"`
+		EpicTitle string                `json:"epicTitle"`
+		Outcome   string                `json:"outcome"`
+		Tags      []string              `json:"tags"`
+		DryRun    bool                  `json:"dryRun"`
+		Tasks     []board.PlanTaskInput `json:"tasks"`
+		RequestID string                `json:"requestId"`
 	}
 	if !bindBoardBody(c, raw, &req) {
 		return
 	}
-	in := board.PlanInput{EpicTitle: req.EpicTitle, Outcome: req.Outcome}
-	for _, t := range req.Tasks {
-		in.Tasks = append(in.Tasks, board.PlanTaskInput{
-			Key: t.Key, Title: t.Title, Description: t.Description, Tags: t.Tags,
-			AcceptanceCriteria: t.AcceptanceCriteria, DependsOn: t.DependsOn,
-		})
+	in := board.PlanInput{
+		Epic: req.Epic, EpicID: req.EpicID,
+		EpicTitle: req.EpicTitle, Outcome: req.Outcome, Tags: req.Tags,
+		Tasks: req.Tasks,
 	}
 	out, err := h.boardMgr.ImportPlan(c.Request.Context(), h.managerActor(owner, ws, session), c.Param("id"), "",
 		in, req.DryRun, req.RequestID)
@@ -700,8 +669,10 @@ func readySetFromTasks(tasks []board.Task) []string {
 
 // BoardManagerListTasks is board_list: one project's every task in one
 // call — stage, claim (assignee), lease expiry, paused, blocked — plus
-// the derived ready set. Manager-gated, workspace-scoped (a foreign
-// workspace's project is a plain 404).
+// the derived ready set. Workspace-scoped (a foreign workspace's
+// project is a plain 404); open to any in-workspace session (the
+// #1747 §5 manager grant is repealed, ruling 2026-10-27 /
+// tsk-copper-refectory-generates).
 func (h *PodAutomationHandler) BoardManagerListTasks(c *gin.Context) {
 	_, ws, _, _, ok := h.resolveManager(c)
 	if !ok {
@@ -745,7 +716,9 @@ func (h *PodAutomationHandler) BoardManagerListTasks(c *gin.Context) {
 
 // BoardManagerHealth is board_health: the workspace's board health
 // snapshot (active leases with expiry, cooldowns, pending origins,
-// reclaims, per-project slots). Manager-gated, workspace-scoped.
+// reclaims, per-project slots). Workspace-scoped; open to any
+// in-workspace session (ruling 2026-10-27 /
+// tsk-copper-refectory-generates).
 func (h *PodAutomationHandler) BoardManagerHealth(c *gin.Context) {
 	_, ws, _, _, ok := h.resolveManager(c)
 	if !ok {

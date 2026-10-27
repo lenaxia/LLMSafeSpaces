@@ -49,9 +49,11 @@ func TestBoardSeam_ListTasks(t *testing.T) {
 func TestBoardSeam_ListTasksManagerGate(t *testing.T) {
 	r := newBoardAutomationRouterWithManager(t, newFakeBoardService(), newFakeBoardManager())
 
-	// No session identity: the manager gate refuses (the #1747 §5 belt).
+	// No session identity: the list PROCEEDS — identity is audit
+	// attribution only (the #1747 §5 manager gate is repealed, ruling
+	// 2026-10-27 / tsk-copper-refectory-generates).
 	w := doBoard(t, r, http.MethodGet, "/internal/v1/automation/board/projects/prj-aaaa1111/tasks?workspaceID=ws-1", "")
-	require.Equal(t, http.StatusForbidden, w.Code)
+	require.Equal(t, http.StatusOK, w.Code)
 }
 
 func TestBoardSeam_Health(t *testing.T) {
