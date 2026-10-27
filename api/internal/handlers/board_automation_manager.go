@@ -638,35 +638,34 @@ func (h *PodAutomationHandler) BoardRemoveDependency(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"task": t})
 }
 
-// BoardImportPlan materializes (dryRun validates) an entire plan.
+// BoardImportPlan materializes (dryRun validates) an entire plan. The
+// unified plan document (design 0070 §1a) carries one epic arm — the
+// `epic` object (create a new epic) or `epicId` (attach to an existing
+// epic, §3) — with the legacy epicTitle/outcome spelling still bound for
+// the REST/external surfaces; exactly-one-of and all atomicity live in
+// the canonical BoardService.
 func (h *PodAutomationHandler) BoardImportPlan(c *gin.Context) {
 	raw, ws, owner, session, ok := h.resolveManager(c)
 	if !ok {
 		return
 	}
 	var req struct {
-		EpicTitle string `json:"epicTitle"`
-		Outcome   string `json:"outcome"`
-		DryRun    bool   `json:"dryRun"`
-		Tasks     []struct {
-			Key                string                      `json:"key"`
-			Title              string                      `json:"title"`
-			Description        string                      `json:"description"`
-			Tags               []string                    `json:"tags"`
-			AcceptanceCriteria []board.AcceptanceCriterion `json:"acceptanceCriteria"`
-			DependsOn          []string                    `json:"dependsOn"`
-		} `json:"tasks"`
-		RequestID string `json:"requestId"`
+		Epic      *board.PlanEpicSpec   `json:"epic"`
+		EpicID    string                `json:"epicId"`
+		EpicTitle string                `json:"epicTitle"`
+		Outcome   string                `json:"outcome"`
+		Tags      []string              `json:"tags"`
+		DryRun    bool                  `json:"dryRun"`
+		Tasks     []board.PlanTaskInput `json:"tasks"`
+		RequestID string                `json:"requestId"`
 	}
 	if !bindBoardBody(c, raw, &req) {
 		return
 	}
-	in := board.PlanInput{EpicTitle: req.EpicTitle, Outcome: req.Outcome}
-	for _, t := range req.Tasks {
-		in.Tasks = append(in.Tasks, board.PlanTaskInput{
-			Key: t.Key, Title: t.Title, Description: t.Description, Tags: t.Tags,
-			AcceptanceCriteria: t.AcceptanceCriteria, DependsOn: t.DependsOn,
-		})
+	in := board.PlanInput{
+		Epic: req.Epic, EpicID: req.EpicID,
+		EpicTitle: req.EpicTitle, Outcome: req.Outcome, Tags: req.Tags,
+		Tasks: req.Tasks,
 	}
 	out, err := h.boardMgr.ImportPlan(c.Request.Context(), h.managerActor(owner, ws, session), c.Param("id"), "",
 		in, req.DryRun, req.RequestID)

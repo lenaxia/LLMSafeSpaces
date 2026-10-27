@@ -545,20 +545,20 @@ func (h *BoardHandler) DeleteEpic(c *gin.Context) {
 
 // ImportPlan materializes (or, with dryRun=true, validates) an entire
 // plan — one epic + tasks + edges, all-or-nothing (#1747: the user's
-// plan-approval moment).
+// plan-approval moment). The unified plan document (design 0070 §1a)
+// alternatively attaches tasks to an EXISTING epic (epicId); the
+// exactly-one-of arm validation lives in the canonical BoardService.
 func (h *BoardHandler) ImportPlan(c *gin.Context) {
 	var req boardPlanRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request body: " + err.Error()})
 		return
 	}
-	in := board.PlanInput{EpicTitle: req.EpicTitle, Outcome: req.Outcome, Tags: req.Tags}
-	for _, t := range req.Tasks {
-		in.Tasks = append(in.Tasks, board.PlanTaskInput{
-			Key: t.Key, Title: t.Title, Description: t.Description, Tags: t.Tags,
-			AcceptanceCriteria: t.AcceptanceCriteria, DependsOn: t.DependsOn,
-		})
+	in := board.PlanInput{
+		Epic: req.Epic, EpicID: req.EpicID,
+		EpicTitle: req.EpicTitle, Outcome: req.Outcome, Tags: req.Tags,
 	}
+	in.Tasks = req.Tasks
 	out, err := h.board.ImportPlan(c.Request.Context(), h.boardActor(c), c.Param("id"), "",
 		in, req.DryRun, req.RequestID)
 	if err != nil {
@@ -568,22 +568,18 @@ func (h *BoardHandler) ImportPlan(c *gin.Context) {
 	c.JSON(http.StatusOK, out)
 }
 
-type boardPlanTaskRequest struct {
-	Key                string                      `json:"key"`
-	Title              string                      `json:"title"`
-	Description        string                      `json:"description"`
-	Tags               []string                    `json:"tags"`
-	AcceptanceCriteria []board.AcceptanceCriterion `json:"acceptanceCriteria"`
-	DependsOn          []string                    `json:"dependsOn"`
-}
-
 type boardPlanRequest struct {
-	EpicTitle string                 `json:"epicTitle"`
-	Outcome   string                 `json:"outcome"`
-	Tags      []string               `json:"tags"`
-	DryRun    bool                   `json:"dryRun"`
-	Tasks     []boardPlanTaskRequest `json:"tasks"`
-	RequestID string                 `json:"requestId"`
+	// Unified plan document (design 0070 §1a): the epic object (create
+	// a new epic) or epicId (attach to an existing one) — exactly one
+	// epic arm per payload, validated in the service.
+	Epic      *board.PlanEpicSpec   `json:"epic"`
+	EpicID    string                `json:"epicId"`
+	EpicTitle string                `json:"epicTitle"`
+	Outcome   string                `json:"outcome"`
+	Tags      []string              `json:"tags"`
+	DryRun    bool                  `json:"dryRun"`
+	Tasks     []board.PlanTaskInput `json:"tasks"`
+	RequestID string                `json:"requestId"`
 }
 
 // --- Tasks ---------------------------------------------------------------------
