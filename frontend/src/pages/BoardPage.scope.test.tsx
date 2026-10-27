@@ -26,8 +26,12 @@ describe("BoardPage — scope switcher (project/epic focus)", () => {
     fireEvent.change(screen.getByTestId("project-focus"), { target: { value: "proj-uuid-b" } });
     await waitFor(() => expect(screen.queryByTestId("swimlane-prj-aaaa1111")).toBeNull());
     expect(screen.getByTestId("swimlane-prj-bbbb2222")).toBeInTheDocument();
-    // focused fetch is the single-project REST call
+    // #1964 r1: the tasks read is always the FULL fan-out (drawer
+    // lanes need every lane's rows regardless of focus) — focus is a
+    // view filter over the cached board, so every lane's REST call
+    // (the focused one included) has fired.
     expect(mockListProjectTasks).toHaveBeenCalledWith("proj-uuid-b", undefined);
+    expect(mockListProjectTasks).toHaveBeenCalledWith("proj-uuid-a", undefined);
   });
 
   it("epic chips filter within the focused scope and reset with All epics", async () => {

@@ -1595,6 +1595,11 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 			// from the sweep's cadence (the guarded stamp — identity +
 			// lease re-arm — lands when the session id exists; a spawn
 			// that never lands heals by lease lapse).
+			// #1959c: the board worker-comms delivery dependency — the
+			// adapter's V1 legs behind the phrase-registry resolver (a
+			// PHRASE-addressed assignee/implementer resolves to its raw
+			// harness id before any opencode post; raw refs pass through).
+			boardSender := newBoardResolvingSender(agentAdapter, boardPhraseLookupFor(boardPool))
 			spawnOpts := []board.Option{
 				board.WithWorkerSpawner(newBoardSpawner(
 					&apiwf.K8sWorkspaceActivator{K8sClient: k8sClient, Namespace: cfg.Kubernetes.Namespace},
@@ -1646,14 +1651,14 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 				// abort + pause-must-pause halt/resume delivery, both on
 				// the pkg/agent adapter's session routes (no new
 				// transport).
-				board.WithWorkerAborter(newBoardAborter(boardPool, agentAdapter)),
-				board.WithWorkerMessenger(newBoardMessenger(boardScopeFor(boardPool), agentAdapter)),
+				board.WithWorkerAborter(newBoardAborter(boardScopeFor(boardPool), boardSender)),
+				board.WithWorkerMessenger(newBoardMessenger(boardScopeFor(boardPool), boardSender)),
 				// #1959: the bounce re-dispatch seam — a fail verdict's
 				// fresh claim delivered to the ORIGINAL implementer's
 				// existing session (the ruling's bounce-target
 				// semantics); delivery failure falls back to a
 				// fresh-implementer spawn inside pkg/board.
-				board.WithBounceRedispatcher(newBoardRedispatcher(boardScopeFor(boardPool), agentAdapter)),
+				board.WithBounceRedispatcher(newBoardRedispatcher(boardScopeFor(boardPool), boardSender)),
 				// #1832 WS4: the stillborn guard's evidence source —
 				// the session index's message_count (positive-zero
 				// refuses heartbeat extension; errors fail open).
