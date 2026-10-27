@@ -233,6 +233,26 @@ func TestBoardFileParams_RoutingAndControlPlaneStayInline(t *testing.T) {
 		assert.JSONEq(t, `{"index":0,"met":true}`, string(wire["setCriteriaMet"]))
 	})
 
+	t.Run("patchFile alongside inline control-plane", func(t *testing.T) {
+		// Review round 1's missing-case note: the mixed manager call —
+		// a patch file AND the inline criteria check-off — merges both
+		// onto the wire (control-plane rides inline by §1; the patch's
+		// fields ride the file).
+		api, rec := newAutomationAPI(t, 200, `{"id":"t-1"}`)
+		setupRenameWorkspaceEnv(t, api)
+		path := boardWritePayloadFile(t, t.TempDir(), "patch.json",
+			`{"title":"T-mixed","description":"d-mixed"}`)
+		_, err := mcpAutomation(context.Background(), mcpTestPassword, "board_update_task", map[string]any{
+			"taskId": "tsk-aaaa1111", "setCriteriaMet": map[string]any{"index": 1, "met": false},
+			"patchFile": path, "lsp_injected_session": "ses-1"})
+		require.NoError(t, err)
+		var wire map[string]json.RawMessage
+		require.NoError(t, json.Unmarshal([]byte(rec.body), &wire))
+		assert.JSONEq(t, `"T-mixed"`, string(wire["title"]), "the patch file's fields ride the wire")
+		assert.JSONEq(t, `{"index":1,"met":false}`, string(wire["setCriteriaMet"]), "the control-plane check-off rides inline, verbatim")
+		assert.NotContains(t, wire, "patchFile")
+	})
+
 	t.Run("dryRun rides inline with planFile", func(t *testing.T) {
 		payload := `{"epic":{"title":"E"},"tasks":[{"key":"k1","title":"T","description":"d","acceptanceCriteria":[{"text":"c"}]}]}`
 		path := boardWritePayloadFile(t, t.TempDir(), "plan.json", payload)

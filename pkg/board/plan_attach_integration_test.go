@@ -24,7 +24,7 @@ import (
 // UNTOUCHED (no partial attach); a terminal epic refuses the whole
 // plan (the #1948 starvation guard's attach arm).
 
-func (s *BoardSuite) TestPlan_0069_AttachToExistingEpic() {
+func (s *BoardSuite) TestPlan_0070_AttachToExistingEpic() {
 	ctx := context.Background()
 	ws := s.seedWorkspace()
 	p := s.seedProject(ws, 2)
@@ -61,7 +61,7 @@ func (s *BoardSuite) TestPlan_0069_AttachToExistingEpic() {
 	assert.Equal(s.T(), 1, n, "no new epic minted in attach mode")
 }
 
-func (s *BoardSuite) TestPlan_0069_BothEpicArmsRefuse() {
+func (s *BoardSuite) TestPlan_0070_BothEpicArmsRefuse() {
 	ctx := context.Background()
 	ws := s.seedWorkspace()
 	p := s.seedProject(ws, 2)
@@ -89,7 +89,7 @@ func (s *BoardSuite) TestPlan_0069_BothEpicArmsRefuse() {
 	assert.Equal(s.T(), before, s.countEvents("import_plan"), "no audit event")
 }
 
-func (s *BoardSuite) TestPlan_0069_NeitherEpicArmRefuses() {
+func (s *BoardSuite) TestPlan_0070_NeitherEpicArmRefuses() {
 	ctx := context.Background()
 	ws := s.seedWorkspace()
 	p := s.seedProject(ws, 2)
@@ -107,7 +107,7 @@ func (s *BoardSuite) TestPlan_0069_NeitherEpicArmRefuses() {
 	assert.Contains(s.T(), err.Error(), "neither is present")
 }
 
-func (s *BoardSuite) TestPlan_0069_AttachAtomicity() {
+func (s *BoardSuite) TestPlan_0070_AttachAtomicity() {
 	ctx := context.Background()
 	ws := s.seedWorkspace()
 	p := s.seedProject(ws, 2)
@@ -138,7 +138,7 @@ func (s *BoardSuite) TestPlan_0069_AttachAtomicity() {
 	assert.Equal(s.T(), "existing", seededTitle, "the existing epic's tasks are untouched")
 }
 
-func (s *BoardSuite) TestPlan_0069_AttachToTerminalEpicRefuses() {
+func (s *BoardSuite) TestPlan_0070_AttachToTerminalEpicRefuses() {
 	ctx := context.Background()
 	ws := s.seedWorkspace()
 	p := s.seedProject(ws, 2)
@@ -168,7 +168,53 @@ func (s *BoardSuite) TestPlan_0069_AttachToTerminalEpicRefuses() {
 	require.Error(s.T(), err)
 }
 
-func (s *BoardSuite) TestPlan_0069_AttachForeignProjectEpicRefuses() {
+func (s *BoardSuite) TestPlan_0070_AttachReplayAfterTerminalization() {
+	// The F1 pin (review round 1): an idempotent retry (same
+	// requestId) of an attach-mode import that already landed must
+	// render the ORIGINAL outcome — never a GuardEpicState on the
+	// terminal state the original write's aftermath produced (the
+	// #1948 replay-first discipline, service.go's CreateTask arm).
+	ctx := context.Background()
+	ws := s.seedWorkspace()
+	p := s.seedProject(ws, 2)
+	e := s.seedEpic(p, board.EpicActive)
+
+	rid := "replay-attach-0070"
+	out, err := s.svc.ImportPlan(ctx, s.owner(), p.ID, "", board.PlanInput{
+		EpicID: e.ID,
+		Tasks: []board.PlanTaskInput{
+			{Key: "k", Title: "T", Description: "d",
+				AcceptanceCriteria: []board.AcceptanceCriterion{{Text: "c"}}},
+		},
+	}, false, rid)
+	require.NoError(s.T(), err)
+	require.Equal(s.T(), e.ID, out.EpicID)
+
+	// The target terminalizes AFTER the write landed.
+	_, err = s.pool.Exec(ctx, `UPDATE epics SET status=$1 WHERE id=$2`,
+		board.EpicCompleted, e.ID)
+	s.Require().NoError(err)
+
+	retry, err := s.svc.ImportPlan(ctx, s.owner(), p.ID, "", board.PlanInput{
+		EpicID: e.ID,
+		Tasks: []board.PlanTaskInput{
+			{Key: "k", Title: "T", Description: "d",
+				AcceptanceCriteria: []board.AcceptanceCriterion{{Text: "c"}}},
+		},
+	}, false, rid)
+	require.NoError(s.T(), err,
+		"the replay renders the original outcome — the terminalized target must not turn it into a guard error")
+	assert.Equal(s.T(), out.EpicID, retry.EpicID, "the original epic id renders")
+	assert.Equal(s.T(), out.EpicShortID, retry.EpicShortID)
+	assert.Equal(s.T(), out.TaskKeys, retry.TaskKeys, "the original task keys render — no phantom empty map")
+
+	var n int
+	s.Require().NoError(s.pool.QueryRow(ctx,
+		`SELECT count(*) FROM tasks WHERE epic_id=$1`, e.ID).Scan(&n))
+	assert.Equal(s.T(), 1, n, "the retry attached nothing new")
+}
+
+func (s *BoardSuite) TestPlan_0070_AttachForeignProjectEpicRefuses() {
 	ws := s.seedWorkspace()
 	p := s.seedProject(ws, 2)
 	other := s.seedProject(ws, 2)

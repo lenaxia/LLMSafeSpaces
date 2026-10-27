@@ -89,9 +89,13 @@ func (s *Service) ImportPlan(ctx context.Context, actor Actor, projectID, shortI
 	// transaction (only the archived project can fire there); the
 	// ATTACH arm resolves the existing epic up front so the same
 	// starvation guard covers it — a terminal epic would leave every
-	// attached task silently unfed. Replay-first: a requestId that
-	// already landed renders the original outcome even after the
-	// target terminalized (projectLifecycle's discipline).
+	// attached task silently unfed. Replay-first (the #1948 precedent's
+	// discipline, service.go's CreateTask arm): the terminal-refusal is
+	// gated on replay == nil — a requestId that already landed renders
+	// the original outcome even after the target terminalized, never a
+	// guard error on the state the original write left behind. The
+	// resolution and the belongs-to-project check stay PRE-replay:
+	// they are static identity facts, not state.
 	var existing *Epic
 	if arm.attach != "" {
 		existing, err = s.store.resolveEpic(ctx, s.q(), "", arm.attach)
@@ -100,10 +104,7 @@ func (s *Service) ImportPlan(ctx context.Context, actor Actor, projectID, shortI
 		}
 		if existing.ProjectID != p.ID {
 			return nil, &GuardError{Code: GuardInput,
-				Detail: fmt.Sprintf("epic %s belongs to another project — a plan attaches tasks within the URL project only", existing.ShortID)}
-		}
-		if err := refuseTerminalEpicCreateTarget(existing); err != nil {
-			return nil, err
+				Detail: "epic belongs to another project — a plan attaches tasks within the URL project only"}
 		}
 	}
 	replay, err := s.replayOf(ctx, p.ID, requestID, "import_plan")
@@ -113,6 +114,11 @@ func (s *Service) ImportPlan(ctx context.Context, actor Actor, projectID, shortI
 	if replay == nil {
 		if err := refuseArchivedProjectCreateTarget(p); err != nil {
 			return nil, err
+		}
+		if existing != nil {
+			if err := refuseTerminalEpicCreateTarget(existing); err != nil {
+				return nil, err
+			}
 		}
 	}
 
@@ -127,7 +133,7 @@ func (s *Service) ImportPlan(ctx context.Context, actor Actor, projectID, shortI
 	epicID := uuid.NewString()
 	out := &ImportResult{DryRun: false, ProjectID: p.ID, TaskKeys: map[string]string{}, Warnings: validation.Warnings}
 	ew := &eventWriter{svc: s, projectID: p.ID, requestID: requestID, action: "import_plan", itemKind: "epic", itemID: epicID, actor: actor}
-	_, dup, err := ew.run(ctx, func(tx pgx.Tx) (map[string]any, error) {
+	outcome, dup, err := ew.run(ctx, func(tx pgx.Tx) (map[string]any, error) {
 		// r1 (#1948 review): the pre-write guard is check-then-act —
 		// re-check the target status under its row lock INSIDE the
 		// write transaction (the TaskStart in-tx precedent), so a
@@ -214,6 +220,25 @@ func (s *Service) ImportPlan(ctx context.Context, actor Actor, projectID, shortI
 		return nil, err
 	}
 	_ = dup
+	// Replay render (ew.run's duplicate discipline, the CreateTask
+	// precedent): the outcome map is the ORIGINAL's recorded payload
+	// when the requestId already landed — render from it, so a retry
+	// returns the original result, never a phantom fresh-uuid epic or
+	// an empty task map, whatever the target's CURRENT state.
+	if eid, _ := outcome["epic_id"].(string); eid != "" {
+		epicID = eid
+	}
+	if sid, _ := outcome["epic_short_id"].(string); sid != "" {
+		out.EpicShortID = sid
+	}
+	if keys, ok := outcome["tasks"].(map[string]any); ok && len(keys) > 0 {
+		out.TaskKeys = make(map[string]string, len(keys))
+		for k, v := range keys {
+			if sv, ok := v.(string); ok {
+				out.TaskKeys[k] = sv
+			}
+		}
+	}
 	out.EpicID = epicID
 	ready, err := s.EpicInitialReadySet(ctx, epicID)
 	if err == nil {
