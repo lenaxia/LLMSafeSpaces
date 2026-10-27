@@ -209,9 +209,12 @@ type Authority struct {
 	// evict-oldest under count + byte budgets. a.mu-guarded; appended
 	// in fanoutLocked so nothing that consumes a seq escapes it.
 	ring replayRing
-	// replayFallbacks counts Events resume attempts that fell below the
-	// ring's low-water mark and degraded to the snapshot-first protocol
-	// (the honest-fallback signal; a.mu-guarded, Metrics-exposed).
+	// replayFallbacks counts Events resume attempts that degraded to
+	// the snapshot-first protocol: cursor below the ring's low-water
+	// mark OR beyond the authority's current seq (the client-ahead
+	// guard — a cursor from a foreign/reset seq space). Either arm is
+	// an unservable cursor (the honest-fallback signal; a.mu-guarded,
+	// Metrics-exposed).
 	replayFallbacks int64
 
 	reseedMu sync.Mutex
@@ -936,9 +939,13 @@ type Metrics struct {
 	// ReplayRing (design 0069): the retained-frame window's shape —
 	// frame count, serialized bytes, and the low/high water marks.
 	// ReplayFallbacks counts Events resume attempts that degraded to
-	// the snapshot-first protocol (cursor below low-water — the
-	// ring-miss signal; a permanently-high rate means consumers
-	// reconnect slower than the ring turns over, or restarts ate it).
+	// the snapshot-first protocol — any unservable cursor: below
+	// low-water (ring turnover, restarts) OR beyond the current seq
+	// (client-ahead: the client's fold is from a foreign/reset seq
+	// space). A permanently-high low-water rate means consumers
+	// reconnect slower than the ring turns over or restarts keep
+	// eating it; a client-ahead rate means cursor-file resets or
+	// endpoint reuse across authority generations.
 	ReplayRingFrames int
 	ReplayRingBytes  int
 	ReplayLowWater   uint64

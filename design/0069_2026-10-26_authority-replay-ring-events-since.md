@@ -61,7 +61,7 @@ A cursor exactly AT the current seq resumes with an empty replay and goes live �
 
 ### 3.4 Observability
 
-`Metrics()` grows the ring's shape: `ReplayRingFrames`, `ReplayRingBytes`, `ReplayLowWater`, `ReplayHighWater`, and `ReplayFallbacks` (resume attempts that degraded — the ring-miss signal; a persistently high rate means consumers reconnect slower than the ring turns over, or restarts keep eating it). `ReplayWindow()` exposes the water marks for tests and diagnostics.
+`Metrics()` grows the ring's shape: `ReplayRingFrames`, `ReplayRingBytes`, `ReplayLowWater`, `ReplayHighWater`, and `ReplayFallbacks` (resume attempts that degraded to the snapshot — any unservable cursor: below low-water OR beyond the current seq, the client-ahead guard; a persistently high low-water rate means consumers reconnect slower than the ring turns over or restarts keep eating it, a client-ahead rate means cursor-file resets or endpoint reuse across authority generations). `ReplayWindow()` exposes the water marks for tests and diagnostics.
 
 ## 4. Test plan (landed with this change)
 
