@@ -104,10 +104,45 @@ func TestMCPBoard_UpdateTaskDualRoute_1946(t *testing.T) {
 		boardWorkerSessions.record("ses_wrapshaper")
 
 		_, err := mcpAutomation(context.Background(), mcpTestPassword, "board_update_task", map[string]any{
-			"plan": map[string]any{"setCriteriaMet": map[string]any{"index": 0, "met": true}},
+			"plan":                 map[string]any{"setCriteriaMet": map[string]any{"index": 0, "met": true}},
 			"lsp_injected_session": "ses_wrapshaper"})
 		require.Error(t, err, "wrapper-key shaping must not slip setCriteriaMet past the pin")
 		assert.Contains(t, err.Error(), "self-certification")
 		assert.Empty(t, rec.method, "no wire call for the refused call")
+	})
+
+	// PR review r3 finding A: the criteria-REPLACEMENT door — a
+	// worker's patchFile acceptanceCriteria replace rewrites met flags
+	// with no persona guard (Service.UpdateTask); the pin reads the
+	// file and refuses the worker-sourced shape. A non-worker's
+	// replace stays legal.
+	t.Run("spawned worker, patchFile acceptanceCriteria replace → refused", func(t *testing.T) {
+		api, rec := newAutomationAPI(t, 200, `{}`)
+		setupRenameWorkspaceEnv(t, api)
+		boardWorkerSessions.record("ses_criteriarepl")
+
+		path := filepath.Join(t.TempDir(), "patch.json")
+		require.NoError(t, os.WriteFile(path, []byte(`{"acceptanceCriteria":[{"text":"done","met":true}]}`), 0o600))
+		_, err := mcpAutomation(context.Background(), mcpTestPassword, "board_update_task", map[string]any{
+			"taskId": "tsk-aaaa1111", "patchFile": path,
+			"lsp_injected_session": "ses_criteriarepl"})
+		require.Error(t, err, "a worker re-writing its own criteria (met flags ride the replace) is self-certification")
+		assert.Contains(t, err.Error(), "#1946")
+		assert.Contains(t, err.Error(), "acceptanceCriteria")
+		assert.Empty(t, rec.method, "no wire call for the refused call")
+	})
+
+	t.Run("non-worker, same patchFile acceptanceCriteria replace → legal", func(t *testing.T) {
+		api, rec := newAutomationAPI(t, 200, `{"id":"t-1"}`)
+		setupRenameWorkspaceEnv(t, api)
+
+		path := filepath.Join(t.TempDir(), "patch.json")
+		require.NoError(t, os.WriteFile(path, []byte(`{"acceptanceCriteria":[{"text":"done","met":true}]}`), 0o600))
+		_, err := mcpAutomation(context.Background(), mcpTestPassword, "board_update_task", map[string]any{
+			"taskId": "tsk-aaaa1111", "patchFile": path,
+			"lsp_injected_session": "ses_orchestrator"})
+		require.NoError(t, err, "a manager/orchestrator replace is the pin's non-concern")
+		assert.Equal(t, http.MethodPatch, rec.method)
+		assert.Contains(t, rec.body, "acceptanceCriteria", "the replace rides the wire for non-workers")
 	})
 }

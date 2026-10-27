@@ -81,25 +81,45 @@ func logBoardAttributionLoss(name, ref string, err error) {
 // manager-grant gate is gone — every manager tool opens to any
 // in-workspace session, spawned workers included — EXCEPT the
 // reviewer-grant widening this pin refuses: a spawned board worker
-// recording criteria met through the token-less manager shape of
-// board_update_task. #1946's grant stays reviewer-persona-only (the
-// engine's persona tier refuses the worker route; this refuses the
-// manager detour around it — task-worker self-certification of its
-// own work remains forbidden).
+// self-certifying its own work through the token-less manager shape
+// of board_update_task, in BOTH shapes — the inline setCriteriaMet
+// check-off AND a patchFile whose acceptanceCriteria replace rewrites
+// met flags (Service.UpdateTask replaces the set wholesale with no
+// persona guard; PR review r3 finding A). #1946's grant stays
+// reviewer-persona-only (the engine's persona tier refuses the worker
+// route; this refuses the manager detour around it).
 func boardWorkerSelfCertificationPin(ctx context.Context, password, name string, body map[string]any) error {
 	// The SAME unwrap dispatch honors — the full wrapper key set. A
 	// pin reading a narrower shape than the dispatcher is bypassable
 	// by wrapper-key argument shaping ({"plan": {…setCriteriaMet…}},
 	// PR review r2 finding 2); the two key sets must never diverge.
 	args := boardArgs(body, "project", "epic", "task", "plan")
-	if _, ok := args["setCriteriaMet"]; !ok {
+	_, inlineCheckOff := args["setCriteriaMet"]
+	// The criteria-replacement door: the pin must ALSO see what the
+	// patchFile carries — acceptanceCriteria is a legal
+	// update_task_patch property whose replace semantics would rewrite
+	// met flags with no persona guard. Manager-sourced replaces stay
+	// legal; only the WORKER-sourced shape refuses.
+	criteriaReplace := false
+	if pf, ok := args["patchFile"].(string); ok && strings.TrimSpace(pf) != "" {
+		if fields, _, ferr := resolveBoardPayloadFile("patchFile", pf); ferr == nil {
+			_, criteriaReplace = fields["acceptanceCriteria"]
+		}
+		// An unreadable/invalid file is dispatch's own refusal (the
+		// CRUD gate rejects it before any wire call) — nothing to
+		// guard here.
+	}
+	if !inlineCheckOff && !criteriaReplace {
 		return nil
 	}
 	sid := boardManagerSession(ctx, password, name, body)
 	if sid == "" || !boardWorkerSessions.isWorker(sid) {
 		return nil
 	}
-	return fmt.Errorf("%s failed: task-worker self-certification stays refused — criteria-met recording is the reviewer-persona claim's scoped grant (issue #1946); a spawned board worker may not check off its own work through the manager shape (ruling 2026-10-27, tsk-copper-refectory-generates)", name)
+	if inlineCheckOff {
+		return fmt.Errorf("%s failed: task-worker self-certification stays refused — criteria-met recording is the reviewer-persona claim's scoped grant (issue #1946); a spawned board worker may not check off its own work through the manager shape (ruling 2026-10-27, tsk-copper-refectory-generates)", name)
+	}
+	return fmt.Errorf("%s failed: task-worker self-certification stays refused — a patchFile acceptanceCriteria replace rewrites met flags with no persona guard (issue #1946); a spawned board worker may not re-write its own criteria through the manager shape (ruling 2026-10-27, tsk-copper-refectory-generates)", name)
 }
 
 // boardArgs unwraps the documented flat argument form, tolerating the
