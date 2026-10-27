@@ -97,7 +97,7 @@ func TestBoardSpawner_DispatchCarriesEpisodeRunID(t *testing.T) {
 	var captured *apiwf.NodeExecRequest
 	act := stubActivator{ip: "10.42.0.7"}
 	exe := stubDispatcher{capture: &captured, session: "sess-fresh-1"}
-	spawner := newBoardSpawner(&act, &exe)
+	spawner := newBoardSpawner(&act, &exe, nil, nil)
 	id, err := spawner(context.Background(), c)
 	if err != nil || id != "sess-fresh-1" {
 		t.Fatalf("spawn failed: id=%s err=%v", id, err)

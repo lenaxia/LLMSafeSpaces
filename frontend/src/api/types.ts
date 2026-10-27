@@ -90,7 +90,9 @@ export interface SessionListItem {
   hasUnread: boolean;
   /** Prompt tokens from the last LLM step for this session. undefined = no step completed yet. */
   contextUsed?: number;
-  /** Session origin: manual | routine | workflow | api (from session_origins enrichment). */
+  /** Session origin: manual | routine | workflow | api | worker (from
+   *  session_origins enrichment; 'worker' = board/engine fresh-worker
+   *  spawn, #1966). */
   origin?: string;
   /**
    * Present and true when the session is archived (read-only: chat

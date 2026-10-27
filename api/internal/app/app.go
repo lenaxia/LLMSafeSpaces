@@ -1604,6 +1604,38 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 				board.WithWorkerSpawner(newBoardSpawner(
 					&apiwf.K8sWorkspaceActivator{K8sClient: k8sClient, Namespace: cfg.Kubernetes.Namespace},
 					&apiwf.HTTPAgentExecutor{Port: 4097, PasswordProvider: proxyHandler},
+					// #1966: the spawner stamps the worker-class origin
+					// mark (session_origins, kind='session') on every
+					// successful fresh-worker spawn — the sidebar's
+					// Workers folder classifies on it. Same DB (the
+					// board pool shares cfg.Database), its own pool; the
+					// mark write is best-effort like every #1915 mark.
+					workflows.NewStore(boardPool),
+					// #1966 owner ruling: the worker-session hard cap
+					// (default 50) — on-create prune hard-deletes the
+					// OLDEST worker sessions past it (the #1882
+					// authorized core), refusing anything without a
+					// worker signal (re-verified per candidate) and
+					// honoring a 1h grace floor. Best-effort, detached
+					// from the spawn. The logger is bound fresh here:
+					// engineLogger stays nil in no-pg builds and the
+					// authorized core logs failures through it.
+					newBoardWorkerRetainer(
+						workflows.NewStore(boardPool),
+						func() func(ctx context.Context, workspaceID, podIP, sessionID string) bool {
+							retentionLogger := &apiwf.AppEngineLogger{
+								LogFn: func(msg string, kv ...any) { log.Info(msg, kv...) },
+								ErrFn: func(err error, msg string, kv ...any) { log.Error(msg, err, kv...) },
+							}
+							retentionStore := workflows.NewStore(boardPool)
+							return func(ctx context.Context, workspaceID, podIP, sessionID string) bool {
+								return apiwf.DeleteSessionAuthorized(ctx, retentionLogger,
+									retentionStore, proxyHandler, proxyHandler, 4097,
+									workspaceID, podIP, sessionID, "board worker retention cap (#1966)")
+							}
+						}(),
+						cfg.Board.WorkerSessionCap, cfg.Board.WorkerSessionGraceSecs,
+					).prune,
 				)),
 				board.WithAsyncSpawn(),
 				// Stage-persona claim-then-spawn (owner directive

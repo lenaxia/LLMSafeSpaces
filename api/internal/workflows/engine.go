@@ -623,7 +623,7 @@ func (r *Reconciler) executeNode(ctx context.Context, logger Logger, run *wf.Wor
 			// failed) is an orphan. Best-effort; failures log inside
 			// the delete path and the retry proceeds.
 			if resp != nil && resp.SessionID != "" && !pinnedSession && r.PasswordProvider != nil {
-				deleteSessionAuthorized(ctx, logger, r.Store, r.PasswordProvider, r.SessionDelete, r.agentdPort(), run.WorkspaceID, podIP, resp.SessionID, deletePurposeNodeRetry)
+				DeleteSessionAuthorized(ctx, logger, r.Store, r.PasswordProvider, r.SessionDelete, r.agentdPort(), run.WorkspaceID, podIP, resp.SessionID, deletePurposeNodeRetry)
 			}
 			select {
 			case <-time.After(time.Duration(attempt) * time.Second):
@@ -1460,6 +1460,11 @@ const (
 	deletePurposePreserveOnFailure = "preserve_on_failure_success"
 	deletePurposeRetryIntermediate = "retry_intermediate_cleanup"
 	deletePurposeNodeRetry         = "dag_node_retry_cleanup"
+	// deletePurposeWorkerRetention prefixes the #1966 retention
+	// evictions' purpose labels (the suffix carries the ruling ref)
+	// — originForPurpose keys the transient carrier mark's honest
+	// origin on it.
+	deletePurposeWorkerRetention = "board worker retention"
 )
 
 // deleteRoutineSession deletes a finished routine's opencode session via
@@ -1502,13 +1507,14 @@ func deleteRoutineSession(ctx context.Context, logger Logger, password, podIP st
 // A confirmed delete propagates platform-side (#1882) via the wired
 // SessionDeletePropagator — the same teardown the user-route delete runs.
 func (s *Scheduler) deleteRoutineSessionAuthorized(ctx context.Context, logger Logger, workspaceID, podIP, sessionID, purpose string) bool {
-	return deleteSessionAuthorized(ctx, logger, s.Store, s.PasswordProvider, s.SessionDelete, s.agentdPort(), workspaceID, podIP, sessionID, purpose)
+	return DeleteSessionAuthorized(ctx, logger, s.Store, s.PasswordProvider, s.SessionDelete, s.agentdPort(), workspaceID, podIP, sessionID, purpose)
 }
 
-// deleteSessionAuthorized is the caller-neutral authorized-delete core
-// shared by the routine scheduler and the DAG reconciler's retry
-// cleanup (#1476 DAG adoption): nil provider → skipped; every log line
-// carries the purpose label. #1882: a CONFIRMED pod-side delete runs
+// DeleteSessionAuthorized is the caller-neutral authorized-delete core
+// shared by the routine scheduler, the DAG reconciler's retry cleanup
+// (#1476 DAG adoption), and the board worker-retention prune (#1966):
+// nil provider → skipped; every log line carries the purpose label.
+// #1882: a CONFIRMED pod-side delete runs
 // the platform-side teardown (prop may be nil — unwired engines keep
 // the pre-#1882 pod-side-only behavior) — the carrier's session_index
 // row was minted during its life and no other route removes it.
@@ -1521,7 +1527,7 @@ func (s *Scheduler) deleteRoutineSessionAuthorized(ctx context.Context, logger L
 // unmarked fate). Fail-safe best-effort: a failed mark logs and the
 // effects still run; a failed clean logs and the mark survives (the
 // same DB outage that failed the effects' writes fails the clean too).
-func deleteSessionAuthorized(ctx context.Context, logger Logger, origins SessionOriginStore, pp apiinterfaces.WorkspacePasswordProvider, prop SessionDeletePropagator, port int, workspaceID, podIP, sessionID, purpose string) bool {
+func DeleteSessionAuthorized(ctx context.Context, logger Logger, origins SessionOriginStore, pp apiinterfaces.WorkspacePasswordProvider, prop SessionDeletePropagator, port int, workspaceID, podIP, sessionID, purpose string) bool {
 	if pp == nil {
 		logger.Error(fmt.Errorf("no PasswordProvider configured"), "session delete: no password provider configured", "sessionId", sessionID, "purpose", purpose)
 		return false
@@ -1564,10 +1570,14 @@ func deleteSessionAuthorized(ctx context.Context, logger Logger, origins Session
 // originForPurpose maps the authorized-delete's purpose label to the
 // honest origin value for the transient carrier mark (#1915): the two
 // routine cleanups are routine-sourced; the DAG node-retry cleanup is
-// workflow-sourced.
+// workflow-sourced; the board worker-retention eviction (#1966) is
+// worker-sourced.
 func originForPurpose(purpose string) string {
 	if purpose == deletePurposeNodeRetry {
 		return types.SessionOriginWorkflow
+	}
+	if strings.HasPrefix(purpose, deletePurposeWorkerRetention) {
+		return types.SessionOriginWorker
 	}
 	return types.SessionOriginRoutine
 }
