@@ -123,12 +123,12 @@ func (s *Service) moveStageTx(ctx context.Context, tx pgx.Tx, actor Actor, taskI
 	// The pending_input exits are manager-surface-only for WORKERS (a
 	// delegated worker is not the human the exit exists for; its token
 	// does not unlock self-exit). #1832 WS2: the pod seam's
-	// manager-grade agent surface (SurfaceAgentManager — the
-	// orchestrator-class session behind the resolveManager belt:
-	// harness-attested identity + the live-assignee worker refusal)
-	// is a manager surface; the ordinary-worker rule is unchanged.
+	// manager-grade agent surface (SurfaceAgentManager — open to ANY
+	// in-workspace session since the #1747 §5 manager grant's repeal,
+	// ruling 2026-10-27 / tsk-copper-refectory-generates) is a manager
+	// surface; the ordinary-worker rule is unchanged.
 	if from == StagePendingInput && actor.Surface == SurfaceAgent {
-		return res, nudge{}, &GuardError{Code: GuardManagerSurface, Detail: "pending_input exits are human or manager decisions (the worker surface is denied; the orchestrator-class manager path is the agent-manager surface)"}
+		return res, nudge{}, &GuardError{Code: GuardManagerSurface, Detail: "pending_input exits are human or manager decisions (the worker surface is denied; the manager route — board_move_stage without a claim token — is the agent-manager surface)"}
 	}
 
 	// #1747 pause-must-pause: FORWARD stage-writes refuse on a

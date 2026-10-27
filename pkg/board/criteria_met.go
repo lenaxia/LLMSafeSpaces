@@ -12,15 +12,15 @@ import (
 // criteria_met.go — the #1946 scoped grant (owner ruling 2026-10-25:
 // "Why is set criteria met manager only. It should not be.").
 //
-// Ruling #1747 §5's blanket surface separation (ALL manager board tools
-// denied to spawned worker sessions) plus the anti-self-certification
-// rule for TASK workers caught the reviewer persona in the same net:
-// the auto-review reviewer (the #1941 stage-persona claim-then-spawn
-// under the #1939 flipped defaults) can VERIFY acceptance criteria but
-// could never RECORD them met — setCriteriaMet was manager-surface-only,
-// so the done guard (R2) refused the reviewer's →done and a
-// user-collaborator had to hand-set the flags. Criteria verification IS
-// the reviewer's job; the loop must self-complete.
+// The anti-self-certification rule for TASK workers once rode the
+// #1747 §5 blanket surface separation (ALL manager board tools denied
+// to spawned worker sessions); that separation is REPEALED (ruling
+// 2026-10-27 / tsk-copper-refectory-generates) but this grant keeps
+// its narrow shape on all three axes — the reviewer persona
+// (the #1941 stage-persona claim-then-spawn under the #1939 flipped
+// defaults) can VERIFY acceptance criteria and RECORD them met, and
+// nobody else on the worker route can: criteria verification IS the
+// reviewer's job; the loop must self-complete.
 //
 // The grant, exactly as ruled — narrow on all three axes:
 //   - WHO: only a REVIEWER-PERSONA claim. The #1941 mint's provenance,
@@ -28,8 +28,7 @@ import (
 //     seam: it is non-NULL only while a persona episode's token holds
 //     the row, and in_review tokens are minted by NOTHING else. A task
 //     worker's claim (worker grant, bounce re-claim, exit re-claim)
-//     never carries it — self-certification stays refused with the
-//     #1747 §5 error.
+//     never carries it — self-certification stays refused.
 //   - WHAT: only the per-criterion met flag (setCriteriaMet's one
 //     mutation — no title/description/tags/criteria-replace reach this
 //     method; the surrounding seam refuses them loudly).
@@ -60,12 +59,13 @@ func (s *Service) SetCriteriaMet(ctx context.Context, actor Actor, taskID, short
 		return nil, err
 	}
 	// Grant guard, tier 1 — the persona seam. A row that is not held
-	// by a reviewer-persona claim has NO grant on this surface: the
-	// caller falls back to the #1747 §5 rule verbatim (manager board
-	// tools, user-collaborator sessions only). This is the error the
-	// task worker self-certifying its own work keeps seeing.
+	// by a reviewer-persona claim has NO grant on this surface: an
+	// implementer or task worker falls here — self-certification of
+	// one's own work stays forbidden (the #1946 grant does not widen;
+	// the #1747 §5 manager gate that used to share this refusal class
+	// is repealed, ruling 2026-10-27 / tsk-copper-refectory-generates).
 	if t.Stage != StageInReview || t.ClaimPersona == "" {
-		return nil, &GuardError{Code: GuardManagerSurface, Detail: "criteria-met recording is the reviewer-persona claim's scoped grant (issue #1946) — manager board tools attach to user-collaborator sessions only (ruling #1747 §5), and task-worker self-certification remains forbidden"}
+		return nil, &GuardError{Code: GuardManagerSurface, Detail: "criteria-met recording is the reviewer-persona claim's scoped grant (issue #1946) — no persona claim, no grant; task-worker self-certification remains forbidden (ruling 2026-10-27, tsk-copper-refectory-generates)"}
 	}
 	// Grant guard, tier 2 — the live token (the charter envelope's
 	// claim token; an empty or stale token never matches).

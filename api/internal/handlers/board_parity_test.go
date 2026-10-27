@@ -477,7 +477,7 @@ func TestBoardParity_AgentColumn(t *testing.T) {
 		"POST /internal/v1/automation/board/projects/:id/unarchive",
 		"POST /internal/v1/automation/board/resource-pressure",
 		"POST /internal/v1/automation/board/tasks/:id/dependencies",
-		"POST /internal/v1/automation/board/tasks/:id/move-stage", // #1832 WS2: manager-grade move (pending_input exits for orchestrator-class sessions)
+		"POST /internal/v1/automation/board/tasks/:id/move-stage", // #1832 WS2: manager-grade move (pending_input exits; open to any in-workspace session — manager-grant gate repealed, ruling 2026-10-27)
 		"POST /internal/v1/automation/board/tasks/:id/pause",
 		"POST /internal/v1/automation/board/tasks/:id/rearm", // #1832 WS3
 		"POST /internal/v1/automation/board/tasks/:id/resume",

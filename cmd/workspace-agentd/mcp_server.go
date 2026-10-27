@@ -144,7 +144,9 @@ func decodeOneDocument(r io.Reader, v any) error {
 // ToolDescriptionGuidance test pins them.
 // boardManagerTools returns the #1747 Task Board MANAGER catalog
 // entries (extracted from mcpToolCatalog — funlen): the full manager
-// set at project/epic/task level for user-collaborator sessions.
+// set at project/epic/task level, open to ANY in-workspace session
+// (the #1747 §5 manager grant is repealed, ruling 2026-10-27 /
+// tsk-copper-refectory-generates).
 func boardManagerTools() []mcpTool {
 	return []mcpTool{
 		{
@@ -153,7 +155,7 @@ func boardManagerTools() []mcpTool {
 			// are the manager's project/fleet projections.
 			Name:        "board_list",
 			Annotations: annot(true, false, false),
-			Description: "List EVERY task of one board project in a single call (#1837 P2a) — the orchestrator's overview the per-task board_read cannot give. Each row carries the stage, claim (assignee session), lease expiry, paused, blocked, attempts, and cooldown columns (live claim TOKENS are deliberately absent from the bulk projection — board_read keeps the token for the claimant's own flow); the response also derives the project's ready HINT (backlog + unblocked + unpaused + not cooling — the task-level claim predicates; epic-quota and project gates resolve at claim time; rendered only on fully unfiltered lists). Manager tool (user-collaborator sessions only); workspace-scoped (a foreign workspace's project is a plain 404).",
+			Description: "List EVERY task of one board project in a single call (#1837 P2a) — the orchestrator's overview the per-task board_read cannot give. Each row carries the stage, claim (assignee session), lease expiry, paused, blocked, attempts, and cooldown columns (live claim TOKENS are deliberately absent from the bulk projection — board_read keeps the token for the claimant's own flow); the response also derives the project's ready HINT (backlog + unblocked + unpaused + not cooling — the task-level claim predicates; epic-quota and project gates resolve at claim time; rendered only on fully unfiltered lists). Workspace-scoped (a foreign workspace's project is a plain 404); open to any in-workspace session (the manager-grant gate is repealed, ruling 2026-10-27, tsk-copper-refectory-generates).",
 			InputSchema: map[string]any{"type": "object", "properties": map[string]any{
 				"projectId": map[string]any{"type": "string", "description": "Project short id (prj-… or UUID)"},
 				"stage":     map[string]any{"type": "string", "enum": []string{"backlog", "in_progress", "in_review", "done", "pending_input"}, "description": "Optional stage filter (one of the five stages)"},
@@ -163,23 +165,26 @@ func boardManagerTools() []mcpTool {
 		{
 			Name:        "board_health",
 			Annotations: annot(true, false, false),
-			Description: "The WORKSPACE's board health snapshot (#1837 P2a): active leases with expiry and assignee, task and project-slot cooldowns, pending_input counts by origin, recent reclaims, and per-project worker slots in use — one call over every board this workspace's projects carry. Use it to answer 'what is in flight, what is stuck, what cools down' before scheduling decisions. Manager tool (user-collaborator sessions only); workspace-scoped.",
+			Description: "The WORKSPACE's board health snapshot (#1837 P2a): active leases with expiry and assignee, task and project-slot cooldowns, pending_input counts by origin, recent reclaims, and per-project worker slots in use — one call over every board this workspace's projects carry. Use it to answer 'what is in flight, what is stuck, what cools down' before scheduling decisions. Workspace-scoped; open to any in-workspace session (the manager-grant gate is repealed, ruling 2026-10-27, tsk-copper-refectory-generates).",
 			InputSchema: map[string]any{"type": "object", "properties": map[string]any{}},
 		},
 		{
 			// Task Board MANAGER tools (#1747, design 0067 §4.3c as
 			// amended): the collaboration-to-execution loop — take a
-			// user-approved design, create the epics/tasks, activate the
-			// epic, and the engine's claim-then-spawn executes. Manager
-			// tools attach to USER-COLLABORATOR sessions only: a spawned
-			// claim-token worker holds no manager grant (prompt-injection
-			// blast radius), and every call carries the calling session's
-			// identity. claim_next is engine-internal forever; task_start
+			// user-approved design, create the epics/tasks, activate
+			// the epic, and the engine's claim-then-spawn executes. The
+			// #1747 §5 manager grant is REPEALED (ruling 2026-10-27 /
+			// tsk-copper-refectory-generates): every manager tool opens
+			// to ANY in-workspace session — a workspace pod is
+			// single-tenant, all sessions share one credential, and the
+			// claim-token fence is the real protection. The calling
+			// session's identity rides the wire as audit attribution
+			// only. claim_next is engine-internal forever; task_start
 			// is owner-surface only; cancel is ELIMINATED (delete
 			// replaces it); ordering is dependency-only FIFO — no
 			// priority fields exist.
 			Name:        "board_create_project",
-			Description: "Create a Task Board project in THIS workspace: a swimlane with a worker-slot budget (max concurrent in-flight workers, default 2). The project targets your own workspace by construction — you manage THIS workspace's board only (ruling #1747). Use when the user wants a new board/campaign for structured multi-agent work. Not for: repeated scheduled jobs (create a workflow instead — boards are one-shot sprints). Manager tool: your session must be a user-collaborator session (spawned workers are refused).",
+			Description: "Create a Task Board project in THIS workspace: a swimlane with a worker-slot budget (max concurrent in-flight workers, default 2). The project targets your own workspace by construction — you manage THIS workspace's board only (ruling #1747). Use when the user wants a new board/campaign for structured multi-agent work. Not for: repeated scheduled jobs (create a workflow instead — boards are one-shot sprints). Open to any in-workspace session, spawned workers included (the manager-grant gate is repealed, ruling 2026-10-27, tsk-copper-refectory-generates).",
 			InputSchema: map[string]any{"type": "object", "properties": map[string]any{
 				"name":        map[string]any{"type": "string", "description": "Project name"},
 				"workerSlots": map[string]any{"type": "integer", "description": "Max concurrent in-flight claims (default 2)"},
@@ -188,7 +193,7 @@ func boardManagerTools() []mcpTool {
 		},
 		{
 			Name:        "board_update_project",
-			Description: "Patch a board project (name, worker slots, tags). A pod cannot retarget a project's workspace — it is bound to this workspace structurally (ruling #1747). Manager tool (user-collaborator sessions only).",
+			Description: "Patch a board project (name, worker slots, tags). A pod cannot retarget a project's workspace — it is bound to this workspace structurally (ruling #1747). Open to any in-workspace session (the manager-grant gate is repealed, ruling 2026-10-27, tsk-copper-refectory-generates).",
 			InputSchema: map[string]any{"type": "object", "properties": map[string]any{
 				"projectId":   map[string]any{"type": "string", "description": "Project short id (prj-… or UUID)"},
 				"name":        map[string]any{"type": "string", "description": "New name (rename cascades display inheritance)"},
@@ -198,45 +203,45 @@ func boardManagerTools() []mcpTool {
 		},
 		{
 			Name:        "board_project_archive",
-			Description: "Archive a board project (reversible storage): stops ALL claims into it. Not deletion — archive_project keeps every row; unarchive restores. Manager tool (user-collaborator sessions only).",
+			Description: "Archive a board project (reversible storage): stops ALL claims into it. Not deletion — archive_project keeps every row; unarchive restores. Open to any in-workspace session (the manager-grant gate is repealed, ruling 2026-10-27, tsk-copper-refectory-generates).",
 			InputSchema: map[string]any{"type": "object", "properties": map[string]any{
 				"projectId": map[string]any{"type": "string", "description": "Project short id (prj-… or UUID)"},
 			}, "required": []string{"projectId"}},
 		},
 		{
 			Name:        "board_project_unarchive",
-			Description: "Unarchive a board project: restores it to active (claims resume). Manager tool (user-collaborator sessions only).",
+			Description: "Unarchive a board project: restores it to active (claims resume). Open to any in-workspace session (the manager-grant gate is repealed, ruling 2026-10-27, tsk-copper-refectory-generates).",
 			InputSchema: map[string]any{"type": "object", "properties": map[string]any{
 				"projectId": map[string]any{"type": "string", "description": "Project short id (prj-… or UUID)"},
 			}, "required": []string{"projectId"}},
 		},
 		{
 			Name:        "board_project_pause",
-			Description: "Pause a board project — the scheduling lever (\"pause this project so another moves forward\"): claim candidacy turns off for every task under it, in-flight workers receive HALT directives (they finish their current thought, then stop — never a mid-generation cut), and leases keep running. Use when the user wants work in this project to yield resources to another project. resume_project clears it. Manager tool (user-collaborator sessions only).",
+			Description: "Pause a board project — the scheduling lever (\"pause this project so another moves forward\"): claim candidacy turns off for every task under it, in-flight workers receive HALT directives (they finish their current thought, then stop — never a mid-generation cut), and leases keep running. Use when the user wants work in this project to yield resources to another project. resume_project clears it. Open to any in-workspace session (the manager-grant gate is repealed, ruling 2026-10-27, tsk-copper-refectory-generates).",
 			InputSchema: map[string]any{"type": "object", "properties": map[string]any{
 				"projectId": map[string]any{"type": "string", "description": "Project short id (prj-… or UUID)"},
 			}, "required": []string{"projectId"}},
 		},
 		{
 			Name:        "board_project_resume",
-			Description: "Resume a paused board project: clears the pause and delivers RESUME directives to held workers; a worker whose lease lapsed while paused re-enters the FIFO pool (a fresh worker may take the task). Manager tool (user-collaborator sessions only).",
+			Description: "Resume a paused board project: clears the pause and delivers RESUME directives to held workers; a worker whose lease lapsed while paused re-enters the FIFO pool (a fresh worker may take the task). Open to any in-workspace session (the manager-grant gate is repealed, ruling 2026-10-27, tsk-copper-refectory-generates).",
 			InputSchema: map[string]any{"type": "object", "properties": map[string]any{
 				"projectId": map[string]any{"type": "string", "description": "Project short id (prj-… or UUID)"},
 			}, "required": []string{"projectId"}},
 		},
 		{
 			Name:        "board_create_epic",
-			Description: "Create a DRAFT epic in a board project (the default state). The epic holds tasks and gates their claiming; activate it to start feeding work to fresh workers. The outcome field is the human's steering wheel — what this epic exists to achieve. PAYLOAD IS FILE-ONLY (design 0070 cutover): write the whole payload JSON {title, outcome, tags} with the write tool, check it with board_validate_file (op create_epic), then submit bodyFile — the file is DELETED after a successful create (re-write to retry; a retried create that finds no file should check board_list to confirm it landed). Manager tool (user-collaborator sessions only).",
+			Description: "Create a DRAFT epic in a board project (the default state). The epic holds tasks and gates their claiming; activate it to start feeding work to fresh workers. The outcome field is the human's steering wheel — what this epic exists to achieve. PAYLOAD IS FILE-ONLY (design 0070 cutover): write the whole payload JSON {title, outcome, tags} with the write tool, check it with board_validate_file (op create_epic), then submit bodyFile — the file is DELETED after a successful create (re-write to retry; a retried create that finds no file should check board_list to confirm it landed). Open to any in-workspace session (the manager-grant gate is repealed, ruling 2026-10-27, tsk-copper-refectory-generates).",
 			InputSchema: json.RawMessage(`{"properties":{"projectId":{"description":"Project short id (prj-… or UUID)","type":"string"},"bodyFile":{"description":"REQUIRED — workspace file holding the whole epic payload JSON {title, outcome, tags, requestId?} (relative paths resolve against the workspace root)","type":"string"}},"required":["projectId","bodyFile"],"type":"object"}`),
 		},
 		{
 			Name:        "board_update_epic",
-			Description: "Patch an epic (title, outcome, tags — replace-if-present semantics). The outcome is the steering wheel for every worker under the epic; a title rename cascades to its tasks' display. PAYLOAD IS FILE-ONLY (design 0070 cutover): write the patch JSON {title?, outcome?, tags?} with the write tool (board_read first for read-before-update), check it with board_validate_file (op update_epic_patch), then submit patchFile — the file is DELETED after a successful update. Manager tool (user-collaborator sessions only).",
+			Description: "Patch an epic (title, outcome, tags — replace-if-present semantics). The outcome is the steering wheel for every worker under the epic; a title rename cascades to its tasks' display. PAYLOAD IS FILE-ONLY (design 0070 cutover): write the patch JSON {title?, outcome?, tags?} with the write tool (board_read first for read-before-update), check it with board_validate_file (op update_epic_patch), then submit patchFile — the file is DELETED after a successful update. Open to any in-workspace session (the manager-grant gate is repealed, ruling 2026-10-27, tsk-copper-refectory-generates).",
 			InputSchema: json.RawMessage(`{"properties":{"epicId":{"description":"Epic short id (epc-… or UUID)","type":"string"},"patchFile":{"description":"REQUIRED — workspace file holding the patch JSON {title?, outcome?, tags?, requestId?} (relative paths resolve against the workspace root)","type":"string"}},"required":["epicId","patchFile"],"type":"object"}`),
 		},
 		{
 			Name:        "board_epic_activate",
-			Description: "Activate an epic — the publish/start lever: ready tasks start feeding to fresh workers via the engine's claim-then-spawn. Refuses while cross-epic dependencies enter INACTIVE epics unless acknowledged (pass acknowledgeInactiveDeps after the user accepts the blockage); reports the initial ready set in the response. Held workers under the epic receive RESUME directives. Not for: assigning a specific task NOW (there is no such agent tool — the engine claims in FIFO order; ruling #1747). Manager tool (user-collaborator sessions only).",
+			Description: "Activate an epic — the publish/start lever: ready tasks start feeding to fresh workers via the engine's claim-then-spawn. Refuses while cross-epic dependencies enter INACTIVE epics unless acknowledged (pass acknowledgeInactiveDeps after the user accepts the blockage); reports the initial ready set in the response. Held workers under the epic receive RESUME directives. Not for: assigning a specific task NOW (there is no such agent tool — the engine claims in FIFO order; ruling #1747). Open to any in-workspace session (the manager-grant gate is repealed, ruling 2026-10-27, tsk-copper-refectory-generates).",
 			InputSchema: map[string]any{"type": "object", "properties": map[string]any{
 				"epicId":                  map[string]any{"type": "string", "description": "Epic short id (epc-… or UUID)"},
 				"acknowledgeInactiveDeps": map[string]any{"type": "boolean", "description": "Acknowledge deps entering inactive epics (they stay blocking until those epics activate)"},
@@ -244,21 +249,21 @@ func boardManagerTools() []mcpTool {
 		},
 		{
 			Name:        "board_epic_pause",
-			Description: "Pause an epic: stops NEW claims for its tasks and cascades HALT directives to the epic's in-flight workers (they finish the current thought, then stop). In-flight leases are never interrupted mid-generation; forward stage-writes refuse while paused. Manager tool (user-collaborator sessions only).",
+			Description: "Pause an epic: stops NEW claims for its tasks and cascades HALT directives to the epic's in-flight workers (they finish the current thought, then stop). In-flight leases are never interrupted mid-generation; forward stage-writes refuse while paused. Open to any in-workspace session (the manager-grant gate is repealed, ruling 2026-10-27, tsk-copper-refectory-generates).",
 			InputSchema: map[string]any{"type": "object", "properties": map[string]any{
 				"epicId": map[string]any{"type": "string", "description": "Epic short id (epc-… or UUID)"},
 			}, "required": []string{"epicId"}},
 		},
 		{
 			Name:        "board_epic_archive",
-			Description: "Archive an epic (reversible storage): it leaves the claimable set. Not deletion — unarchive restores active. Manager tool (user-collaborator sessions only).",
+			Description: "Archive an epic (reversible storage): it leaves the claimable set. Not deletion — unarchive restores active. Open to any in-workspace session (the manager-grant gate is repealed, ruling 2026-10-27, tsk-copper-refectory-generates).",
 			InputSchema: map[string]any{"type": "object", "properties": map[string]any{
 				"epicId": map[string]any{"type": "string", "description": "Epic short id (epc-… or UUID)"},
 			}, "required": []string{"epicId"}},
 		},
 		{
 			Name:        "board_epic_unarchive",
-			Description: "Unarchive an epic — always restores it to active (the resumable default). Manager tool (user-collaborator sessions only).",
+			Description: "Unarchive an epic — always restores it to active (the resumable default). Open to any in-workspace session (the manager-grant gate is repealed, ruling 2026-10-27, tsk-copper-refectory-generates).",
 			InputSchema: map[string]any{"type": "object", "properties": map[string]any{
 				"epicId": map[string]any{"type": "string", "description": "Epic short id (epc-… or UUID)"},
 			}, "required": []string{"epicId"}},
@@ -266,7 +271,7 @@ func boardManagerTools() []mcpTool {
 		{
 			Name:        "board_delete_epic",
 			Annotations: annot(false, true, false),
-			Description: "Destructively delete an epic AND its tasks (#1747: cancel is eliminated — delete replaces it). The audit log keeps every removal: each deleted row's event embeds its full final-state snapshot. REFUSES while any claim under the epic is in-flight unless force=true (the delete commits, then in-flight workers are aborted — post-commit) — confirm with the user before forcing. Tasks with dependents outside the epic: those dependents lose their edges (listed in the response, each gets an unblocked_by_delete audit event — visible, never a refusal). Not for reversible shelving — archive instead. Manager tool (user-collaborator sessions only).",
+			Description: "Destructively delete an epic AND its tasks (#1747: cancel is eliminated — delete replaces it). The audit log keeps every removal: each deleted row's event embeds its full final-state snapshot. REFUSES while any claim under the epic is in-flight unless force=true (the delete commits, then in-flight workers are aborted — post-commit) — confirm with the user before forcing. Tasks with dependents outside the epic: those dependents lose their edges (listed in the response, each gets an unblocked_by_delete audit event — visible, never a refusal). Not for reversible shelving — archive instead. Open to any in-workspace session (the manager-grant gate is repealed, ruling 2026-10-27, tsk-copper-refectory-generates).",
 			InputSchema: map[string]any{"type": "object", "properties": map[string]any{
 				"epicId": map[string]any{"type": "string", "description": "Epic short id (epc-… or UUID)"},
 				"force":  map[string]any{"type": "boolean", "description": "Abort in-flight workers and delete anyway (confirm with the user first)"},
@@ -274,30 +279,30 @@ func boardManagerTools() []mcpTool {
 		},
 		{
 			Name:        "board_create_task",
-			Description: "Create a backlog task in an epic. The description (markdown) seeds the worker charter; acceptance criteria define Done (ALL met + evidence). ATOMIC-CREATE CONTRACT (#1849): a non-empty description AND at least one acceptance criterion are REQUIRED — a create missing either, or whose title/description/criterion is ENTIRELY a placeholder-class token (placeholder, todo, tbd, asdf, qwerty…), is rejected outright; re-compose (prose that merely mentions such a token is fine). dependsOn (short ids of existing tasks) adds prerequisite edges in the same write; ordering is dependency-only FIFO by creation — no priority field exists. PAYLOAD IS FILE-ONLY (design 0070 cutover): write the whole payload JSON {title, description, tags, acceptanceCriteria, dependsOn} with the write tool, check it with board_validate_file (op create_task), then submit bodyFile — the file is DELETED after a successful create (re-write to retry; a retried create that finds no file should check board_list to confirm it landed). This is the FLAT single-task document; for an epic plus its tasks, or SEVERAL tasks at once, use board_import_plan's planFile instead. Manager tool (user-collaborator sessions only).",
+			Description: "Create a backlog task in an epic. The description (markdown) seeds the worker charter; acceptance criteria define Done (ALL met + evidence). ATOMIC-CREATE CONTRACT (#1849): a non-empty description AND at least one acceptance criterion are REQUIRED — a create missing either, or whose title/description/criterion is ENTIRELY a placeholder-class token (placeholder, todo, tbd, asdf, qwerty…), is rejected outright; re-compose (prose that merely mentions such a token is fine). dependsOn (short ids of existing tasks) adds prerequisite edges in the same write; ordering is dependency-only FIFO by creation — no priority field exists. PAYLOAD IS FILE-ONLY (design 0070 cutover): write the whole payload JSON {title, description, tags, acceptanceCriteria, dependsOn} with the write tool, check it with board_validate_file (op create_task), then submit bodyFile — the file is DELETED after a successful create (re-write to retry; a retried create that finds no file should check board_list to confirm it landed). This is the FLAT single-task document; for an epic plus its tasks, or SEVERAL tasks at once, use board_import_plan's planFile instead. Open to any in-workspace session (the manager-grant gate is repealed, ruling 2026-10-27, tsk-copper-refectory-generates).",
 			InputSchema: json.RawMessage(`{"properties":{"epicId":{"description":"Epic short id (epc-… or UUID)","type":"string"},"bodyFile":{"description":"REQUIRED — workspace file holding the whole task payload JSON {title, description, tags, acceptanceCriteria, dependsOn, requestId?} (relative paths resolve against the workspace root)","type":"string"}},"required":["epicId","bodyFile"],"type":"object"}`),
 		},
 		{
 			Name:        "board_update_task",
-			Description: "Patch a task (title, description, tags, criteria — replace-if-present semantics; omitted fields keep existing values). setCriteriaMet is {index, met} — check off OR uncheck the criterion at the 0-based index (the reviewer's Done preparation can walk flags BOTH ways, #1837 P2b; the bare-integer form still decodes as {index, met:true}); REFUSED alongside an acceptanceCriteria replace (send one or the other); out-of-bounds indices are loud errors. THE PATCH PAYLOAD IS FILE-ONLY (design 0070 cutover): write the patch JSON {title?, description?, tags?, acceptanceCriteria?} with the write tool (board_read first — criteria REPLACE the full set), check it with board_validate_file (op update_task_patch), then submit patchFile — the file is DELETED after a successful update. patchFile is REQUIRED on the manager route; the ONE exception is the bare criteria check-off {taskId, setCriteriaMet}. #1946 scoped grant: a caller sending its charter claimToken rides the worker route and may record setCriteriaMet on its OWN claimed row ONLY (any other field with a claimToken refuses loudly); task workers self-certifying their own work stay refused (ruling #1747 §5).",
+			Description: "Patch a task (title, description, tags, criteria — replace-if-present semantics; omitted fields keep existing values). setCriteriaMet is {index, met} — check off OR uncheck the criterion at the 0-based index (the reviewer's Done preparation can walk flags BOTH ways, #1837 P2b; the bare-integer form still decodes as {index, met:true}); REFUSED alongside an acceptanceCriteria replace (send one or the other); out-of-bounds indices are loud errors. THE PATCH PAYLOAD IS FILE-ONLY (design 0070 cutover): write the patch JSON {title?, description?, tags?, acceptanceCriteria?} with the write tool (board_read first — criteria REPLACE the full set), check it with board_validate_file (op update_task_patch), then submit patchFile — the file is DELETED after a successful update. patchFile is REQUIRED on the manager route; the ONE exception is the bare criteria check-off {taskId, setCriteriaMet}. #1946 scoped grant: a caller sending its charter claimToken rides the worker route and may record setCriteriaMet on its OWN claimed row ONLY (any other field with a claimToken refuses loudly); task workers self-certifying their own work stay refused (ruling 2026-10-27, tsk-copper-refectory-generates — the one surviving registry refusal).",
 			InputSchema: json.RawMessage(`{"properties":{"taskId":{"description":"Task short id (phrase form tsk-crimson-finch-blooms, legacy tsk-XXXXXXXX forms still resolve, or UUID)","type":"string"},"claimToken":{"description":"The claim token from your charter envelope — present ONLY for the #1946 reviewer-persona grant: the call routes to the worker surface and may record setCriteriaMet on your OWN claimed row (any other field refuses). Omit it for the manager patch.","type":"string"},"setCriteriaMet":{"description":"{index, met} — check off OR uncheck the criterion (the legacy bare integer = check-off); refused alongside acceptanceCriteria","properties":{"index":{"description":"0-based criterion index","type":"integer"},"met":{"description":"The flag to write (default true — the legacy bare-integer form)","type":"boolean"}},"required":["index"],"type":"object"},"patchFile":{"description":"REQUIRED (manager patch) — workspace file holding the patch JSON {title?, description?, tags?, acceptanceCriteria?, requestId?} (relative paths resolve against the workspace root)","type":"string"}},"required":["taskId"],"type":"object"}`),
 		},
 		{
 			Name:        "board_add_dependency",
 			Annotations: annot(false, false, true),
-			Description: "Add a structural dependency edge — the ONLY blocking mechanism: task→task within this workspace (cross-epic allowed, never cross-workspace). Cycles are rejected (409 with did-you-mean suggestions); duplicate edges are idempotent no-ops; edges per node are capped (16 default). Dependencies are SEMANTIC prerequisites — never use edges to express preference (ordering is FIFO by creation; ruling #1747). Manager tool (user-collaborator sessions only).",
+			Description: "Add a structural dependency edge — the ONLY blocking mechanism: task→task within this workspace (cross-epic allowed, never cross-workspace). Cycles are rejected (409 with did-you-mean suggestions); duplicate edges are idempotent no-ops; edges per node are capped (16 default). Dependencies are SEMANTIC prerequisites — never use edges to express preference (ordering is FIFO by creation; ruling #1747). Open to any in-workspace session (the manager-grant gate is repealed, ruling 2026-10-27, tsk-copper-refectory-generates).",
 			InputSchema: json.RawMessage(`{"properties":{"taskId":{"description":"Dependent task short id (tsk-… phrase/legacy form, or UUID)","type":"string"},"dependsOn":{"description":"Prerequisite task short id (tsk-… phrase/legacy form, or UUID)","type":"string"}},"required":["taskId","dependsOn"],"type":"object"}`),
 		},
 		{
 			Name:        "board_remove_dependency",
 			Annotations: annot(false, false, true),
-			Description: "Remove one dependency edge. Removing an abandoned prerequisite's edge unblocks the dependent row (one of the pending_input resolutions). Manager tool (user-collaborator sessions only).",
+			Description: "Remove one dependency edge. Removing an abandoned prerequisite's edge unblocks the dependent row (one of the pending_input resolutions). Open to any in-workspace session (the manager-grant gate is repealed, ruling 2026-10-27, tsk-copper-refectory-generates).",
 			InputSchema: json.RawMessage(`{"properties":{"taskId":{"description":"Dependent task short id (tsk-… phrase/legacy form, or UUID)","type":"string"},"dependsOn":{"description":"Prerequisite task short id (tsk-… phrase/legacy form, or UUID)","type":"string"}},"required":["taskId","dependsOn"],"type":"object"}`),
 		},
 		{
 			Name:        "board_delete_task",
 			Annotations: annot(false, true, false),
-			Description: "Destructively delete a task (#1747: cancel is eliminated — delete replaces it). An idle row goes straight; an in-flight row's worker turn is cut AFTER the delete commits (post-commit abort — the row's removal is the authority). The audit event embeds the task's full final-state snapshot. The task's edges cascade away: orphaned dependents are LISTED in the response and each gets an unblocked_by_delete audit event — they simply become ready; NO auto-reconnect ever happens (a wrong reconnect is a silent stale-chain stall). reconnect=true lets orphans inherit the deleted node's direct upstream edges (deduplicated, cycle-guarded) — only when the user's intent says so. Manager tool (user-collaborator sessions only).",
+			Description: "Destructively delete a task (#1747: cancel is eliminated — delete replaces it). An idle row goes straight; an in-flight row's worker turn is cut AFTER the delete commits (post-commit abort — the row's removal is the authority). The audit event embeds the task's full final-state snapshot. The task's edges cascade away: orphaned dependents are LISTED in the response and each gets an unblocked_by_delete audit event — they simply become ready; NO auto-reconnect ever happens (a wrong reconnect is a silent stale-chain stall). reconnect=true lets orphans inherit the deleted node's direct upstream edges (deduplicated, cycle-guarded) — only when the user's intent says so. Open to any in-workspace session (the manager-grant gate is repealed, ruling 2026-10-27, tsk-copper-refectory-generates).",
 			InputSchema: map[string]any{"type": "object", "properties": map[string]any{
 				"taskId":    map[string]any{"type": "string", "description": "Task short id (phrase form tsk-crimson-finch-blooms, legacy tsk-XXXXXXXX forms still resolve, or UUID)"},
 				"reconnect": map[string]any{"type": "boolean", "description": "Orphans inherit the deleted node's direct upstream edges (default off — the graph never rewrites itself implicitly)"},
@@ -305,21 +310,21 @@ func boardManagerTools() []mcpTool {
 		},
 		{
 			Name:        "board_pause_task",
-			Description: "Pause one task — the scheduling lever: claim candidacy off, forward stage-writes refused (409 task_paused), and a HALT directive lands on the in-flight worker (it finishes its current thought, then stops — never a mid-generation cut). The lease keeps running (LAPSE accounting): a long pause naturally reclaims; resume brings the row back. Dependencies stay blocking while paused. Manager tool (user-collaborator sessions only).",
+			Description: "Pause one task — the scheduling lever: claim candidacy off, forward stage-writes refused (409 task_paused), and a HALT directive lands on the in-flight worker (it finishes its current thought, then stops — never a mid-generation cut). The lease keeps running (LAPSE accounting): a long pause naturally reclaims; resume brings the row back. Dependencies stay blocking while paused. Open to any in-workspace session (the manager-grant gate is repealed, ruling 2026-10-27, tsk-copper-refectory-generates).",
 			InputSchema: map[string]any{"type": "object", "properties": map[string]any{
 				"taskId": map[string]any{"type": "string", "description": "Task short id (phrase form tsk-crimson-finch-blooms, legacy tsk-XXXXXXXX forms still resolve, or UUID)"},
 			}, "required": []string{"taskId"}},
 		},
 		{
 			Name:        "board_resume_task",
-			Description: "Resume a paused task: clears the flag and delivers the RESUME directive — the held session continues if its lease survived; a lapsed one re-enters the FIFO pool (a fresh worker claims it). Manager tool (user-collaborator sessions only).",
+			Description: "Resume a paused task: clears the flag and delivers the RESUME directive — the held session continues if its lease survived; a lapsed one re-enters the FIFO pool (a fresh worker claims it). Open to any in-workspace session (the manager-grant gate is repealed, ruling 2026-10-27, tsk-copper-refectory-generates).",
 			InputSchema: map[string]any{"type": "object", "properties": map[string]any{
 				"taskId": map[string]any{"type": "string", "description": "Task short id (phrase form tsk-crimson-finch-blooms, legacy tsk-XXXXXXXX forms still resolve, or UUID)"},
 			}, "required": []string{"taskId"}},
 		},
 		{
 			Name:        "board_rearm_task",
-			Description: "Re-pool an attempts-exhausted task (#1832 WS3): an escalated pending_input row (attempts at the cap — the engine withheld the grant) returns to backlog with attempts reset to 0 (a fresh-judgment ledger; the pre-reset count rides the rearm audit event) and is claimable immediately. Only pending_input/escalated rows; other stages and origins keep their enumerated transitions. Manager tool (user-collaborator sessions only).",
+			Description: "Re-pool an attempts-exhausted task (#1832 WS3): an escalated pending_input row (attempts at the cap — the engine withheld the grant) returns to backlog with attempts reset to 0 (a fresh-judgment ledger; the pre-reset count rides the rearm audit event) and is claimable immediately. Only pending_input/escalated rows; other stages and origins keep their enumerated transitions. Open to any in-workspace session (the manager-grant gate is repealed, ruling 2026-10-27, tsk-copper-refectory-generates).",
 			InputSchema: map[string]any{"type": "object", "properties": map[string]any{
 				"taskId":    map[string]any{"type": "string", "description": "Task short id (phrase form tsk-crimson-finch-blooms, legacy tsk-XXXXXXXX forms still resolve, or UUID)"},
 				"requestId": map[string]any{"type": "string", "description": "Optional idempotency key: reuse ONE id per logical operation across retries"},
@@ -331,7 +336,7 @@ func boardManagerTools() []mcpTool {
 			// bulk CLAIM variant deliberately does not exist on this
 			// surface: task_start is owner-surface only (round-3 #2).
 			Name:        "board_move_stage_bulk",
-			Description: "Bulk stage move (#1836): one shared target stage + evidenceUrl across up to 50 tasks in ONE call — each item is one full server-arbitrated board_move_stage (Done guard — ALL criteria met + evidence for done; pause guards; claim-token rule; auto-review dispatch on toStage=in_review; the done settle cascade). Response is a per-item result array [{id, status: done|failed, error?}] — partial failures are reported per item, never all-or-nothing; one malformed id sinks only its own item. Re-submitting the batch (same requestId) is safe: an item already at the target stage returns done, not conflict. The canonical use: completing review sets (in_review → done) after a verification sweep. Manager tool (user-collaborator sessions only).",
+			Description: "Bulk stage move (#1836): one shared target stage + evidenceUrl across up to 50 tasks in ONE call — each item is one full server-arbitrated board_move_stage (Done guard — ALL criteria met + evidence for done; pause guards; claim-token rule; auto-review dispatch on toStage=in_review; the done settle cascade). Response is a per-item result array [{id, status: done|failed, error?}] — partial failures are reported per item, never all-or-nothing; one malformed id sinks only its own item. Re-submitting the batch (same requestId) is safe: an item already at the target stage returns done, not conflict. The canonical use: completing review sets (in_review → done) after a verification sweep. Open to any in-workspace session (the manager-grant gate is repealed, ruling 2026-10-27, tsk-copper-refectory-generates).",
 			InputSchema: map[string]any{"type": "object", "properties": map[string]any{
 				"taskIds":     map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Task short ids (phrase form preferred; legacy forms and UUIDs resolve) — 1 to 50 items"},
 				"toStage":     map[string]any{"type": "string", "enum": []string{"in_progress", "in_review", "done", "pending_input", "backlog"}, "description": "The ONE target stage every item moves to (per-item from-stage legality stays server-arbitrated)"},
@@ -344,7 +349,7 @@ func boardManagerTools() []mcpTool {
 			// twin (delete IS a manager action; only claim/create are
 			// owner-only, so unlike the bulk claim this form lives here).
 			Name:        "board_delete_tasks",
-			Description: "Bulk delete (#1836): the delete_task(s) batch — up to 50 destructive removals in ONE call, ONE shared reconnect flag. Each item is one full board_delete_task (its own snapshot-bearing audit event, orphan events + is_blocked rederive, post-commit worker abort for an in-flight row). Response is a per-item result array [{id, status: done|failed, orphaned_dependents?, reconnected?, error?}] — partial failures are reported per item, never all-or-nothing; one malformed id sinks only its own item. Idempotent retry for a destructive variant: re-submitting the batch is safe, and a miss, a foreign row, and an already-deleted row all render the SAME not_found item (absence is the done state — rendering it done would fabricate outcomes for foreign probes and leak foreign existence; never a conflict). Canonical use: cleanup sweeps after re-planning. Manager tool (user-collaborator sessions only).",
+			Description: "Bulk delete (#1836): the delete_task(s) batch — up to 50 destructive removals in ONE call, ONE shared reconnect flag. Each item is one full board_delete_task (its own snapshot-bearing audit event, orphan events + is_blocked rederive, post-commit worker abort for an in-flight row). Response is a per-item result array [{id, status: done|failed, orphaned_dependents?, reconnected?, error?}] — partial failures are reported per item, never all-or-nothing; one malformed id sinks only its own item. Idempotent retry for a destructive variant: re-submitting the batch is safe, and a miss, a foreign row, and an already-deleted row all render the SAME not_found item (absence is the done state — rendering it done would fabricate outcomes for foreign probes and leak foreign existence; never a conflict). Canonical use: cleanup sweeps after re-planning. Open to any in-workspace session (the manager-grant gate is repealed, ruling 2026-10-27, tsk-copper-refectory-generates).",
 			InputSchema: map[string]any{"type": "object", "properties": map[string]any{
 				"taskIds":   map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Task short ids (phrase form preferred; legacy forms and UUIDs resolve) — 1 to 50 items"},
 				"reconnect": map[string]any{"type": "boolean", "description": "The ONE shared reconnect flag: orphans of every deleted item inherit that item's direct upstream edges (deduplicated, cycle-guarded) — default off"},
@@ -353,7 +358,7 @@ func boardManagerTools() []mcpTool {
 		},
 		{
 			Name:        "board_import_plan",
-			Description: "Materialize a plan atomically (#1747): ONE unified plan document (design 0070 §1a), any granularity — a NEW epic with all its tasks ({epic: {title, outcome, tags}, tasks: [1..N]}), or N tasks attached to an EXISTING epic ({epicId: \"epc-…\", tasks: [1..N]}); a single task is a one-element plan or board_create_task's flat bodyFile. EXACTLY ONE of epic|epicId (both/neither is refused); tasks address each other by payload key in dependsOn; nodes-per-epic and edges-per-node caps apply; all-or-nothing in every mode. ALWAYS dry-run first (dryRun=true): the response renders the graph, warnings, and the initial ready set — show it to the user as the plan-approval moment; write only after approval. THE PLAN IS FILE-ONLY (design 0070 cutover): write the plan JSON with the write tool, check it with board_validate_file (op import_plan — local shape checks; the dryRun covers GRAPH semantics: cycles, caps), then submit planFile — the file is DELETED after a successful non-dry run (a dry run keeps it for the real submission). Manager tool (user-collaborator sessions only).",
+			Description: "Materialize a plan atomically (#1747): ONE unified plan document (design 0070 §1a), any granularity — a NEW epic with all its tasks ({epic: {title, outcome, tags}, tasks: [1..N]}), or N tasks attached to an EXISTING epic ({epicId: \"epc-…\", tasks: [1..N]}); a single task is a one-element plan or board_create_task's flat bodyFile. EXACTLY ONE of epic|epicId (both/neither is refused); tasks address each other by payload key in dependsOn; nodes-per-epic and edges-per-node caps apply; all-or-nothing in every mode. ALWAYS dry-run first (dryRun=true): the response renders the graph, warnings, and the initial ready set — show it to the user as the plan-approval moment; write only after approval. THE PLAN IS FILE-ONLY (design 0070 cutover): write the plan JSON with the write tool, check it with board_validate_file (op import_plan — local shape checks; the dryRun covers GRAPH semantics: cycles, caps), then submit planFile — the file is DELETED after a successful non-dry run (a dry run keeps it for the real submission). Open to any in-workspace session (the manager-grant gate is repealed, ruling 2026-10-27, tsk-copper-refectory-generates).",
 			InputSchema: json.RawMessage(`{"properties":{"projectId":{"description":"Project short id (prj-… or UUID)","type":"string"},"dryRun":{"description":"Validate + render only — nothing is written (the plan-approval moment; the plan file survives)","type":"boolean"},"planFile":{"description":"REQUIRED — workspace file holding the unified plan JSON {epic:{title,outcome,tags} | epicId, tasks:[{key,title,description,tags,acceptanceCriteria,dependsOn}], requestId?} (relative paths resolve against the workspace root)","type":"string"}},"required":["projectId","planFile"],"type":"object"}`),
 		},
 		{
@@ -381,6 +386,7 @@ func mcpToolByName(name string) *mcpTool {
 	return nil
 }
 
+//nolint:funlen // the catalog is one flat literal — one entry per tool, ordered; decomposition would scatter the tool surface (same posture as app.New)
 func mcpToolCatalog() []mcpTool {
 	tools := append(boardManagerTools(), []mcpTool{
 		{
@@ -663,9 +669,9 @@ func mcpToolCatalog() []mcpTool {
 		},
 		{
 			Name:        "board_move_stage",
-			Description: "Move a task's stage — the worker's forward writes when you hold a claim token, or the manager-grade move when you don't. WORKER (claimToken present, your claimed task): in_progress → in_review when your work is done (attach evidenceUrl — the artifact link for this transition: PR, build, doc); a review bounce (in_review → in_progress) re-arms a fresh claim and worker; → done requires ALL acceptance criteria met + evidenceUrl and is the reviewer's move, not yours. MANAGER (no claimToken — orchestrator-class sessions only; spawned workers are refused the manager dispatch): the full legal manager set including the pending_input exits (→ in_progress re-claims, → backlog re-queues — the ONE attempts reset) — the pending_input freeze-out class (#1832) is gone; your session identity rides the audit. A 409 with code claim_token means the claim is no longer yours — STOP and re-read the task with board_read. The task's stage machine arbitrates every move server-side; on refusal the response carries the authoritative row.",
+			Description: "Move a task's stage — the worker's forward writes when you hold a claim token, or the manager-grade move when you don't. WORKER (claimToken present, your claimed task): in_progress → in_review when your work is done (attach evidenceUrl — the artifact link for this transition: PR, build, doc); a review bounce (in_review → in_progress) re-arms a fresh claim and worker; → done requires ALL acceptance criteria met + evidenceUrl and is the reviewer's move, not yours. MANAGER (no claimToken — any in-workspace session, spawned workers included; the manager-grant gate is repealed, ruling 2026-10-27, tsk-copper-refectory-generates): the full legal manager set including the pending_input exits (→ in_progress re-claims, → backlog re-queues — the ONE attempts reset) — the pending_input freeze-out class (#1832) is gone; your session identity rides the audit. A 409 with code claim_token means the claim is no longer yours — STOP and re-read the task with board_read. The task's stage machine arbitrates every move server-side; on refusal the response carries the authoritative row.",
 			InputSchema: map[string]any{"type": "object", "properties": map[string]any{
-				"claimToken":  map[string]any{"type": "string", "description": "The claim token from your charter envelope (the in-flight guard) — OMIT it only for the manager-grade move (orchestrator-class sessions)"},
+				"claimToken":  map[string]any{"type": "string", "description": "The claim token from your charter envelope (the in-flight guard) — OMIT it only for the manager-grade move (any in-workspace session)"},
 				"toStage":     map[string]any{"type": "string", "description": "Target stage: in_review (work done), in_progress (re-work / the pending_input re-claim exit), done, pending_input, backlog (the pending_input re-queue exit)"},
 				"evidenceUrl": map[string]any{"type": "string", "description": "The artifact link for this transition (PR, build, doc) — required for → done, good practice for → in_review"},
 				"requestId":   map[string]any{"type": "string", "description": "Optional idempotency key (UUID): reuse it on retry of the SAME logical move — a replay returns the original outcome, never a duplicate"},
@@ -1174,7 +1180,10 @@ func callMCPTool(ctx context.Context, password, name string, args map[string]any
 		"board_record_verdict": // #1947: the spawned reviewer persona's verdict channel
 		// #1701: the board worker tools ride the same automation seam
 		// (pod SA token, verbatim passthrough, platform-validated).
-		// #1747: the manager set joins them, session-gated at dispatch.
+		// #1747: the manager set joins them — open to any in-workspace
+		// session (the manager grant gate is repealed, ruling
+		// 2026-10-27 / tsk-copper-refectory-generates); the resolved
+		// session identity rides the wire as audit attribution.
 		return mcpAutomation(ctx, password, name, args)
 	case "get_datetime":
 		timezoneArg, _ := args["timezone"].(string)

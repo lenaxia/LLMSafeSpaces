@@ -37,7 +37,8 @@ func (s *BoardSuite) TestRearm_EscalatedRowRePoolsWithFreshLedger() {
 	s.Require().True(c.Escalated)
 	require.Equal(s.T(), board.StagePendingInput, s.reloadTask(t.ID).Stage)
 
-	// The re-arm: orchestrator-class manager surface.
+	// The re-arm: the manager-grade surface, open to any in-workspace
+	// session (the manager-grant gate is repealed, ruling 2026-10-27).
 	out, err := s.svc.RearmTask(ctx, s.agentManager(ws, "orchestrator-rearm"), "", t.ShortID, "req-rearm-1")
 	s.Require().NoError(err)
 	require.Equal(s.T(), board.StageBacklog, out.Stage)

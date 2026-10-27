@@ -1363,13 +1363,14 @@ func TestMCPHandler_ToolDescriptionGuidance(t *testing.T) {
 		d, ok := descs["board_move_stage"]
 		require.True(t, ok, "board_move_stage in tools/list")
 		for _, want := range []string{
-			"claim token",                 // required on every in-flight worker write
-			"in_review",                   // the worker's forward move (work done)
-			"evidenceUrl",                 // the artifact link per transition
-			"pending_input",               // the exits are named
-			"orchestrator-class",          // #1832 WS2: the manager-grade dual route
-			"spawned workers are refused", // workers never reach the manager dispatch
-			"acceptance criteria",         // Done guard named (criteria + evidence)
+			"claim token",                    // required on every in-flight worker write
+			"in_review",                      // the worker's forward move (work done)
+			"evidenceUrl",                    // the artifact link per transition
+			"pending_input",                  // the exits are named
+			"any in-workspace session",       // the manager route is open post-repeal (ruling 2026-10-27, tsk-copper-refectory-generates)
+			"spawned workers included",       // workers reach the manager dispatch too
+			"manager-grant gate is repealed", // the #1747 §5 identity gate is gone
+			"acceptance criteria",            // Done guard named (criteria + evidence)
 		} {
 			assert.Contains(t, d, want)
 		}

@@ -301,11 +301,12 @@ func TestMCPEnvelope_BoardIdentityAliasStrippedAndResolved(t *testing.T) {
 	s1 := f.newSession("board-alias")
 	withAgentServer(t, f.handler(t))
 
-	// Snake alias resolves as the caller identity when sessionId is absent.
-	sid, err := boardManagerSession(context.Background(), mcpTestPassword, "board_create_project",
+	// Snake alias resolves as the caller identity when sessionId is absent
+	// (attribution-only resolution — ruling 2026-10-27 /
+	// tsk-copper-refectory-generates: identity never refuses the call).
+	sid := boardManagerSession(context.Background(), mcpTestPassword, "board_create_project",
 		map[string]any{"session_id": s1})
-	require.NoError(t, err, "the snake identity alias resolves on camel absence")
-	assert.Equal(t, s1, sid)
+	assert.Equal(t, s1, sid, "the snake identity alias resolves on camel absence")
 
 	// boardWireBody strips BOTH identity spellings + the injected stamp.
 	wire := boardWireBody(map[string]any{
@@ -322,30 +323,28 @@ func TestMCPEnvelope_BoardIdentityAliasStrippedAndResolved(t *testing.T) {
 
 // Presence policy on the identity alias: an explicitly-present camel
 // sessionId wins; the snake alias never overrides it; and a
-// present-but-MISTYPED sessionId refuses fail-closed instead of
-// consulting the alias (r5/r6 review corner: the board gate is
-// absence-only, narrower than argStr's wrong-type case).
+// present-but-MISTYPED sessionId DEGRADES TO EMPTY ATTRIBUTION
+// instead of consulting the alias (r5/r6 review corner: the presence
+// policy is absence-only, narrower than argStr's wrong-type case —
+// and post-repeal, ruling 2026-10-27 / tsk-copper-refectory-generates,
+// identity resolution can never refuse the call).
 func TestBoardManagerIdentity_CamelPresenceWins(t *testing.T) {
-	t.Run("mistyped camel refuses, never consults the alias", func(t *testing.T) {
+	t.Run("mistyped camel degrades to empty attribution, never consults the alias", func(t *testing.T) {
 		f := newFakeAgent()
-		s1 := f.newSession("board-camel")
 		s2 := f.newSession("board-snake")
 		withAgentServer(t, f.handler(t))
 
-		_, err := boardManagerSession(context.Background(), mcpTestPassword, "board_create_project",
+		sid := boardManagerSession(context.Background(), mcpTestPassword, "board_create_project",
 			map[string]any{"sessionId": 42, "session_id": s2})
-		require.Error(t, err, "a mistyped sessionId is present-and-authoritative — fail closed, no alias")
-		assert.NotContains(t, err.Error(), s2, "the alias must not leak into the failure")
-		_ = s1
+		assert.Empty(t, sid, "a mistyped sessionId degrades to empty audit attribution — the manager call still proceeds")
 	})
 	f := newFakeAgent()
 	s1 := f.newSession("board-camel")
 	s2 := f.newSession("board-snake")
 	withAgentServer(t, f.handler(t))
 
-	sid, err := boardManagerSession(context.Background(), mcpTestPassword, "board_create_project",
+	sid := boardManagerSession(context.Background(), mcpTestPassword, "board_create_project",
 		map[string]any{"sessionId": s1, "session_id": s2})
-	require.NoError(t, err)
 	assert.Equal(t, s1, sid, "present camel sessionId is authoritative; the alias never overrides")
 }
 

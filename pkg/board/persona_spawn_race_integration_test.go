@@ -402,7 +402,7 @@ func (s *BoardSuite) TestPersonaSpawnRace_S6_VerdictChannelHoldsReviewersToken()
 		Verdict: board.VerdictFail, Reviewer: "tokenless",
 		Findings: []board.VerdictFinding{{Severity: board.SeverityMinor, Pointer: "x"}},
 	}, "")
-	s.Require().Error(err, "an agent-surface verdict without a token refuses (spawned workers hold no manager grant)")
+	s.Require().Error(err, "an agent-surface verdict without a token refuses (the claim-token fence — the real in-flight protection)")
 }
 
 // row2Token fetches the row's current claim token (the bounce's mint).

@@ -8,14 +8,14 @@ package handlers
 // board_manager_bulk_integration_test.go — #1836 review r1's e2e gate:
 // the bulk complete pinned END-TO-END on the pod seam — the REAL
 // BoardService (Postgres arbitration, no fakes on the action path)
-// behind the REAL pod-identity belt (TokenReview resolve → workspace
-// pin → resolveManager: fail-closed identity, the live-assignee worker
-// refusal answered from Postgres) — the bulk mirror of
-// TestIntegrationBoardManagerSemantics. Pinned: the per-item envelope
-// through real wiring (done + failed(done_guard) in one 200), the real
-// belt's worker refusal on the bulk route, the foreign-workspace item
-// rendering not_found per-item (the agent-surface perimeter at the
-// HTTP tier), and the session-attributed audit for every landed item.
+// behind the pod-identity seam (TokenReview resolve → workspace pin →
+// the manager surface OPEN to any in-workspace session, identity as
+// audit attribution only — the #1747 §5 belt repealed, ruling
+// 2026-10-27) — the bulk mirror of TestIntegrationBoardManagerSemantics.
+// Pinned: the per-item envelope through real wiring (done +
+// failed(done_guard) in one 200), the foreign-workspace item rendering
+// not_found per-item (the agent-surface perimeter at the HTTP tier),
+// and the session-attributed audit for every landed item.
 
 import (
 	"context"
@@ -171,11 +171,28 @@ func TestIntegrationBoardManagerMoveStageBulk(t *testing.T) {
 	require.Equal(t, beltProbe.ID, claim.TaskID, "the probe is the claimable row")
 	liveWorker := claim.Assignee
 
-	// --- 1: the belt's worker refusal through REAL wiring -------------------------
+	// --- 1: the repealed gate through REAL wiring ----------------------------------
+	// The #1747 §5 manager grant is REPEALED (ruling 2026-10-27 /
+	// tsk-copper-refectory-generates): a live worker's token-less bulk
+	// move is SERVED — 200 with the per-item envelope. The done move
+	// carries NO evidenceUrl, so the Done guard refuses the ITEM
+	// (done_guard), never the caller.
 	w = call(http.MethodPost, "/internal/v1/automation/board/tasks/move-stage-bulk",
 		fmt.Sprintf(`{"workspaceID":%q,"sessionId":%q,"taskIds":[%q],"toStage":"done"}`, wsPod, liveWorker, met.ShortID))
-	assert.Equal(t, http.StatusForbidden, w.Code, w.Body.String())
-	assert.Contains(t, w.Body.String(), board.GuardManagerSurface)
+	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
+	var guardEnv struct {
+		Results []board.BulkItemResult `json:"results"`
+		Count   int                    `json:"count"`
+	}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &guardEnv))
+	require.Len(t, guardEnv.Results, 1)
+	assert.Equal(t, 1, guardEnv.Count)
+	guardItem := guardEnv.Results[0]
+	assert.Equal(t, met.ShortID, guardItem.Ref)
+	assert.Equal(t, board.BulkFailed, guardItem.Status, "the worker's bulk move is served; the missing evidenceUrl fails the item")
+	require.NotNil(t, guardItem.Error)
+	assert.Equal(t, board.GuardDone, guardItem.Error.Code, "the Done guard's own code, per item")
+	assert.Equal(t, board.StageInReview, mustStage(t, pool, met.ID), "the refused item is untouched")
 
 	// --- 2: the per-item envelope through REAL wiring ------------------------------
 	// done + failed(done_guard) in ONE 200; a foreign-workspace item

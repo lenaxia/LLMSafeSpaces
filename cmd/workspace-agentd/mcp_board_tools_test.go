@@ -8,9 +8,11 @@ package main
 // its four claim-token tools (board_heartbeat, board_report_throttle,
 // board_move_stage, board_read); #1747 adds the MANAGER set (project/
 // epic/task CRUD incl. pause/resume, delete replacing the eliminated
-// cancel, dependencies, import_plan) so a user-collaborator agent can
-// take an approved design to execution. The platform (never agentd)
-// arbitrates every guard — agentd passes bodies through verbatim and
+// cancel, dependencies, import_plan) so ANY in-workspace agent can
+// take an approved design to execution (the manager-grant gate is
+// repealed, ruling 2026-10-27 / tsk-copper-refectory-generates). The
+// platform (never agentd) arbitrates every guard — agentd passes
+// bodies through verbatim and
 // surfaces the platform's error classes verbatim, the mcpAutomation
 // discipline trigger_*/workflow_* established.
 //
@@ -331,19 +333,21 @@ func TestMCPBoard_DispatcherWiring(t *testing.T) {
 	assert.Contains(t, out, `"extended":true`)
 	assert.Equal(t, "/internal/v1/automation/board/tasks/heartbeat", rec.path)
 
-	// Shape + identity routing at the dispatcher (#1832 WS2 dual-route):
-	// a token-less move_stage with NO session identity never reaches
-	// the wire (the manager gate refuses fail-closed — a spawned
-	// worker that omits its token gains nothing).
-	rec.method = ""
+	// Shape routing at the dispatcher (#1832 WS2 dual-route): a
+	// token-less move_stage rides the MANAGER-GRADE wire path for ANY
+	// in-workspace caller — identity or not (the #1747 §5 manager gate
+	// is repealed, ruling 2026-10-27 / tsk-copper-refectory-generates:
+	// identity is audit attribution, never a fence; the claim token is
+	// the in-flight protection).
+	rec.path, rec.method = "", ""
 	_, err = callMCPTool(context.Background(), mcpTestPassword, "board_move_stage", map[string]any{
 		"shortId": "tsk-aaaa1111", "toStage": "in_review"})
-	require.Error(t, err, "token-less, identity-less move_stage must be refused")
-	assert.Contains(t, err.Error(), "manager board tools require the calling session's identity")
-	assert.Empty(t, rec.method, "no wire call for a token-less, identity-less move")
+	require.NoError(t, err, "a token-less, identity-less move rides the manager path — attribution degrades to empty")
+	assert.Equal(t, "/internal/v1/automation/board/tasks/tsk-aaaa1111/move-stage", rec.path,
+		"the manager-grade move rides the :id-addressed manager route")
 
-	// A token-less move_stage WITH an (injected) orchestrator-class
-	// session identity routes the MANAGER-GRADE wire path.
+	// A token-less move_stage WITH an (injected) session identity
+	// routes the same MANAGER-GRADE wire path (attribution rides).
 	rec.path, rec.method = "", ""
 	_, err = callMCPTool(context.Background(), mcpTestPassword, "board_move_stage", map[string]any{
 		"shortId": "tsk-aaaa1111", "toStage": "backlog",
@@ -530,37 +534,43 @@ func TestMCPBoard_ManagerWireContract(t *testing.T) {
 	})
 }
 
-// TestMCPBoard_ManagerGrantGate (#1747 §5, tier 1): manager tools
-// REQUIRE a session identity (fail-closed) and REFUSE sessions recorded
-// as spawned board workers. Worker tools are unaffected.
-func TestMCPBoard_ManagerGrantGate(t *testing.T) {
-	t.Run("no session identity → fail-closed refusal pre-wire", func(t *testing.T) {
+// TestMCPBoard_ManagerOpenToAnySession (re-peals the #1747 §5 manager
+// gate, ruling 2026-10-27 / tsk-copper-refectory-generates): manager
+// tools are open to ANY in-workspace session — no identity required
+// (absent identity degrades to empty audit attribution; the call
+// proceeds), spawned board workers INCLUDED. The one surviving
+// registry refusal is the #1946 self-certification pin (pinned in
+// board_update_task_1946_test.go). Worker tools are unaffected.
+func TestMCPBoard_ManagerOpenToAnySession(t *testing.T) {
+	t.Run("no session identity → the call proceeds, attribution degrades to empty", func(t *testing.T) {
 		api, rec := newAutomationAPI(t, 200, `{}`)
 		setupRenameWorkspaceEnv(t, api)
 
-		_, err := mcpAutomation(context.Background(), mcpTestPassword, "board_create_task", map[string]any{
-			"epicId": "epc-bbbb2222", "title": "T1"})
-		require.Error(t, err, "an unidentified caller holds no manager grant")
-		assert.Contains(t, err.Error(), "#1747")
-		assert.Empty(t, rec.method, "no wire call may happen for a refused call")
+		_, err := mcpAutomation(context.Background(), mcpTestPassword, "board_pause_task", map[string]any{
+			"taskId": "tsk-cccc3333"})
+		require.NoError(t, err, "an unidentified caller proceeds — identity is attribution, never a grant")
+		assert.Equal(t, "/internal/v1/automation/board/tasks/tsk-cccc3333/pause", rec.path)
+		assert.NotEmpty(t, rec.method, "the wire call happens")
 	})
 
-	t.Run("spawned-worker session → refused pre-wire", func(t *testing.T) {
+	t.Run("spawned-worker session → the call proceeds (workers hold manager tools too)", func(t *testing.T) {
 		api, rec := newAutomationAPI(t, 200, `{}`)
 		setupRenameWorkspaceEnv(t, api)
 		boardWorkerSessions.record("ses_spawnedworker")
 
 		_, err := mcpAutomation(context.Background(), mcpTestPassword, "board_epic_activate", map[string]any{
 			"epicId": "epc-bbbb2222", "lsp_injected_session": "ses_spawnedworker"})
-		require.Error(t, err, "a spawned worker never gains manager tools")
-		assert.Contains(t, err.Error(), "user-collaborator")
-		assert.Empty(t, rec.method)
+		require.NoError(t, err, "a spawned worker holds the manager tools — the impersonation threat is a prompting concern, not RBAC")
+		assert.Equal(t, "/internal/v1/automation/board/epics/epc-bbbb2222/activate", rec.path)
+		assert.NotEmpty(t, rec.method)
 
-		// The declared fallback does not bypass the registry either.
+		// The declared fallback rides the same open path.
+		rec.path, rec.method = "", ""
 		_, err = mcpAutomation(context.Background(), mcpTestPassword, "board_pause_task", map[string]any{
 			"taskId": "tsk-cccc3333", "sessionId": "ses_spawnedworker"})
-		require.Error(t, err)
-		assert.Empty(t, rec.method)
+		require.NoError(t, err)
+		assert.Equal(t, "/internal/v1/automation/board/tasks/tsk-cccc3333/pause", rec.path)
+		assert.NotEmpty(t, rec.method)
 	})
 
 	t.Run("injection wins over a declared worker id", func(t *testing.T) {

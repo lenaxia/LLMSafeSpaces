@@ -4,32 +4,35 @@
 //go:build integration
 
 // board_manager_e2e_integration_test.go — #1747 review round 8 ("E2E
-// minimal tier"): the two halves of the manager chain joined in ONE
-// test. The REAL chain — the plugin-injection convention
+// minimal tier"), re-pinned by ruling 2026-10-27 /
+// tsk-copper-refectory-generates: the two halves of the manager chain
+// joined in ONE test. The REAL chain — the plugin-injection convention
 // (lsp_injected_session over a conflicting model-declared copy) →
 // agentd's real dispatchBoardManagerTool → the real loopback HTTP
 // client → the pod seam over real HTTP → the real BoardService over
-// Postgres (audit trail, workspace binding, grant belt all engine
-// arbitration). Pinned: injection wins into the audit actor;
-// identity-less dispatch fails closed pre-wire (no seam call); the
-// engine belt refuses a live claimed worker (403 manager_surface_only);
-// the cross-workspace binding refuses a foreign project (403
+// Postgres (audit trail, workspace binding — engine arbitration).
+// Pinned: injection wins into the audit actor; identity-less dispatch
+// PROCEEDS with empty audit attribution (the #1747 §5 belt is
+// repealed); a spawned worker's manager call PROCEEDS (the
+// impersonation threat is a prompting concern, not RBAC); the
+// cross-workspace binding refuses a foreign project (403
 // workspace_binding).
 //
 // The seam's identity middleware (resolve/resolveManager: TokenReview →
-// SA principal → workspace pin → owner → session gate) is a CONTRACT
-// MIRROR, not the real handler: Go's internal-package rule prevents
-// cmd/workspace-agentd from importing api/internal/handlers (the same
-// boundary documented in controller/internal/workspace/org_status_e2e_test.go).
-// The real handler's own behavior is pinned in
-// api/internal/handlers/board_manager_semantics_integration_test.go; this
-// test proves the agentd arm of the contract against the same engine
-// guards. Everything on the action path is real: dispatch, the loopback
-// wire form, HTTP, the engine (Postgres), IsWorkerSession, and the
-// audit actor. The only doubles sit at the identity boundary (fake
-// clientset TokenReview, workspace lookup) plus the recording spawner.
-// Runs against TEST_DATABASE_URL (skips when unreachable); the schema
-// is expected to exist (CI applies migrations).
+// SA principal → workspace pin → owner → session attribution) is a
+// CONTRACT MIRROR, not the real handler: Go's internal-package rule
+// prevents cmd/workspace-agentd from importing api/internal/handlers
+// (the same boundary documented in
+// controller/internal/workspace/org_status_e2e_test.go). The real
+// handler's own behavior is pinned in
+// api/internal/handlers/board_manager_semantics_integration_test.go;
+// this test proves the agentd arm of the contract against the same
+// engine guards. Everything on the action path is real: dispatch, the
+// loopback wire form, HTTP, the engine (Postgres), and the audit
+// actor. The only doubles sit at the identity boundary (fake clientset
+// TokenReview, workspace lookup) plus the recording spawner. Runs
+// against TEST_DATABASE_URL (skips when unreachable); the schema is
+// expected to exist (CI applies migrations).
 
 package main
 
@@ -143,21 +146,10 @@ func (s *boardE2ESeam) resolve(c *gin.Context) (fields map[string]json.RawMessag
 	if v, has := fields["sessionId"]; has {
 		_ = json.Unmarshal(v, &sessionID)
 	}
-	if sessionID == "" {
-		s.fail(c, http.StatusForbidden, board.GuardManagerSurface,
-			"board manager routes require the calling session's identity (sessionId) — spawned workers and unidentified callers hold no manager grant (ruling #1747 §5)")
-		return nil, "", "", "", false
-	}
-	worker, werr := s.svc.IsWorkerSession(c.Request.Context(), sessionID)
-	if werr != nil {
-		s.fail(c, http.StatusServiceUnavailable, board.GuardManagerSurface, "board manager grant check failed — refusing fail-open (ruling #1747 §5)")
-		return nil, "", "", "", false
-	}
-	if worker {
-		s.fail(c, http.StatusForbidden, board.GuardManagerSurface,
-			"board manager tools attach to user-collaborator sessions, not spawned workers (ruling #1747 §5)")
-		return nil, "", "", "", false
-	}
+	// Attribution-only identity (ruling 2026-10-27 /
+	// tsk-copper-refectory-generates): an absent or worker-typed
+	// session NEVER refuses — the mirror of the production
+	// resolveManager post-repeal.
 	return fields, workspaceID, ws.UserID, sessionID, true
 }
 
@@ -423,17 +415,26 @@ func TestIntegrationBoardManagerE2E(t *testing.T) {
 		task.ID, mgrSession).Scan(&n))
 	assert.Equal(t, 1, n)
 
-	// --- B: identity-less dispatch fails closed pre-wire ------------------------
+	// --- B: identity-less dispatch PROCEEDS with empty attribution ----------------
+	// (ruling 2026-10-27 / tsk-copper-refectory-generates: identity is
+	// audit attribution, never a grant — the #1747 §5 fail-closed belt
+	// is repealed; tonight's live failure was exactly this call shape.)
 	before := boardE2EEventCount(t, ctx, pool)
-	_, err = dispatchBoardManagerTool(ctx, client, e2eMCPPassword, "board_create_epic", map[string]any{
+	resp, err = dispatchBoardManagerTool(ctx, client, e2eMCPPassword, "board_create_epic", map[string]any{
 		"projectId": proj.ShortID,
-		"bodyFile":  e2ePayloadFile(t, `{"title":"x"}`),
+		"bodyFile":  e2ePayloadFile(t, `{"title":"identity-less"}`),
 	}, "sa-token", wsPod)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "identity")
-	assert.Equal(t, before, boardE2EEventCount(t, ctx, pool))
+	require.NoError(t, err)
+	require.Equal(t, http.StatusCreated, resp.Status, resp.Body)
+	require.Equal(t, before+1, boardE2EEventCount(t, ctx, pool))
+	require.NoError(t, pool.QueryRow(ctx, `
+		SELECT count(*) FROM board_events
+		WHERE item_kind = 'epic' AND (actor->>'session_id' IS NULL OR actor->>'session_id' = '')`,
+	).Scan(&n))
+	assert.GreaterOrEqual(t, n, 1, "the identity-less create lands with an UNATTRIBUTED actor — not refused")
 
-	// --- C: the engine belt refuses a claimed worker session --------------------
+	// --- C: a spawned worker's manager call PROCEEDS (prompting concern,
+	// not RBAC — the claim-token fence is the real in-flight protection) ----
 	resp, err = dispatchBoardManagerTool(ctx, client, e2eMCPPassword, "board_epic_activate", map[string]any{
 		"lsp_injected_session": mgrSession,
 		"epicId":               epic.ShortID,
@@ -446,15 +447,23 @@ func TestIntegrationBoardManagerE2E(t *testing.T) {
 	require.NotNil(t, claim)
 	require.Equal(t, task.ID, claim.TaskID)
 
-	_, err = dispatchBoardManagerTool(ctx, client, e2eMCPPassword, "board_create_task", map[string]any{
+	resp, err = dispatchBoardManagerTool(ctx, client, e2eMCPPassword, "board_create_task", map[string]any{
 		"lsp_injected_session": claim.Assignee,
 		"epicId":               epic.ShortID,
-		"bodyFile": e2ePayloadFile(t, `{"title":"worker power grab","description":"seeded charter",`+
+		"bodyFile": e2ePayloadFile(t, `{"title":"worker manager call","description":"seeded charter",`+
 			`"acceptanceCriteria":[{"text":"c","met":false}]}`),
 	}, "sa-token", wsPod)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "403")
-	assert.Contains(t, err.Error(), board.GuardManagerSurface)
+	require.NoError(t, err, "a spawned worker holds the manager tools post-repeal")
+	require.Equal(t, http.StatusCreated, resp.Status, resp.Body)
+	var workerTask struct {
+		ID string `json:"id"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(resp.Body), &workerTask))
+	require.NoError(t, pool.QueryRow(ctx, `
+		SELECT count(*) FROM board_events
+		WHERE item_kind = 'task' AND item_id = $1 AND actor->>'session_id' = $2`,
+		workerTask.ID, claim.Assignee).Scan(&n))
+	assert.Equal(t, 1, n, "the worker-attributed manager create lands in the audit trail")
 
 	// --- D: the cross-workspace binding -----------------------------------------
 	foreign, err := svc.CreateProject(ctx,
@@ -472,8 +481,9 @@ func TestIntegrationBoardManagerE2E(t *testing.T) {
 
 	// --- E: the manager-grade move exits pending_input end to end (#1832 WS2) ----
 	// The tsk-3do6n458 freeze class: an escalated row (attempts at cap,
-	// no assignee) that neither the worker NOR the orchestrator-class
-	// session could exit. The manager move lands it backlog, attempts
+	// no assignee) that neither the worker surface NOR the manager
+	// surface could exit (pre-#1832). The manager move lands it
+	// backlog, attempts
 	// reset, audit carrying the session identity. The escalation's own
 	// engine path (attempts>=cap -> pending_input/escalated) is pinned
 	// by pkg/board's suite; here we pin the EXIT through the real seam,

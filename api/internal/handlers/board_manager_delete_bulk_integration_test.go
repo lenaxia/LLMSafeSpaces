@@ -8,14 +8,14 @@ package handlers
 // board_manager_delete_bulk_integration_test.go — #1836 sibling's e2e
 // gate: the bulk DELETE pinned END-TO-END on the pod seam — the REAL
 // BoardService (Postgres arbitration, no fakes on the action path)
-// behind the REAL pod-identity belt (TokenReview resolve → workspace
-// pin → resolveManager: fail-closed identity, the live-assignee worker
-// refusal answered from Postgres). Pinned: the per-item envelope
-// through real wiring (done + not_found in one 200 — the absence ≡
-// miss ≡ foreign triple-equality), the real belt's worker refusal on
-// the bulk delete route, the in-flight item's post-commit worker abort,
-// and the session-attributed audit (delete_task event with the
-// final-state snapshot) for every landed item.
+// behind the pod-identity seam (TokenReview resolve → workspace pin →
+// the manager surface OPEN to any in-workspace session, identity as
+// audit attribution only — the #1747 §5 belt repealed, ruling
+// 2026-10-27). Pinned: the per-item envelope through real wiring (done
+// + not_found in one 200 — the absence ≡ miss ≡ foreign
+// triple-equality), the in-flight item's post-commit worker abort, and
+// the session-attributed audit (delete_task event with the final-state
+// snapshot) for every landed item.
 
 import (
 	"context"
@@ -159,14 +159,27 @@ func TestIntegrationBoardManagerDeleteTasksBulk(t *testing.T) {
 	// the bulk delete's done item is an idle-row-straight delete.
 	idle := mkTask("idle")
 
-	// --- 1: the belt's worker refusal through REAL wiring --------------------------
+	// --- 1: the repealed gate through REAL wiring ----------------------------------
+	// The #1747 §5 manager grant is REPEALED (ruling 2026-10-27 /
+	// tsk-copper-refectory-generates): a live worker's token-less bulk
+	// delete is SERVED — 200, count=1, the row actually deleted.
 	w = call(http.MethodPost, "/internal/v1/automation/board/tasks/delete-bulk",
 		fmt.Sprintf(`{"workspaceID":%q,"sessionId":%q,"taskIds":[%q]}`, wsPod, liveWorker, idle.ShortID))
-	assert.Equal(t, http.StatusForbidden, w.Code, w.Body.String())
-	assert.Contains(t, w.Body.String(), board.GuardManagerSurface)
+	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
+	var guardEnv struct {
+		Results []board.BulkItemResult `json:"results"`
+		Count   int                    `json:"count"`
+	}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &guardEnv))
+	require.Len(t, guardEnv.Results, 1)
+	assert.Equal(t, 1, guardEnv.Count)
+	assert.Equal(t, board.BulkDone, guardEnv.Results[0].Status, "the live worker's bulk delete is served (gate repealed)")
 	var n int
 	require.NoError(t, pool.QueryRow(ctx, `SELECT count(*) FROM tasks WHERE id=$1`, idle.ID).Scan(&n))
-	assert.Equal(t, 1, n, "the refused batch deleted NOTHING")
+	assert.Equal(t, 0, n, "the batch DELETED the row")
+
+	// Section 2 needs a fresh idle row — section 1 consumed it.
+	idle2 := mkTask("idle2")
 
 	// --- 2: the per-item envelope through REAL wiring ------------------------------
 	// done + not_found (a miss) in ONE 200; a foreign-workspace item
@@ -183,7 +196,7 @@ func TestIntegrationBoardManagerDeleteTasksBulk(t *testing.T) {
 
 	w = call(http.MethodPost, "/internal/v1/automation/board/tasks/delete-bulk",
 		fmt.Sprintf(`{"workspaceID":%q,"sessionId":%q,"taskIds":[%q,%q,%q],"requestId":"e2e-del-1"}`,
-			wsPod, sess, idle.ShortID, "tsk-nope-does-not-exist", foreignTask.ShortID))
+			wsPod, sess, idle2.ShortID, "tsk-nope-does-not-exist", foreignTask.ShortID))
 	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
 
 	var envelope struct {
@@ -197,7 +210,7 @@ func TestIntegrationBoardManagerDeleteTasksBulk(t *testing.T) {
 	for _, item := range envelope.Results {
 		byRef[item.Ref] = item
 	}
-	assert.Equal(t, board.BulkDone, byRef[idle.ShortID].Status, "the idle row deletes")
+	assert.Equal(t, board.BulkDone, byRef[idle2.ShortID].Status, "the idle row deletes")
 	missItem := byRef["tsk-nope-does-not-exist"]
 	assert.Equal(t, safeCode(missItem), board.BulkItemNotFound, "a miss is its own not_found item")
 	foreignItem := byRef[foreignTask.ShortID]
@@ -220,9 +233,9 @@ func TestIntegrationBoardManagerDeleteTasksBulk(t *testing.T) {
 		SELECT count(*) FROM board_events
 		WHERE item_id=$1 AND action='delete_task' AND actor->>'session_id'=$2
 		  AND payload ? 'snapshot'`,
-		idle.ID, sess).Scan(&n))
+		idle2.ID, sess).Scan(&n))
 	assert.Equal(t, 1, n, "the bulk route's audit attributes to the calling manager session, snapshot embedded")
-	require.NoError(t, pool.QueryRow(ctx, `SELECT count(*) FROM tasks WHERE id=$1`, idle.ID).Scan(&n))
+	require.NoError(t, pool.QueryRow(ctx, `SELECT count(*) FROM tasks WHERE id=$1`, idle2.ID).Scan(&n))
 	assert.Zero(t, n, "the landed item's row is gone")
 	assert.Equal(t, board.StageBacklog, mustStage(t, pool, foreignTask.ID), "the foreign row is untouched")
 
@@ -245,7 +258,7 @@ func TestIntegrationBoardManagerDeleteTasksBulk(t *testing.T) {
 
 	// --- 4: the re-submit is safe ---------------------------------------------------
 	w = call(http.MethodPost, "/internal/v1/automation/board/tasks/delete-bulk",
-		fmt.Sprintf(`{"workspaceID":%q,"sessionId":%q,"taskIds":[%q],"requestId":"e2e-del-1"}`, wsPod, sess, idle.ShortID))
+		fmt.Sprintf(`{"workspaceID":%q,"sessionId":%q,"taskIds":[%q],"requestId":"e2e-del-1"}`, wsPod, sess, idle2.ShortID))
 	require.Equal(t, http.StatusOK, w.Code, w.Body.String(), "re-submitting the batch never errors")
 	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &envelope))
 	require.Len(t, envelope.Results, 1)
@@ -253,7 +266,7 @@ func TestIntegrationBoardManagerDeleteTasksBulk(t *testing.T) {
 	assert.Equal(t, board.BulkItemNotFound, safeCode(envelope.Results[0]),
 		"absence renders not_found — the truthful, never-disclose retry rendering")
 	require.NoError(t, pool.QueryRow(ctx, `
-		SELECT count(*) FROM board_events WHERE action='delete_task' AND item_id=$1`, idle.ID).Scan(&n))
+		SELECT count(*) FROM board_events WHERE action='delete_task' AND item_id=$1`, idle2.ID).Scan(&n))
 	assert.Equal(t, 1, n, "no duplicate delete event on re-submit")
 }
 

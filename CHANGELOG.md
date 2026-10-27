@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed — the #1747 §5 manager grant is REPEALED: board manager tools open to ANY in-workspace session (ruling 2026-10-27, tsk-copper-refectory-generates)
+
+- **Owner ruling (verbatim): "The concept of a manager grant needs to go away. This is a sharp edge that will cause pain. Why is there even a concept of RBAC here. We have access to the whole system and if a task is going to impersonate another session that's the user's prompting issue not mine."** A workspace pod is single-tenant (every session shares one credential — an identity-grant layer over a shared credential is theater, not authorization), and the live failure was incoherent: the session that created a project/epic/tasks could create/update but was refused `board_rearm_task`/`board_list`/`board_health` ("spawned workers and unidentified callers hold no manager grant, ruling #1747 §5"), stranding completed rows at `pending_input` and forcing successor-task workarounds.
+- **Both grant tiers removed**: agentd's `boardManagerSession` gate (required-identity fail-closed + spawned-worker registry refusal, pre-wire) is reduced to identity RESOLUTION for audit attribution — an absent, mistyped, or unresolvable identity degrades to empty attribution and the call proceeds (loudly noted); the platform seam's belt (`resolveManager`'s required-session 403 and the `IsWorkerSession` live-assignee refusal, removed from `pkg/board`) is gone. Manager-grade dispatch (token-less `board_move_stage`, `board_rearm_task`, `board_list`, `board_health`, bulk, CRUD) serves any in-workspace session, spawned workers included; the resolved session id still rides the audit actor.
+- **Deliberately unchanged (correctness machinery, not RBAC)**: claim-token arbitration (409 `claim_token` — concurrency fencing), stage-machine and Done guards, the worker surface's denial of the pending_input exits, and #1946's reviewer-persona `setCriteriaMet` scoping — a spawned TASK worker's token-less self-certification still refuses (agentd's `boardWorkerSelfCertificationPin`, the one surviving registry check). External REST/MCP surfaces keep user-token authn (real tenancy). Design 0067 §10.10 records the ruling; every tool description/comment citing "#1747 §5"/"manager grant"/"orchestrator-class" amended.
+- Tests: every manager-gate/worker-refusal pin re-pinned to the open behavior (agentd dispatcher + catalog guidance + phrase-identity suites; API handler belt suites `ManagerGrantRepealed`; engine criteria-met/persona pins), integration pins updated including the **regression for tonight's failure — the creating session re-arms its own attempts-exhausted rows through the manager seam** (backlog, attempts reset, audit attributed).
+
+
 ## [0.44.5] - 2026-10-27
 
 ### Added — board file-backed CRUD: bodyFile/patchFile/planFile, board_validate_file, auto-cleanup (design 0070)

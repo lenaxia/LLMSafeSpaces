@@ -70,8 +70,10 @@ func (s *BoardSuite) claimWithAssignee(wsID string) (*board.Claim, string) {
 	return c, raw
 }
 
-// managerActorOn builds the orchestrator-class manager actor (#1747:
-// harness-attested SessionID attributes the audit row).
+// managerActorOn builds the manager-grade actor — any in-workspace
+// session post-repeal (ruling 2026-10-27 /
+// tsk-copper-refectory-generates); the harness-attested SessionID
+// attributes the audit row.
 func (s *BoardSuite) managerActorOn(wsID, sessionID string) board.Actor {
 	return board.Actor{Kind: board.ActorUser, UserID: testUser,
 		Surface: board.SurfaceAgentManager, WorkspaceID: wsID, SessionID: sessionID}
