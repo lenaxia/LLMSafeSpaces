@@ -581,22 +581,16 @@ function WorkspaceSessionList({
   onRenameSessionCancel,
   onRenameSessionConfirm,
 }: SessionListProps) {
+  // #1966: the sessions cache key is SHARED with ChatPage (same key,
+  // same plain queryFn — no merge in either). The previous shape
+  // (origins merged inside this component's queryFn) raced ChatPage's
+  // merge-less queryFn for whose fetch defined the cache: when
+  // ChatPage mounted first, worker origins never merged and the
+  // Workers folder miscounted. The origins now ride their own cache
+  // and merge at this consumer — deterministic by construction.
   const { data: sessions, isLoading } = useQuery({
     queryKey: ["sessions", workspaceId],
-    queryFn: async () => {
-      // #1735: the sidebar renders the Archived group — it needs the
-      // archived rows, so it opts in explicitly.
-      const result = await workspacesApi.getSessions(workspaceId, { includeArchived: true });
-      const origins = await workspaceWorkflowApi.sessionOrigins(workspaceId);
-      if (origins.length > 0) {
-        const originMap = new Map(origins.map((o) => [o.sessionId, o.origin]));
-        return result.map((s) => ({
-          ...s,
-          origin: originMap.get(s.id) || s.origin,
-        }));
-      }
-      return result;
-    },
+    queryFn: () => workspacesApi.getSessions(workspaceId, { includeArchived: true }),
     enabled: !!workspaceId,
     // #1646: reconciliation floor for the session LIST (and its unread
     // reconcile, which runs on every cache update). SSE events converge
@@ -611,6 +605,28 @@ function WorkspaceSessionList({
     refetchOnWindowFocus: true,
   });
 
+  // #1915/#1966 origin marks on their own cache; the sidebar merges
+  // them into the (shared) session rows at the consumer seam.
+  const { data: sessionOrigins } = useQuery({
+    queryKey: ["session-origins", workspaceId],
+    queryFn: () => workspaceWorkflowApi.sessionOrigins(workspaceId),
+    enabled: !!workspaceId,
+    staleTime: 60_000,
+    refetchInterval: 60_000,
+    refetchOnWindowFocus: true,
+  });
+
+  const mergedSessions = useMemo(() => {
+    if (!sessions || !sessionOrigins || sessionOrigins.length === 0) {
+      return sessions;
+    }
+    const originMap = new Map(sessionOrigins.map((o) => [o.sessionId, o.origin]));
+    return sessions.map((s) => ({
+      ...s,
+      origin: originMap.get(s.id) || s.origin,
+    }));
+  }, [sessions, sessionOrigins]);
+
   // S36.5: Subscribe to workspace status cache (populated by ChatPage poller)
   // to show per-session context usage indicators. staleTime:Infinity + enabled:false
   // means: read from cache only, never trigger a fetch from here.
@@ -619,13 +635,13 @@ function WorkspaceSessionList({
   // so it is available for all sessions regardless of workspace pod state.
   const contextBySessionId = useMemo(() => {
     const m = new Map<string, number>();
-    for (const s of sessions ?? []) {
+    for (const s of mergedSessions ?? []) {
       if (s.contextUsed != null) {
         m.set(s.id, s.contextUsed);
       }
     }
     return m;
-  }, [sessions]);
+  }, [mergedSessions]);
 
   // #1627: archived sessions never render in the live tree — they
   // live in the collapsed-by-default Archived group below it.
@@ -635,16 +651,16 @@ function WorkspaceSessionList({
   // FIRST, so an archived worker rows under Archived (retirement
   // outranks the worker class).
   const archivedSessions = useMemo(
-    () => (sessions ?? []).filter((s) => s.archived),
-    [sessions],
+    () => (mergedSessions ?? []).filter((s) => s.archived),
+    [mergedSessions],
   );
   const workerSessions = useMemo(
-    () => (sessions ?? []).filter((s) => !s.archived && isWorkerSession(s)),
-    [sessions],
+    () => (mergedSessions ?? []).filter((s) => !s.archived && isWorkerSession(s)),
+    [mergedSessions],
   );
   const userSessions = useMemo(
-    () => (sessions ?? []).filter((s) => !s.archived && !isWorkerSession(s)),
-    [sessions],
+    () => (mergedSessions ?? []).filter((s) => !s.archived && !isWorkerSession(s)),
+    [mergedSessions],
   );
 
   // Tree shape: roots + orphans, where roots/orphans contain children of
@@ -692,7 +708,7 @@ function WorkspaceSessionList({
   // When disabled, still auto-expand ancestors so the active session is
   // always visible (existing behaviour).
   useEffect(() => {
-    if (!sessions) return;
+    if (!mergedSessions) return;
 
     const prev = prevSelectedRef.current;
     const next = selectedSessionId;
@@ -700,8 +716,8 @@ function WorkspaceSessionList({
     if (autoExpandChildren) {
       // --- Auto-collapse previous subtree root when leaving it ---
       if (prev && prev !== next) {
-        const prevChain = ancestorChain(sessions, prev);
-        const nextChain = next ? ancestorChain(sessions, next) : [];
+        const prevChain = ancestorChain(mergedSessions, prev);
+        const nextChain = next ? ancestorChain(mergedSessions, next) : [];
         const prevRoot = prevChain[0];
         const nextRoot = nextChain[0];
 
@@ -722,7 +738,7 @@ function WorkspaceSessionList({
 
       // --- Auto-expand the active session if it has children ---
       if (next) {
-        const chain = ancestorChain(sessions, next);
+        const chain = ancestorChain(mergedSessions, next);
         setExpanded((current) => {
           const updated = new Set(current);
           // Expand the full ancestor chain (existing behaviour).
@@ -737,7 +753,7 @@ function WorkspaceSessionList({
     } else {
       // Setting off: only ensure ancestor chain is visible (existing behaviour).
       if (!next) return;
-      const chain = ancestorChain(sessions, next);
+      const chain = ancestorChain(mergedSessions, next);
       if (chain.length <= 1) return;
       setExpanded((prev) => {
         const next2 = new Set(prev);
@@ -749,7 +765,7 @@ function WorkspaceSessionList({
     }
 
     prevSelectedRef.current = next;
-  }, [sessions, selectedSessionId, autoExpandChildren]);
+  }, [mergedSessions, selectedSessionId, autoExpandChildren]);
 
   // The synthetic "Orphaned subtasks" group was removed by #1966:
   // every parented session (the only orphan candidates) is
@@ -801,11 +817,11 @@ function WorkspaceSessionList({
         <div className="px-2 py-1 text-xs text-muted-foreground">Loading...</div>
       )}
 
-      {!isLoading && (!sessions || sessions.length === 0) && (
+      {!isLoading && (!mergedSessions || mergedSessions.length === 0) && (
         <div className="px-2 py-1 text-xs text-muted-foreground">No sessions yet</div>
       )}
 
-      {sessions && sessions.length > 0 && (
+      {mergedSessions && mergedSessions.length > 0 && (
         <div className="flex flex-col gap-0.5">
           {tree.roots.map((node) => (
             <SessionTreeRow

@@ -1308,6 +1308,10 @@ type WorkerSessionRow struct {
 // Cross-table read note: session_index belongs to the proxy/session
 // domain and session_origins to the workflows domain; both live in the
 // same database this store's pool serves. The join is read-only.
+
+// ListWorkerSessions returns the workspace's worker-signaled sessions
+// (#1966 retention projection) — origin-class workers and parented
+// subagents, oldest-activity first, death-marked rows excluded.
 func (s *Store) ListWorkerSessions(ctx context.Context, workspaceID string) ([]WorkerSessionRow, error) {
 	rows, err := s.pool.Query(ctx, `
 		SELECT si.session_id,
