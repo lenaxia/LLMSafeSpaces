@@ -171,11 +171,28 @@ func TestIntegrationBoardManagerMoveStageBulk(t *testing.T) {
 	require.Equal(t, beltProbe.ID, claim.TaskID, "the probe is the claimable row")
 	liveWorker := claim.Assignee
 
-	// --- 1: the belt's worker refusal through REAL wiring -------------------------
+	// --- 1: the repealed gate through REAL wiring ----------------------------------
+	// The #1747 §5 manager grant is REPEALED (ruling 2026-10-27 /
+	// tsk-copper-refectory-generates): a live worker's token-less bulk
+	// move is SERVED — 200 with the per-item envelope. The done move
+	// carries NO evidenceUrl, so the Done guard refuses the ITEM
+	// (done_guard), never the caller.
 	w = call(http.MethodPost, "/internal/v1/automation/board/tasks/move-stage-bulk",
 		fmt.Sprintf(`{"workspaceID":%q,"sessionId":%q,"taskIds":[%q],"toStage":"done"}`, wsPod, liveWorker, met.ShortID))
-	assert.Equal(t, http.StatusForbidden, w.Code, w.Body.String())
-	assert.Contains(t, w.Body.String(), board.GuardManagerSurface)
+	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
+	var guardEnv struct {
+		Results []board.BulkItemResult `json:"results"`
+		Count   int                    `json:"count"`
+	}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &guardEnv))
+	require.Len(t, guardEnv.Results, 1)
+	assert.Equal(t, 1, guardEnv.Count)
+	guardItem := guardEnv.Results[0]
+	assert.Equal(t, met.ShortID, guardItem.Ref)
+	assert.Equal(t, board.BulkFailed, guardItem.Status, "the worker's bulk move is served; the missing evidenceUrl fails the item")
+	require.NotNil(t, guardItem.Error)
+	assert.Equal(t, board.GuardDone, guardItem.Error.Code, "the Done guard's own code, per item")
+	assert.Equal(t, board.StageInReview, mustStage(t, pool, met.ID), "the refused item is untouched")
 
 	// --- 2: the per-item envelope through REAL wiring ------------------------------
 	// done + failed(done_guard) in ONE 200; a foreign-workspace item
