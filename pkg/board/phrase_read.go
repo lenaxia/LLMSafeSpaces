@@ -72,6 +72,36 @@ func LookupSessionPhrases(ctx context.Context, q PhraseQueryer, workspaceID stri
 	return out
 }
 
+// LookupSessionIDByPhrase resolves a #1756 phrase to its RAW harness
+// session id within one workspace — the reverse of LookupSessionPhrases
+// and FindSessionByShortID's exact consult (the same session_index
+// registry the SessionRefResolution middleware and the pod-side replica
+// read). "" = no live session holds the phrase; consult errors propagate
+// (the caller owns the degraded posture). #1959c: the bounce path's
+// consumption-side resolution — the engine's raw-keyed turn-evidence
+// pre-check and the delivery seam both key on the harness id, while the
+// stored implementer identity may be the phrase (durable identity,
+// #1850/#1816).
+func LookupSessionIDByPhrase(ctx context.Context, q PhraseQueryer, workspaceID, phrase string) (string, error) {
+	if workspaceID == "" || phrase == "" {
+		return "", nil
+	}
+	rows, err := q.Query(ctx,
+		`SELECT session_id FROM session_index WHERE workspace_id=$1 AND lower(short_id)=$2`,
+		workspaceID, shortid.Normalize(phrase))
+	if err != nil {
+		return "", err
+	}
+	defer rows.Close()
+	var raw string
+	if rows.Next() {
+		if err := rows.Scan(&raw); err != nil {
+			return "", err
+		}
+	}
+	return raw, rows.Err()
+}
+
 // TranslateActorSessionPhrase rewrites one actor JSON blob's
 // session_id to its phrase form at READ time (board_events.actor is
 // append-only — the stored row is never rewritten). The degraded shape

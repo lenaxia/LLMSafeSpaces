@@ -134,6 +134,10 @@ describe("BoardPage #1832 item 3 — kebab menus + delete flows", () => {
     );
     mockUnarchiveProject.mockResolvedValue({ ...archived, status: "active" });
     renderBoard();
+    // #1964: the archived lane lives inside the collapsed bottom
+    // drawer — open BOTH levels before its kebab is reachable.
+    fireEvent.click(await screen.findByTestId("archived-projects-toggle"));
+    fireEvent.click(await screen.findByTestId("archived-project-toggle-prj-arch3333"));
     await screen.findByTestId("swimlane-prj-arch3333");
 
     fireEvent.click(screen.getByTestId("project-kebab-prj-arch3333"));

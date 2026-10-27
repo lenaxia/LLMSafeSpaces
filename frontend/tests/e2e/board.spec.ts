@@ -951,7 +951,7 @@ test.describe("#1832 r2 — server-listed epics, unhappy paths, picker escape ha
 });
 
 test.describe("#1832 item 3 — kebab menus + delete flows", () => {
-  test("project kebab: archive then unarchive (NO delete item — #1747)", async ({ page }) => {
+  test("project kebab: archive then unarchive (NO delete item — #1747; #1964 archived drawer)", async ({ page }) => {
     await openBoard(page);
 
     await page.getByTestId(`project-kebab-${PROJECT_A}`).click();
@@ -965,13 +965,23 @@ test.describe("#1832 item 3 — kebab menus + delete flows", () => {
     const req = await reqP;
     expect(req.url()).toContain(`/me/projects/${PROJECT_A}/archive`);
 
-    // Post-invalidation: the swimlane header shows the archived badge.
-    await expect(page.getByTestId(`swimlane-${PROJECT_A}`).locator("text=archived").first()).toBeVisible({ timeout: 8000 });
+    // #1964: post-invalidation the archived lane leaves the active
+    // surface for the collapsed Archived drawer at the board's end.
+    await expect(page.getByTestId(`swimlane-${PROJECT_A}`)).toHaveCount(0, { timeout: 8000 });
+    await expect(page.getByTestId("archived-projects-drawer")).toBeVisible();
 
-    // Unarchive from the same kebab restores active.
+    // Open BOTH levels — the drawer, then the project's name-only row:
+    // its swimlane (history) renders inside, archived badge included.
+    await page.getByTestId("archived-projects-toggle").click();
+    await page.getByTestId(`archived-project-toggle-${PROJECT_A}`).click();
+    await expect(page.getByTestId(`swimlane-${PROJECT_A}`).locator("text=archived").first()).toBeVisible();
+
+    // Unarchive from the kebab INSIDE the drawer restores the lane to
+    // the active surface and empties the drawer.
     await page.getByTestId(`project-kebab-${PROJECT_A}`).click();
-    await menu.getByRole("menuitem", { name: "Unarchive project" }).click();
+    await page.getByRole("menuitem", { name: "Unarchive project" }).click();
     await expect(page.getByTestId(`swimlane-${PROJECT_A}`).locator("text=archived")).toHaveCount(0, { timeout: 8000 });
+    await expect(page.getByTestId("archived-projects-drawer")).toHaveCount(0, { timeout: 8000 });
   });
 
   test("project kebab: failed lifecycle call surfaces the page error; board stays consistent, retry recovers", async ({ page }) => {
@@ -1005,11 +1015,13 @@ test.describe("#1832 item 3 — kebab menus + delete flows", () => {
     await expect(page.getByTestId("task-card-tsk-aaaa0001")).toBeVisible();
 
     // Recovery: the project is back server-side; a retry archives it,
-    // clears the page error, and the post-invalidation badge lands.
+    // clears the page error — and #1964: the post-invalidation lane
+    // leaves the active surface for the collapsed Archived drawer.
     state.projects = [...(state.projects ?? []), { ...apollo }];
     await page.getByTestId(`project-kebab-${PROJECT_A}`).click();
     await page.getByRole("menuitem", { name: "Archive project" }).click();
-    await expect(page.getByTestId(`swimlane-${PROJECT_A}`).locator("text=archived").first()).toBeVisible({ timeout: 8000 });
+    await expect(page.getByTestId(`swimlane-${PROJECT_A}`)).toHaveCount(0, { timeout: 8000 });
+    await expect(page.getByTestId("archived-projects-drawer")).toBeVisible();
     await expect(page.locator("[data-board-error]")).toHaveCount(0);
   });
 

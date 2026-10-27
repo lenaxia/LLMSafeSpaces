@@ -142,18 +142,18 @@ func isV2PromptPath(p string) bool {
 // the stub (static pod-IP/password resolvers + WithAdapterPort — the
 // pkg/agent/opencode adapter_test.go pattern, mirrored here because its
 // helpers are package-private).
-func newBoardCommsAdapter(t *testing.T, s *stubOpencode) *agentoc.Adapter {
+func newBoardCommsAdapter(t *testing.T, srv *httptest.Server) *agentoc.Adapter {
 	t.Helper()
-	hostPort := strings.TrimPrefix(s.URL, "http://")
+	hostPort := strings.TrimPrefix(srv.URL, "http://")
 	parts := strings.SplitN(hostPort, ":", 2)
 	port, err := strconv.Atoi(parts[1])
-	require.NoError(t, err, "parse stub server port from %s", s.URL)
+	require.NoError(t, err, "parse stub server port from %s", srv.URL)
 	pw := agentoc.PasswordResolver(func(_ context.Context, _ string) (string, error) {
 		return "test-password", nil
 	})
 	ip := &staticBoardPodIP{ip: parts[0]}
 	return agentoc.NewAdapter(pw, ip, zap.NewNop(),
-		agentoc.WithAdapterHTTPClient(s.Client()),
+		agentoc.WithAdapterHTTPClient(srv.Client()),
 		agentoc.WithAdapterPort(port),
 	)
 }
@@ -162,6 +162,17 @@ type staticBoardPodIP struct{ ip string }
 
 func (p *staticBoardPodIP) GetWorkspacePodIP(_ context.Context, _, _ string) (string, error) {
 	return p.ip, nil
+}
+
+// newBoardTestSender wraps the production adapter in the #1959c
+// resolving sender with a FAIL-LOUD phrase lookup: these route pins
+// address sessions by RAW ids only, so the registry must never be
+// consulted (a raw passthrough that suddenly consulted would fail the
+// pin loudly instead of silently passing).
+func newBoardTestSender(adapter *agentoc.Adapter) *boardResolvingSender {
+	return newBoardResolvingSender(adapter, func(_ context.Context, _, phrase string) (string, error) {
+		return "", fmt.Errorf("unexpected phrase-registry lookup for %q in a raw-id route pin", phrase)
+	})
 }
 
 // stubScope is the injected boardScopeResolver: fixed addressing keys,
@@ -202,9 +213,9 @@ const (
 // though a live V1 endpoint sits right next to it.
 func TestBoardWorkerComms_Redispatcher_RidesV1NotTheDeadV2Queue(t *testing.T) {
 	stub := newStubOpencode(t)
-	adapter := newBoardCommsAdapter(t, stub)
+	adapter := newBoardCommsAdapter(t, stub.Server)
 	scope := &stubScope{}
-	redispatch := newBoardRedispatcher(scope.resolve, adapter)
+	redispatch := newBoardRedispatcher(scope.resolve, newBoardTestSender(adapter))
 
 	err := redispatch(context.Background(), "ses_original", redispatchText, wireShortID)
 	require.NoError(t, err,
@@ -229,8 +240,8 @@ func TestBoardWorkerComms_Redispatcher_DeadSession_FastFailKeepsFallback(t *test
 	stub.mu.Lock()
 	stub.v1Status = http.StatusNotFound // the session is gone; V1 answers 404
 	stub.mu.Unlock()
-	adapter := newBoardCommsAdapter(t, stub)
-	redispatch := newBoardRedispatcher((&stubScope{}).resolve, adapter)
+	adapter := newBoardCommsAdapter(t, stub.Server)
+	redispatch := newBoardRedispatcher((&stubScope{}).resolve, newBoardTestSender(adapter))
 
 	start := time.Now()
 	err := redispatch(context.Background(), "ses_reaped", redispatchText, wireShortID)
@@ -258,8 +269,8 @@ func TestBoardWorkerComms_Redispatcher_SlowTurnIsInFlight_NotCallerBlocked(t *te
 	stub.mu.Lock()
 	stub.v1Delay = 600 * time.Millisecond // the slow-turn shape: the POST pends
 	stub.mu.Unlock()
-	adapter := newBoardCommsAdapter(t, stub)
-	redispatch := newBoardRedispatcher((&stubScope{}).resolve, adapter)
+	adapter := newBoardCommsAdapter(t, stub.Server)
+	redispatch := newBoardRedispatcher((&stubScope{}).resolve, newBoardTestSender(adapter))
 
 	ctx, cancel := context.WithCancel(context.Background())
 	start := time.Now()
@@ -287,9 +298,9 @@ func TestBoardWorkerComms_Redispatcher_SlowTurnIsInFlight_NotCallerBlocked(t *te
 // turn — and both directive texts must land on the LIVE V1 route.
 func TestBoardWorkerComms_Messenger_HaltAndResume_RideV1Detached(t *testing.T) {
 	stub := newStubOpencode(t)
-	adapter := newBoardCommsAdapter(t, stub)
+	adapter := newBoardCommsAdapter(t, stub.Server)
 	scope := &stubScope{}
-	messenger := newBoardMessenger(scope.resolve, adapter)
+	messenger := newBoardMessenger(scope.resolve, newBoardTestSender(adapter))
 
 	start := time.Now()
 	require.NoError(t, messenger(context.Background(), "ses_worker", "halt", wireShortID))
@@ -322,9 +333,9 @@ func TestBoardWorkerComms_Messenger_HaltAndResume_RideV1Detached(t *testing.T) {
 // task scope is a synchronous seam error — pkg/board's fallback arm.
 func TestBoardWorkerComms_ScopeErrorPropagatesToFallback(t *testing.T) {
 	stub := newStubOpencode(t)
-	adapter := newBoardCommsAdapter(t, stub)
+	adapter := newBoardCommsAdapter(t, stub.Server)
 	scope := &stubScope{err: fmt.Errorf("no such task")}
-	redispatch := newBoardRedispatcher(scope.resolve, adapter)
+	redispatch := newBoardRedispatcher(scope.resolve, newBoardTestSender(adapter))
 
 	err := redispatch(context.Background(), "ses_original", redispatchText, wireShortID)
 	require.Error(t, err)
