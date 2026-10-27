@@ -7,6 +7,8 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -61,8 +63,10 @@ func TestMCPBoard_UpdateTaskDualRoute_1946(t *testing.T) {
 		api, rec := newAutomationAPI(t, 200, `{"id":"t-1"}`)
 		setupRenameWorkspaceEnv(t, api)
 
+		path := filepath.Join(t.TempDir(), "patch.json")
+		require.NoError(t, os.WriteFile(path, []byte(`{"title":"T"}`), 0o600))
 		_, err := mcpAutomation(context.Background(), mcpTestPassword, "board_update_task", map[string]any{
-			"taskId": "tsk-aaaa1111", "title": "T",
+			"taskId": "tsk-aaaa1111", "patchFile": path,
 			"lsp_injected_session": "sessi-2feellha"})
 		require.NoError(t, err)
 		assert.Equal(t, http.MethodPatch, rec.method)
@@ -70,6 +74,7 @@ func TestMCPBoard_UpdateTaskDualRoute_1946(t *testing.T) {
 			"the token-less call keeps the manager-grade PATCH")
 		var wire map[string]json.RawMessage
 		require.NoError(t, json.Unmarshal([]byte(rec.body), &wire))
+		assert.JSONEq(t, `"T"`, string(wire["title"]), "the patch file's fields ride the wire verbatim")
 		assert.JSONEq(t, `"sessi-2feellha"`, string(wire["sessionId"]), "the manager identity stamp rides")
 	})
 
