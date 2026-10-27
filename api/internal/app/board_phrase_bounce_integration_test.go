@@ -198,6 +198,14 @@ func TestIntegrationBoardPhraseBounceProductionWiring(t *testing.T) {
 func TestIntegrationBoardPhraseLookupBinding(t *testing.T) {
 	pool := phraseBouncePool(t)
 	ctx := context.Background()
+	// Self-sufficient on a fresh database (review r2's blocking finding):
+	// this pin must not rely on the wiring test having inserted the user.
+	_, err := pool.Exec(ctx, `
+		INSERT INTO users (id, username, email, password_hash, active, role)
+		VALUES ($1, $1, $1, 'hash', true, 'user')
+		ON CONFLICT (id) DO NOTHING
+	`, integTestUser)
+	require.NoError(t, err)
 	wsID := uuid.NewString()
 	otherWS := uuid.NewString()
 	for _, w := range []string{wsID, otherWS} {
@@ -205,7 +213,7 @@ func TestIntegrationBoardPhraseLookupBinding(t *testing.T) {
 			VALUES ($1::uuid, $2, $3, 'default', now(), now())`, w, integTestUser, "ws-"+w[:8])
 		require.NoError(t, err)
 	}
-	_, err := pool.Exec(ctx, `
+	_, err = pool.Exec(ctx, `
 		INSERT INTO session_index (workspace_id, session_id, short_id, message_count)
 		VALUES ($1::uuid, $2, $3, 1)`, wsID, integRawID, integPhrase)
 	require.NoError(t, err)

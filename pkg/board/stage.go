@@ -508,9 +508,16 @@ func (s *Service) resolveImplementerRef(ctx context.Context, taskID, ref string)
 		return ref
 	}
 	var ws string
-	_ = s.q().QueryRow(ctx,
+	if err := s.q().QueryRow(ctx,
 		`SELECT p.target_workspace_id::text FROM tasks t JOIN projects p ON p.id = t.project_id
-		 WHERE t.id::text = $1`, taskID).Scan(&ws)
+		 WHERE t.id::text = $1`, taskID).Scan(&ws); err != nil {
+		// Transient DB error and genuinely-unknown workspace share the
+		// degraded posture (stored ref kept), but the log names which
+		// one fired — never misattribute an outage (review r2 minor).
+		slog.WarnContext(ctx, "board: bounce implementer phrase unresolved — task workspace lookup failed; keeping the stored ref",
+			"task_id", taskID, "implementer", ref, "err", err.Error())
+		return ref
+	}
 	if ws == "" {
 		slog.WarnContext(ctx, "board: bounce implementer phrase unresolved — task workspace unknown; keeping the stored ref",
 			"task_id", taskID, "implementer", ref)

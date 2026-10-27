@@ -273,3 +273,31 @@ re-applied in the follow-up commit; the decisive api-side wiring pin
 (TestIntegrationBoardPhraseBounceProductionWiring) was not yet reached in
 that CI run's step ordering (the kill-tests step failed first) and rides
 the same head re-run.
+
+## 11. Review r2 (CHANGES_REQUESTED @3b3789bb2 — "make it self-sufficient and this is ready to approve")
+
+Every r1 finding verified RESOLVED by the review (engine-side resolution
+mutation-verified by the reviewer against a local Postgres — RED without
+the call, GREEN with it; the decisive wiring pin "not a tautology"; branch
+(B) honest recording accepted; ErrNoRows + aborter pins accepted). One new
+blocking finding, fixed in this round:
+
+- **`TestIntegrationBoardPhraseLookupBinding` order-dependence**: the pin
+  relied on the wiring test having inserted `integTestUser`
+  (`workspaces_user_id_fkey` violation on a standalone run — reproduced by
+  the review). Fixed: the pin inserts the user itself
+  (`ON CONFLICT DO NOTHING`) — self-sufficient on a fresh database.
+
+Non-blocking review items also taken:
+- **Robustness minor**: `resolveImplementerRef`'s workspace-lookup error is
+  no longer swallowed — a transient DB failure and a genuinely-unknown
+  workspace share the degraded posture but get distinct, honestly
+  attributed log lines.
+- **Follow-up pre-registration (review missing-test 2)**: if the owner
+  probe confirms phrase-valued rows live, the NEXT defect in the chain is
+  re-claim-row propagation — `bounceTx` stamps `assignee_session` from the
+  UNRESOLVED `bounceImplementer(cur)` (resolution is nudge-path,
+  post-commit), and the raw-equality consumers of the new row —
+  `IsWorkerSession` (pause.go, the #1747 manager belt) and the
+  reconciler's `PendingInput(assignee)` — are phrase-blind. Recorded here
+  as discriminator 3 for the probe outcome.
