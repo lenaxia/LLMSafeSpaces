@@ -117,11 +117,26 @@ func (rb *replayBuffer) appendLocked(evt apitypes.WorkspaceSSEEvent) uint64 {
 
 func (rb *replayBuffer) sinceLocked(lastID uint64) ([]ReplayEntry, bool) {
 	if rb.count == 0 {
-		return nil, false
+		// An EMPTY ring with a presented cursor is the client-ahead
+		// window at its narrowest: this replica published nothing for
+		// the user (fresh after a roll, or quiet since), so the cursor
+		// is from an id space this replica never wrote — a gap, never a
+		// silent empty replay. lastID == 0 (first-ever connect) is not
+		// a gap: nothing was missed.
+		return nil, lastID > 0
 	}
 
 	oldestID := rb.nextID - uint64(rb.count) //nolint:gosec // count is always [0, replayBufferSize]
-	gapDetected := lastID > 0 && lastID < oldestID
+	// Two gap arms, one outcome (resync):
+	//  - lastID < oldestID: ring overflow — the entries the client is
+	//    still missing were evicted.
+	//  - lastID >= nextID: client-ahead — the cursor comes from an id
+	//    space this replica never wrote (the ring is in-process, so a
+	//    fresh replica after an API roll restarts at id 1). The ring
+	//    cannot honor the client's continuity, and the scan below
+	//    naturally yields nothing, so the caller must signal resync
+	//    instead of a silent empty replay.
+	gapDetected := lastID > 0 && (lastID < oldestID || lastID >= rb.nextID)
 
 	var result []ReplayEntry
 	start := (rb.head - rb.count + replayBufferSize) % replayBufferSize

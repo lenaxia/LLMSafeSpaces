@@ -91,15 +91,30 @@ func killingHandler(next http.Handler, k *killSwitch) http.Handler {
 }
 
 // newKillingAuthority stands up the REAL sessionstate authority behind
-// a kill-switch-wrapped HTTP surface.
+// a kill-switch-wrapped HTTP surface (default replay-ring budgets — with
+// design 0069 the consumer's redial RESUMES from the ring on this
+// fixture; use newKillingAuthorityRing to force the fallback leg).
 func newKillingAuthority(t *testing.T) (*sessionstate.Authority, *httptest.Server, *killSwitch) {
+	return newKillingAuthorityRing(t, 0)
+}
+
+// newKillingAuthorityRing is newKillingAuthority with an injectable
+// replay-ring frame cap (design 0069): a tiny ring lets a test evict the
+// client's cursor past the low-water mark during a dead window, making
+// the redial take the honest SNAPSHOT FALLBACK (the #1884 seed path)
+// deterministically instead of resuming.
+func newKillingAuthorityRing(t *testing.T, ringFrames int) (*sessionstate.Authority, *httptest.Server, *killSwitch) {
 	t.Helper()
-	auth, err := sessionstate.New(sessionstate.Config{
+	cfg := sessionstate.Config{
 		PlatformDir: t.TempDir(),
 		Parser:      jsonEventParser{},
 		Store:       &e2eStore{},
 		Passwords:   []string{"pw"},
-	})
+	}
+	if ringFrames > 0 {
+		cfg.ReplayRingFrames = ringFrames
+	}
+	auth, err := sessionstate.New(cfg)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = auth.Close() })
 	_, h := auth.Handler()
@@ -113,6 +128,15 @@ func newKillingAuthority(t *testing.T) (*sessionstate.Authority, *httptest.Serve
 // (Retry) so the reconnect lands in milliseconds and a parked settle
 // window (IdleDrop) so nothing but the test drives the gate down.
 func newReconcileConsumer(t *testing.T, baseURL string, br Bridge) *Consumer {
+	return newReconcileConsumerRetry(t, baseURL, br, 50*time.Millisecond)
+}
+
+// newReconcileConsumerRetry is newReconcileConsumer with a tunable
+// redial backoff: the #1884 fallback rows park it LONGER (400ms) so the
+// test's filler ingests deterministically land inside the dead window
+// (evicting the ring past the client's cursor) before the single redial
+// takes the snapshot fallback.
+func newReconcileConsumerRetry(t *testing.T, baseURL string, br Bridge, retry time.Duration) *Consumer {
 	t.Helper()
 	c := New(Config{
 		Resolve: func(ctx context.Context, workspaceID string) (string, string, error) {
@@ -123,7 +147,7 @@ func newReconcileConsumer(t *testing.T, baseURL string, br Bridge) *Consumer {
 		},
 		Bridge:   br,
 		IdleDrop: time.Hour,
-		Retry:    50 * time.Millisecond,
+		Retry:    retry,
 	})
 	t.Cleanup(c.CloseAll)
 	return c

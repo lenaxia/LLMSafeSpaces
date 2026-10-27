@@ -204,6 +204,71 @@ func TestUserBroker_ReplayGapDetection(t *testing.T) {
 	assert.Len(t, entries, replayBufferSize)
 }
 
+// TestUserBroker_ReplayGapRuleCompleteTable pins the replay gap rule's
+// complete truth table (L4a): behind-oldest → gap (ring overflow),
+// client-ahead → gap (cursor from an id space this replica never
+// wrote — the ring is in-process, so a fresh replica after an API
+// roll restarts at id 1 and a reconnecting browser's Last-Event-ID is
+// ahead of nextID, or the user has no ring state AT ALL on this
+// replica), in-range → normal ring replay with no sentinel, cursor 0 →
+// first-ever connect, never a gap.
+func TestUserBroker_ReplayGapRuleCompleteTable(t *testing.T) {
+	b := NewUserEventBroker()
+
+	// Case 1 — behind-oldest (existing arm): overflow the ring so the
+	// cursor points before the oldest retained entry.
+	for i := 0; i < replayBufferSize+50; i++ {
+		b.PublishToUser("u-overflow", apitypes.WorkspaceSSEEvent{Type: "workspace.phase"})
+	}
+	entries, gap := b.Replay("u-overflow", 1)
+	assert.True(t, gap, "behind-oldest cursor must be a gap (ring overflow)")
+	assert.Len(t, entries, replayBufferSize)
+
+	// Case 2 — client-ahead (new arm): a fresh replica's ring holds
+	// ids 1..3 (nextID=4); a cursor from the dead replica's id space
+	// is at or past nextID and must be a gap, never a silent empty
+	// replay.
+	for i := 0; i < 3; i++ {
+		b.PublishToUser("u-ahead", apitypes.WorkspaceSSEEvent{Type: "workspace.phase"})
+	}
+	entries, gap = b.Replay("u-ahead", 4)
+	assert.True(t, gap, "lastID == nextID (id never written by this replica) must be a gap")
+	assert.Empty(t, entries, "nothing in this ring can satisfy an ahead cursor")
+
+	entries, gap = b.Replay("u-ahead", 4242)
+	assert.True(t, gap, "lastID far past nextID must be a gap")
+	assert.Empty(t, entries)
+
+	// Case 3 — in-range: the cursor inside the ring replays strictly
+	// newer entries with no gap; a cursor at the newest event means
+	// the client is up to date (no gap, nothing to replay).
+	entries, gap = b.Replay("u-ahead", 1)
+	assert.False(t, gap, "in-range cursor is not a gap")
+	require.Len(t, entries, 2)
+	assert.Equal(t, uint64(2), entries[0].ID)
+	assert.Equal(t, uint64(3), entries[1].ID)
+
+	entries, gap = b.Replay("u-ahead", 3)
+	assert.False(t, gap, "cursor at the newest event is up to date, not a gap")
+	assert.Empty(t, entries)
+
+	// Case 4 — client-ahead against NO ring state (review r1): a user
+	// this replica never published for has no ring at all; the most
+	// common client-ahead shape immediately after an API roll (browsers
+	// reconnect fast, user events publish only on activity). A
+	// presented cursor is from another replica's id space — a gap,
+	// never the silent empty replay the old nil-return produced.
+	entries, gap = b.Replay("u-never-published", 4242)
+	assert.True(t, gap, "a cursor against no ring state is the client-ahead gap — never silent")
+	assert.Empty(t, entries)
+
+	// A zero cursor (first-ever connect) is NOT a gap: nothing was
+	// missed yet.
+	entries, gap = b.Replay("u-never-published", 0)
+	assert.False(t, gap, "first-ever connect (cursor 0) is not a gap")
+	assert.Empty(t, entries)
+}
+
 func TestUserBroker_ReplayNoGapWhenLastIDIsZero(t *testing.T) {
 	b := NewUserEventBroker()
 
@@ -218,11 +283,20 @@ func TestUserBroker_ReplayNoGapWhenLastIDIsZero(t *testing.T) {
 	assert.Len(t, entries, replayBufferSize)
 }
 
+// TestUserBroker_ReplayEmptyUser pins the no-ring client-ahead rule
+// (review r1): a user this replica has no ring state for cannot honor
+// ANY presented cursor — the cursor is from another replica's id space,
+// so the answer is the gap/resync outcome, never the silent empty
+// replay the old nil-return produced. Cursor 0 stays not-a-gap.
 func TestUserBroker_ReplayEmptyUser(t *testing.T) {
 	b := NewUserEventBroker()
 
 	entries, gapDetected := b.Replay("nonexistent", 5)
-	assert.False(t, gapDetected)
+	assert.True(t, gapDetected, "a presented cursor against no ring state is the client-ahead gap — never silent")
+	assert.Empty(t, entries)
+
+	entries, gapDetected = b.Replay("nonexistent", 0)
+	assert.False(t, gapDetected, "cursor 0 is the first-ever connect — nothing was missed")
 	assert.Empty(t, entries)
 }
 

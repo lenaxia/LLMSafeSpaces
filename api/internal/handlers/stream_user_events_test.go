@@ -257,6 +257,87 @@ func TestStreamUserEvents_Replay(t *testing.T) {
 	assert.Equal(t, 2, replayedCount)
 }
 
+// TestStreamUserEvents_ReplayClientAheadEmitsResync (L4a) pins the
+// client-ahead gap on the wire: the replay ring is in-process per
+// replica, so after an API roll the fresh replica's ring restarts at
+// id 1. A browser reconnecting with a Last-Event-ID from the dead
+// replica's id space (≥ the fresh ring's nextID) must get the same
+// gap/resync outcome as ring overflow — a resync marker and NO
+// replayed entries — never a silent empty replay.
+func TestStreamUserEvents_ReplayClientAheadEmitsResync(t *testing.T) {
+	broker := eventbroker.NewUserEventBroker()
+	h := &ProxyHandler{logger: &testLogger{}, namespace: "default", userBroker: broker}
+
+	// Fresh replica's ring: ids 1..2, nextID=3. The client's cursor
+	// (Last-Event-ID: 500) is from an id space this replica never wrote.
+	for i := 0; i < 2; i++ {
+		broker.PublishToUser("user-ahead", apitypes.WorkspaceSSEEvent{
+			Type:        "workspace.phase",
+			WorkspaceID: "ws-ahead",
+			Phase:       "Active",
+		})
+	}
+
+	router := gin.New()
+	router.GET("/api/v1/events", func(c *gin.Context) {
+		c.Set("userID", "user-ahead")
+		h.StreamUserEvents(c)
+	})
+
+	// #1927: this connect must not inherit the in-process loopback
+	// budget consumed by earlier tests, and its own consumption must
+	// not bleed into successors.
+	resetLoopbackSSEBudget()
+	t.Cleanup(resetLoopbackSSEBudget)
+
+	srv := httptest.NewServer(router)
+	defer srv.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	req, _ := http.NewRequestWithContext(ctx, "GET", srv.URL+"/api/v1/events", nil)
+	req.Header.Set("Last-Event-ID", "500")
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	require.Equal(t, http.StatusOK, resp.StatusCode,
+		"SSE connect rejected: connect-budget test hygiene, not the gap rule")
+
+	scanner := bufio.NewScanner(resp.Body)
+	gotResync := false
+	replayedBeforeResync := 0
+	deadline := time.After(2 * time.Second)
+	for {
+		select {
+		case <-deadline:
+			goto doneAhead
+		default:
+		}
+		if !scanner.Scan() {
+			break
+		}
+		line := scanner.Text()
+		if strings.HasPrefix(line, "id: ") {
+			replayedBeforeResync++
+			continue
+		}
+		if !strings.HasPrefix(line, "data: ") {
+			continue
+		}
+		var evt apitypes.WorkspaceSSEEvent
+		if err := json.Unmarshal([]byte(strings.TrimPrefix(line, "data: ")), &evt); err == nil && evt.Type == "resync" {
+			gotResync = true
+			goto doneAhead
+		}
+	}
+doneAhead:
+	cancel()
+
+	assert.True(t, gotResync, "client-ahead Last-Event-ID must emit the resync marker (gap/resync path)")
+	assert.Zero(t, replayedBeforeResync, "an ahead cursor has nothing to replay — no id: lines may precede the resync")
+}
+
 func TestStreamUserEvents_HeartbeatEmitted(t *testing.T) {
 	// Verifies the heartbeat goroutine sends heartbeat sentinel events.
 	// Uses a short ticker interval to avoid slow tests; asserts ≥1 heartbeat

@@ -181,7 +181,11 @@ func (b *UserEventBroker) Replay(userID string, lastID uint64) ([]ReplayEntry, b
 
 	rb := sh.replay[userID]
 	if rb == nil {
-		return nil, false
+		// No ring state at all (this replica never published for the
+		// user): a presented cursor is from another replica's id space —
+		// the client-ahead gap (L4a), never a silent empty replay. A
+		// zero cursor is the first-ever connect: nothing was missed.
+		return nil, lastID > 0
 	}
 	return rb.sinceLocked(lastID)
 }

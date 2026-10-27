@@ -59,10 +59,40 @@ func (a *Authority) auth(next http.Handler) http.Handler {
 // their endpoint semantics — the surface EXISTS and is authenticated +
 // rate-limited, which is what I8's "every route" audit requires.
 
+// Events serves op 1 in two connection modes (design 0069 amending the
+// 0055 M1 snapshot-only protocol):
+//
+//   - EventsRequest.since ABSENT: exactly the 0055 behavior — the
+//     stream opens with a stamped snapshot frame, then ordered live
+//     events (I2 ordering).
+//
+//   - since PRESENT: resume attempt. A cursor in the ring's servable
+//     range — low-water <= since <= the current seq — replays the
+//     retained frames with seq > since first (no snapshot frame),
+//     then live, gapless by construction (StreamSince's one-lock
+//     registration). Outside that range — below low-water (an empty
+//     ring floors low-water AT the current seq, so after a process
+//     restart only a caught-up cursor stays servable) or client-ahead
+//     of the current seq — ⇒ the honest fallback: today's
+//     snapshot-first stream. The first frame on
+//     the wire disambiguates for the client — SnapshotFrame means
+//     "resume not honored, apply the stamp's discard rule"; anything
+//     else means "replaying from your cursor".
 func (a *Authority) Events(ctx context.Context, req *connect.Request[abiv1.EventsRequest], stream *connect.ServerStream[abiv1.StreamFrame]) error {
-	frames, cancel, err := a.Stream(ctx)
-	if err != nil {
-		return connect.NewError(connect.CodeInternal, err)
+	var frames <-chan *abiv1.StreamFrame
+	var cancel func()
+	if since := req.Msg.Since; since != nil {
+		f, _, c, err := a.StreamSince(ctx, *since)
+		if err != nil {
+			return connect.NewError(connect.CodeInternal, err)
+		}
+		frames, cancel = f, c
+	} else {
+		f, c, err := a.Stream(ctx)
+		if err != nil {
+			return connect.NewError(connect.CodeInternal, err)
+		}
+		frames, cancel = f, c
 	}
 	defer cancel()
 	for {
