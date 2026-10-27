@@ -444,24 +444,6 @@ func (s *BoardSuite) TestKill_1747_ResourcePressureBackpressure() {
 	s.Equal(t1.ID, c.TaskID)
 }
 
-// KILL-TEST 1747-k (grant belt): IsWorkerSession answers true for a
-// live assignee, false otherwise — the seam's engine-authoritative gate.
-func (s *BoardSuite) TestKill_1747_IsWorkerSession() {
-	ws := s.seedWorkspace()
-	p := s.seedProject(ws, 4)
-	e := s.seedEpic(p, board.EpicActive)
-	t1 := s.seedTask(e, "claimed", nil, false)
-
-	c := s.claimOrFail(ws)
-	live, err := s.svc.IsWorkerSession(context.Background(), c.Assignee)
-	s.Require().NoError(err)
-	s.True(live, "the stamped assignee is a worker")
-	no, err := s.svc.IsWorkerSession(context.Background(), "ses-not-a-worker")
-	s.Require().NoError(err)
-	s.False(no)
-	_ = t1
-}
-
 // KILL-TEST 1747-l (r2, the review's missing-case 4): delete_task on an
 // IN-FLIGHT row aborts the worker (the abort branch, previously only
 // pinned for delete_epic's force path) — and only AFTER the delete

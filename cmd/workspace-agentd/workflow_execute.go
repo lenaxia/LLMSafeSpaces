@@ -538,9 +538,16 @@ func execAgentNode(ctx context.Context, password string, w http.ResponseWriter, 
 			return
 		}
 		createdEphemeral = true
-		// #1747 grant differentiation: a session minted by the BOARD
-		// worker dispatch (the spawner's NodeID) is a spawned worker —
-		// recorded at spawn so the manager board tools refuse it.
+		// Board worker provenance: a session minted by the BOARD worker
+		// dispatch (the spawner's NodeID) is recorded at spawn — no
+		// manager gate anymore (the #1747 §5 grant is repealed, ruling
+		// 2026-10-27 / tsk-copper-refectory-generates); the record now
+		// feeds exactly one refusal, the task-worker self-certification
+		// pin — every met-flag-writing manager shape refuses for a
+		// spawned worker (board_update_task's inline setCriteriaMet
+		// check-off and patchFile criteria replace, plus pre-met
+		// criteria on board_create_task/board_import_plan; #1946's
+		// grant stays reviewer-persona-only).
 		if req.NodeID == "board-worker" {
 			boardWorkerSessions.record(sessionID)
 		}

@@ -970,8 +970,8 @@ func (c *Client) BoardRecordVerdict(ctx context.Context, saToken, workspaceID st
 // BoardSetCriteriaMet is the #1946 scoped grant's worker call: the
 // reviewer persona records one criterion's met flag on its OWN claimed
 // row (claim-token-guarded; persona provenance arbitrated at the
-// engine — a task worker's identical call refuses with the #1747 §5
-// class there).
+// engine — a task worker's identical call refuses there: no persona
+// claim, no grant).
 func (c *Client) BoardSetCriteriaMet(ctx context.Context, saToken, workspaceID string, body json.RawMessage) (*AutomationResponse, error) {
 	return c.boardWorkerPost(ctx, saToken, workspaceID, "/internal/v1/automation/board/tasks/set-criteria-met", body)
 }
@@ -1009,8 +1009,10 @@ func (c *Client) boardManagerPost(ctx context.Context, saToken, workspaceID, ses
 }
 
 // BoardManagerListTasks is board_list (#1837 P2a): one project's
-// tasks + the derived ready set, manager-gated and workspace-scoped
-// server-side. Identity rides the query (a body-less GET).
+// tasks + the derived ready set, workspace-scoped (open to any
+// in-workspace session — the #1747 §5 manager grant is repealed,
+// ruling 2026-10-27 / tsk-copper-refectory-generates).
+// Identity rides the query (a body-less GET) as audit attribution.
 func (c *Client) BoardManagerListTasks(ctx context.Context, saToken, workspaceID, sessionID, projectID, stage, failed string) (*AutomationResponse, error) {
 	if err := validateBoardRef(projectID); err != nil {
 		return nil, err
@@ -1171,8 +1173,10 @@ func (c *Client) BoardRearmTask(ctx context.Context, saToken, workspaceID, sessi
 }
 
 // BoardManagerMoveStage is the manager-grade stage move (#1832 WS2):
-// the orchestrator-class session's path — same canonical MoveStage,
-// manager-grade agent surface, session-attributed audit.
+// the manager route's path — any in-workspace session (the #1747 §5
+// gate is repealed, ruling 2026-10-27 / tsk-copper-refectory-generates)
+// — same canonical MoveStage, manager-grade agent surface,
+// session-attributed audit.
 func (c *Client) BoardManagerMoveStage(ctx context.Context, saToken, workspaceID, sessionID, taskID string, body json.RawMessage) (*AutomationResponse, error) {
 	if err := validateBoardRef(taskID); err != nil {
 		return nil, err

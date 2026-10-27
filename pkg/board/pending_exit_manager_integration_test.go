@@ -13,22 +13,23 @@ import (
 	"github.com/lenaxia/llmsafespaces/pkg/board"
 )
 
-// #1832 WS2 — pending_input exits for orchestrator-class agent
-// sessions (the tsk-3do6n458 incident: an escalated task froze a whole
-// dependency chain because neither the lane worker NOR the
-// orchestrator-class session could exit it — both ride the agent
-// surface, and the pending_input exits were manager-surface-only with
-// NO manager move path on the in-pod seam).
+// #1832 WS2 — pending_input exits on the agent-manager surface (the
+// tsk-3do6n458 incident: an escalated task froze a whole dependency
+// chain because neither the lane worker NOR any manager-capable
+// session could exit it — workers ride the agent surface, and the
+// pending_input exits were manager-surface-only with NO manager move
+// path on the in-pod seam).
 //
 // The fix: a distinct agent-manager surface for the pod seam's manager
-// projection (SurfaceAgentManager) — the human-only rule HOLDS for
+// projection (SurfaceAgentManager) — the worker-surface rule HOLDS for
 // ordinary workers (SurfaceAgent stays denied), and the manager move
-// is the orchestrator-class session's path, audited with its session
-// identity.
+// is open to ANY in-workspace session (the manager-grant gate is
+// repealed, ruling 2026-10-27 / tsk-copper-refectory-generates),
+// audited with its session identity.
 
 // agentManager is the pod manager seam's actor: the resolved owner
 // (R7), the manager-grade agent surface, the workspace binding, and
-// the orchestrator-class session's identity (audit attribution).
+// the calling session's identity (audit attribution).
 func (s *BoardSuite) agentManager(wsID, sessionID string) board.Actor {
 	return board.Actor{Kind: board.ActorUser, UserID: testUser,
 		Surface: board.SurfaceAgentManager, WorkspaceID: wsID, SessionID: sessionID}
@@ -55,7 +56,7 @@ func (s *BoardSuite) TestPendingExit_WorkerStillDenied_OrchestratorGradeAllowed(
 	require.ErrorAs(s.T(), err, &guard)
 	require.Equal(s.T(), board.GuardManagerSurface, guard.Code)
 
-	// The orchestrator-class session (agent-manager surface) exits.
+	// The manager-grade surface (any in-workspace session) exits.
 	out, err := s.svc.MoveStage(context.Background(), s.agentManager(ws, "orchestrator-session-1"), "", c.ShortID, board.StageInProgress, "", "")
 	s.Require().NoError(err)
 	require.Equal(s.T(), board.StageInProgress, out.Stage)

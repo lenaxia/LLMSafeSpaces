@@ -3,11 +3,13 @@
 
 package main
 
-// board_manager_tools.go — the #1747 manager board tools' dispatch:
-// session gate (fail-closed on missing identity; worker-registry
-// refusal), verbatim body passthrough with the resolver stamps, and
-// one wire call per tool over the pod-identity seam. The platform
-// validates; agentd re-models nothing (the mcpAutomation discipline).
+// board_manager_tools.go — the manager board tools' dispatch: session
+// identity RESOLUTION for audit attribution (never a gate — the
+// manager-grant RBAC concept is repealed, ruling 2026-10-27 /
+// tsk-copper-refectory-generates), verbatim body passthrough with the
+// resolver stamps, and one wire call per tool over the pod-identity
+// seam. The platform validates; agentd re-models nothing (the
+// mcpAutomation discipline).
 
 import (
 	"context"
@@ -21,23 +23,29 @@ import (
 	"strings"
 
 	"github.com/lenaxia/llmsafespaces/pkg/agent/opencode"
+	"go.uber.org/zap"
 )
 
-// boardManagerSession resolves and gates the calling session for a
-// manager tool call (#1747 §5): the harness-attested injected identity
-// (the send_message pattern — injection wins over any declared copy),
-// fail-closed when absent, refused when the session was spawned as a
-// board worker. The DECLARED fallback (degraded pod, plugin absent)
-// may be typed as a 3-word phrase or alias — it resolves through the
-// same §4.4 precedence as every other caller-typed session ref before
-// it feeds the platform wire and the worker-grant check (#1816: every
-// id-taking surface accepts phrases).
-func boardManagerSession(ctx context.Context, password, name string, body map[string]any) (string, error) {
+// boardManagerSession resolves the calling session's identity for a
+// manager tool call — ATTRIBUTION ONLY, never a refusal (the #1747 §5
+// manager gate is repealed, ruling 2026-10-27 /
+// tsk-copper-refectory-generates: a workspace pod is single-tenant,
+// every session shares one credential, and an identity-grant layer over
+// a shared credential is theater; if a task impersonates another
+// session that is the user's prompting issue). The harness-attested
+// injected identity wins over any declared copy (the send_message
+// pattern); the DECLARED fallback (degraded pod, plugin absent) may be
+// typed as a 3-word phrase or alias — it resolves through the same
+// §4.4 precedence as every other caller-typed session ref before it
+// feeds the platform wire (#1816: every id-taking surface accepts
+// phrases). An unresolvable declared ref degrades to empty
+// attribution, loudly noted — the call still proceeds.
+func boardManagerSession(ctx context.Context, password, name string, body map[string]any) string {
 	injected, _ := body["lsp_injected_session"].(string)
 	// sessionId is canonical; session_id is its one-release legacy
 	// alias, gated on sessionId's ABSENCE — narrower than argStr's
-	// wrong-type case: a present-but-mistyped sessionId refuses
-	// (fail-closed) rather than consulting the alias.
+	// wrong-type case: a present-but-mistyped sessionId degrades to
+	// empty attribution rather than consulting the alias.
 	declared, _ := body["sessionId"].(string)
 	if _, present := body["sessionId"]; !present {
 		declared, _ = body["session_id"].(string)
@@ -48,20 +56,97 @@ func boardManagerSession(ctx context.Context, password, name string, body map[st
 		if sid != "" {
 			resolved, rerr := resolveSessionRef(ctx, password, sid)
 			if rerr != nil {
-				return "", fmt.Errorf("%s failed: the declared sessionId could not be resolved as a session address: %w", name, rerr)
+				logBoardAttributionLoss(name, sid, rerr)
+				return ""
 			}
 			sid = resolved
 		}
 	}
-	if sid == "" {
-		return "", fmt.Errorf("%s failed: manager board tools require the calling session's identity — "+
-			"spawned workers and unidentified callers hold no manager grant (ruling #1747 §5)", name)
+	return sid
+}
+
+// logBoardAttributionLoss notes a declared session ref that could not
+// be resolved: the manager call proceeds (attribution-only identity),
+// but the audit actor lands unattributed — the note keeps that
+// visible instead of silently degrading.
+func logBoardAttributionLoss(name, ref string, err error) {
+	log.Warn("board manager dispatch: declared session ref did not resolve — proceeding with empty audit attribution",
+		zap.String("tool", name),
+		zap.String("ref", ref),
+		zap.Error(err))
+}
+
+// boardWorkerSelfCertificationPin is the ONE surviving registry
+// refusal (ruling 2026-10-27 / tsk-copper-refectory-generates): the
+// manager-grant gate is gone — every manager tool opens to any
+// in-workspace session, spawned workers included — EXCEPT the
+// reviewer-grant widening this pin refuses: a spawned board worker
+// self-certifying its own work through ANY manager shape that writes
+// met flags — the board_update_task inline setCriteriaMet check-off,
+// a board_update_task patchFile acceptanceCriteria replace (met flags
+// ride the replace; Service.UpdateTask rewrites the set wholesale
+// with no persona guard), and the CREATE shapes (board_create_task
+// bodyFile, board_import_plan planFile task items) whose pre-met
+// criteria would author done-ready rows with zero reviewer
+// involvement (PR review rounds r2–r4: the pin must watch every
+// shape the dispatch surface executes — wrapper keys, sibling
+// fields, sibling tools). #1946's grant stays reviewer-persona-only.
+// Non-worker pre-met creates stay legal (the platform surface
+// deliberately supports importing completed work). The update-side
+// replace arm is PRESENCE-based — a worker's met:false-only rewording
+// refuses too (fail-closed over-breadth, accepted for a pin).
+//
+// Runs INSIDE dispatchBoardManagerTool on the post-file-merge args —
+// one parse shared between pin and wire body (no TOCTOU window
+// between a pin read and the dispatch read), with the caller's
+// already-resolved identity (no double resolve).
+func boardWorkerSelfCertificationPin(name, sid string, args map[string]any) error {
+	if sid == "" || !boardWorkerSessions.isWorker(sid) {
+		return nil
 	}
-	if boardWorkerSessions.isWorker(sid) {
-		return "", fmt.Errorf("%s failed: this session was spawned as a board worker — manager board tools "+
-			"attach to user-collaborator sessions only (ruling #1747 §5)", name)
+	switch name {
+	case "board_update_task":
+		if _, ok := args["setCriteriaMet"]; ok {
+			return fmt.Errorf("%s failed: task-worker self-certification stays refused — criteria-met recording is the reviewer-persona claim's scoped grant (issue #1946); a spawned board worker may not check off its own work through the manager shape (ruling 2026-10-27, tsk-copper-refectory-generates)", name)
+		}
+		if _, ok := args["acceptanceCriteria"]; ok {
+			return fmt.Errorf("%s failed: task-worker self-certification stays refused — a patchFile acceptanceCriteria replace rewrites met flags with no persona guard (issue #1946); a spawned board worker may not re-write its own criteria through the manager shape (ruling 2026-10-27, tsk-copper-refectory-generates)", name)
+		}
+	case "board_create_task":
+		if anyCriterionMetTrue(args["acceptanceCriteria"]) {
+			return fmt.Errorf("%s failed: task-worker self-certification stays refused — a pre-met criterion authors a done-ready row with no reviewer involvement (issue #1946); a spawned board worker may not create its own work pre-certified (ruling 2026-10-27, tsk-copper-refectory-generates)", name)
+		}
+	case "board_import_plan":
+		tasks, _ := args["tasks"].([]any)
+		for _, t := range tasks {
+			task, ok := t.(map[string]any)
+			if !ok {
+				continue
+			}
+			if anyCriterionMetTrue(task["acceptanceCriteria"]) {
+				return fmt.Errorf("%s failed: task-worker self-certification stays refused — a pre-met criterion authors a done-ready row with no reviewer involvement (issue #1946); a spawned board worker may not import its own work pre-certified (ruling 2026-10-27, tsk-copper-refectory-generates)", name)
+			}
+		}
 	}
-	return sid, nil
+	return nil
+}
+
+// anyCriterionMetTrue reports whether a criteria array carries any
+// explicit met:true entry (the pre-met create shapes; absent/false
+// flags are ordinary backlog criteria and stay legal).
+func anyCriterionMetTrue(v any) bool {
+	criteria, ok := v.([]any)
+	if !ok {
+		return false
+	}
+	for _, c := range criteria {
+		if m, ok := c.(map[string]any); ok {
+			if met, _ := m["met"].(bool); met {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // boardArgs unwraps the documented flat argument form, tolerating the
@@ -254,11 +339,12 @@ func boardInjectCleanupWarning(res *opencode.AutomationResponse, path string, rm
 }
 
 // dispatchBoardManagerTool routes one manager tool to its seam call.
+// The manager set is open to ANY in-workspace session (the #1747 §5
+// manager grant is repealed, ruling 2026-10-27 /
+// tsk-copper-refectory-generates); the resolved identity is audit
+// attribution only.
 func dispatchBoardManagerTool(ctx context.Context, client *opencode.Client, password, name string, body map[string]any, saToken, workspaceID string) (*opencode.AutomationResponse, error) {
-	sessionID, err := boardManagerSession(ctx, password, name, body)
-	if err != nil {
-		return nil, err
-	}
+	sessionID := boardManagerSession(ctx, password, name, body)
 	args := boardArgs(body, "project", "epic", "task", "plan")
 
 	// The file-crud cutover (design 0070): the payload file is the ONLY
@@ -270,6 +356,13 @@ func dispatchBoardManagerTool(ctx context.Context, client *opencode.Client, pass
 	consumedPath, err := resolveBoardToolFileArgs(name, args)
 	if err != nil {
 		return nil, fmt.Errorf("%s failed: %w", name, err)
+	}
+
+	// The #1946 pin, on the post-merge args: every met-flag-writing
+	// shape (update check-off/replace, create/import pre-met) refuses
+	// for spawned workers — see boardWorkerSelfCertificationPin.
+	if err := boardWorkerSelfCertificationPin(name, sessionID, args); err != nil {
+		return nil, err
 	}
 
 	wire := boardWireBody(args)

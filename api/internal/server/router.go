@@ -1393,7 +1393,7 @@ func registerInternalAutomationRoutes(router *gin.Engine, cfg RouterConfig) {
 		b.POST("/epics/:id/tasks", h.BoardCreateTask)
 
 		b.PATCH("/tasks/:id", h.BoardUpdateTask)
-		b.POST("/tasks/:id/move-stage", h.BoardManagerMoveStage) // #1832 WS2: the manager-grade move (pending_input exits serviceable by orchestrator-class sessions)
+		b.POST("/tasks/:id/move-stage", h.BoardManagerMoveStage) // #1832 WS2: the manager-grade move (pending_input exits serviceable by any in-workspace session — the manager-grant gate is repealed, ruling 2026-10-27 / tsk-copper-refectory-generates)
 		b.POST("/tasks/:id/rearm", h.BoardRearmTask)             // #1832 WS3: the attempts-exhaustion re-pool
 		b.POST("/tasks/:id/pause", h.BoardPauseTask)
 		b.POST("/tasks/:id/resume", h.BoardResumeTask)

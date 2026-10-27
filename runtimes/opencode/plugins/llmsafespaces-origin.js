@@ -34,7 +34,9 @@
  *  delete_session, and the delete bulk (#1836) carry the CALLING
  *  session for the current-session default and the self-delete guard
  *  (#1627). The 21 board MANAGER
- *  tools (#1747 §5) carry the calling session's identity the same way:
+ *  tools carry the calling session's identity the same way — AUDIT
+ *  ATTRIBUTION ONLY, never a gate (the #1747 §5 manager grant is
+ *  repealed, ruling 2026-10-27 / tsk-copper-refectory-generates):
  *  the seam stamps it into the audit actor, and injection OVERWRITES
  *  any model-supplied copy. Kept in lockstep with the agentd registry
  *  by TestMCPBoard_ManagerInjectionSupply (both directions). */

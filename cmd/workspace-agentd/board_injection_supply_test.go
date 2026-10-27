@@ -1,14 +1,18 @@
 // Copyright (C) 2026 Michael Kao
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-// board_injection_supply_test.go — #1747 §5 IDENTITY SUPPLY freeze pin
-// (review round 8, finding 1): the origin plugin's INJECTED_SESSION_TOOLS
-// and the agentd registry's manager catalog must move in LOCKSTEP —
+// board_injection_supply_test.go — the manager identity SUPPLY freeze
+// pin (review round 8, finding 1): the origin plugin's
+// INJECTED_SESSION_TOOLS and the agentd registry's manager catalog
+// must move in LOCKSTEP —
 //
 //   - every manager tool the registry serves is injected with the
 //     calling session's identity by the plugin (a manager tool missing
 //     from the plugin set loses its identity supply: dispatch falls to
-//     the model-declared copy — exactly the §5 threat model), and
+//     the model-declared copy and the audit attribution degrades — the
+//     #1747 §5 gate this once fed is repealed, ruling 2026-10-27 /
+//     tsk-copper-refectory-generates, but the attribution must still
+//     land), and
 //   - nothing in the plugin set is unregistered (a stale entry injects
 //     identity onto a tool that will never read it — dead weight that
 //     silently rots).
@@ -57,7 +61,7 @@ func TestMCPBoard_ManagerInjectionSupply(t *testing.T) {
 	for _, tool := range boardManagerTools() {
 		qualified := "llmsafespaces_" + tool.Name
 		if !pluginSet[qualified] {
-			t.Errorf("manager tool %s is registered but NOT in the plugin's INJECTED_SESSION_TOOLS — its identity supply is gone (ruling #1747 §5)", qualified)
+			t.Errorf("manager tool %s is registered but NOT in the plugin's INJECTED_SESSION_TOOLS — its identity supply is gone (audit attribution degrades, ruling 2026-10-27 / tsk-copper-refectory-generates)", qualified)
 		}
 	}
 	// Direction 2: nothing in the plugin that isn't registered.

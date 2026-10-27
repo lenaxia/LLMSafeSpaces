@@ -3,19 +3,26 @@
 
 package main
 
-// board_workers.go — the #1747 grant-differentiation registry, FIRST
-// tier: sessions spawned BY the board worker dispatch (the
-// "board-worker" agent node) are recorded here at spawn time and
-// refused manager board tools at dispatch — a spawned worker must not
-// create tasks or activate epics (prompt-injection blast radius,
-// ruling #1747 §5). The engine-authoritative belt (IsWorkerSession
-// over live assignee rows) is the second tier at the seam.
+// board_workers.go — the board worker registry. The #1747 §5
+// manager-grant gate it used to enforce is REPEALED (ruling
+// 2026-10-27 / tsk-copper-refectory-generates: a workspace pod is
+// single-tenant, every session shares one credential — identity
+// gating over that is theater, and a task impersonating another
+// session is the user's prompting issue). Spawned workers now hold
+// the FULL manager set like every other in-workspace session, with
+// ONE surviving refusal this registry owns: the reviewer-grant
+// widening (boardWorkerSelfCertificationPin — a spawned worker may
+// not self-certify its own work through ANY met-flag-writing manager
+// shape: the setCriteriaMet check-off, a patchFile criteria replace,
+// and pre-met criteria on create/import; #1946's grant stays
+// reviewer-persona-only).
 //
 // Storage: an append-only JSON-lines file beside the pod's other
 // agentd state (the restart-marker pattern; env-overridable path).
-// Append-only means "ever was a worker" — exactly the strict posture:
-// a session that ever held a charter never gains manager tools, even
-// after its task moved on.
+// Append-only means "ever was a worker" — the strict posture the
+// self-certification pin wants: a session that ever held a charter
+// never gains the self-certification shape, even after its task
+// moved on.
 
 import (
 	"bufio"
