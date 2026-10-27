@@ -134,7 +134,6 @@ func TestBoardAutomation_ManagerDeleteTasksBulk(t *testing.T) {
 	assert.Contains(t, w.Body.String(), "tsk-orph", "the orphan echo renders on the pod seam too")
 }
 
-// The belt ERROR is a refusal on the bulk delete route too (fail-closed).
 // Binding: taskIds presence — the same adapter-owned validation as the
 // REST column (parity).
 func TestBoardAutomation_ManagerDeleteTasksBulkBinding(t *testing.T) {

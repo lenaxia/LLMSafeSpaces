@@ -23,6 +23,7 @@ import (
 	"strings"
 
 	"github.com/lenaxia/llmsafespaces/pkg/agent/opencode"
+	"go.uber.org/zap"
 )
 
 // boardManagerSession resolves the calling session's identity for a
@@ -69,7 +70,10 @@ func boardManagerSession(ctx context.Context, password, name string, body map[st
 // but the audit actor lands unattributed — the note keeps that
 // visible instead of silently degrading.
 func logBoardAttributionLoss(name, ref string, err error) {
-	fmt.Fprintf(os.Stderr, "board manager dispatch: %s carried a declared session ref %q that did not resolve — proceeding with empty audit attribution: %v\n", name, ref, err)
+	log.Warn("board manager dispatch: declared session ref did not resolve — proceeding with empty audit attribution",
+		zap.String("tool", name),
+		zap.String("ref", ref),
+		zap.Error(err))
 }
 
 // boardWorkerSelfCertificationPin is the ONE surviving registry
@@ -83,7 +87,11 @@ func logBoardAttributionLoss(name, ref string, err error) {
 // manager detour around it — task-worker self-certification of its
 // own work remains forbidden).
 func boardWorkerSelfCertificationPin(ctx context.Context, password, name string, body map[string]any) error {
-	args := boardArgs(body, "task")
+	// The SAME unwrap dispatch honors — the full wrapper key set. A
+	// pin reading a narrower shape than the dispatcher is bypassable
+	// by wrapper-key argument shaping ({"plan": {…setCriteriaMet…}},
+	// PR review r2 finding 2); the two key sets must never diverge.
+	args := boardArgs(body, "project", "epic", "task", "plan")
 	if _, ok := args["setCriteriaMet"]; !ok {
 		return nil
 	}

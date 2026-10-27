@@ -8,14 +8,14 @@ package handlers
 // board_manager_delete_bulk_integration_test.go — #1836 sibling's e2e
 // gate: the bulk DELETE pinned END-TO-END on the pod seam — the REAL
 // BoardService (Postgres arbitration, no fakes on the action path)
-// behind the REAL pod-identity belt (TokenReview resolve → workspace
-// pin → resolveManager: fail-closed identity, the live-assignee worker
-// refusal answered from Postgres). Pinned: the per-item envelope
-// through real wiring (done + not_found in one 200 — the absence ≡
-// miss ≡ foreign triple-equality), the real belt's worker refusal on
-// the bulk delete route, the in-flight item's post-commit worker abort,
-// and the session-attributed audit (delete_task event with the
-// final-state snapshot) for every landed item.
+// behind the pod-identity seam (TokenReview resolve → workspace pin →
+// the manager surface OPEN to any in-workspace session, identity as
+// audit attribution only — the #1747 §5 belt repealed, ruling
+// 2026-10-27). Pinned: the per-item envelope through real wiring (done
+// + not_found in one 200 — the absence ≡ miss ≡ foreign
+// triple-equality), the in-flight item's post-commit worker abort, and
+// the session-attributed audit (delete_task event with the final-state
+// snapshot) for every landed item.
 
 import (
 	"context"

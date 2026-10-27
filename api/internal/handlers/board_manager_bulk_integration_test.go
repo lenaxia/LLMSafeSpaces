@@ -8,14 +8,14 @@ package handlers
 // board_manager_bulk_integration_test.go — #1836 review r1's e2e gate:
 // the bulk complete pinned END-TO-END on the pod seam — the REAL
 // BoardService (Postgres arbitration, no fakes on the action path)
-// behind the REAL pod-identity belt (TokenReview resolve → workspace
-// pin → resolveManager: fail-closed identity, the live-assignee worker
-// refusal answered from Postgres) — the bulk mirror of
-// TestIntegrationBoardManagerSemantics. Pinned: the per-item envelope
-// through real wiring (done + failed(done_guard) in one 200), the real
-// belt's worker refusal on the bulk route, the foreign-workspace item
-// rendering not_found per-item (the agent-surface perimeter at the
-// HTTP tier), and the session-attributed audit for every landed item.
+// behind the pod-identity seam (TokenReview resolve → workspace pin →
+// the manager surface OPEN to any in-workspace session, identity as
+// audit attribution only — the #1747 §5 belt repealed, ruling
+// 2026-10-27) — the bulk mirror of TestIntegrationBoardManagerSemantics.
+// Pinned: the per-item envelope through real wiring (done +
+// failed(done_guard) in one 200), the foreign-workspace item rendering
+// not_found per-item (the agent-surface perimeter at the HTTP tier),
+// and the session-attributed audit for every landed item.
 
 import (
 	"context"

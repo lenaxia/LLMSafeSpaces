@@ -93,4 +93,21 @@ func TestMCPBoard_UpdateTaskDualRoute_1946(t *testing.T) {
 		assert.Contains(t, err.Error(), "#1946")
 		assert.Empty(t, rec.method, "no wire call for the refused call")
 	})
+
+	// PR review r2 finding 2: the pin must read the SAME unwrapped
+	// shape the dispatcher honors — {"plan": {…setCriteriaMet…}} from a
+	// spawned worker is the wrapper-key bypass of the flat-shape-only
+	// pin, and it refuses identically.
+	t.Run("spawned worker, {plan:{…}} wrapper → the pin reads through the wrapper", func(t *testing.T) {
+		api, rec := newAutomationAPI(t, 200, `{}`)
+		setupRenameWorkspaceEnv(t, api)
+		boardWorkerSessions.record("ses_wrapshaper")
+
+		_, err := mcpAutomation(context.Background(), mcpTestPassword, "board_update_task", map[string]any{
+			"plan": map[string]any{"setCriteriaMet": map[string]any{"index": 0, "met": true}},
+			"lsp_injected_session": "ses_wrapshaper"})
+		require.Error(t, err, "wrapper-key shaping must not slip setCriteriaMet past the pin")
+		assert.Contains(t, err.Error(), "self-certification")
+		assert.Empty(t, rec.method, "no wire call for the refused call")
+	})
 }
