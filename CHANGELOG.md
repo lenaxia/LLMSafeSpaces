@@ -31,6 +31,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Boards whose every project is archived get an explicit "No active projects" hint pointing at the drawer (the old "No boards yet." empty state is now reserved for a genuine zero-project read).
 - Follow-up noted (out of scope, owner did not ask): the same collapsed treatment for COMPLETED epics inside ACTIVE projects.
 
+## [0.44.4] - 2026-10-27
+
+### Fixed — board bounce re-dispatch: phrase→raw resolution through the WHOLE bounce path (#1959 root cause 2, PR #1967)
+
+- **A phrase-addressed bounce no longer falls back to a fresh worker** (the token drain): the engine resolves the implementer ref upstream of the raw-keyed turn-evidence pre-check, and the api-side V1 seam resolves phrase→raw before the POST (platform registry consult inside the fast-fail window; raw `ses_`/legacy refs pass through byte-identical). Halt/resume directives and in-flight-claim aborts resolve through the same leg; a bare adapter no longer satisfies `boardV1Sender` (compile-level narrowing). Mutation-verified pins; the live phrase-in-row cause remains an honestly-recorded open question with pre-registered probe discriminators.
+
+### Added — sidebar Workers folder + worker-session hard cap: oldest-first retention (#1966, PR #1968)
+
+- **Worker sessions no longer flood the sidebar**: board/engine-spawned workers and subagent sessions folder into a collapsed "Workers" group (count badge, one-click expand, rows fully usable; classification is presentation-only, riding the new `worker` origin mark + parentage).
+- **Past a per-workspace cap of 50 worker sessions, the OLDEST workers are hard-deleted on every create** (retention, not archiving): worker-only eviction re-verified by a fresh single-row store read immediately before the delete; mid-lease workers (< 1h grace floor) and the just-created worker are never deleted. Config: `LLMSAFESPACES_BOARD_WORKERSESSIONCAP` (default 50), `LLMSAFESPACES_BOARD_WORKERSESSIONGRACESECONDS` (default 3600).
+
+### Added — board UI: archived projects collapse into a bottom drawer (#1964, PR #1965)
+
+- **Archived projects leave the active board surface**: active-lane-only dropdown/chips/search derivations, a collapsed bottom drawer holds archived projects (name-only until clicked, full swimlane inside), a focused lane that archives anywhere resets scope to All, and an all-archived board shows an explicit "No active projects" hint. Presentation-only; the #1755 archive semantics are untouched.
+
 ## [0.44.3] - 2026-10-26
 
 ### Fixed — board: bounce re-dispatch + halt/resume directives ride the live V1 delivery route (#1959 follow-up, #755)
