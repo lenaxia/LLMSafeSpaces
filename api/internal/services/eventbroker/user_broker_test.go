@@ -204,6 +204,53 @@ func TestUserBroker_ReplayGapDetection(t *testing.T) {
 	assert.Len(t, entries, replayBufferSize)
 }
 
+// TestUserBroker_ReplayGapRuleThreeCases pins the replay gap rule's
+// complete truth table (L4a): behind-oldest → gap (ring overflow),
+// client-ahead → gap (cursor from an id space this replica never
+// wrote — the ring is in-process, so a fresh replica after an API
+// roll restarts at id 1 and a reconnecting browser's Last-Event-ID is
+// ahead of nextID), in-range → normal ring replay with no sentinel.
+func TestUserBroker_ReplayGapRuleThreeCases(t *testing.T) {
+	b := NewUserEventBroker()
+
+	// Case 1 — behind-oldest (existing arm): overflow the ring so the
+	// cursor points before the oldest retained entry.
+	for i := 0; i < replayBufferSize+50; i++ {
+		b.PublishToUser("u-overflow", apitypes.WorkspaceSSEEvent{Type: "workspace.phase"})
+	}
+	entries, gap := b.Replay("u-overflow", 1)
+	assert.True(t, gap, "behind-oldest cursor must be a gap (ring overflow)")
+	assert.Len(t, entries, replayBufferSize)
+
+	// Case 2 — client-ahead (new arm): a fresh replica's ring holds
+	// ids 1..3 (nextID=4); a cursor from the dead replica's id space
+	// is at or past nextID and must be a gap, never a silent empty
+	// replay.
+	for i := 0; i < 3; i++ {
+		b.PublishToUser("u-ahead", apitypes.WorkspaceSSEEvent{Type: "workspace.phase"})
+	}
+	entries, gap = b.Replay("u-ahead", 4)
+	assert.True(t, gap, "lastID == nextID (id never written by this replica) must be a gap")
+	assert.Empty(t, entries, "nothing in this ring can satisfy an ahead cursor")
+
+	entries, gap = b.Replay("u-ahead", 4242)
+	assert.True(t, gap, "lastID far past nextID must be a gap")
+	assert.Empty(t, entries)
+
+	// Case 3 — in-range: the cursor inside the ring replays strictly
+	// newer entries with no gap; a cursor at the newest event means
+	// the client is up to date (no gap, nothing to replay).
+	entries, gap = b.Replay("u-ahead", 1)
+	assert.False(t, gap, "in-range cursor is not a gap")
+	require.Len(t, entries, 2)
+	assert.Equal(t, uint64(2), entries[0].ID)
+	assert.Equal(t, uint64(3), entries[1].ID)
+
+	entries, gap = b.Replay("u-ahead", 3)
+	assert.False(t, gap, "cursor at the newest event is up to date, not a gap")
+	assert.Empty(t, entries)
+}
+
 func TestUserBroker_ReplayNoGapWhenLastIDIsZero(t *testing.T) {
 	b := NewUserEventBroker()
 

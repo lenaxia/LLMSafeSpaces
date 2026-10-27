@@ -121,7 +121,16 @@ func (rb *replayBuffer) sinceLocked(lastID uint64) ([]ReplayEntry, bool) {
 	}
 
 	oldestID := rb.nextID - uint64(rb.count) //nolint:gosec // count is always [0, replayBufferSize]
-	gapDetected := lastID > 0 && lastID < oldestID
+	// Two gap arms, one outcome (resync):
+	//  - lastID < oldestID: ring overflow — the entries the client is
+	//    still missing were evicted.
+	//  - lastID >= nextID: client-ahead — the cursor comes from an id
+	//    space this replica never wrote (the ring is in-process, so a
+	//    fresh replica after an API roll restarts at id 1). The ring
+	//    cannot honor the client's continuity, and the scan below
+	//    naturally yields nothing, so the caller must signal resync
+	//    instead of a silent empty replay.
+	gapDetected := lastID > 0 && (lastID < oldestID || lastID >= rb.nextID)
 
 	var result []ReplayEntry
 	start := (rb.head - rb.count + replayBufferSize) % replayBufferSize
