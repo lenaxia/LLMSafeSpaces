@@ -5,10 +5,13 @@
 // authority (design 0055 M1): five operations in platform schema, frozen.
 // If a change wants more than these ops, it belongs in the API.
 //
-// Sync protocol (M1): connect → snapshot@S → event@S+1 → event@S+2 …
-// client rule: apply in order; discard seq ≤ S. There is no replay buffer
-// and no since-cursor by design; reconnect mid-turn re-fetches in-flight
-// state via a fresh stamped snapshot.
+// Sync protocol (M1, amended by design 0069): connect → snapshot@S →
+// event@S+1 → event@S+2 … client rule: apply in order; discard seq ≤ S.
+// Design 0069 adds a bounded replay ring and the OPTIONAL since resume
+// cursor below: a reconnecting consumer that presents its last applied
+// seq gets the missed frames replayed (gapless, then live) instead of
+// re-snapshotting. The snapshot-first protocol is unchanged and remains
+// the fallback whenever the ring cannot serve the cursor.
 
 syntax = "proto3";
 
@@ -48,7 +51,23 @@ service HarnessABIService {
   rpc Act(ActionRequest) returns (ActionResult);
 }
 
-message EventsRequest {}
+// EventsRequest selects the connection mode of op 1 (design 0069):
+// absent since ⇒ today's behavior — the stream opens with a stamped
+// SnapshotFrame, then live events. Present since ⇒ resume attempt: since
+// is the caller's LAST APPLIED seq ("I hold exactly the fold of events
+// 1..since"). When the authority's replay ring covers the cursor
+// (since ≥ low-water), the stream opens with the retained frames
+// seq > since in order — NO snapshot frame — then continues live,
+// gapless by construction; a ReseedNotice inside the replayed range is
+// delivered in seq position (the mandatory re-snapshot rule applies to
+// it as on any connection). When the cursor is below the low-water mark
+// (or the ring is empty, e.g. after a process restart), the request
+// degrades honestly to the snapshot-first behavior — the first frame
+// being a SnapshotFrame is the client's signal that resume was not
+// honored and its cursor is superseded by the stamp's discard rule.
+message EventsRequest {
+  optional uint64 since = 1;
+}
 
 // StreamFrame is one item on the events stream.
 message StreamFrame {

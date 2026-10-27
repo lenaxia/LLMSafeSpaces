@@ -157,6 +157,14 @@ type Config struct {
 	// FastCursor disables per-event fsync (scenario harnesses replaying
 	// event BURSTS; durability is covered by the fault-injection suite).
 	FastCursor bool
+	// ReplayRingFrames caps the retained-frame replay ring (design
+	// 0069) by count. Zero ⇒ defaultReplayFrames (1024).
+	ReplayRingFrames int
+	// ReplayRingBytes caps the ring by serialized byte size (frames can
+	// be large — see the 16 MB SSE line-buffer precedent). Zero ⇒
+	// defaultReplayBytes (16 MiB). The newest frame is always retained
+	// even when it alone exceeds the budget.
+	ReplayRingBytes int
 }
 
 // StateSnapshot is an atomically-stamped view of the projection (I1: the
@@ -197,6 +205,14 @@ type Authority struct {
 	subs      map[*subscriber]struct{}
 	buffering bool
 	pending   [][]byte
+	// ring is the design-0069 replay window: every published frame,
+	// evict-oldest under count + byte budgets. a.mu-guarded; appended
+	// in fanoutLocked so nothing that consumes a seq escapes it.
+	ring replayRing
+	// replayFallbacks counts Events resume attempts that fell below the
+	// ring's low-water mark and degraded to the snapshot-first protocol
+	// (the honest-fallback signal; a.mu-guarded, Metrics-exposed).
+	replayFallbacks int64
 
 	reseedMu sync.Mutex
 	cursor   *seqCursor
@@ -254,6 +270,12 @@ func New(cfg Config) (*Authority, error) {
 	if cfg.RateLimit.RefillPerSec <= 0 {
 		cfg.RateLimit.RefillPerSec = defaultRefillPerSec
 	}
+	if cfg.ReplayRingFrames <= 0 {
+		cfg.ReplayRingFrames = defaultReplayFrames
+	}
+	if cfg.ReplayRingBytes <= 0 {
+		cfg.ReplayRingBytes = defaultReplayBytes
+	}
 	dir := cfg.PlatformDir
 	if dir == "" {
 		dir = DefaultPlatformDir
@@ -280,6 +302,7 @@ func New(cfg Config) (*Authority, error) {
 		sessions:            map[string]*sessionRecord{},
 		serveGathers:        map[string]*serveGather{},
 		subs:                map[*subscriber]struct{}{},
+		ring:                replayRing{cap: cfg.ReplayRingFrames, budget: cfg.ReplayRingBytes},
 		cursor:              cursor,
 		limiter:             newSessionLimiter(cfg.RateLimit),
 		ledger:              ledger,
@@ -447,12 +470,20 @@ func (a *Authority) projectLocked(evt *abiv1.Event) {
 }
 
 func (a *Authority) fanoutLocked(frame *abiv1.StreamFrame) {
+	// Design 0069: every frame that consumes a seq and reaches fanout
+	// (harness events, reseed notices, orphan-sweep aborts, action
+	// events) is retained in the replay ring FIRST — the ring append is
+	// under the same a.mu hold as the subscriber send loop below, which
+	// is what makes StreamSince's replay-copy + live-registration
+	// gapless by construction.
+	a.ring.append(frame)
 	for sub := range a.subs {
 		select {
 		case sub.ch <- frame:
 		default:
 			// M3.4 backpressure: a slow consumer is dropped — it resyncs
-			// with a fresh stamped snapshot on reconnect.
+			// with a fresh stamped snapshot on reconnect, or resumes from
+			// the ring with EventsRequest.since (0069).
 			sub.cancel()
 			delete(a.subs, sub)
 		}
@@ -720,6 +751,92 @@ func (a *Authority) dropSub(sub *subscriber) {
 	a.mu.Unlock()
 }
 
+// StreamSince is the design-0069 Events resume path. since is the
+// caller's last applied seq. Two outcomes:
+//
+//   - resumed=true: since >= the ring's low-water mark. The stream does
+//     NOT open with a snapshot frame; it opens with the retained frames
+//     seq > since in publish order, then continues live. Gapless and
+//     duplicate-free by construction: the replay copy and the live
+//     subscriber registration happen under ONE a.mu hold — every frame
+//     published before the hold is in the copy (and never in the
+//     channel), every frame published after is in the channel (and
+//     never in the copy). This is the same lock discipline that makes
+//     the stamped snapshot's atomic cut exact (I2); the ring's
+//     contiguity (one frame per published seq, appended in
+//     fanoutLocked) is what makes any since >= low-water exact.
+//     A ReseedNotice inside the replayed range is delivered in seq
+//     position — the client's mandatory re-snapshot rule applies to it
+//     as on any connection.
+//
+//   - resumed=false: since < low-water (cursor too old, or the ring is
+//     empty — always the case after a process restart: the ring is
+//     memory, the seq counter is the durable thing). The honest
+//     fallback: a plain snapshot-first Stream (today's behavior,
+//     byte-identical); the caller detects it by the returned flag (the
+//     wire-level signal is the SnapshotFrame first frame).
+//
+// A since at or beyond the current seq is served as resumed with an
+// empty replay — the client believes it is fully caught up (or ahead;
+// the fsync'd cursor makes ahead-of-authority cursors impossible from
+// this authority) and simply goes live.
+func (a *Authority) StreamSince(ctx context.Context, since uint64) (<-chan *abiv1.StreamFrame, bool, func(), error) {
+	subCtx, cancel := context.WithCancel(context.WithoutCancel(ctx))
+	sub := &subscriber{ch: make(chan *abiv1.StreamFrame, streamBuffer), cancel: cancel}
+
+	a.mu.Lock()
+	low := a.ring.lowWater(a.seq)
+	if since < low {
+		a.replayFallbacks++
+		a.mu.Unlock()
+		cancel()
+		frames, fallbackCancel, err := a.Stream(ctx)
+		return frames, false, fallbackCancel, err
+	}
+	// (1) register the live buffer and (2) copy the replay tail under
+	// the SAME hold — the atomic cut resume rests on.
+	a.subs[sub] = struct{}{}
+	replay := a.ring.after(since)
+	a.mu.Unlock()
+
+	out := make(chan *abiv1.StreamFrame, streamBuffer)
+	go func() {
+		defer close(out)
+		for _, f := range replay {
+			select {
+			case out <- f:
+			case <-subCtx.Done():
+				return
+			}
+		}
+		// Live pump: identical to Stream's — frames published after
+		// registration; slow consumers dropped by fanoutLocked.
+		for {
+			select {
+			case f := <-sub.ch:
+				select {
+				case out <- f:
+				case <-subCtx.Done():
+					return
+				}
+			case <-subCtx.Done():
+				return
+			}
+		}
+	}()
+	return out, true, func() { a.dropSub(sub) }, nil
+}
+
+// ReplayWindow reports the ring's water marks: low is the smallest
+// since value StreamSince can serve exactly, high is the newest
+// retained seq (== the authority's current seq). Observability for
+// tests and ops; the values are consistent under the authority lock.
+func (a *Authority) ReplayWindow() (low, high uint64) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.ring.lowWater(a.seq), a.seq
+}
+
 // Close persists the final cursor and releases resources. Idempotent
 // (once-guarded): test cleanups and shutdown paths may both close.
 func (a *Authority) Close() error {
@@ -802,6 +919,17 @@ type Metrics struct {
 	// DeadlineExceeded path — every count is a would-be 125s hang made
 	// visible and fast.
 	AnswerBudgetExceeded int64
+	// ReplayRing (design 0069): the retained-frame window's shape —
+	// frame count, serialized bytes, and the low/high water marks.
+	// ReplayFallbacks counts Events resume attempts that degraded to
+	// the snapshot-first protocol (cursor below low-water — the
+	// ring-miss signal; a permanently-high rate means consumers
+	// reconnect slower than the ring turns over, or restarts ate it).
+	ReplayRingFrames int
+	ReplayRingBytes  int
+	ReplayLowWater   uint64
+	ReplayHighWater  uint64
+	ReplayFallbacks  int64
 }
 
 func (a *Authority) Metrics() Metrics {
@@ -834,6 +962,11 @@ func (a *Authority) Metrics() Metrics {
 	m.ReconcileBusyCleared = a.reconBusyCleared
 	m.ReconcileEvidenceFails = a.reconEvidenceFails
 	m.AnswerBudgetExceeded = a.answerBudgetExceeded
+	m.ReplayRingFrames = len(a.ring.frames)
+	m.ReplayRingBytes = a.ring.bytes
+	m.ReplayLowWater = a.ring.lowWater(a.seq)
+	m.ReplayHighWater = a.seq
+	m.ReplayFallbacks = a.replayFallbacks
 	return m
 }
 
