@@ -368,13 +368,16 @@ func (b *usageBridge) AgentDied(workspaceID string) {
 }
 
 // StreamResynced is the #1884 cue (the consumer's BridgeResync seam):
-// the pod→api usage stream applied a snapshot seed that is NOT the
-// gate's first — a reconnect after a silent stream death, or the
-// in-stream reseed redial. Frames since the previous seed were lost
-// with the user stream healthy, so the browser leg's heals (reconnect
-// wipe #1646, broker resync #1687) never fired — exactly the frozen
-// latches of the #1883 incident. Mirror the browser-leg pattern: run
-// the per-workspace busy-snapshot flight (the #1848 authority
+// the pod→api usage stream applied a snapshot seed that is NOT the gate's
+// first. With design 0069 resume active this means the FALLBACK leg — the
+// authority's replay ring could not serve the consumer's cursor (below
+// low-water: a pod restart ate the ring, or the loss exceeded its window)
+// or a reseed invalidated the fold; every other reconnect RESUMES from the
+// ring and fires nothing (no loss, no flight). Frames since the previous
+// seed were lost with the user stream healthy, so the browser leg's heals
+// (reconnect wipe #1646, broker resync #1687) never fired — exactly the
+// frozen latches of the #1883 incident. Mirror the browser-leg pattern:
+// run the per-workspace busy-snapshot flight (the #1848 authority
 // reconciliation) so every subscriber converges onto ground truth. The
 // #1666 per-session corrections have already been emitted by the time
 // this fires; the flight heals what they cannot compute (browser-side

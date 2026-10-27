@@ -114,14 +114,17 @@ type BridgeWithInternal interface {
 }
 
 // BridgeResync is the #1884 optional extension: a bridge that wants to
-// be told when a snapshot seed lands that is NOT the gate's first — a
-// reconnect's first fold after a silent stream death, or the in-stream
-// reseed redial. Frames since the previous seed may have been lost with
-// every downstream surface healthy (the user stream never saw a drop,
-// so its #1646/#1687 heals never fire); the notification is the cue for
-// the handler layer to run its authority-flight reconciliation (the
-// busy-snapshot handshake) so subscribers converge onto ground truth.
-// Bridges that do not implement it are unaffected.
+// be told when a snapshot seed lands that is NOT the gate's first — with
+// design 0069 resume active, that means a reconnect the ring could NOT
+// serve (cursor below low-water: a pod restart ate the ring, or too many
+// frames were lost) or the in-stream reseed redial. Frames since the
+// previous seed may have been lost with every downstream surface healthy
+// (the user stream never saw a drop, so its #1646/#1687 heals never
+// fire); the notification is the cue for the handler layer to run its
+// authority-flight reconciliation (the busy-snapshot handshake) so
+// subscribers converge onto ground truth. A reconnect that RESUMED from
+// the replay ring fires nothing — nothing was lost. Bridges that do not
+// implement it are unaffected.
 type BridgeResync interface {
 	Bridge
 	// StreamResynced fires once per NON-INITIAL snapshot seed (the
@@ -235,9 +238,19 @@ type gate struct {
 	busyNow   bool      // the last published fold state had a busy session
 	idleSince time.Time // when the fold last reported all-idle (zero while busy)
 	frames    bool      // any frame received on the current connection
-	// client is the connection the consults ride (rebuilt per
-	// reconnect in run; nil before the first connect).
+	// client is the connection the consults ride AND the holder of the
+	// resume fold (design 0069): rebuilt only when the resolved endpoint
+	// changes — across stream retries the SAME client is reused so its
+	// persisted fold turns every reconnect into a ring resume instead of
+	// a full snapshot. nil before the first connect. The fold (and its
+	// cursor) is in-memory: it dies with the gate, degrading the next
+	// gate to today's snapshot-first connect — always sound.
 	client Client
+	// baseURL/password pin the endpoint the current client was built
+	// for: a changed resolve (pod replaced, credential rotation) builds
+	// a fresh client rather than presenting one pod's cursor to another
+	// authority.
+	baseURL, password string
 	// derived is the consult-maintained busy truth per session (#1602):
 	// the last authority answer the bridge published (or failed to
 	// consult past). OR'd into busyNow so a silent-but-derived-busy
@@ -246,12 +259,16 @@ type gate struct {
 	// bridged is the last busy truth EMITTED to the bridge per session
 	// (#1666): the reconcile baseline. Event legs record here; the
 	// reconnect/resync seed diffs the freshly-folded truth against it
-	// so busy state lost across a silent stream death (the stream is
-	// replay-less) is re-emitted, not semantically lost.
+	// so busy state lost across a silent stream death is re-emitted,
+	// not semantically lost (with design 0069 the loss window shrinks
+	// to the snapshot-fallback/reseed legs — a served resume loses
+	// nothing and the baseline carries over untouched).
 	bridged map[string]bool
 	// seededFold marks the connection's first fold publication (the
 	// snapshot frame) as not-yet-applied — the reconnect reconcile
-	// rebuilds derived from it.
+	// rebuilds derived from it. With design 0069 a RESUMED connection
+	// sets this directly (WithResumed): its first publication is a
+	// continuing fold, not a seed, and must not run the seed branch.
 	seededFold bool
 	// snapshotSeeds counts the snapshot seeds this gate has applied
 	// (#1884): the initial connect's seed and every subsequent one (a
@@ -423,28 +440,54 @@ func (c *Consumer) run(ctx context.Context, workspaceID string, g *gate) {
 			}
 			continue
 		}
-		cl := c.cfg.NewClient(baseURL, password)
+		// Client reuse (design 0069): keep the SAME abiclient across
+		// stream retries while the resolved endpoint is stable — its
+		// persisted fold makes the retry present EventsRequest.since and
+		// resume from the authority's replay ring instead of paying a
+		// full snapshot (and losing the billing frames the snapshot
+		// cannot carry). A changed endpoint (pod replaced, credential
+		// rotation) rebuilds: a fresh fold, never a foreign cursor.
 		g.mu.Lock()
+		if g.client == nil || g.baseURL != baseURL || g.password != password {
+			g.client = c.cfg.NewClient(baseURL, password)
+			g.baseURL, g.password = baseURL, password
+		}
+		cl := g.client
 		g.frames = false
-		g.client = cl
 		g.seededFold = false
 		g.connections++
 		g.mu.Unlock()
 		err = cl.Stream(ctx, func(st *abiclient.SessionState) {
 			c.onState(workspaceID, g, st)
-		}, abiclient.WithResynced(func() {
+		}, abiclient.WithResumed(func() {
+			// Design 0069: this connection RESUMED from the fold's last
+			// applied seq (ring replay) — no frames were lost, so the
+			// snapshot-seeded reconciliation (derived rebuild, #1666
+			// corrections, #1884 resync cue) must NOT fire: mark the
+			// connection already-seeded so the first publication skips
+			// the seed branch. The baselines stay valid by construction
+			// (the fold is the same continuing fold); replayed events
+			// re-fire the event legs (billing is idempotent by its
+			// deterministic keys). This is the "no double-fire" pin: a
+			// resumed reconnect runs NO authority flight.
+			g.mu.Lock()
+			g.seededFold = true
+			g.mu.Unlock()
+		}), abiclient.WithResynced(func() {
 			// In-stream reseed: abiclient redials on projection.reseeded
 			// WITHOUT returning, so run()'s per-connection reset never
 			// fires — re-arm the snapshot reconcile here (review r1
 			// finding 1: the stale-true lease on this path).
 			//
-			// abiclient fires this callback on EVERY connection's first
-			// snapshot — the initial connect included — so arming the
-			// resync cue here unconditionally would notify on every
-			// connect. The discriminator: a true in-stream reseed is a
-			// SECOND snapshot inside one Stream call, i.e. the gate has
-			// already folded on this connection (seededFold true). Arm
-			// only then; the run-loop redial path keys on connections.
+			// abiclient fires this callback when a snapshot frame lands
+			// — the initial connect and the resume FALLBACK included —
+			// so arming the resync cue here unconditionally would
+			// notify on every connect. The discriminator: a true
+			// in-stream reseed is a SECOND snapshot inside one Stream
+			// call, i.e. the gate has already folded on this connection
+			// (seededFold true — set by the seed branch, by live
+			// folding, or by WithResumed). Arm only then; the run-loop
+			// redial path keys on connections.
 			g.mu.Lock()
 			inStream := g.seededFold
 			g.seededFold = false
@@ -509,12 +552,16 @@ func (c *Consumer) onState(workspaceID string, g *gate, st *abiclient.SessionSta
 		// #1884: a seed on any connection beyond the first — or any
 		// in-stream reseed, even on connection 1 — is a reconnect/reseed
 		// snapshot: frames since the previous seed may have been lost
-		// silently (the stream is replay-less) while every downstream
-		// surface stayed healthy. Keyed on connections, not the fold
-		// count: a connection that dies before its first snapshot holds
-		// the server-side subscription without ever folding, so its
-		// successor's healing seed must still fire the bridge's resync
-		// cue. Fire after the corrections (both outside the lock).
+		// while every downstream surface stayed healthy. With design
+		// 0069 a seed means the ring could NOT serve the cursor (the
+		// resume fallback) or a reseed invalidated the fold — the loss
+		// window is real exactly then; a served resume never reaches
+		// this branch (WithResumed suppresses it). Keyed on
+		// connections, not the fold count: a connection that dies
+		// before its first snapshot holds the server-side subscription
+		// without ever folding, so its successor's healing seed must
+		// still fire the bridge's resync cue. Fire after the
+		// corrections (both outside the lock).
 		resyncSeed = g.connections > 1 || g.reseedArmed
 		g.reseedArmed = false
 		rebuilt := map[string]bool{}

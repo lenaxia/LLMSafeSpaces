@@ -24,12 +24,20 @@ import (
 // fold, and browser latches whose loss the gate's bridged baseline
 // cannot see, are only healed by an AUTHORITY flight (the busy-snapshot
 // handshake #1848 serves on subscribe and on the lease recheck). These
-// rows pin the missing trigger: every NON-INITIAL snapshot seed — a
-// reconnect's first fold after a silent stream death, and the in-stream
-// reseed redial — must notify the bridge so the handler layer can run
-// the per-workspace flight. The gate's INITIAL connect fires nothing:
-// nothing has been lost yet, and the connect-path flight already covers
-// the subscribers.
+// rows pin the missing trigger: every NON-INITIAL snapshot seed must
+// notify the bridge so the handler layer can run the per-workspace
+// flight. The gate's INITIAL connect fires nothing: nothing was lost
+// before it, and the connect-path flight already covers the
+// subscribers.
+//
+// Design 0069 amended WHEN a seed exists: a reconnect the replay ring
+// can serve RESUMES (no snapshot, no notify — nothing was lost; the
+// resumed rows live in billing_replay_test.go). A seed now lands only
+// on the honest FALLBACK (cursor below the ring's low-water mark) or
+// the in-stream reseed redial — both genuine possible-loss windows, so
+// the notify still fires on every seed that remains. The fallback rows
+// below drive a tiny-ring authority so the dead window's filler events
+// evict the cursor past low-water deterministically.
 
 // resyncBridge extends syncBridge with the #1884 optional seam: it
 // records StreamResynced calls under the same mutex discipline (the
@@ -78,31 +86,38 @@ func TestResyncFlightE2E_InitialConnectFiresNothing(t *testing.T) {
 		"the gate's initial connect must NOT fire the resync notify — only a reconnect/reseed seed may")
 }
 
-// TestResyncFlightE2E_SilentDeathRedialFiresResync: THE #1884 row. The
-// stream dies silently mid-flight (server-side write abort, no close
-// frame, no replay); frames in the dead window are lost with the user
-// stream healthy, so no browser-leg wipe ever fires. The consumer's
-// redial applies a fresh snapshot seed — that seed must notify the
-// bridge (the handler layer's cue to run the authority flight that
-// reconciles every subscriber's latches).
+// TestResyncFlightE2E_SilentDeathRedialFiresResync: THE #1884 row, on
+// the design-0069 FALLBACK leg (the only silent-loss shape left): the
+// stream dies silently mid-flight AND the loss exceeds what the replay
+// ring can serve (here: a 2-frame ring, the busy frame plus fillers
+// evicted past the client's cursor), so the redial must re-snapshot.
+// That snapshot seed must notify the bridge (the handler layer's cue to
+// run the authority flight that reconciles every subscriber's latches).
 func TestResyncFlightE2E_SilentDeathRedialFiresResync(t *testing.T) {
-	auth, ts, kill := newKillingAuthority(t)
+	auth, ts, kill := newKillingAuthorityRing(t, 2)
 	br := &resyncBridge{}
-	c := newReconcileConsumer(t, ts.URL, br)
+	c := newReconcileConsumerRetry(t, ts.URL, br, 400*time.Millisecond)
 	c.Open("ws1")
 	waitSubscribers(t, auth, 1, "consumer never subscribed")
 
-	// The busy flip's frame dies on the wire; the fold goes busy.
+	// The busy flip's frame dies on the wire; the fold goes busy. The
+	// filler events (no bridge semantics) evict the 2-frame ring past
+	// the client's cursor=0 inside the dead window — the redial CANNOT
+	// resume and must take the snapshot fallback.
 	kill.arm()
 	ingest(t, auth, &abiv1.Event{Type: abiv1.EventType_EVENT_TYPE_SESSION_STATUS, SessionId: "s1", Status: abiv1.SessionStatus_SESSION_STATUS_BUSY})
 	waitSubscribers(t, auth, 0, "the killed stream never dropped its subscription")
+	ingest(t, auth, &abiv1.Event{Type: abiv1.EventType_EVENT_TYPE_SESSION_UPDATED, SessionId: "s1",
+		Session: &abiv1.Session{Id: "s1", Title: "filler-a"}})
+	ingest(t, auth, &abiv1.Event{Type: abiv1.EventType_EVENT_TYPE_SESSION_UPDATED, SessionId: "s1",
+		Session: &abiv1.Session{Id: "s1", Title: "filler-b"}})
 	waitSubscribers(t, auth, 1, "the consumer never redialed after the silent death")
 
 	// The redial's snapshot seed (which also carries the #1666 busy
 	// correction) must fire the resync notify exactly once.
 	require.Eventually(t, func() bool { return br.resyncCount() >= 1 },
 		5*time.Second, 10*time.Millisecond,
-		"the reconnect's snapshot seed must fire the resync notify — the lost-frame heal's cue")
+		"the fallback redial's snapshot seed must fire the resync notify — the lost-frame heal's cue")
 	require.Equal(t, []string{"ws1"}, br.resyncSnapshot(),
 		"exactly one notify per reconnect seed (not a spray)")
 
@@ -113,14 +128,14 @@ func TestResyncFlightE2E_SilentDeathRedialFiresResync(t *testing.T) {
 
 // TestResyncFlightE2E_AgreeingFoldStillFires: the notify is NOT a diff.
 // The #1666 corrections fire only on bridged/fold disagreement; the
-// resync notify must fire on EVERY reconnect seed — a fold that agrees
+// resync notify must fire on EVERY fallback seed — a fold that agrees
 // with the bridge baseline can still disagree with every BROWSER's
 // latch (the loss the gate cannot compute), which only the authority
 // flight heals.
 func TestResyncFlightE2E_AgreeingFoldStillFires(t *testing.T) {
-	auth, ts, kill := newKillingAuthority(t)
+	auth, ts, kill := newKillingAuthorityRing(t, 2)
 	br := &resyncBridge{}
-	c := newReconcileConsumer(t, ts.URL, br)
+	c := newReconcileConsumerRetry(t, ts.URL, br, 400*time.Millisecond)
 	c.Open("ws1")
 	waitSubscribers(t, auth, 1, "consumer never subscribed")
 
@@ -129,12 +144,18 @@ func TestResyncFlightE2E_AgreeingFoldStillFires(t *testing.T) {
 	waitForStatuses(t, &br.syncBridge, []string{"ws1:s1:busy"})
 	require.Zero(t, br.resyncCount(), "precondition: a live delivery is not a seed")
 
-	// Silent death at a semantics-free frame; the redial fold still says
-	// busy — the #1666 diff stays quiet, but the notify must fire.
+	// Silent death at a semantics-free frame, then fillers that evict
+	// the 2-frame ring past the client's cursor=1 — the redial falls
+	// back to a snapshot. The redial fold still says busy — the #1666
+	// diff stays quiet, but the notify must fire.
 	kill.arm()
 	ingest(t, auth, &abiv1.Event{Type: abiv1.EventType_EVENT_TYPE_SESSION_UPDATED, SessionId: "s1",
 		Session: &abiv1.Session{Id: "s1", Title: "still busy"}})
 	waitSubscribers(t, auth, 0, "the killed stream never dropped its subscription")
+	ingest(t, auth, &abiv1.Event{Type: abiv1.EventType_EVENT_TYPE_SESSION_UPDATED, SessionId: "s1",
+		Session: &abiv1.Session{Id: "s1", Title: "filler-a"}})
+	ingest(t, auth, &abiv1.Event{Type: abiv1.EventType_EVENT_TYPE_SESSION_UPDATED, SessionId: "s1",
+		Session: &abiv1.Session{Id: "s1", Title: "filler-b"}})
 	waitSubscribers(t, auth, 1, "the consumer never redialed after the silent death")
 
 	require.Eventually(t, func() bool { return br.resyncCount() == 1 },
