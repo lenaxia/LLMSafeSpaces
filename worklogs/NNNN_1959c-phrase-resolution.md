@@ -248,3 +248,28 @@ owner probe now discriminates:
 - `go test -short ./pkg/... ./api/...` — GREEN (full sweep; the new
   integration tests self-skip without a DB, handlers-lane pattern).
 - Unit/race legs for the touched families — green.
+
+## 10. The r1 wiring miss the CI pin caught (honest record)
+
+Commit 8ed94aee9 shipped `resolveImplementerRef` (the helper) but LOST the
+`redispatchBounce` CALL — a mid-race branch switch (the sibling lane moved
+HEAD to a detached origin/main between my two stage.go edits) carried one
+edit and dropped the other, and the local tree built/vetted green because
+an uncalled helper is valid Go. CI's new integration pin caught it
+EXACTLY as designed:
+
+```
+--- FAIL: TestBoardSuite/TestBounce1959Phrase_EvidenceAndDeliveryReceiveRawID
+    expected: "ses_phrase_impl_1959c"
+    actual  : "florid-teapot-verifies"
+    the turn-evidence consult must receive the RAW id — a phrase reads
+    never-turned and falls back before delivery
+```
+
+This is the pin doing the born-RED work at distance (the lane environment
+has no Postgres): the red run against the "fixed" head IS the discriminator
+evidence for the engine-leg pin. The call + the function-header doc are
+re-applied in the follow-up commit; the decisive api-side wiring pin
+(TestIntegrationBoardPhraseBounceProductionWiring) was not yet reached in
+that CI run's step ordering (the kill-tests step failed first) and rides
+the same head re-run.

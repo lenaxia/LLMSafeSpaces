@@ -352,11 +352,28 @@ func (n nudge) fire(ctx context.Context, s *Service) {
 // delivery seam installed (the inert-engine shape), zero turn evidence
 // (never-turned), or a delivery error (archived/reaped — the seam's
 // own liveness answer).
+//
+// #1959c: the stored implementer identity is resolved to the RAW
+// harness id BEFORE either consumer runs — the turn-evidence consult
+// and the delivery seam are both raw-keyed (session_index.session_id;
+// opencode's routes), and the row may hold the platform PHRASE (the
+// durable identity, #1850/#1816 — the form the live 0.44.3 probe
+// indicted). Unresolved upstream of the pre-check, a phrase reads
+// "never indexed = never turned" at the evidence arm and the bounce
+// falls back to a fresh spawn WITHOUT the delivery seam ever running —
+// the ordering defect review F1 pinned (PR #1967 r1). Resolution is
+// best-effort by the read edge's degraded posture (resolveImplementerRef):
+// a phrase no live session holds keeps the stored ref, and the evidence
+// consult's honest zero drives the fallback (a dead original's verdict).
 func (s *Service) redispatchBounce(ctx context.Context, taskID, token, implementer string) {
 	if s.redispatcher == nil {
 		s.spawnFor(ctx, taskID, token) // no delivery seam: the fresh-worker fallback
 		return
 	}
+	// #1959c: resolve the stored identity BEFORE the evidence consult —
+	// see the function header (both raw-keyed consumers receive the raw
+	// id; unresolved phrases degrade honestly).
+	implementer = s.resolveImplementerRef(ctx, taskID, implementer)
 	if s.turnEvidence != nil {
 		if turns, err := s.turnEvidence.SessionTurnEvidence(ctx, implementer); err == nil && turns <= 0 {
 			slog.WarnContext(ctx, "board: bounce re-dispatch skipped — original implementer never turned; falling back to a fresh worker",
