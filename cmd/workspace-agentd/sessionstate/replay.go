@@ -17,11 +17,13 @@ import (
 // a frame-count cap and a byte budget. A reconnecting Events consumer
 // that presents its last applied seq (EventsRequest.since) is served
 // the retained frames with seq > since and then goes live, gapless by
-// construction (StreamSince). Consumers whose cursor fell below the
-// low-water mark get today's snapshot-first behavior — the stamped
-// snapshot (I2) remains the authority for since soundness: any
-// since >= low-water is served exactly because the ring holds every
-// published frame after it.
+// construction (StreamSince). A cursor OUTSIDE the ring's servable
+// range — below the low-water mark, or ahead of the current seq (a
+// client fold newer than the authority's) — falls back to today's
+// snapshot-first behavior; the stamped snapshot (I2) remains the
+// authority for since soundness: a cursor in [low-water, current
+// seq] is served exactly because the ring holds every published
+// frame inside that range.
 //
 // Memory: the ring shares the already-published frame pointers (the
 // same immutability discipline fanout relies on — the projection

@@ -66,14 +66,16 @@ func (a *Authority) auth(next http.Handler) http.Handler {
 //     stream opens with a stamped snapshot frame, then ordered live
 //     events (I2 ordering).
 //
-//   - since PRESENT: resume attempt. since >= the replay ring's
-//     low-water mark ⇒ the retained frames with seq > since replay
-//     first (no snapshot frame), then live — gapless by construction
-//     (StreamSince's one-lock registration). Below low-water (or ring
-//     empty) ⇒ the honest fallback: today's snapshot-first stream. The
-//     first frame on the wire disambiguates for the client —
-//     SnapshotFrame means "resume not honored, apply the stamp's
-//     discard rule"; anything else means "replaying from your cursor".
+//   - since PRESENT: resume attempt. A cursor in the ring's servable
+//     range — low-water <= since <= the current seq — replays the
+//     retained frames with seq > since first (no snapshot frame),
+//     then live, gapless by construction (StreamSince's one-lock
+//     registration). Outside that range (below low-water, ring
+//     empty, or client-ahead of the current seq) ⇒ the honest
+//     fallback: today's snapshot-first stream. The first frame on
+//     the wire disambiguates for the client — SnapshotFrame means
+//     "resume not honored, apply the stamp's discard rule"; anything
+//     else means "replaying from your cursor".
 func (a *Authority) Events(ctx context.Context, req *connect.Request[abiv1.EventsRequest], stream *connect.ServerStream[abiv1.StreamFrame]) error {
 	var frames <-chan *abiv1.StreamFrame
 	var cancel func()

@@ -371,7 +371,8 @@ func (b *usageBridge) AgentDied(workspaceID string) {
 // the pod→api usage stream applied a snapshot seed that is NOT the gate's
 // first. With design 0069 resume active this means the FALLBACK leg — the
 // authority's replay ring could not serve the consumer's cursor (below
-// low-water: a pod restart ate the ring, or the loss exceeded its window)
+// low-water: a pod restart ate the ring, or the loss exceeded its window;
+// or client-ahead: the cursor is newer than the authority's current seq)
 // or a reseed invalidated the fold; every other reconnect RESUMES from the
 // ring and fires nothing (no loss, no flight). Frames since the previous
 // seed were lost with the user stream healthy, so the browser leg's heals

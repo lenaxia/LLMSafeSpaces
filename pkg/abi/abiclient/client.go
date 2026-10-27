@@ -12,9 +12,10 @@
 // fold's last applied seq) across connections and, on every reconnect,
 // presents that seq as EventsRequest.since. A served cursor replays the
 // authority's retained frames (ring replay) through the same discard rule —
-// no gap, no duplicate application, by construction; an unservable cursor
-// (below the ring's low-water mark, or an older agentd that ignores the
-// field) degrades to today's snapshot-first protocol, which the client
+// no gap, no duplicate application, by construction; an unservable
+// cursor (below the ring's low-water mark, ahead of its current seq,
+// or an older agentd that ignores the field) degrades to today's
+// snapshot-first protocol, which the client
 // recognizes by the SnapshotFrame that opens the connection.
 //
 // This is a consumer of generated wire types — no hand-written wire
@@ -262,12 +263,13 @@ func AppliedEventsOf(opts []StreamOption) func(evt *abiv1.Event, seq uint64) {
 }
 
 // WithResynced registers a callback fired whenever the fold is rebuilt
-// from a fresh snapshot frame — the initial connect, the honest fallback
-// (the resume cursor was below the ring's low-water mark, or the serving
-// agentd predates design 0069 and ignored since), and the in-stream
-// projection.reseeded redial (Stream handles the reseed internally without
-// returning, so run-loop-level reconnect hooks never see it). Fired BEFORE
-// the onUpdate publication of the rebuilt state, so consumers can re-arm
+// from a fresh snapshot frame — the initial connect, the honest
+// fallback (the resume cursor was below the ring's low-water mark,
+// ahead of its current seq, or the serving agentd predates design
+// 0069 and ignored since), and the in-stream projection.reseeded
+// redial (Stream handles the reseed internally without returning, so
+// run-loop-level reconnect hooks never see it). Fired BEFORE the
+// onUpdate publication of the rebuilt state, so consumers can re-arm
 // snapshot-based reconciliation. The #1602 stale-truth reconcile is the
 // consumer. A connection that RESUMED fires WithResumed instead — nothing
 // was lost, so snapshot-seeded reconciliation must stay quiet.
@@ -391,7 +393,8 @@ func (c *Client) Stream(ctx context.Context, onUpdate func(*SessionState), opts 
 				if snap := f.GetSnapshot(); snap != nil {
 					// Snapshot-first connection: the initial connect, the
 					// post-reseed redial, or the honest fallback (cursor
-					// below the ring's low-water mark / pre-0069 agentd).
+					// below the ring's low-water mark, ahead of its
+					// current seq, / pre-0069 agentd).
 					// applySnapshot REPLACES the fold content and re-stamps
 					// Seq — the discard rule stays exact across the rebuild.
 					applySnapshot(c.state, snap)

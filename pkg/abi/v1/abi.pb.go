@@ -91,15 +91,19 @@ func (ReseedReason) EnumDescriptor() ([]byte, []int) {
 // SnapshotFrame, then live events. Present since ⇒ resume attempt: since
 // is the caller's LAST APPLIED seq ("I hold exactly the fold of events
 // 1..since"). When the authority's replay ring covers the cursor
-// (since ≥ low-water), the stream opens with the retained frames
-// seq > since in order — NO snapshot frame — then continues live,
-// gapless by construction; a ReseedNotice inside the replayed range is
-// delivered in seq position (the mandatory re-snapshot rule applies to
-// it as on any connection). When the cursor is below the low-water mark
-// (or the ring is empty, e.g. after a process restart), the request
-// degrades honestly to the snapshot-first behavior — the first frame
-// being a SnapshotFrame is the client's signal that resume was not
-// honored and its cursor is superseded by the stamp's discard rule.
+// (low-water <= since <= the authority's current seq), the stream
+// opens with the retained frames seq > since in order — NO snapshot
+// frame — then continues live, gapless by construction; a
+// ReseedNotice inside the replayed range is delivered in seq position
+// (the mandatory re-snapshot rule applies to it as on any
+// connection). When the cursor is outside that range — below the
+// low-water mark (or the ring is empty, e.g. after a process
+// restart), or ahead of the current seq (the client's fold is newer
+// than the authority's — a superseded primary or a reused client
+// across authority generations) — the request degrades honestly to
+// the snapshot-first behavior: the first frame being a SnapshotFrame
+// is the client's signal that resume was not honored and its cursor
+// is superseded by the stamp's discard rule.
 type EventsRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Since         *uint64                `protobuf:"varint,1,opt,name=since,proto3,oneof" json:"since,omitempty"`

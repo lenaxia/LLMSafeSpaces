@@ -117,8 +117,10 @@ type BridgeWithInternal interface {
 // be told when a snapshot seed lands that is NOT the gate's first — with
 // design 0069 resume active, that means a reconnect the ring could NOT
 // serve (cursor below low-water: a pod restart ate the ring, or too many
-// frames were lost) or the in-stream reseed redial. Frames since the
-// previous seed may have been lost with every downstream surface healthy
+// frames were lost; or client-ahead: the cursor is newer than the
+// authority's current seq) or the in-stream reseed redial. Frames since
+// the previous seed may have been lost with every downstream surface
+// healthy
 // (the user stream never saw a drop, so its #1646/#1687 heals never
 // fire); the notification is the cue for the handler layer to run its
 // authority-flight reconciliation (the busy-snapshot handshake) so

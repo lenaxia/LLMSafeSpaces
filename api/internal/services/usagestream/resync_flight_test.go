@@ -33,11 +33,12 @@ import (
 // Design 0069 amended WHEN a seed exists: a reconnect the replay ring
 // can serve RESUMES (no snapshot, no notify — nothing was lost; the
 // resumed rows live in billing_replay_test.go). A seed now lands only
-// on the honest FALLBACK (cursor below the ring's low-water mark) or
-// the in-stream reseed redial — both genuine possible-loss windows, so
-// the notify still fires on every seed that remains. The fallback rows
-// below drive a tiny-ring authority so the dead window's filler events
-// evict the cursor past low-water deterministically.
+// on the honest FALLBACK (cursor below the ring's low-water mark, or
+// client-ahead of its current seq) or the in-stream reseed redial —
+// all genuine possible-loss windows, so the notify still fires on
+// every seed that remains. The fallback rows below drive a tiny-ring
+// authority so the dead window's filler events evict the cursor past
+// low-water deterministically.
 
 // resyncBridge extends syncBridge with the #1884 optional seam: it
 // records StreamResynced calls under the same mutex discipline (the
