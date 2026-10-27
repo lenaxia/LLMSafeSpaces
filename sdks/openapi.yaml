@@ -13689,12 +13689,41 @@ components:
           description: Other KEYS in this payload
     BoardPlanRequest:
       type: object
-      required: [epicTitle, tasks]
+      description: |
+        The unified plan document (design 0070 §1a): ONE epic arm — `epic`
+        (create a new epic with these tasks) or `epicId` (attach the tasks
+        to an EXISTING epic) — plus 1..N tasks. Exactly one epic arm per
+        payload: both present or neither present is a 400. The legacy
+        `epicTitle`/`outcome` spelling remains accepted as the create arm
+        (the REST/external surfaces' inline form). All-or-nothing in every
+        mode; `dependsOn` addresses payload keys.
+      required: [tasks]
       properties:
+        epic:
+          type: object
+          description: The new-epic arm — the epic this plan creates (exactly-one-of with epicId)
+          required: [title]
+          properties:
+            title:
+              type: string
+            outcome:
+              type: string
+            tags:
+              type: array
+              items:
+                type: string
+        epicId:
+          type: string
+          description: The existing-epic arm — the epic these tasks attach to (exactly-one-of with epic/epicTitle)
         epicTitle:
           type: string
+          description: Legacy create-arm spelling (superseded by the epic object on the agent surface)
         outcome:
           type: string
+        tags:
+          type: array
+          items:
+            type: string
         dryRun:
           type: boolean
           description: Validate + render only — nothing is written (the plan-approval moment)

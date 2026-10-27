@@ -69,6 +69,7 @@ const INJECTED_SESSION_TOOLS = new Set([
   "llmsafespaces_board_import_plan",
   "llmsafespaces_board_list",
   "llmsafespaces_board_health",
+  "llmsafespaces_board_validate_file",
 ])
 
 /**
