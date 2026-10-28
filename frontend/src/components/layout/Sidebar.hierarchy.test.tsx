@@ -1,12 +1,13 @@
 /**
- * Sidebar hierarchy tests, post-#1966: subagent (subtask) sessions no
- * longer nest under their parent — every parented session is
- * worker-classified and lives in the collapsed Workers folder (issue
- * #1966: "parented Task-tool sessions … same bucket"). These pins hold
- * the NEW contract: user sessions render flat in the main list,
- * subtasks (including orphaned ones — the synthetic Orphaned-subtasks
- * group is gone) row inside the Workers folder, and the folder's
- * expand/collapse owns their visibility.
+ * Sidebar hierarchy tests, ruling 6 (2026-10-28 owner batch): subagent
+ * (subtask) sessions nest under their parent again — the Board workers
+ * group is populated by worker PROVENANCE (origin-class 'worker'),
+ * never parentage. These pins hold the contract: user sessions render
+ * flat in the main list with their subtask children nested beneath
+ * them; orphaned subtasks promote to top-level rows (the synthetic
+ * Orphaned-subtasks group stays dead); board workers leave the flat
+ * roots for the collapsed Board workers group, whose expand/collapse
+ * owns their visibility.
  */
 import { describe, expect, it, vi, beforeEach } from "vitest";
 import { screen, waitFor, render, fireEvent } from "@testing-library/react";
@@ -96,7 +97,7 @@ describe("Sidebar — session hierarchy", () => {
     expect(screen.queryByText("Subtask child")).not.toBeInTheDocument();
   });
 
-  it("subtask children live in the Workers folder, not nested under the parent (#1966)", async () => {
+  it("subtask children nest under their parent in the main tree (ruling 6 — no folder without provenance)", async () => {
     (workspacesApi.getSessions as ReturnType<typeof vi.fn>).mockResolvedValue([
       { id: "parent", title: "Parent task", messageCount: 1, status: "idle" },
       { id: "child", title: "Subtask child", parentId: "parent", messageCount: 1, status: "idle" },
@@ -105,16 +106,13 @@ describe("Sidebar — session hierarchy", () => {
     renderSidebar();
 
     await waitFor(() => expect(screen.getByText("Parent task")).toBeInTheDocument());
-    // The parent rows flat in the main list — the pre-#1966 nesting
-    // chevron is gone.
-    expect(screen.queryByLabelText("Expand subtasks")).not.toBeInTheDocument();
-    expect(screen.queryByText("Subtask child")).not.toBeInTheDocument();
+    // The parent rows flat in the main list with its subtree chevron;
+    // parentage alone never opens a workers group.
+    expect(screen.getByLabelText("Expand subtasks")).toBeInTheDocument();
+    expect(screen.queryByTestId("workers-group")).not.toBeInTheDocument();
 
-    // The subtask is reachable one click away, inside the folder.
-    const group = screen.getByTestId("workers-group");
-    expect(group).toBeInTheDocument();
-    expect(screen.getByText("1")).toBeInTheDocument();
-    fireEvent.click(screen.getByLabelText("Expand worker sessions"));
+    // The subtask nests beneath its parent — one subtree click away.
+    fireEvent.click(screen.getByLabelText("Expand subtasks"));
     expect(screen.getByText("Subtask child")).toBeInTheDocument();
   });
 
@@ -151,24 +149,25 @@ describe("Sidebar — session hierarchy", () => {
     });
   });
 
-  it("collapsing the Workers folder hides the subtask rows", async () => {
+  it("collapsing the Board workers group hides the worker rows", async () => {
     (workspacesApi.getSessions as ReturnType<typeof vi.fn>).mockResolvedValue([
-      { id: "parent", title: "Parent task", messageCount: 1, status: "idle" },
-      { id: "child", title: "Subtask child", parentId: "parent", messageCount: 1, status: "idle" },
+      { id: "worker", title: "Board worker", origin: "worker", messageCount: 1, status: "idle" },
+      { id: "child", title: "Worker subtask", parentId: "worker", messageCount: 1, status: "idle" },
     ]);
 
     renderSidebar("/chat/ws-1/child");
 
-    await waitFor(() => expect(screen.getByText("Subtask child")).toBeInTheDocument());
+    // Navigating to the worker's nested subagent auto-expands the
+    // group AND the worker's subtree.
+    await waitFor(() => expect(screen.getByText("Worker subtask")).toBeInTheDocument());
 
-    // Selecting the subtask auto-expanded the folder; a human click
-    // collapses it again.
-    fireEvent.click(screen.getByLabelText("Collapse worker sessions"));
+    // A human click collapses the group again.
+    fireEvent.click(screen.getByLabelText("Collapse board workers"));
 
-    expect(screen.queryByText("Subtask child")).not.toBeInTheDocument();
+    expect(screen.queryByText("Worker subtask")).not.toBeInTheDocument();
   });
 
-  it("orphaned subtasks row under Workers — the synthetic 'Orphaned subtasks' group is gone (#1966)", async () => {
+  it("orphaned subtasks promote to top-level main-list rows — no synthetic group, no folder (ruling 6)", async () => {
     // 'orphan' references a parent that's not in the list.
     (workspacesApi.getSessions as ReturnType<typeof vi.fn>).mockResolvedValue([
       { id: "regular", title: "Regular session", messageCount: 1, status: "idle" },
@@ -179,15 +178,13 @@ describe("Sidebar — session hierarchy", () => {
 
     await waitFor(() => {
       expect(screen.getByText("Regular session")).toBeInTheDocument();
-      expect(screen.getByTestId("workers-group")).toBeInTheDocument();
+      // Orphan-by-parentage: visible as its own top-level row — the
+      // synthetic 'Orphaned subtasks' group stays dead and parentage
+      // never folders it.
+      expect(screen.getByText("Orphaned task")).toBeInTheDocument();
     });
-    // The pre-#1966 synthetic group no longer renders.
     expect(screen.queryByText("Orphaned subtasks")).not.toBeInTheDocument();
-    // Collapsed by default — content hidden until expanded.
-    expect(screen.queryByText("Orphaned task")).not.toBeInTheDocument();
-
-    fireEvent.click(screen.getByLabelText("Expand worker sessions"));
-    expect(screen.getByText("Orphaned task")).toBeInTheDocument();
+    expect(screen.queryByTestId("workers-group")).not.toBeInTheDocument();
   });
 
   it("orphans group is hidden entirely when there are no orphans", async () => {
@@ -216,24 +213,23 @@ describe("Sidebar — session hierarchy", () => {
     });
   });
 
-  it("keeps the user-expanded Workers folder across a sessions refetch", async () => {
-    // User expands the folder without navigating into it; a refetch
+  it("keeps the user-expanded Board workers group across a sessions refetch", async () => {
+    // User expands the group without navigating into it; a refetch
     // must not clobber that state.
     (workspacesApi.getSessions as ReturnType<typeof vi.fn>).mockResolvedValue([
-      { id: "parent", title: "Parent task", messageCount: 1, status: "idle" },
-      { id: "child", title: "Manual expand", parentId: "parent", messageCount: 1, status: "idle" },
+      { id: "worker", title: "Board worker", origin: "worker", messageCount: 1, status: "idle" },
     ]);
 
     renderSidebar();
-    await waitFor(() => expect(screen.getByText("Parent task")).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByTestId("workers-group")).toBeInTheDocument());
 
-    fireEvent.click(screen.getByLabelText("Expand worker sessions"));
-    expect(screen.getByText("Manual expand")).toBeInTheDocument();
+    fireEvent.click(screen.getByLabelText("Expand board workers"));
+    expect(screen.getByText("Board worker")).toBeInTheDocument();
 
     // Simulate the query refetching with the same data — the
     // user's manual expand state must persist.
     qc.invalidateQueries({ queryKey: ["sessions", "ws-1"] });
-    await waitFor(() => expect(screen.getByText("Manual expand")).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText("Board worker")).toBeInTheDocument());
   });
 });
 
@@ -267,7 +263,7 @@ describe("Sidebar — auto-expand/collapse setting", () => {
     );
   }
 
-  it("navigating to a parent session does not auto-open the Workers folder (#1966)", async () => {
+  it("navigating to a parent session auto-expands its nested subtask children (ruling 6 restores the subtree)", async () => {
     (workspacesApi.getSessions as ReturnType<typeof vi.fn>).mockResolvedValue([
       { id: "parent", title: "Parent task", messageCount: 1, status: "idle" },
       { id: "child", title: "Child session", parentId: "parent", messageCount: 1, status: "idle" },
@@ -275,15 +271,15 @@ describe("Sidebar — auto-expand/collapse setting", () => {
     ]);
 
     // Navigate directly to the parent session — its subtask children
-    // stay foldered (the pre-#1966 auto-expand of parent children is
-    // superseded; only SELECTING a worker session expands the folder).
+    // nest beneath it again (the tree's auto-expand-the-active-session
+    // precedent; no worker group opens because parentage isn't provenance).
     renderSidebarAtPath("/chat/ws-1/parent");
 
     await waitFor(() => {
       expect(screen.getByText("Parent task")).toBeInTheDocument();
-      expect(screen.getByTestId("workers-group")).toBeInTheDocument();
+      expect(screen.getByText("Child session")).toBeInTheDocument();
     });
-    expect(screen.queryByText("Child session")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("workers-group")).not.toBeInTheDocument();
   });
 
   it("does NOT auto-expand parent children when setting is off", async () => {
@@ -322,27 +318,26 @@ describe("Sidebar — auto-expand/collapse setting", () => {
     });
   });
 
-  it("the Workers folder stays expanded when navigating between worker sessions", async () => {
+  it("the Board workers group stays expanded when navigating between sessions", async () => {
     (workspacesApi.getSessions as ReturnType<typeof vi.fn>).mockResolvedValue([
-      { id: "parent-a", title: "Parent A", messageCount: 1, status: "idle" },
-      { id: "child-a", title: "Child of A", parentId: "parent-a", messageCount: 1, status: "idle" },
-      { id: "parent-b", title: "Parent B", messageCount: 1, status: "idle" },
-      { id: "child-b", title: "Child of B", parentId: "parent-b", messageCount: 1, status: "idle" },
+      { id: "worker-a", title: "Worker A", origin: "worker", messageCount: 1, status: "idle" },
+      { id: "worker-b", title: "Worker B", origin: "worker", messageCount: 1, status: "idle" },
+      { id: "user", title: "User session", messageCount: 1, status: "idle" },
     ]);
 
-    // Start inside child-a — the folder auto-expands for the active
+    // Start inside worker-a — the group auto-expands for the active
     // worker session.
-    renderSidebarAtPath("/chat/ws-1/child-a");
+    renderSidebarAtPath("/chat/ws-1/worker-a");
 
-    await waitFor(() => expect(screen.getByText("Child of A")).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText("Worker A")).toBeInTheDocument());
 
-    // Click parent-b (a user session) to navigate away — the folder
-    // keeps its expanded state; both workers stay reachable.
-    fireEvent.click(screen.getByText("Parent B"));
+    // Click the user session to navigate away — the group keeps its
+    // expanded state; both workers stay reachable.
+    fireEvent.click(screen.getByText("User session"));
 
-    await waitFor(() => expect(screen.getByText("Parent B")).toBeInTheDocument());
-    expect(screen.getByText("Child of B")).toBeInTheDocument();
-    expect(screen.getByText("Child of A")).toBeInTheDocument();
+    await waitFor(() => expect(screen.getByText("User session")).toBeInTheDocument());
+    expect(screen.getByText("Worker A")).toBeInTheDocument();
+    expect(screen.getByText("Worker B")).toBeInTheDocument();
   });
 
   it("does NOT auto-collapse previous subtree when setting is off", async () => {
