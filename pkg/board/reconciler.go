@@ -258,7 +258,7 @@ func (s *Service) rc1Reclaims(ctx context.Context) (int, error) {
 
 	rows, err := tx.Query(ctx, `
 		SELECT t.id, t.project_id, COALESCE(t.lease_expires_at::text, 'null'), t.failure_count,
-			COALESCE(t.assignee_session,''), COALESCE(t.nudge_id,'')
+			COALESCE(t.assignee_session,''), COALESCE(t.nudge_id,''), COALESCE(t.short_id,'')
 		FROM tasks t
 		WHERE t.stage='in_progress' AND NOT t.pending_input
 		  AND (t.lease_expires_at IS NULL OR t.lease_expires_at < now())
@@ -270,11 +270,12 @@ func (s *Service) rc1Reclaims(ctx context.Context) (int, error) {
 		id, project, episode string
 		failures             int32
 		assignee, nudgeID    string
+		shortID              string
 	}
 	var victims []victim
 	for rows.Next() {
 		var v victim
-		if err := rows.Scan(&v.id, &v.project, &v.episode, &v.failures, &v.assignee, &v.nudgeID); err != nil {
+		if err := rows.Scan(&v.id, &v.project, &v.episode, &v.failures, &v.assignee, &v.nudgeID, &v.shortID); err != nil {
 			rows.Close()
 			return 0, err
 		}
@@ -326,7 +327,9 @@ func (s *Service) rc1Reclaims(ctx context.Context) (int, error) {
 			// ladder is inert without a sender)
 		case v.nudgeID == "":
 			id := uuidNew()
-			if err := s.nudger(ctx, v.assignee, NudgePayload{NudgeID: id, TaskID: v.id}); err != nil {
+			if err := s.nudger(ctx, v.assignee, NudgePayload{
+				NudgeID: id, TaskID: v.id, TaskShortID: v.shortID,
+			}); err != nil {
 				continue // delivery failed: undecidable this sweep — wall-clock path
 			}
 			nudgeIDs[v.id] = id

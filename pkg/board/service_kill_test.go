@@ -65,28 +65,28 @@ func (s *BoardSuite) TestKill_StageMachineGuards() {
 			if row := s.rawTask(task.ID); row.ClaimToken != nil {
 				token = *row.ClaimToken
 			}
-		actor := tc.actor(s.owner(), token)
-		_, err := s.svc.MoveStage(context.Background(), actor, task.ID, "", tc.to, "https://evidence.example/x", "")
-		if tc.wantErr == "" {
-			s.Require().NoError(err)
-			if tc.to == board.StagePendingInput {
-				// 000050 flag-op: the real stage is KEPT, the flag rides
-				// it, and the audit is the flag event — never a
-				// board_transitions row (no stage move happened). The
-				// event count is item-scoped: subtests share the table.
-				s.parkedPin(task.ID, tc.from, board.PendingOriginWorker)
-				s.Equal(0, s.countTransitions(task.ID, board.StagePendingInput),
-					"the flag-op writes NO transition row")
-				var flagEvents int
-				s.Require().NoError(s.pool.QueryRow(context.Background(),
-					`SELECT count(*) FROM board_events WHERE action='pending_input_flag' AND item_id=$1`, task.ID).Scan(&flagEvents))
-				s.Equal(1, flagEvents, "the flag event is the audit (item-scoped)")
+			actor := tc.actor(s.owner(), token)
+			_, err := s.svc.MoveStage(context.Background(), actor, task.ID, "", tc.to, "https://evidence.example/x", "")
+			if tc.wantErr == "" {
+				s.Require().NoError(err)
+				if tc.to == board.StagePendingInput {
+					// 000050 flag-op: the real stage is KEPT, the flag rides
+					// it, and the audit is the flag event — never a
+					// board_transitions row (no stage move happened). The
+					// event count is item-scoped: subtests share the table.
+					s.parkedPin(task.ID, tc.from, board.PendingOriginWorker)
+					s.Equal(0, s.countTransitions(task.ID, board.StagePendingInput),
+						"the flag-op writes NO transition row")
+					var flagEvents int
+					s.Require().NoError(s.pool.QueryRow(context.Background(),
+						`SELECT count(*) FROM board_events WHERE action='pending_input_flag' AND item_id=$1`, task.ID).Scan(&flagEvents))
+					s.Equal(1, flagEvents, "the flag event is the audit (item-scoped)")
+					return
+				}
+				s.Equal(tc.to, s.rawTask(task.ID).Stage)
+				s.Equal(1, s.countTransitions(task.ID, tc.to), "every transition writes exactly one board_transitions row")
 				return
 			}
-			s.Equal(tc.to, s.rawTask(task.ID).Stage)
-			s.Equal(1, s.countTransitions(task.ID, tc.to), "every transition writes exactly one board_transitions row")
-			return
-		}
 			s.Require().Error(err)
 			var ge *board.GuardError
 			s.Require().ErrorAs(err, &ge, "move_stage guard class")

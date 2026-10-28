@@ -83,7 +83,30 @@ func (h *ProxyHandler) buildUsageStream() *usagestream.Consumer {
 		Bridge:       &usageBridge{h: h},
 		Logger:       h.logger,
 		OnGateChange: recordUsageStreamGate,
+		// The seamless lease's activity leg: EVERY frame stamps the
+		// board's liveness index (late-bound — see ProxyHandler's
+		// frameObserver field for why the closure re-reads per call).
+		OnFrame: func(workspaceID string, evt *abiv1.Event) {
+			if fn := h.currentFrameObserver(); fn != nil {
+				fn(workspaceID, evt)
+			}
+		},
 	})
+}
+
+// SetFrameObserver installs the per-frame activity observer (app.go's
+// board wiring; the liveness index). Safe to call before or after the
+// usagestream singleton exists — the observer is read at frame time.
+func (h *ProxyHandler) SetFrameObserver(fn usagestream.FrameObserver) {
+	h.frameObserverMu.Lock()
+	h.frameObserver = fn
+	h.frameObserverMu.Unlock()
+}
+
+func (h *ProxyHandler) currentFrameObserver() usagestream.FrameObserver {
+	h.frameObserverMu.RLock()
+	defer h.frameObserverMu.RUnlock()
+	return h.frameObserver
 }
 
 // SetUsageBilling wires the inference metrics + metering sinks (app.go;

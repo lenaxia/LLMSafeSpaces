@@ -1,0 +1,373 @@
+// Copyright (C) 2026 Michael Kao
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
+package app
+
+// board_liveness.go — the seamless lease's opencode adapter (design
+// reports/specs/seamless-lease-design.md; owner rulings 2026-10-27/28):
+// the production AssigneeLivenessSource + NudgeSender at the app
+// integration point, read-only over sessionstate.
+//
+// The engine (pkg/board) stays harness-agnostic: it asks three POOR
+// questions per assignee — moved? exists? anything after the sentinel?
+// — and this file is the only place that knows how opencode answers
+// them. Two evidence legs, deliberately composed:
+//
+//   - The 0069 frame stream (FINE-grained): the usagestream singleton
+//     holds one subscription per active pod, and EVERY applied frame —
+//     PART_START tool-part events included, which no other leg sees —
+//     stamps the in-process activity index. THIS is the leg that makes
+//     "a worker mid-command longer than the lease window" observable:
+//     a tool-call START is movement evidence the moment it happens, not
+//     when the command completes.
+//   - session_index (DURABLE): message_count/updated_at deltas survive
+//     stream drops and serve cross-replica; message boundaries only.
+//
+// Both legs are SAME-SOURCE deltas (this process's previous answer) or
+// SAME-ROW counters (the index's own message_count then vs now) — no
+// cross-process timestamp is ever compared. The ordinal wedge query is
+// answered in-frame-order: any frame received after the sentinel's
+// send-mark is at the sentinel's transcript position or later (the
+// stream is seq-ordered and live; a replayed old frame can only err
+// FALSE-ALIVE — the safe direction, never a wrong reclaim of a live
+// worker). The DB leg backs it when no stream was held: message_count
+// above its at-send snapshot means something landed after the nudge.
+//
+// Honesty mapping (liveness.go's contract):
+//
+//   - row present, deleted_at NULL    → Observed, Exists
+//   - row present, deleted_at NOT NULL → Observed, dead-evidence (the
+//     soft delete is a deliberate write — provably gone)
+//   - row absent                       → Observed=false (the index is
+//     event-fed and can lag; an unindexed session is NO-evidence,
+//     never death — the engine falls to the honest wall-clock path)
+//   - query failure                    → all refs no-evidence + a loud
+//     warn (per-sweep degradation IS the Nil contract; a cheap batched
+//     SELECT needs no circuit-breaker to converge next sweep)
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"log/slog"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
+
+	abiv1 "github.com/lenaxia/llmsafespaces/pkg/abi/v1"
+	"github.com/lenaxia/llmsafespaces/pkg/board"
+	"github.com/lenaxia/llmsafespaces/pkg/shortid"
+)
+
+// boardObserveBudget bounds one ObserveAssignees call (the seam's ~2s
+// hygiene: the reconciler sweeps on a cadence and stalling here stalls
+// reclaims globally).
+const boardObserveBudget = 2 * time.Second
+
+// boardLivenessHub is the shared state of the two adapter halves: the
+// frame-activity index (fed by the usagestream observer), the nudge
+// send-marks (fed by the NudgeSender), and the per-ref observation
+// cursors (the same-source delta baselines). One hub per process; the
+// Service and the Reconciler MUST share it so a nudge sent by either is
+// ordinal-anchored for both.
+type boardLivenessHub struct {
+	pool *pgxpool.Pool
+
+	mu      sync.Mutex
+	counter uint64 // monotonic frame stamp; also the send-mark clock
+	// frames stamps the last frame-arrival stamp per key (the RAW
+	// harness id AND the wire phrase both get stamped — #1817: frames
+	// carry the phrase on emission, the raw id internally).
+	frames map[string]uint64
+	// nudges holds the send-mark per nudge id: the frame stamp at send
+	// and the session_index message_count snapshot at send.
+	nudges map[string]boardNudgeMark
+	// cursors holds the previous observation per assignee ref.
+	cursors map[string]boardLiveCursor
+}
+
+// boardNudgeMark anchors one sentinel's ordinal position.
+type boardNudgeMark struct {
+	frameStamp uint64
+	dbCount    int64 // message_count at send; -1 = the row was unreadable
+}
+
+// boardLiveCursor is the same-source delta baseline for one ref.
+type boardLiveCursor struct {
+	frameStamp uint64
+	dbCount    int64 // message_count at the previous observation; -1 absent
+}
+
+func newBoardLivenessHub(pool *pgxpool.Pool) *boardLivenessHub {
+	return &boardLivenessHub{
+		pool:    pool,
+		frames:  map[string]uint64{},
+		nudges:  map[string]boardNudgeMark{},
+		cursors: map[string]boardLiveCursor{},
+	}
+}
+
+// ObserveFrame is the usagestream OnFrame observer: one stamp per
+// applied frame, under both identity keys the frame carries. Cheap by
+// contract (a map write under one mutex); it must never block or panic
+// the fold goroutine.
+func (h *boardLivenessHub) ObserveFrame(_ string, evt *abiv1.Event) {
+	if evt == nil {
+		return
+	}
+	h.mu.Lock()
+	h.counter++
+	stamp := h.counter
+	for _, key := range [...]string{evt.GetInternalSessionId(), evt.GetSessionId()} {
+		if key != "" {
+			h.frames[key] = stamp
+		}
+	}
+	h.mu.Unlock()
+}
+
+// frameStampLocked-ish helpers keep the observe path under one lock
+// hold (see ObserveAssignees).
+
+// markNudge records a sentinel's send-mark: the current frame stamp and
+// the assignee's session_index message_count snapshot. Called BEFORE
+// delivery — a mark that precedes its sentinel can only err false-alive.
+func (h *boardLivenessHub) markNudge(ctx context.Context, nudgeID, ref string) {
+	h.mu.Lock()
+	h.counter++
+	mark := boardNudgeMark{frameStamp: h.counter, dbCount: -1}
+	h.mu.Unlock()
+	if h.pool != nil {
+		var count int64
+		err := h.pool.QueryRow(ctx,
+			`SELECT message_count FROM session_index WHERE session_id=$1`, ref).Scan(&count)
+		if err == nil {
+			mark.dbCount = count
+		} else if !errors.Is(err, pgx.ErrNoRows) {
+			// The unreadable snapshot still anchors the frame leg; the
+			// DB leg of the ordinal answer sits this episode out.
+			slog.WarnContext(ctx, "board: lease nudge could not snapshot message_count (frame leg only)",
+				"session", ref, "err", err.Error())
+		}
+	}
+	h.mu.Lock()
+	h.nudges[nudgeID] = mark
+	h.mu.Unlock()
+}
+
+// sessionIndexRow is one resolved assignee's durable evidence.
+type sessionIndexRow struct {
+	ref          string // the engine's ref (as passed)
+	nudgeID      string // the engine's live nudge anchor ("" = skip)
+	rawID        string // session_index.session_id
+	phrase       string // session_index.short_id ("" when unset)
+	messageCount int64
+	deleted      bool
+	present      bool
+}
+
+// resolveRefs batch-resolves the sweep's refs against session_index.
+// RAW refs (the spawner's ses_-form mint) resolve by session_id — a
+// session id is a globally unique platform key (the boardTurnEvidence
+// assumption); PHRASE-form refs resolve by short_id, where a
+// cross-workspace phrase collision merges at most two sessions'
+// evidence (bounded: the answer feeds a boolean; the wrong direction is
+// a wasted nudge, never a wrong reclaim of a provably-moving worker).
+func (h *boardLivenessHub) resolveRefs(ctx context.Context, refs []board.AssigneeRef) ([]sessionIndexRow, error) {
+	if h == nil || h.pool == nil {
+		return nil, errors.New("board: liveness hub has no pool")
+	}
+	var raw, phrases []string
+	for _, r := range refs {
+		if shortid.IsShortIDForm(r.SessionID) {
+			phrases = append(phrases, shortid.Normalize(r.SessionID))
+		} else {
+			raw = append(raw, r.SessionID)
+		}
+	}
+	byRaw := map[string]sessionIndexRow{}
+	byPhrase := map[string]sessionIndexRow{}
+	scan := func(rows pgx.Rows, refKey func(sessionIndexRow) string, into map[string]sessionIndexRow) error {
+		defer rows.Close()
+		for rows.Next() {
+			var r sessionIndexRow
+			var deleted *time.Time
+			if err := rows.Scan(&r.rawID, &r.phrase, &r.messageCount, &deleted); err != nil {
+				return err
+			}
+			r.present = true
+			r.deleted = deleted != nil
+			into[refKey(r)] = r
+		}
+		return rows.Err()
+	}
+	if len(raw) > 0 {
+		rows, err := h.pool.Query(ctx,
+			`SELECT session_id, coalesce(short_id,''), message_count, deleted_at
+			 FROM session_index WHERE session_id = ANY($1)`, raw)
+		if err != nil {
+			return nil, err
+		}
+		if err := scan(rows, func(r sessionIndexRow) string { return r.rawID }, byRaw); err != nil {
+			return nil, err
+		}
+	}
+	if len(phrases) > 0 {
+		rows, err := h.pool.Query(ctx,
+			`SELECT session_id, coalesce(short_id,''), message_count, deleted_at
+			 FROM session_index WHERE lower(short_id) = ANY($1)`, phrases)
+		if err != nil {
+			return nil, err
+		}
+		if err := scan(rows, func(r sessionIndexRow) string { return r.phrase }, byPhrase); err != nil {
+			return nil, err
+		}
+	}
+	out := make([]sessionIndexRow, 0, len(refs))
+	for _, ref := range refs {
+		row, ok := byRaw[ref.SessionID]
+		if !ok && shortid.IsShortIDForm(ref.SessionID) {
+			row, ok = byPhrase[shortid.Normalize(ref.SessionID)]
+		}
+		if !ok {
+			out = append(out, sessionIndexRow{ref: ref.SessionID, nudgeID: ref.NudgeID})
+			continue
+		}
+		row.ref = ref.SessionID
+		row.nudgeID = ref.NudgeID
+		out = append(out, row)
+	}
+	return out, nil
+}
+
+// ObserveAssignees implements board.AssigneeLivenessSource: one batched
+// session_index read + the in-process frame index, composed into the
+// three facts per ref. Failure of the DB leg answers EVERY ref
+// no-evidence (never death) and logs loud — the per-sweep degradation
+// is exactly the Nil contract, and the next sweep retries one cheap
+// query (no circuit-breaker state to strand).
+func (h *boardLivenessHub) ObserveAssignees(sess board.SessionObservations) board.SessionObservationResults {
+	ctx, cancel := context.WithTimeout(context.Background(), boardObserveBudget)
+	defer cancel()
+
+	out := make(board.SessionObservationResults, len(sess.Refs))
+	if len(sess.Refs) == 0 {
+		return out
+	}
+	rows, err := h.resolveRefs(ctx, sess.Refs)
+	if err != nil {
+		slog.WarnContext(ctx, "board: assignee liveness degraded this sweep (no-evidence; wall-clock semantics)",
+			"refs", len(sess.Refs), "err", err.Error())
+		for _, ref := range sess.Refs {
+			out[ref.SessionID] = board.AssigneeObservation{Observed: false}
+		}
+		return out
+	}
+
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	for _, row := range rows {
+		ref := row.ref
+		if !row.present {
+			// Unindexed: no-evidence (the index lags; absence is not
+			// death). The cursor stays untouched — a later indexing
+			// starts a clean baseline.
+			out[ref] = board.AssigneeObservation{Observed: false}
+			continue
+		}
+		obs := board.AssigneeObservation{Observed: true, Exists: !row.deleted}
+
+		// The frame stamp: whichever identity key moved latest.
+		stamp := h.frames[row.rawID]
+		if p := h.frames[row.phrase]; p > stamp {
+			stamp = p
+		}
+		cur := h.cursors[ref]
+		if _, hadCursor := h.cursors[ref]; !hadCursor {
+			// First observation of this ref: the DB leg establishes its
+			// baseline NOW (a message_count days old is not this
+			// episode's movement — it asserts itself from the next
+			// sweep on), while the frame leg deliberately baselines at
+			// zero: any stamp this process ever saw for the session is
+			// post-spawn activity, and one possibly-gratuitous renewal
+			// for a long-quiet session is the safe direction (the busy
+			// worker — the live incident — renews on first sight
+			// instead of eating a nudge; a corpse loses one window to
+			// detection, never the reverse).
+			cur.dbCount = row.messageCount
+		}
+		if !row.deleted &&
+			(stamp > cur.frameStamp || row.messageCount > cur.dbCount) {
+			obs.MovedSinceLastSweep = true
+		}
+		// The ordinal wedge arm: only the engine knows the live nudge
+		// id; answer positionally when we hold its send-mark.
+		if row.nudgeID != "" {
+			if mark, ok := h.nudges[row.nudgeID]; ok {
+				after := stamp > mark.frameStamp
+				if !after && mark.dbCount >= 0 && row.messageCount > mark.dbCount {
+					after = true // the DB leg: something landed after the send
+				}
+				obs.EventsAfterNudge = after
+			}
+		}
+		h.cursors[ref] = boardLiveCursor{frameStamp: stamp, dbCount: row.messageCount}
+		out[ref] = obs
+	}
+	return out
+}
+
+// leaseNudgeSentinel is the additive agentmessage-v1 payload the
+// sentinel carries (the grammar's unknown-key forward-compatibility
+// makes this a legal v1 extension; parsers that don't know the keys
+// read the message as plain text — exactly the prose fallback the
+// design wants for grammar-ignorant workers).
+type leaseNudgeSentinel struct {
+	Mode    string `json:"mode"`
+	TaskID  string `json:"taskId"`
+	NudgeID string `json:"nudgeId"`
+	Expects string `json:"expects"`
+}
+
+// leaseNudgeText composes the sentinel message: the v1 marker line
+// carrying the ordinal anchor, then the surgical prose (owner ruling:
+// nudge the thread — advance or declare failed; NEVER a restart).
+func leaseNudgeText(shortID string, p board.NudgePayload) string {
+	payload, _ := json.Marshal(leaseNudgeSentinel{
+		Mode:    "lease-nudge",
+		TaskID:  shortID,
+		NudgeID: p.NudgeID,
+		Expects: "advance|fail",
+	})
+	var b strings.Builder
+	b.WriteString("<!-- lsp:agent-message-v1 ")
+	b.Write(payload)
+	b.WriteString(" -->\n")
+	fmt.Fprintf(&b, "BOARD LEASE NUDGE: your claim on task %s has gone quiet. Do NOT restart. "+
+		"Assess your current state: either move the task to its next stage (board_move_stage with your "+
+		"claim token), or declare it failed with a reason if you cannot complete it. Any activity you "+
+		"produce in response — including a plain reply — renews the lease.", shortID)
+	return b.String()
+}
+
+// newBoardNudger builds the production NudgeSender: resolve the task's
+// scope, mark the sentinel's ordinal anchor (BEFORE delivery — a mark
+// racing its sentinel can only err false-alive), and deliver over the
+// V1 route with the bounce seam's fast-fail window so a DEAD session's
+// 4xx returns synchronously (the engine falls to the wall-clock arm
+// this sweep instead of waiting out a nudge no one will ever see).
+func newBoardNudger(scope boardScopeResolver, sender boardV1Sender, hub *boardLivenessHub) board.NudgeSender {
+	return func(ctx context.Context, sessionID string, p board.NudgePayload) error {
+		userID, workspaceID, err := scope(ctx, p.TaskID)
+		if err != nil {
+			return fmt.Errorf("board: lease nudge scope: %w", err)
+		}
+		hub.markNudge(ctx, p.NudgeID, sessionID)
+		return deliverBoardTextV1(ctx, sender, "lease nudge", userID, workspaceID, sessionID,
+			leaseNudgeText(p.TaskShortID, p), boardV1FastFail)
+	}
+}
