@@ -46,6 +46,15 @@ ALTER TABLE public.tasks ADD CONSTRAINT tasks_pending_input_set
 
 ALTER TABLE public.tasks ADD COLUMN nudge_id text;
 ALTER TABLE public.tasks ADD COLUMN nudged_at timestamptz;
+-- The nudge-RESPONSE channel (item 6 amendment): board_heartbeat survives
+-- as the concrete reply to a lease-nudge, so the row records the latest
+-- heartbeat ARRIVAL (server clock — never the client-declared stamp). The
+-- wedge predicate reads it ordinally: a heartbeat whose arrival is later
+-- than nudged_at is a post-nudge response — the strong ALIVE signal OR'd
+-- in at every rung, and the ONLY wedge detector when no liveness source
+-- can answer. An arrival BEFORE the nudge is the dead periodic
+-- discipline and saves nothing.
+ALTER TABLE public.tasks ADD COLUMN last_heartbeat_at timestamptz;
 
 UPDATE public.tasks SET stage='failed'
     WHERE stage='pending_input' AND pending_origin='escalated';

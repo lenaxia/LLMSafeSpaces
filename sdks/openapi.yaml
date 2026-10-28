@@ -5529,8 +5529,9 @@ paths:
         carries post-subscribe commits (§4.6 persist-then-publish);
         this read is the HISTORY seam. Owner perimeter identical to
         GET /me/tasks/{id} (foreign rows are plain 404s). `?limit=N`
-        keeps the newest N rows (default 200, max 500; heartbeats write
-        a row per call, so the window bounds long-lived claims).
+        keeps the newest N rows (default 200, max 500; nudge-response
+        heartbeats write a row per call, so the window bounds long-lived
+        claims).
       operationId: getBoardTaskEvents
       parameters:
         - $ref: "#/components/parameters/BoardTaskId"
