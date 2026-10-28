@@ -203,10 +203,7 @@ var stageVocabulary = []string{StageBacklog, StageInProgress, StageInReview, Sta
 // wireStageVocabulary is the acceptance set: the storable stages plus
 // the pending_input flag-op alias (000050 — surfaces send the literal;
 // the engine maps it to flag semantics and never persists it).
-var wireStageVocabulary = append([]string{}, stageVocabulary...)
-var _ = wireStageVocabulary // populated below; kept separate for clarity
-
-func init() { wireStageVocabulary = append(wireStageVocabulary, StagePendingInput) }
+var wireStageVocabulary = append(append([]string{}, stageVocabulary...), StagePendingInput)
 
 // StageVocabulary renders the five storable stages (joined) for
 // caller-facing validation errors.

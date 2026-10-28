@@ -1131,7 +1131,7 @@ paths:
                     `/workspace/uploads/<uuid>-` are rejected with 400.
                   items:
                     type: string
-                    pattern: "^/workspace/uploads/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}-"
+                    pattern: '^/workspace/uploads/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}-'
                 clientMessageID:
                   type: string
                   description: Caller-chosen idempotency key; a retry with the same value re-dispatches the originally accepted text exactly once
@@ -1383,7 +1383,7 @@ paths:
                     are rejected with 400.
                   items:
                     type: string
-                    pattern: "^/workspace/uploads/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}-"
+                    pattern: '^/workspace/uploads/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}-'
                 clientMessageID:
                   type: string
                   description: Caller-chosen idempotency key; a retry with the same value returns the originally accepted entry
@@ -1718,7 +1718,7 @@ paths:
           required: true
           schema:
             type: string
-            pattern: "^[a-zA-Z0-9._-]{1,128}$"
+            pattern: '^[a-zA-Z0-9._-]{1,128}$'
       requestBody:
         required: true
         content:
@@ -1760,7 +1760,7 @@ paths:
           required: true
           schema:
             type: string
-            pattern: "^[a-zA-Z0-9._-]{1,128}$"
+            pattern: '^[a-zA-Z0-9._-]{1,128}$'
       responses:
         "200":
           description: Rejection accepted
@@ -1820,7 +1820,7 @@ paths:
           required: true
           schema:
             type: string
-            pattern: "^[a-zA-Z0-9._-]{1,128}$"
+            pattern: '^[a-zA-Z0-9._-]{1,128}$'
       requestBody:
         required: true
         content:
@@ -1886,7 +1886,7 @@ paths:
           description: The live ask reject failed — the record stays pending
         "503":
           description: Harness pending set unknown — dismiss fails closed; retry.
-    # --- Terminal ---
+   # --- Terminal ---
   /workspaces/{id}/terminal/ticket:
     post:
       tags: [workspaces]
@@ -8211,7 +8211,7 @@ paths:
           required: true
           schema:
             type: string
-            pattern: "^s-[0-9a-f]{16}$"
+            pattern: '^s-[0-9a-f]{16}$'
       responses:
         "200":
           description: Resolution
@@ -9380,15 +9380,7 @@ paths:
             application/json:
               schema:
                 type: object
-                required:
-                  [
-                    deployed,
-                    routerDeployed,
-                    crdInstalled,
-                    awsConfigured,
-                    ociConfigured,
-                    gcpConfigured,
-                  ]
+                required: [deployed, routerDeployed, crdInstalled, awsConfigured, ociConfigured, gcpConfigured]
                 properties:
                   deployed:
                     type: boolean
@@ -9775,7 +9767,7 @@ components:
       name: stage
       in: query
       required: false
-      description: "Stage filter (stored stages + failed, 000050); the pending_input literal filters the awaiting-input FLAG across real stages"
+      description: Stage filter (stored stages + failed, 000050); the pending_input literal filters the awaiting-input FLAG across real stages
       schema:
         type: string
         enum: [backlog, in_progress, in_review, done, failed, pending_input]
@@ -9916,19 +9908,7 @@ components:
                 properties:
                   code:
                     type: string
-                    enum:
-                      [
-                        stage_transition,
-                        done_guard,
-                        claim_token,
-                        manager_surface_only,
-                        epic_state,
-                        project_state,
-                        dependency,
-                        self,
-                        cycle,
-                        cross_project,
-                      ]
+                    enum: [stage_transition, done_guard, claim_token, manager_surface_only, epic_state, project_state, dependency, self, cycle, cross_project]
                   suggestions:
                     type: array
                     items:
@@ -10040,8 +10020,7 @@ components:
           type: string
     AuthConfig:
       type: object
-      required:
-        [registrationEnabled, oidcEnabled, passkeyEnabled, instanceName, motd]
+      required: [registrationEnabled, oidcEnabled, passkeyEnabled, instanceName, motd]
       properties:
         registrationEnabled:
           type: boolean
@@ -10170,18 +10149,7 @@ components:
           type: string
         phase:
           type: string
-          enum:
-            [
-              Pending,
-              Creating,
-              Active,
-              Suspending,
-              Suspended,
-              Resuming,
-              Terminating,
-              Terminated,
-              Failed,
-            ]
+          enum: [Pending, Creating, Active, Suspending, Suspended, Resuming, Terminating, Terminated, Failed]
         pvcName:
           type: string
         labels:
@@ -10249,18 +10217,7 @@ components:
           type: string
         phase:
           type: string
-          enum:
-            [
-              Pending,
-              Creating,
-              Active,
-              Suspending,
-              Suspended,
-              Resuming,
-              Terminating,
-              Terminated,
-              Failed,
-            ]
+          enum: [Pending, Creating, Active, Suspending, Suspended, Resuming, Terminating, Terminated, Failed]
         imageTag:
           type: string
         agentVersion:
@@ -10468,16 +10425,7 @@ components:
           type: integer
         status:
           type: string
-          enum:
-            [
-              freed,
-              would_free,
-              not_present,
-              in_use,
-              refused,
-              error,
-              skipped_target_met,
-            ]
+          enum: [freed, would_free, not_present, in_use, refused, error, skipped_target_met]
         reason:
           type: string
     WorkspaceConditionResult:
@@ -10664,8 +10612,7 @@ components:
 
     SessionAlert:
       type: object
-      required:
-        [id, workspaceId, sessionId, alert, oldestBusySeconds, createdAt]
+      required: [id, workspaceId, sessionId, alert, oldestBusySeconds, createdAt]
       properties:
         id:
           type: string
@@ -10714,16 +10661,7 @@ components:
           type: string
         type:
           type: string
-          enum:
-            [
-              user,
-              assistant,
-              shell,
-              agent_switch,
-              model_switch,
-              compaction,
-              system,
-            ]
+          enum: [user, assistant, shell, agent_switch, model_switch, compaction, system]
         createdAt:
           type: string
           format: date-time
@@ -10851,19 +10789,9 @@ components:
       properties:
         type:
           type: string
-          enum:
-            [
-              session.status,
-              session.updated,
-              message.start,
-              message.end,
-              part.start,
-              part.delta,
-              part.end,
-              input.request,
-              input.resolved,
-              error,
-            ]
+          enum: [session.status, session.updated, message.start, message.end,
+                 part.start, part.delta, part.end, input.request,
+                 input.resolved, error]
         timestamp:
           type: string
           format: date-time
@@ -11079,7 +11007,7 @@ components:
           type: string
           minLength: 1
           maxLength: 255
-          pattern: "^[a-z0-9._-]+$"
+          pattern: '^[a-z0-9._-]+$'
           description: Lowercase alphanumeric, dots, underscores, hyphens only. Must not start with dot or hyphen.
         type:
           type: string
@@ -11517,7 +11445,7 @@ components:
           type: string
         slug:
           type: string
-          pattern: "^[a-z0-9]([a-z0-9-]{0,62}[a-z0-9])?$"
+          pattern: '^[a-z0-9]([a-z0-9-]{0,62}[a-z0-9])?$'
         apiKey:
           type: string
         baseURL:
@@ -11644,8 +11572,7 @@ components:
     # --- Workflows & triggers (Epic 64) ---
     Workflow:
       type: object
-      required:
-        [id, ownerType, name, slug, specYaml, status, createdAt, updatedAt]
+      required: [id, ownerType, name, slug, specYaml, status, createdAt, updatedAt]
       properties:
         id:
           type: string
@@ -11737,16 +11664,7 @@ components:
           type: object
     WorkflowRun:
       type: object
-      required:
-        [
-          id,
-          workflowId,
-          specSnapshot,
-          status,
-          workspaceId,
-          createdAt,
-          updatedAt,
-        ]
+      required: [id, workflowId, specSnapshot, status, workspaceId, createdAt, updatedAt]
       properties:
         id:
           type: string
@@ -11790,8 +11708,7 @@ components:
           format: date-time
     WorkflowNodeRun:
       type: object
-      required:
-        [id, workflowRunId, nodeId, nodeType, status, attempt, startedAt]
+      required: [id, workflowRunId, nodeId, nodeType, status, attempt, startedAt]
       properties:
         id:
           type: string
@@ -11830,20 +11747,7 @@ components:
           nullable: true
     Trigger:
       type: object
-      required:
-        [
-          id,
-          ownerType,
-          name,
-          enabled,
-          sourceType,
-          sourceConfig,
-          inputFrom,
-          consecutiveFailures,
-          autoDisableAfter,
-          createdAt,
-          updatedAt,
-        ]
+      required: [id, ownerType, name, enabled, sourceType, sourceConfig, inputFrom, consecutiveFailures, autoDisableAfter, createdAt, updatedAt]
       properties:
         id:
           type: string
@@ -11921,7 +11825,7 @@ components:
           format: date-time
     TriggerScript:
       type: object
-      description: 'Inline gate script (#1812): INLINE SOURCE, not a path pointer (that is the legacy scriptPath pre-script). Before each fire''s LLM call the handler runs in the routine''s target workspace (same sandbox as workflow script nodes) with the fire envelope as input; it must return {"proceed": <bool>, "vars": {<str>: <str>}}. proceed=false exits the fire with NO LLM call (the fire audit records status skipped with a {gate:{proceed,vars}} actionResult); proceed=true fires the prompt with each vars value substituted jinja-style ({{key}} — literal token replacement, unmatched tokens stay literal) and ALL vars appended as a trailing `[trigger script vars]` metadata block. Any script failure (runtime error, unparseable output, or a return not matching the schema — proceed must be a bool, vars values must be strings, keys must not start with ".") fails CLOSED: status failed, the named error in the fire audit, no LLM call. A script-bearing trigger with NO prompt never calls the LLM at all (gate + side effects only). Routine targets only — rejected (400) on workflow-mode triggers, whose DAGs carry their own script/condition nodes.'
+      description: "Inline gate script (#1812): INLINE SOURCE, not a path pointer (that is the legacy scriptPath pre-script). Before each fire's LLM call the handler runs in the routine's target workspace (same sandbox as workflow script nodes) with the fire envelope as input; it must return {\"proceed\": <bool>, \"vars\": {<str>: <str>}}. proceed=false exits the fire with NO LLM call (the fire audit records status skipped with a {gate:{proceed,vars}} actionResult); proceed=true fires the prompt with each vars value substituted jinja-style ({{key}} — literal token replacement, unmatched tokens stay literal) and ALL vars appended as a trailing `[trigger script vars]` metadata block. Any script failure (runtime error, unparseable output, or a return not matching the schema — proceed must be a bool, vars values must be strings, keys must not start with \".\") fails CLOSED: status failed, the named error in the fire audit, no LLM call. A script-bearing trigger with NO prompt never calls the LLM at all (gate + side effects only). Routine targets only — rejected (400) on workflow-mode triggers, whose DAGs carry their own script/condition nodes."
       required: [language, handler]
       properties:
         language:
@@ -11930,14 +11834,14 @@ components:
           description: "Runtime for the inline source — the two workflow script-node runtimes."
         handler:
           type: string
-          description: 'INLINE handler source defining handler(input) -> {"proceed": <bool>, "vars": {<str>: <str>}}. Receives the fire envelope ({source, received_at, headers?, body?}) as input. Not a path, not a command — the source itself (≤ 64 KiB).'
+          description: "INLINE handler source defining handler(input) -> {\"proceed\": <bool>, \"vars\": {<str>: <str>}}. Receives the fire envelope ({source, received_at, headers?, body?}) as input. Not a path, not a command — the source itself (≤ 64 KiB)."
       example:
         language: python
         handler: "def handler(input):\n    threshold = 5\n    open_items = 2  # e.g. read a state file in the workspace\n    if open_items >= threshold:\n        return {\"proceed\": True, \"vars\": {\"count\": str(open_items)}}\n    return {\"proceed\": False, \"vars\": {}}"
     TriggerCreateRequest:
       type: object
       required: [name, sourceType, sourceConfig]
-      description: 'Exactly one of workspaceId (routine mode) or workflowId (workflow mode) is required. memoryMode last_result requires captureMode full. Input mapping (`input`/`inputFrom` beyond `envelope`) requires workflowId; `inputFrom: body` requires a webhook source; `inputFrom: mapped` validates `input` against the workflow''s inputSchema; an envelope-mode wiring with no `input` against a schema whose required properties reach beyond the source''s envelope keys is rejected with a 400 naming the properties and the three remedies (set `input`, use `inputFrom: "body"`, or relax the schema).'
+      description: "Exactly one of workspaceId (routine mode) or workflowId (workflow mode) is required. memoryMode last_result requires captureMode full. Input mapping (`input`/`inputFrom` beyond `envelope`) requires workflowId; `inputFrom: body` requires a webhook source; `inputFrom: mapped` validates `input` against the workflow's inputSchema; an envelope-mode wiring with no `input` against a schema whose required properties reach beyond the source's envelope keys is rejected with a 400 naming the properties and the three remedies (set `input`, use `inputFrom: \"body\"`, or relax the schema)."
       properties:
         name:
           type: string
@@ -12079,16 +11983,7 @@ components:
           description: Execution outcome — the routine failure cause on error, or the captured agent output under captureMode full. Distinct from actionResult (the pre-execution action payload).
         status:
           type: string
-          enum:
-            [
-              fired,
-              delivered,
-              failed,
-              validation_error,
-              rate_limited,
-              skipped,
-              auto_disabled,
-            ]
+          enum: [fired, delivered, failed, validation_error, rate_limited, skipped, auto_disabled]
         firedAt:
           type: string
           format: date-time
@@ -12181,19 +12076,7 @@ components:
           type: string
     OrgSsoConfig:
       type: object
-      required:
-        [
-          orgId,
-          discoveryUrl,
-          clientId,
-          hasSecret,
-          claimedDomains,
-          verifiedDomains,
-          verificationToken,
-          autoProvision,
-          groupRoleMapping,
-          updatedAt,
-        ]
+      required: [orgId, discoveryUrl, clientId, hasSecret, claimedDomains, verifiedDomains, verificationToken, autoProvision, groupRoleMapping, updatedAt]
       properties:
         orgId:
           type: string
@@ -12349,19 +12232,7 @@ components:
       properties:
         key:
           type: string
-          enum:
-            [
-              allowed_models,
-              allowed_providers,
-              max_workspaces_per_member,
-              max_active_workspaces_per_member,
-              sys_prompt_org,
-              allow_user_prompt,
-              allow_user_mcp_servers,
-              max_mcp_servers_per_workspace,
-              default_runtime,
-              allowed_image_configs,
-            ]
+          enum: [allowed_models, allowed_providers, max_workspaces_per_member, max_active_workspaces_per_member, sys_prompt_org, allow_user_prompt, allow_user_mcp_servers, max_mcp_servers_per_workspace, default_runtime, allowed_image_configs]
         value:
           description: Raw JSON value; type depends on key
         updatedAt:
@@ -12479,7 +12350,7 @@ components:
       properties:
         hash:
           type: string
-          pattern: "^s-[0-9a-f]{16}$"
+          pattern: '^s-[0-9a-f]{16}$'
         selection:
           type: array
           items:
@@ -12493,18 +12364,7 @@ components:
             type: string
     ImageConfig:
       type: object
-      required:
-        [
-          id,
-          hash,
-          name,
-          selection,
-          resolvedValues,
-          baseName,
-          baseVersion,
-          scope,
-          status,
-        ]
+      required: [id, hash, name, selection, resolvedValues, baseName, baseVersion, scope, status]
       properties:
         id:
           type: string
@@ -12585,18 +12445,7 @@ components:
     # --- Admin ---
     OrgSummary:
       type: object
-      required:
-        [
-          id,
-          name,
-          slug,
-          createdBy,
-          createdAt,
-          updatedAt,
-          status,
-          memberCount,
-          workspaceCount,
-        ]
+      required: [id, name, slug, createdBy, createdAt, updatedAt, status, memberCount, workspaceCount]
       properties:
         id:
           type: string
@@ -12780,18 +12629,7 @@ components:
     # --- Org-core CRUD (#1088) ---
     Organization:
       type: object
-      required:
-        [
-          id,
-          name,
-          slug,
-          createdBy,
-          createdAt,
-          updatedAt,
-          status,
-          planId,
-          subscriptionStatus,
-        ]
+      required: [id, name, slug, createdBy, createdAt, updatedAt, status, planId, subscriptionStatus]
       properties:
         id:
           type: string
@@ -12892,17 +12730,7 @@ components:
     OrgWorkspaceMetadata:
       description: "Workspace metadata as returned by the org workspaces list (WorkspaceMetadata — note: no phase field, unlike WorkspaceListItem)."
       type: object
-      required:
-        [
-          id,
-          userId,
-          name,
-          runtime,
-          storageSize,
-          agentNeedsRefresh,
-          createdAt,
-          updatedAt,
-        ]
+      required: [id, userId, name, runtime, storageSize, agentNeedsRefresh, createdAt, updatedAt]
       properties:
         id:
           type: string
@@ -12945,14 +12773,7 @@ components:
         present. Rendered for the acting user's board-wide defaults
         and as the per-project effective row (user defaults overlaid
         with the project's overrides, merged at read time).
-      required:
-        [
-          reviewColumn,
-          autoAssignReviewer,
-          defaultWorkerSlots,
-          stagePersonas,
-          stagePersonasSet,
-        ]
+      required: [reviewColumn, autoAssignReviewer, defaultWorkerSlots, stagePersonas, stagePersonasSet]
       properties:
         reviewColumn:
           type: string
@@ -13089,19 +12910,7 @@ components:
           $ref: "#/components/schemas/BoardConfig"
     BoardProject:
       type: object
-      required:
-        [
-          id,
-          short_id,
-          user_id,
-          name,
-          worker_slots,
-          tags,
-          status,
-          paused,
-          created_at,
-          updated_at,
-        ]
+      required: [id, short_id, user_id, name, worker_slots, tags, status, paused, created_at, updated_at]
       properties:
         id:
           type: string
@@ -13160,21 +12969,7 @@ components:
             the submitted name stored differently (never silent).
     BoardEpic:
       type: object
-      required:
-        [
-          id,
-          project_id,
-          short_id,
-          title,
-          outcome,
-          status,
-          tags,
-          created_at,
-          updated_at,
-          progress_done,
-          progress_total,
-          progress_derived,
-        ]
+      required: [id, project_id, short_id, title, outcome, status, tags, created_at, updated_at, progress_done, progress_total, progress_derived]
       properties:
         id:
           type: string
@@ -13240,26 +13035,7 @@ components:
           type: boolean
     BoardTask:
       type: object
-      required:
-        [
-          id,
-          project_id,
-          epic_id,
-          short_id,
-          title,
-          description,
-          stage,
-          paused,
-          tags,
-          acceptance_criteria,
-          is_blocked,
-          attempts,
-          last_attempt_failed,
-          failure_count,
-          stage_entered_at,
-          created_at,
-          updated_at,
-        ]
+      required: [id, project_id, epic_id, short_id, title, description, stage, paused, tags, acceptance_criteria, is_blocked, attempts, last_attempt_failed, failure_count, stage_entered_at, created_at, updated_at]
       properties:
         id:
           type: string
@@ -13285,15 +13061,11 @@ components:
         stage:
           type: string
           enum: [backlog, in_progress, in_review, done, failed]
-          description: "000050: the stored stages — pending_input is a FLAG riding the real stage (pending_input + pending_origin on the row), never a stored stage; failed is the failure terminus (attempts exhaustion + the lease wedge verdict)."
-        pending_input:
-          type: boolean
-          description: "000050: the awaiting-input flag — true while the row waits on its owner (origin below); the row keeps its real stage."
         pending_origin:
           type: string
           nullable: true
           enum: [worker, escalated, dependency_abandoned, drift_review]
-          description: "000050: with pending_input=true, the awaiting-input flag's origin; alone on failed rows, the escalated marker the re-arm gates on (dependency_abandoned is historical — cancel is eliminated, #1747)"
+          description: Set entering pending_input, cleared on exit (dependency_abandoned is historical — cancel is eliminated, #1747)
         paused:
           type: boolean
           description: "#1747: the scheduling lever — claim candidacy off, forward writes refused while paused"
@@ -13319,8 +13091,8 @@ components:
         acceptance_criteria:
           type: array
           example:
-            - { text: tests green, met: true }
-            - { text: docs updated, met: false }
+            - {text: tests green, met: true}
+            - {text: docs updated, met: false}
           items:
             $ref: "#/components/schemas/BoardAcceptanceCriterion"
         is_blocked:
@@ -13545,15 +13317,7 @@ components:
             type: string
     BoardHealth:
       type: object
-      required:
-        [
-          active_leases,
-          task_cooldowns,
-          project_cooldowns,
-          pending_input_by_origin,
-          recent_reclaims,
-          project_slots,
-        ]
+      required: [active_leases, task_cooldowns, project_cooldowns, pending_input_by_origin, recent_reclaims, project_slots]
       properties:
         active_leases:
           type: array
@@ -13794,7 +13558,6 @@ components:
         toStage:
           type: string
           enum: [backlog, in_progress, in_review, done, pending_input, failed]
-          description: "000050: pending_input is the flag-op alias (SET awaiting-input — the row keeps its real stage; from a flagged row the exits clear it); failed is the failure terminus (worker self-fail / manager verdict); re-arm exits it."
         evidenceUrl:
           type: string
           description: The artifact link for THIS transition — required on → done (ruling R2)
@@ -14111,7 +13874,7 @@ components:
         toStage:
           type: string
           enum: [backlog, in_progress, in_review, done, pending_input, failed]
-          description: "The ONE target every item moves to (per-item from-stage legality stays server-arbitrated; 000050: pending_input = set the flag, failed = the failure terminus)"
+          description: The ONE target stage every item moves to (per-item from-stage legality stays server-arbitrated)
         evidenceUrl:
           type: string
           description: Artifact link applied to every item's transition (required when toStage is done)

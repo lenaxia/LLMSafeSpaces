@@ -531,7 +531,7 @@ func (s *Service) doneCascade(ctx context.Context, tx pgx.Tx, t *Task, evidenceU
 // route through here — a stage move off a flagged row resolves the
 // flag with the move).
 func (s *Service) updateStageTx(ctx context.Context, tx pgx.Tx, taskID, from, toStage, extra, evidenceURL string, actor Actor) (string, error) {
-	extra += `, pending_origin=NULL, pending_input=false, nudge_id=NULL, nudged_at=NULL`
+	extra += `, pending_origin=NULL, pending_input=false, nudge_id=NULL, nudged_at=NULL, last_heartbeat_at=NULL`
 	tag, err := tx.Exec(ctx, `
 		UPDATE tasks SET stage=$2, stage_entered_at=now(), `+extra+`
 		WHERE id=$1 AND stage=$3`, taskID, toStage, from)
@@ -629,7 +629,8 @@ func (s *Service) bounceTx(ctx context.Context, tx pgx.Tx, taskID, implementer s
 	tag, err := tx.Exec(ctx, `
 		UPDATE tasks SET stage='in_progress', stage_entered_at=now(),
 			claim_token=$2, lease_expires_at=now()+make_interval(secs=>$3::float8), last_progress_at=now(),
-			assignee_session=$4, claim_incremented_attempts=false, claim_persona=NULL, pending_origin=NULL
+			assignee_session=$4, claim_incremented_attempts=false, claim_persona=NULL, pending_origin=NULL,
+			nudge_id=NULL, nudged_at=NULL, last_heartbeat_at=NULL
 		WHERE id=$1 AND NOT paused`,
 		taskID, token, s.cfg.LeaseDuration.Seconds(), assignee)
 	if err != nil {
@@ -658,7 +659,7 @@ func (s *Service) exitPendingReclaim(ctx context.Context, tx pgx.Tx, actor Actor
 	// with the re-claim, and the transition row below records that move.
 	tag, err := tx.Exec(ctx, `
 		UPDATE tasks SET stage='in_progress', stage_entered_at=now(), pending_input=false, pending_origin=NULL,
-			nudge_id=NULL, nudged_at=NULL,
+			nudge_id=NULL, nudged_at=NULL, last_heartbeat_at=NULL,
 			claim_token=$2, lease_expires_at=now()+make_interval(secs=>$3::float8), last_progress_at=now(),
 			assignee_session=NULL, implementer_session=NULL, claim_incremented_attempts=false, claim_persona=NULL, attempts=0,
 			failure_count=0, last_attempt_failed=false, last_failure_at=NULL
@@ -827,6 +828,7 @@ func (s *Service) ReportThrottle(ctx context.Context, actor Actor, taskID, short
 				cooldown_until=now()+make_interval(secs=>$2::float8),
 				claim_token=NULL, lease_expires_at=NULL, assignee_session=NULL, implementer_session=NULL,
 				claim_incremented_attempts=false, claim_persona=NULL,
+				nudge_id=NULL, nudged_at=NULL, last_heartbeat_at=NULL,
 				attempts = attempts - CASE WHEN claim_incremented_attempts THEN 1 ELSE 0 END
 			WHERE id=$1 AND stage='in_progress' AND claim_token=$3`,
 			t.ID, retryAfter.Seconds(), actor.ClaimToken)

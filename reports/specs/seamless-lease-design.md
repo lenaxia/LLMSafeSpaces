@@ -65,18 +65,26 @@ type AssigneeLivenessSource interface {
     // ObserveAssignees reports, per session: movement since the last sweep
     // (delta), existence (dead-evidence when provably gone), and whether any
     // events follow the given nudge marker (ordinal query; "" = skip).
-    // Calls carry a ~2s timeout; failure = no-evidence, NEVER death.
-    // K consecutive timeouts circuit-break the source to Nil until recovery
-    // (loud gauge — silent fleet regression to heartbeat semantics must be visible).
+    // Calls carry the sweep's context + a ~2s budget; failure = no-evidence,
+    // NEVER death, and a degraded sweep must be VISIBLE (the production hub
+    // exports an expvar gauge — board_liveness_degraded).
     ObserveAssignees(ctx context.Context, sessions []AssigneeRef) map[string]Observation
 }
 
 type Observation struct {
     MovedSinceLastSweep bool          // renewal evidence
     Exists              bool          // false = dead-evidence → fast reclaim
-    EventsAfterNudge    bool          // ordinal; valid only when nudged
+    EventsAfterNudge    bool          // ordinal; valid only when NudgeMarkKnown
+    NudgeMarkKnown      bool          // THIS source holds the sentinel's mark —
+                                     // an unmeasured silence is NEVER a wedge
+                                     // verdict (the engine re-nudges instead)
 }
 ```
+
+The mark-known rule is the multi-replica safety arm: send-marks are
+process-local, so a replica that did not send the row's sentinel answers
+mark-UNKNOWN (never a false "nothing after it") and the engine re-nudges —
+a duplicate sentinel is benign under latest-only; a wrongful wedge is not.
 
 - Wake capability is a harness-level wiring fact (adapter + messenger present), NOT per-session:
   board assignees are spawner-minted top-level sessions by construction (subagents never hold
@@ -187,3 +195,31 @@ nudge-response channel — and the sentinel's ordinal wedge question gains its s
   direction stays server-authoritative.
 - Pins 9-11 (above) pin the channel: response ⇒ renewed; silence on both channels ⇒ wedge;
   periodic-only heartbeat ⇒ no extension.
+
+## Review round 2 amendments (2026-10-28, later still)
+
+The AI reviewer's CHANGES_REQUESTED round, folded in (worklog §9 carries the full record):
+
+- **Migration ordering is a populated-DB contract**: constraint swaps validate existing
+  rows at ADD time, so 000052 (both directions) runs drop-old → rehome → add-new. Pinned
+  on a throwaway database seeded with the pre-000052 world (escalated park, deliberate
+  park, plain backlog) — CI's empty-schema gates alone let the original order through.
+- **The episode slots are claim-lifecycle state**: nudge_id/nudged_at/last_heartbeat_at
+  reset at every mint, reclaim, throttle, wedge, and stage transition — a dead episode's
+  sentinel must never inherit into a fresh claim (pinned: the reclaim clears them; the
+  fresh claimant's periodic heartbeat stays advisory; a fresh quiet episode re-nudges,
+  never wedges).
+- **The send→stamp window is safe by Postgres clock semantics**: now() is the transaction
+  clock, so nudged_at stamps at the sweep transaction's START — strictly before every
+  delivery made inside it — and the response's arrival therefore stamps strictly after it
+  (pinned mechanically: a heartbeat fired mid-delivery lands as the response).
+- **Audit ids are sentinel-keyed** (episode-unique and deterministic): a count-keyed id
+  collides across episodes and ON CONFLICT DO NOTHING silently drops the audit row.
+- **The claim predicate is pinned on the worker path**: candidateSQL, the project
+  eligibility EXISTS arms, and TaskStart's guards exclude flagged rows (failed rows were
+  already invisible to the backlog-only candidate set).
+- **Nudge delivery is one bounded-concurrent batch per sweep** (the victims' row locks
+  are held until commit; sequential delivery would hold them N fast-fail windows during
+  the mass-quiet incident class this design answers).
+- **The hub evicts**: send-marks TTL out at 2h (windows are 45m); the frame/cursor maps
+  cap with oldest-quarter pruning; a degraded sweep increments a visible gauge.

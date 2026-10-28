@@ -125,6 +125,9 @@ func (s *BoardSuite) TestStillborn_WedgeVerdictOwnsCorpses() {
 	s.rc1Sweep(recon)
 	s.Equal(1, nudger.count(), "the sentinel was delivered")
 
+	// The harness MEASURED the sentinel's position (mark known) and
+	// nothing follows it — the machine-verdict input.
+	lives.set(assignee, board.AssigneeObservation{Observed: true, Exists: true, NudgeMarkKnown: true, EventsAfterNudge: false})
 	s.expireLease(task.ID)
 	s.rc1Sweep(recon)
 

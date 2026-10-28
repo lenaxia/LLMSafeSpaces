@@ -49,8 +49,10 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"expvar"
 	"fmt"
 	"log/slog"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -67,6 +69,25 @@ import (
 // hygiene: the reconciler sweeps on a cadence and stalling here stalls
 // reclaims globally).
 const boardObserveBudget = 2 * time.Second
+
+// boardLivenessDegraded counts ObserveAssignees calls that degraded to
+// no-evidence (the design's loud-gauge requirement: a fleet-wide
+// regression to wall-clock semantics must be VISIBLE — expvar, exported
+// on /debug/vars as board_liveness_degraded).
+var boardLivenessDegraded expvar.Int
+
+func init() { expvar.Publish("board_liveness_degraded", &boardLivenessDegraded) }
+
+// nudgeMarkTTL bounds how long a sentinel's send-mark stays answerable:
+// lease windows are 45m; a mark older than 2h can anchor no live episode
+// and is evictable state (the hub's maps are process-local and otherwise
+// unbounded).
+const nudgeMarkTTL = 2 * time.Hour
+
+// boardLivenessMaxEntries caps the frame/cursor maps (small entries, but
+// never-growing over process lifetime); over the cap the entries not
+// touched by the current sweep are pruned oldest-first.
+const boardLivenessMaxEntries = 8192
 
 // boardLivenessHub is the shared state of the two adapter halves: the
 // frame-activity index (fed by the usagestream observer), the nudge
@@ -93,7 +114,8 @@ type boardLivenessHub struct {
 // boardNudgeMark anchors one sentinel's ordinal position.
 type boardNudgeMark struct {
 	frameStamp uint64
-	dbCount    int64 // message_count at send; -1 = the row was unreadable
+	dbCount    int64     // message_count at send; -1 = the row was unreadable
+	markedAt   time.Time // eviction clock (nudgeMarkTTL)
 }
 
 // boardLiveCursor is the same-source delta baseline for one ref.
@@ -130,6 +152,55 @@ func (h *boardLivenessHub) ObserveFrame(_ string, evt *abiv1.Event) {
 	h.mu.Unlock()
 }
 
+// pruneLocked evicts expired nudge send-marks (nudgeMarkTTL) and, over
+// boardLivenessMaxEntries, prunes the oldest frame/cursor entries — the
+// hub's maps are process-local and otherwise unbounded (the review's
+// slow-leak finding). Caller holds h.mu.
+func (h *boardLivenessHub) pruneLocked() {
+	if len(h.nudges) > 0 {
+		for id, m := range h.nudges {
+			if time.Since(m.markedAt) > nudgeMarkTTL {
+				delete(h.nudges, id)
+			}
+		}
+	}
+	if len(h.frames) <= boardLivenessMaxEntries && len(h.cursors) <= boardLivenessMaxEntries {
+		return
+	}
+	// Over the cap: drop the quarter of each map with the smallest
+	// stamps (the least-recently-answered refs). A dropped frame stamp
+	// can only cost one gratuitous renewal (the safe direction); a
+	// dropped cursor re-baselines on the next observation.
+	type kv struct {
+		k string
+		v uint64
+	}
+	pruneUint := func(m map[string]uint64) {
+		if len(m) <= boardLivenessMaxEntries {
+			return
+		}
+		entries := make([]kv, 0, len(m))
+		for k, v := range m {
+			entries = append(entries, kv{k, v})
+		}
+		sort.Slice(entries, func(i, j int) bool { return entries[i].v < entries[j].v })
+		for _, e := range entries[:len(entries)/4] {
+			delete(m, e.k)
+		}
+	}
+	pruneUint(h.frames)
+	if len(h.cursors) > boardLivenessMaxEntries {
+		entries := make([]kv, 0, len(h.cursors))
+		for k, c := range h.cursors {
+			entries = append(entries, kv{k, c.frameStamp})
+		}
+		sort.Slice(entries, func(i, j int) bool { return entries[i].v < entries[j].v })
+		for _, e := range entries[:len(entries)/4] {
+			delete(h.cursors, e.k)
+		}
+	}
+}
+
 // frameStampLocked-ish helpers keep the observe path under one lock
 // hold (see ObserveAssignees).
 
@@ -139,7 +210,7 @@ func (h *boardLivenessHub) ObserveFrame(_ string, evt *abiv1.Event) {
 func (h *boardLivenessHub) markNudge(ctx context.Context, nudgeID, ref string) {
 	h.mu.Lock()
 	h.counter++
-	mark := boardNudgeMark{frameStamp: h.counter, dbCount: -1}
+	mark := boardNudgeMark{frameStamp: h.counter, dbCount: -1, markedAt: time.Now()}
 	h.mu.Unlock()
 	if h.pool != nil {
 		var count int64
@@ -250,9 +321,14 @@ func (h *boardLivenessHub) resolveRefs(ctx context.Context, refs []board.Assigne
 // no-evidence (never death) and logs loud — the per-sweep degradation
 // is exactly the Nil contract, and the next sweep retries one cheap
 // query (no circuit-breaker state to strand).
-func (h *boardLivenessHub) ObserveAssignees(sess board.SessionObservations) board.SessionObservationResults {
-	ctx, cancel := context.WithTimeout(context.Background(), boardObserveBudget)
+func (h *boardLivenessHub) ObserveAssignees(sweepCtx context.Context, sess board.SessionObservations) board.SessionObservationResults {
+	ctx, cancel := context.WithTimeout(sweepCtx, boardObserveBudget)
 	defer cancel()
+	// The degraded-sweep gauge (the design's "loud" requirement): an
+	// expvar counter, exported on /debug/vars — a silently dead source
+	// regresses the fleet to wall-clock semantics; this makes the
+	// regression observable.
+	boardLivenessDegraded.Add(0) // publish the var on first use
 
 	out := make(board.SessionObservationResults, len(sess.Refs))
 	if len(sess.Refs) == 0 {
@@ -260,8 +336,9 @@ func (h *boardLivenessHub) ObserveAssignees(sess board.SessionObservations) boar
 	}
 	rows, err := h.resolveRefs(ctx, sess.Refs)
 	if err != nil {
+		boardLivenessDegraded.Add(1)
 		slog.WarnContext(ctx, "board: assignee liveness degraded this sweep (no-evidence; wall-clock semantics)",
-			"refs", len(sess.Refs), "err", err.Error())
+			"refs", len(sess.Refs), "err", err.Error(), "degraded_total", boardLivenessDegraded.String())
 		for _, ref := range sess.Refs {
 			out[ref.SessionID] = board.AssigneeObservation{Observed: false}
 		}
@@ -270,6 +347,7 @@ func (h *boardLivenessHub) ObserveAssignees(sess board.SessionObservations) boar
 
 	h.mu.Lock()
 	defer h.mu.Unlock()
+	h.pruneLocked()
 	for _, row := range rows {
 		ref := row.ref
 		if !row.present {
@@ -305,9 +383,13 @@ func (h *boardLivenessHub) ObserveAssignees(sess board.SessionObservations) boar
 			obs.MovedSinceLastSweep = true
 		}
 		// The ordinal wedge arm: only the engine knows the live nudge
-		// id; answer positionally when we hold its send-mark.
+		// id; answer positionally when we hold its send-mark. NO mark
+		// (another replica sent the sentinel; a restart; an eviction)
+		// is NOT silence — NudgeMarkKnown stays false and the engine
+		// re-nudges instead of wedging on an unmeasured answer.
 		if row.nudgeID != "" {
 			if mark, ok := h.nudges[row.nudgeID]; ok {
+				obs.NudgeMarkKnown = true
 				after := stamp > mark.frameStamp
 				if !after && mark.dbCount >= 0 && row.messageCount > mark.dbCount {
 					after = true // the DB leg: something landed after the send

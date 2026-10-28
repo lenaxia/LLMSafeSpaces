@@ -81,10 +81,13 @@ late-bound via `ProxyHandler.SetFrameObserver`) and session_index message_count 
 Honesty mapping: deleted_at = dead-evidence; unindexed = NO-evidence (never death); a failed
 batched read degrades the sweep to no-evidence, loud.
 
-`NudgeSender` (in `board_liveness.go`): the agentmessage-v1 `lease-nudge` sentinel + the full
-contract prose (§2b: RESPOND first via board_heartbeat, then continue / advance / declare
-failed with a reason — never restart), delivered over the V1 route with the bounce seam's
-fast-fail window.
+`NudgeSender` (in `api/internal/app/board_liveness.go`): the agentmessage-v1 `lease-nudge`
+sentinel + the full contract prose (§2b: RESPOND first via board_heartbeat, then continue /
+advance / declare failed with a reason — never restart), delivered over the V1 route with the
+bounce seam's fast-fail window. Delivery runs as ONE bounded-concurrent batch per RC1 pass
+(8 lanes; each delivery carries the ~10s fast-fail window and the victims' FOR UPDATE locks
+are held until commit — sequential delivery would hold them N windows during exactly the
+mass-quiet incident class).
 
 ## 4. Lease default: 15m → 45m (the recorded rationale)
 
@@ -150,6 +153,64 @@ admits exactly the paired flag form plus the failed/escalated terminus.
 
 `pkg/board/{liveness.go,reconciler.go,engine.go,stage.go,board.go,rearm.go,reads.go,...}`,
 `api/migrations/000052_seamless_lease.*` + `helm/migrations/` mirror, the app wiring
-(`api/internal/app/{board_liveness.go,board_nudge.go,app.go,...}` + usagestream OnFrame),
+(`api/internal/app/{board_liveness.go,app.go,...}` + usagestream OnFrame),
 surfaces (api handlers, pkg/mcp, agentd mcp_server, frontend board family, sdks, openapi),
-this worklog + the spec, CHANGELOG.
+this worklog + the spec, CHANGELOG, and the populated-migration pin
+(`api/migrations/migration_000052_populated_test.go`).
+
+## 9. Review round 2 (the AI reviewer's CHANGES_REQUESTED, all findings addressed)
+
+- **000052 populated-DB orderings (findings 1+2)**: the constraint swaps now run
+  drop-old → rehome-UPDATEs → add-new in BOTH directions (a constraint swap validates
+  existing rows at ADD time; rehoming under the still-old vocabulary is what makes the
+  live production rows migratable). Pinned end-to-end on a throwaway database parked at
+  000051 with seeded escalated/deliberate-park/backlog rows
+  (`api/migrations/migration_000052_populated_test.go` — up shapes, down reversal); CI's
+  empty-schema idempotency/round-trip gates alone let the original defect through.
+- **Episode-slot inheritance (finding 3)**: nudge_id/nudged_at/last_heartbeat_at are
+  CLAIM-LIFECYCLE state — every mint (claimOnce, TaskStart, personaClaimSQL, bounce
+  re-entry, RC2 re-entry, exitPendingReclaim), every reclaim (RC1 wall-clock, both
+  persona lapse passes), throttle, the wedge verdict, and every stage transition
+  (updateStageTx) reset all three. Pinned (TestPin_LeaseLadder_ReclaimClearsEpisodeSlots):
+  a dead-evidence reclaim after a nudge clears the slots; the fresh claimant's periodic
+  heartbeat is advisory; a later quiet expiry at the no-evidence rung opens a FRESH
+  nudge episode — never a wedge inherited from the dead one.
+- **RC2 re-entry flag blindness (finding 4)**: both re-entry branches write
+  `pending_input=false` alongside `pending_origin=NULL` (a drift_review-parked row
+  previously violated the paired-form constraint and poison-pilled every sweep at RC2).
+- **Send→stamp race (finding 5)**: NOT lost — safe by Postgres clock semantics: now() is
+  the TRANSACTION clock, so nudged_at stamps at the sweep-tx START, which strictly
+  precedes every delivery made inside it; a heartbeat CAUSED by the nudge starts its own
+  transaction after the delivery, blocks on the sweep's FOR UPDATE, commits after it, and
+  the response arm's `nudge_id IS NOT NULL` predicate matches (or, racing the slot write,
+  its advisory arrival still stamps strictly later — the ordinal rescue). The comment at
+  the nudge apply arm now states this trace, and TestPin_LeaseLadder_HeartbeatInSendWindowIsNotLost
+  pins it mechanically: a heartbeat fired mid-delivery lands as the RESPONSE (Extended),
+  and the episode is over (slot cleared, no wedge on the next quiet sweep).
+- **Episode-unique audit ids (finding 6)**: the nudge and wedge events key on the
+  SENTINEL id (`reconciler:nudge:<task>:<nudgeId>`, `reconciler:wedge:<task>:<nudgeId>`)
+  — deterministic AND episode-unique (renewals never bump failure_count; the human re-arm
+  resets it; the old count-keyed ids collided across episodes and ON CONFLICT DO NOTHING
+  silently dropped the audit rows).
+- **Claim predicates (spec Part 2's pinned claim set)**: candidateSQL +
+  eligibleProjectsSQL (both EXISTS arms) + TaskStart's pre-check and under-lock re-check
+  exclude pending_input-flagged rows (`stage='failed'` was already invisible to the
+  backlog-only candidate set). Pinned: TestPin_ClaimPredicates_ExcludeFlaggedAndFailed
+  (the claim takes the healthy row; TaskStart refuses the flagged row with the guard
+  class).
+- **Multi-replica ordinal hazard (robustness)**: AssigneeObservation gains
+  NudgeMarkKnown — EventsAfterNudge is only a MEASUREMENT when the source holds the
+  sentinel's send-mark; a replica that never saw the sentinel (it didn't send it; a
+  restart; an eviction) answers mark-unknown and the engine RE-NUDGES (latest-only makes
+  the duplicate benign) — an unmeasured silence is never a wedge verdict.
+- **Robustness others**: the seam carries the sweep ctx (ObserveAssignees(ctx, ...)); the
+  hub's send-marks TTL-evict (2h — windows are 45m) and the frame/cursor maps cap at
+  8192 entries with oldest-quarter pruning over the cap; a degraded observation sweep
+  increments an expvar gauge (`board_liveness_degraded`, /debug/vars) — the spec's
+  "silent fleet regression to wall-clock semantics must be visible" made observable.
+- **Style**: board.go's wireStageVocabulary is one composite expression (dead store +
+  init-append gone); the e2e V1 fixture helper's latent -1 index fixed; openapi.yaml
+  re-based onto main's formatting (the ~300-line quote-style/flow-seq churn reverted;
+  only the semantic hunks remain — 55 diff lines).
+- **Worklog filename**: carries the `NNNN_YYYY-MM-DD_slug` date segment the renumber
+  bot's sentinel requires (repolint WorklogSentinelPattern).

@@ -8,16 +8,23 @@
 -- reaction.
 --
 -- Part 2 (flag-not-stage): pending_input stops being a stage. The row
--- keeps its REAL stage while a boolean flag + the existing
--- pending_origin column carry the input wait — no "return to original
--- stage" machinery (the row never moved). The attempts-exhaustion
--- class (pending_origin='escalated') lands in the NEW 'failed' stage
--- per the owner ruling ("exhausted retries should be failed status");
--- deliberate parks (worker/drift origins) keep a real stage, flagged.
--- Migration heuristic for in-place rows: escalated → failed; deliberate
--- parks → in_progress (parks happen during work; the prior stage was
--- never stored — this is the one-time cost the flag avoids forever
--- after).
+-- keeps its REAL stage while a boolean flag + the existing pending_origin
+-- column carry the input wait — no "return to original stage" machinery
+-- (the row never moved). The attempts-exhaustion class
+-- (pending_origin='escalated') lands in the NEW 'failed' stage per the
+-- owner ruling ("exhausted retries should be failed status"); deliberate
+-- parks (worker/drift origins) keep a real stage, flagged. Migration
+-- heuristic for in-place rows: escalated → failed; deliberate parks →
+-- in_progress (parks happen during work; the prior stage was never
+-- stored — this is the one-time cost the flag avoids forever after).
+--
+-- ORDERING (the populated-DB contract, review round 2): the old
+-- constraints are dropped FIRST and the rehome UPDATEs run BEFORE the
+-- new constraints are added — a constraint swap validates existing rows
+-- at ADD time, so rehoming under the still-old vocabulary is what makes
+-- a populated pre-000052 database migratable (the exact rows this
+-- migration exists to move). Fully idempotent: every DROP/ADD COLUMN is
+-- IF EXISTS/IF NOT EXISTS, every re-added constraint is pre-dropped.
 --
 -- The WIRE still accepts the 'pending_input' literal as the flag-op
 -- alias (surfaces keep compiling; the engine maps it to flag set/clear)
@@ -26,11 +33,22 @@
 BEGIN;
 
 ALTER TABLE public.tasks DROP CONSTRAINT IF EXISTS tasks_stage_check;
+ALTER TABLE public.tasks DROP CONSTRAINT IF EXISTS tasks_pending_origin_set;
+
+ALTER TABLE public.tasks ADD COLUMN IF NOT EXISTS pending_input boolean NOT NULL DEFAULT false;
+
+-- Rehome UNDER NO stage constraint: escalated rows take the failure
+-- terminus (origin='escalated' preserved as the re-arm's marker);
+-- deliberate parks take in_progress wearing the flag (origin
+-- preserved). Every other row already satisfies both target shapes.
+UPDATE public.tasks SET stage='failed'
+    WHERE stage='pending_input' AND pending_origin='escalated';
+UPDATE public.tasks SET pending_input=true, stage='in_progress'
+    WHERE stage='pending_input';
+
 ALTER TABLE public.tasks ADD CONSTRAINT tasks_stage_check
     CHECK ((stage = ANY (ARRAY['backlog'::text, 'in_progress'::text, 'in_review'::text, 'done'::text, 'failed'::text])));
 
-ALTER TABLE public.tasks DROP CONSTRAINT IF EXISTS tasks_pending_origin_set;
-ALTER TABLE public.tasks ADD COLUMN IF NOT EXISTS pending_input boolean NOT NULL DEFAULT false;
 -- The flag and its origin travel together for INPUT WAITS, with one
 -- deliberate exception: the attempts-exhaustion terminus carries
 -- pending_origin='escalated' on an UNflagged failed row — the marker
@@ -56,10 +74,5 @@ ALTER TABLE public.tasks ADD COLUMN IF NOT EXISTS nudged_at timestamptz;
 -- can answer. An arrival BEFORE the nudge is the dead periodic
 -- discipline and saves nothing.
 ALTER TABLE public.tasks ADD COLUMN IF NOT EXISTS last_heartbeat_at timestamptz;
-
-UPDATE public.tasks SET stage='failed'
-    WHERE stage='pending_input' AND pending_origin='escalated';
-UPDATE public.tasks SET pending_input=true, stage='in_progress'
-    WHERE stage='pending_input';
 
 COMMIT;

@@ -48,7 +48,7 @@ type fakeLiveness struct {
 	asked []board.AssigneeRef
 }
 
-func (f *fakeLiveness) ObserveAssignees(sess board.SessionObservations) board.SessionObservationResults {
+func (f *fakeLiveness) ObserveAssignees(_ context.Context, sess board.SessionObservations) board.SessionObservationResults {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	out := make(board.SessionObservationResults, len(sess.Refs))
@@ -337,7 +337,7 @@ func (s *BoardSuite) TestPin_Lease3_WedgeVerdictFailsAndRearms() {
 	// Next expiry: the ordinal answer is silence — even a thinking
 	// model emits a turn-start; nothing after a positioned sentinel is
 	// a machine verdict, not a guess.
-	lives.set(assignee, board.AssigneeObservation{Observed: true, Exists: true, EventsAfterNudge: false})
+	lives.set(assignee, board.AssigneeObservation{Observed: true, Exists: true, NudgeMarkKnown: true, EventsAfterNudge: false})
 	s.expireLease(task.ID)
 	s.rc1Sweep(recon)
 
@@ -663,7 +663,7 @@ func (s *BoardSuite) TestPin_Lease9_HeartbeatResponseRenewsEveryRung() {
 
 		// The observation reports NOTHING after the sentinel — but the
 		// worker answered on the heartbeat channel. Alive.
-		lives.set(assignee, board.AssigneeObservation{Observed: true, Exists: true, EventsAfterNudge: false})
+		lives.set(assignee, board.AssigneeObservation{Observed: true, Exists: true, NudgeMarkKnown: true, EventsAfterNudge: false})
 		res, err := s.svc.Heartbeat(context.Background(), s.agent("sess", c.ClaimToken), task.ID, "",
 			time.Now().UTC())
 		s.Require().NoError(err)
@@ -830,4 +830,160 @@ func (s *BoardSuite) TestPin_LeaseLadder_FlaggedRowsSuspendTheLadder() {
 	s.True(row.PendingInput)
 	s.Equal(0, nudger.count())
 	s.Equal(0, s.countEvents("reclaim"), "no second reclaim event (the flag predicates the scan)")
+}
+
+// TestPin_LeaseLadder_HeartbeatInSendWindowIsNotLost pins review round
+// 2's finding 5: a heartbeat fired in the send→stamp window (after the
+// sentinel is delivered, before nudged_at commits) is NOT lost — it
+// lands as the nudge RESPONSE. The mechanism is Postgres clock
+// semantics (now() is the TRANSACTION clock; nudged_at stamps at the
+// sweep-tx start which precedes every delivery made inside it), and
+// the row-lock ordering serializes the racing UPDATE after the sweep's
+// commit — where the response arm's nudge_id predicate matches. The
+// worker answered; the wedge clock dies in the same window.
+func (s *BoardSuite) TestPin_LeaseLadder_HeartbeatInSendWindowIsNotLost() {
+	ws := s.seedWorkspace()
+	p := s.seedProject(ws, 4)
+	e := s.seedEpic(p, board.EpicActive)
+	task := s.seedTask(e, "race-window", nil, false)
+
+	c := s.claimOrFail(ws)
+
+	type hbOutcome struct {
+		res board.HeartbeatResult
+		err error
+	}
+	done := make(chan hbOutcome, 1)
+	var sent int
+	var mu sync.Mutex
+	// The nudger fires the worker's response MID-DELIVERY: the sentinel
+	// is out, the row's nudge_id is still NULL (the apply loop has not
+	// run), and the heartbeat's UPDATE will block on the sweep's FOR
+	// UPDATE until the sweep commits — exactly the reviewer's window.
+	hbCtx := context.Background()
+	nudger := func(_ context.Context, _ string, _ board.NudgePayload) error {
+		mu.Lock()
+		sent++
+		mu.Unlock()
+		go func() {
+			res, err := s.svc.Heartbeat(hbCtx, s.agent("sess", c.ClaimToken), task.ID, "", time.Now().UTC())
+			done <- hbOutcome{res: res, err: err}
+		}()
+		return nil
+	}
+	lives := &fakeLiveness{}
+	lives.set(s.reloadTask(task.ID).AssigneeSession, liveQuiet())
+	recon := s.pinRecon(lives, nudger)
+
+	s.expireLease(task.ID)
+	s.rc1Sweep(recon)
+	s.Equal(1, sent)
+
+	var out hbOutcome
+	select {
+	case out = <-done:
+	case <-time.After(10 * time.Second):
+		s.T().Fatalf("the racing heartbeat never completed — the send-window response was dropped")
+	}
+	s.Require().NoError(out.err)
+	s.True(out.res.Extended, "a heartbeat racing the nudge's row write lands as the RESPONSE (nudge_id committed first by the lock ordering)")
+
+	// And the episode is over: cleared slot, live claim, no wedge on the
+	// next quiet sweep (a FRESH sentinel at most — never the stale one).
+	cleared, _ := s.nudgeState(task.ID)
+	s.Empty(cleared)
+	s.leaseFuture(task.ID)
+	s.Equal(board.StageInProgress, s.rawTask(task.ID).Stage)
+}
+
+// TestPin_LeaseLadder_ReclaimClearsEpisodeSlots pins review round 2's
+// finding 3: the nudge/heartbeat episode slots are CLAIM-LIFECYCLE
+// state — every reclaim/mint/throttle write resets them, so a prior
+// episode's sentinel can never inherit into a fresh claim (the stale
+// slot wrongly renewed the fresh claimant's periodic heartbeat, and a
+// later quiet expiry at the no-evidence rung wedge-failed a worker that
+// was never sent a sentinel).
+func (s *BoardSuite) TestPin_LeaseLadder_ReclaimClearsEpisodeSlots() {
+	ws := s.seedWorkspace()
+	p := s.seedProject(ws, 4)
+	e := s.seedEpic(p, board.EpicActive)
+	task := s.seedTask(e, "slot-inherit", nil, false)
+
+	s.claimOrFail(ws)
+	assignee := s.reloadTask(task.ID).AssigneeSession
+
+	// Episode 1: quiet → nudged.
+	lives := &fakeLiveness{}
+	lives.set(assignee, liveQuiet())
+	nudger := &fakeNudger{}
+	recon := s.pinRecon(lives, nudger.Send)
+	s.expireLease(task.ID)
+	s.rc1Sweep(recon)
+	s.Equal(1, nudger.count())
+	nid, _ := s.nudgeState(task.ID)
+	s.Require().NotEmpty(nid)
+
+	// The assignee dies: dead-evidence reclaims via the wall-clock arm.
+	lives.set(assignee, dead())
+	s.expireLease(task.ID)
+	s.rc1Sweep(recon)
+	s.reclaimOverlay(task.ID, 1)
+	var nidAfter, hbAfter *string
+	var nudgedAfter *time.Time
+	s.Require().NoError(s.pool.QueryRow(context.Background(),
+		`SELECT nudge_id::text, last_heartbeat_at::text, nudged_at FROM tasks WHERE id=$1`,
+		task.ID).Scan(&nidAfter, &hbAfter, &nudgedAfter))
+	s.Nil(nudgedAfter, "the reclaim clears the episode slots — nothing inherits")
+
+	// The fresh claimant: its first (periodic-habit) heartbeat must be
+	// ADVISORY — the dead episode's sentinel cannot renew it.
+	s.clearTaskBackoff(task.ID)
+	c2 := s.claimOrFail(ws)
+	s.Equal(task.ID, c2.TaskID)
+	res, err := s.svc.Heartbeat(context.Background(), s.agent("sess", c2.ClaimToken), task.ID, "", time.Now().UTC())
+	s.Require().NoError(err)
+	s.False(res.Extended, "the fresh claim inherits no live nudge — the stale slot is gone")
+
+	// And a quiet expiry at the no-evidence rung is a FRESH nudge for
+	// the fresh episode — never a wedge inherited from the old one.
+	freshRecon := s.pinRecon(board.NilLiveness{}, nudger.Send)
+	s.expireLease(task.ID)
+	s.rc1Sweep(freshRecon)
+	s.Equal(board.StageInProgress, s.rawTask(task.ID).Stage,
+		"a never-nudged fresh claimant is nudged at worst — never wedged on a dead episode's sentinel")
+	s.Equal(2, nudger.count(), "a fresh sentinel opened the fresh episode")
+}
+
+// TestPin_ClaimPredicates_ExcludeFlaggedAndFailed pins the spec Part 2
+// claim predicate: stage ∈ claimable AND !pending_input AND stage !=
+// failed — the worker claim path (candidateSQL/eligibleProjectsSQL) and
+// TaskStart skip a flagged row and never touch terminal rows; a missed
+// flag check would feed an owner-blocked row to a worker.
+func (s *BoardSuite) TestPin_ClaimPredicates_ExcludeFlaggedAndFailed() {
+	ws := s.seedWorkspace()
+	p := s.seedProject(ws, 4)
+	e := s.seedEpic(p, board.EpicActive)
+	flagged := s.seedTask(e, "flagged-backlog", nil, false)
+	healthy := s.seedTask(e, "healthy-backlog", nil, false)
+	terminal := s.seedTask(e, "failed-row", nil, false)
+
+	_, err := s.pool.Exec(context.Background(), `
+		UPDATE tasks SET pending_input=true, pending_origin='worker' WHERE id=$1`, flagged.ID)
+	s.Require().NoError(err)
+	_, err = s.pool.Exec(context.Background(), `
+		UPDATE tasks SET stage='failed', stage_entered_at=now() WHERE id=$1`, terminal.ID)
+	s.Require().NoError(err)
+
+	c, err := s.svc.ClaimNext(context.Background(), "worker-"+ws, ws)
+	s.Require().NoError(err)
+	s.Equal(healthy.ID, c.TaskID, "the claim takes the healthy row — flagged and failed are invisible")
+
+	// TaskStart refuses the flagged row outright (the guard class, not a
+	// silent skip): the input wait suspends the claim lifecycle.
+	_, err = s.svc.TaskStart(context.Background(), s.owner(), flagged.ID, "", "")
+	s.Require().Error(err)
+	var guard *board.GuardError
+	s.Require().ErrorAs(err, &guard)
+	s.Equal(board.GuardStage, guard.Code)
+	s.Contains(guard.Detail, "pending_input")
 }

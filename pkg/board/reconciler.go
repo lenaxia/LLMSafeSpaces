@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -38,6 +39,12 @@ import (
 // (§4.7): it keys on rows and tokens, never on owner identity.
 
 const sweepScope = "default"
+
+// boardNudgeDeliveryConcurrency bounds the concurrent sentinel-delivery
+// batch inside one RC1 pass (each delivery carries a ~10s fast-fail
+// window; the victims' row locks are held until commit — the batch
+// collapses an N-victim stall to ~one window).
+const boardNudgeDeliveryConcurrency = 8
 
 // Failpoint names (the kill-test fault seams).
 const (
@@ -302,7 +309,7 @@ func (s *Service) rc1Reclaims(ctx context.Context) (int, error) {
 			refs = append(refs, AssigneeRef{SessionID: v.assignee, NudgeID: v.nudgeID})
 		}
 	}
-	observations := lives.ObserveAssignees(SessionObservations{Refs: refs})
+	observations := lives.ObserveAssignees(ctx, SessionObservations{Refs: refs})
 	type ladderDecision uint8
 	const (
 		ladderReclaim ladderDecision = iota // wall-clock fallback (today's path)
@@ -313,6 +320,17 @@ func (s *Service) rc1Reclaims(ctx context.Context) (int, error) {
 	decisions := make(map[string]ladderDecision, len(victims))
 	wedgeEvidence := make(map[string]string, len(victims))
 	nudgeIDs := make(map[string]string, len(victims))
+	type outboundNudge struct {
+		v  victim
+		id string
+	}
+	var outbound []outboundNudge
+	send := func(v victim) string {
+		id := uuidNew()
+		outbound = append(outbound, outboundNudge{v: v, id: id})
+		decisions[v.id] = ladderNudge
+		return id
+	}
 	for _, v := range victims {
 		decisions[v.id] = ladderReclaim
 		if v.assignee == "" {
@@ -342,14 +360,7 @@ func (s *Service) rc1Reclaims(ctx context.Context) (int, error) {
 				continue // no way to ask: the honest wall-clock path (pin 6)
 			}
 			if v.nudgeID == "" {
-				id := uuidNew()
-				if err := s.nudger(ctx, v.assignee, NudgePayload{
-					NudgeID: id, TaskID: v.id, TaskShortID: v.shortID,
-				}); err != nil {
-					continue // delivery failed: undecidable this sweep — wall-clock path
-				}
-				nudgeIDs[v.id] = id
-				decisions[v.id] = ladderNudge
+				send(v)
 				continue
 			}
 			decisions[v.id] = ladderWedge
@@ -365,19 +376,56 @@ func (s *Service) rc1Reclaims(ctx context.Context) (int, error) {
 			// observed-quiet but no nudge seam: fall back (the nudge
 			// ladder is inert without a sender)
 		case v.nudgeID == "":
-			id := uuidNew()
-			if err := s.nudger(ctx, v.assignee, NudgePayload{
-				NudgeID: id, TaskID: v.id, TaskShortID: v.shortID,
-			}); err != nil {
-				continue // delivery failed: undecidable this sweep — wall-clock path
-			}
-			nudgeIDs[v.id] = id
-			decisions[v.id] = ladderNudge
+			send(v)
+		case !o.NudgeMarkKnown:
+			// The sentinel is positioned but THIS source never saw it
+			// (another replica sent it; a restart evicted the mark) —
+			// the ordinal question is unanswerable, and an unmeasured
+			// silence is NEVER a wedge verdict. Re-nudge: the fresh
+			// sentinel re-anchors the ordinal question at a mark THIS
+			// source holds (latest-only makes the duplicate benign).
+			send(v)
 		case !o.EventsAfterNudge:
 			decisions[v.id] = ladderWedge // sentinel positioned, zero events after it
 			wedgeEvidence[v.id] = "no session events after the sentinel"
 		default:
 			decisions[v.id] = ladderRenew // reaction arrived between the arms
+		}
+	}
+
+	// Deliver the batch CONCURRENTLY (bounded): each delivery carries
+	// the bounce seam's fast-fail window (~10s) and the victims' FOR
+	// UPDATE locks are held until this transaction commits — sequential
+	// delivery would hold the locks N windows during exactly the
+	// mass-quiet incident class this ladder answers. The batch runs
+	// while the locks are held but collapses the stall to one window;
+	// the post-commit-delivery alternative was considered and rejected
+	// (it writes nudge state for a sentinel whose delivery outcome is
+	// unknown — the phantom-nudge contract violation; worklog §6).
+	if len(outbound) > 0 {
+		results := make([]error, len(outbound))
+		var wg sync.WaitGroup
+		sem := make(chan struct{}, boardNudgeDeliveryConcurrency)
+		for i, pn := range outbound {
+			wg.Add(1)
+			go func(i int, assignee string, p NudgePayload) {
+				defer wg.Done()
+				sem <- struct{}{}
+				defer func() { <-sem }()
+				results[i] = s.nudger(ctx, assignee, p)
+			}(i, pn.v.assignee, NudgePayload{NudgeID: pn.id, TaskID: pn.v.id, TaskShortID: pn.v.shortID})
+		}
+		wg.Wait()
+		for i, pn := range outbound {
+			if results[i] == nil {
+				nudgeIDs[pn.v.id] = pn.id
+			} else {
+				// Delivery could not be attempted (bounce/transport):
+				// undecidable this sweep — the honest wall-clock path,
+				// never a phantom nudge state claiming a sentinel that
+				// never landed.
+				decisions[pn.v.id] = ladderReclaim
+			}
 		}
 	}
 
@@ -402,6 +450,23 @@ func (s *Service) rc1Reclaims(ctx context.Context) (int, error) {
 			// The sentinel is OUT (delivered above); record it and
 			// extend one window so the NEXT expiry is a clean
 			// measurement point for the ordinal question.
+			//
+			// The send→stamp race is safe BY POSTGRES CLOCK SEMANTICS,
+			// not by luck (review round 2, finding 5): now() is
+			// TRANSACTION_timestamp — this UPDATE stamps nudged_at at
+			// THIS sweep transaction's START, which strictly precedes
+			// the delivery calls made inside it. A heartbeat whose
+			// call was CAUSED by the nudge therefore starts its own
+			// transaction after the delivery, so its last_heartbeat_at
+			// (its statement's txn clock) is strictly AFTER nudged_at
+			// even when the row write races: the blocked UPDATE waits
+			// on this transaction's FOR UPDATE lock, commits after it,
+			// and the next sweep's hbAfterNudge comparison reads
+			// response-wins. A heartbeat that PREDATES the sweep's
+			// start predates the delivery too (it cannot be a
+			// response) and stamps earlier. Both directions ordinal,
+			// one clock domain, no wall-clock comparison. Pinned:
+			// TestPin_LeaseLadder_HeartbeatInSendWindowIsNotLost.
 			if _, err := tx.Exec(ctx, `
 				UPDATE tasks SET nudge_id=$2, nudged_at=now(),
 					lease_expires_at=now()+make_interval(secs=>$3::float8), updated_at=now()
@@ -409,7 +474,14 @@ func (s *Service) rc1Reclaims(ctx context.Context) (int, error) {
 				v.id, nudgeIDs[v.id], s.cfg.LeaseDuration.Seconds()); err != nil {
 				return 0, err
 			}
-			evt, err := recordEventTx(ctx, tx, v.project, engineEventID("nudge", v.id, int(v.failures)), "nudge",
+			// Sentinel-keyed (episode-unique AND re-sweep-idempotent):
+			// an id keyed on failure_count collides across episodes —
+			// renewals never bump the count and the human re-arm RESETS
+			// it — and ON CONFLICT DO NOTHING would silently drop the
+			// audit row (the persona escalate path's hazard, fixed
+			// there with nanos; the nudge/wedge paths key on the
+			// sentinel instead — deterministic AND unique).
+			evt, err := recordEventTx(ctx, tx, v.project, "reconciler:nudge:"+v.id+":"+nudgeIDs[v.id], "nudge",
 				"task", v.id, sys, map[string]any{"task_id": v.id, "nudge_id": nudgeIDs[v.id]})
 			if err != nil {
 				return 0, err
@@ -425,7 +497,7 @@ func (s *Service) rc1Reclaims(ctx context.Context) (int, error) {
 			tag, err := tx.Exec(ctx, `
 				UPDATE tasks SET stage='failed', stage_entered_at=now(),
 					pending_origin='escalated', pending_input=false,
-					nudge_id=NULL, nudged_at=NULL,
+					nudge_id=NULL, nudged_at=NULL, last_heartbeat_at=NULL,
 					claim_token=NULL, lease_expires_at=NULL, assignee_session=NULL, implementer_session=NULL,
 					claim_incremented_attempts=false, claim_persona=NULL,
 					last_attempt_failed=true, failure_count=failure_count+1, last_failure_at=now()
@@ -439,7 +511,7 @@ func (s *Service) rc1Reclaims(ctx context.Context) (int, error) {
 			if err := writeTransition(ctx, txQ{tx}, v.id, StageInProgress, StageFailed, "", sys); err != nil {
 				return 0, err
 			}
-			evt, err := recordEventTx(ctx, tx, v.project, engineEventID("wedge", v.id, int(v.failures)), "wedge",
+			evt, err := recordEventTx(ctx, tx, v.project, "reconciler:wedge:"+v.id+":"+v.nudgeID, "wedge",
 				"task", v.id, sys,
 				map[string]any{"task_id": v.id, "nudge_id": v.nudgeID, "verdict": "wedge",
 					"evidence": wedgeEvidence[v.id]})
@@ -458,6 +530,7 @@ func (s *Service) rc1Reclaims(ctx context.Context) (int, error) {
 			UPDATE tasks SET stage='backlog', stage_entered_at=now(),
 				claim_token=NULL, lease_expires_at=NULL, assignee_session=NULL, implementer_session=NULL,
 				claim_incremented_attempts=false, claim_persona=NULL,
+				nudge_id=NULL, nudged_at=NULL, last_heartbeat_at=NULL,
 				last_attempt_failed=true, failure_count=failure_count+1, last_failure_at=now(),
 				cooldown_until=now()+make_interval(secs=>$2::float8)
 			WHERE id=$1 AND stage='in_progress' AND (lease_expires_at IS NULL OR lease_expires_at < now())`,
@@ -558,7 +631,8 @@ func (s *Service) rc1PersonaClaims(ctx context.Context) (personaReclaim, error) 
 			// Config removed mid-flight: converge to today's unclaimed
 			// in_review shape (no accounting, no transition).
 			tag, err := tx.Exec(ctx, `
-				UPDATE tasks SET claim_token=NULL, lease_expires_at=NULL, claim_persona=NULL
+				UPDATE tasks SET claim_token=NULL, lease_expires_at=NULL, claim_persona=NULL,
+					nudge_id=NULL, nudged_at=NULL, last_heartbeat_at=NULL
 				WHERE id=$1 AND stage='in_review' AND lease_expires_at < now()`, v.id)
 			if err != nil {
 				_ = tx.Rollback(ctx)
@@ -603,6 +677,7 @@ func (s *Service) rc1PersonaClaims(ctx context.Context) (personaReclaim, error) 
 		// in exactly that emptied window).
 		tag, err := tx.Exec(ctx, `
 			UPDATE tasks SET claim_token=NULL, lease_expires_at=NULL, assignee_session=NULL, claim_persona=NULL,
+				nudge_id=NULL, nudged_at=NULL, last_heartbeat_at=NULL,
 				last_attempt_failed=true, failure_count=failure_count+1, last_failure_at=now(),
 				cooldown_until=now()+make_interval(secs=>$2::float8)
 			WHERE id=$1 AND stage='in_review' AND lease_expires_at < now()`,

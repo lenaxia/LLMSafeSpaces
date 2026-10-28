@@ -59,7 +59,7 @@ import "context"
 // so "can the platform wake this session" is a wiring fact (source +
 // messenger installed), not an observation.
 type AssigneeLivenessSource interface {
-	ObserveAssignees(sess SessionObservations) SessionObservationResults
+	ObserveAssignees(ctx context.Context, sess SessionObservations) SessionObservationResults
 }
 
 // AssigneeRef is one row's observation request: the assignee session and,
@@ -87,9 +87,18 @@ type AssigneeObservation struct {
 	// meaningful when Observed.
 	Exists bool
 	// EventsAfterNudge: any session events after the latest nudge
-	// marker's transcript position. Only meaningful when Observed and
-	// the request carried a NudgeID.
+	// marker's transcript position. Only meaningful when NudgeMarkKnown
+	// (see below) — an source that cannot see the marker must leave
+	// BOTH false and say so.
 	EventsAfterNudge bool
+	// NudgeMarkKnown: the source holds the ordinal anchor for the row's
+	// live nudge id — its EventsAfterNudge answer is a MEASUREMENT.
+	// false means "this source never saw that sentinel" (a replica that
+	// did not send it, a restarted process, an evicted mark): the
+	// ordinal question is UNANSWERABLE, and the engine must never wedge
+	// on an unmeasured silence — it re-nudges instead (a duplicate
+	// sentinel is benign under latest-only; a wrongful wedge is not).
+	NudgeMarkKnown bool
 }
 
 // SessionObservations batches one sweep's questions: one call per sweep,
@@ -109,7 +118,7 @@ type SessionObservationResults map[string]AssigneeObservation
 // observation). Correctness never depends on integration depth.
 type NilLiveness struct{}
 
-func (NilLiveness) ObserveAssignees(sess SessionObservations) SessionObservationResults {
+func (NilLiveness) ObserveAssignees(_ context.Context, sess SessionObservations) SessionObservationResults {
 	out := make(SessionObservationResults, len(sess.Refs))
 	for _, ref := range sess.Refs {
 		out[ref.SessionID] = AssigneeObservation{Observed: false}

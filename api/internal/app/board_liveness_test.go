@@ -83,7 +83,7 @@ func TestLeaseLivenessHub_FrameIndexNoPoolIsNoEvidence(t *testing.T) {
 		SessionId:         "florid-teapot-verifies",
 		InternalSessionId: "ses_raw_worker_1",
 	})
-	res := hub.ObserveAssignees(board.SessionObservations{Refs: []board.AssigneeRef{{SessionID: "ses_raw_worker_1"}}})
+	res := hub.ObserveAssignees(context.Background(), board.SessionObservations{Refs: []board.AssigneeRef{{SessionID: "ses_raw_worker_1"}}})
 	o, ok := res["ses_raw_worker_1"]
 	require.True(t, ok)
 	assert.False(t, o.Observed, "no pool → no-evidence for every ref (never death)")
@@ -94,7 +94,7 @@ func TestLeaseLivenessHub_FrameIndexNoPoolIsNoEvidence(t *testing.T) {
 func TestLeaseLivenessHub_NilObserverAndEmptyBatch(t *testing.T) {
 	hub := newBoardLivenessHub(nil)
 	hub.ObserveFrame("ws", nil) // must not panic
-	res := hub.ObserveAssignees(board.SessionObservations{})
+	res := hub.ObserveAssignees(context.Background(), board.SessionObservations{})
 	assert.Empty(t, res)
 }
 
@@ -119,8 +119,7 @@ func (f *recordingV1Sender) Send(_ context.Context, userID, workspaceID, session
 	defer f.mu.Unlock()
 	f.sent = append(f.sent, recordedSend{userID, workspaceID, sessionID, text})
 	if len(f.resps) > 0 {
-		err := f.resps[len(f.sent)%len(f.resps)-1]
-		if err != nil {
+		if err := f.resps[(len(f.sent)-1)%len(f.resps)]; err != nil {
 			return nil, err
 		}
 	}
@@ -210,7 +209,7 @@ func TestIntegrationLeaseLiveness_HonestyMappingAndDeltas(t *testing.T) {
 	seedLivenessSession(t, pool, "ws-lease-liveness", "ses_alive", "alive-teapot-verifies", 3, false)
 	seedLivenessSession(t, pool, "ws-lease-liveness", "ses_dead", "dead-teapot-verifies", 1, true)
 
-	res := hub.ObserveAssignees(board.SessionObservations{Refs: []board.AssigneeRef{
+	res := hub.ObserveAssignees(context.Background(), board.SessionObservations{Refs: []board.AssigneeRef{
 		{SessionID: "ses_alive"},
 		{SessionID: "ses_dead"},
 		{SessionID: "ses_never_indexed"},
@@ -231,7 +230,7 @@ func TestIntegrationLeaseLiveness_HonestyMappingAndDeltas(t *testing.T) {
 
 	// The DB delta leg: a message lands between sweeps → movement.
 	seedLivenessSession(t, pool, "ws-lease-liveness", "ses_alive", "alive-teapot-verifies", 4, false)
-	res = hub.ObserveAssignees(board.SessionObservations{Refs: []board.AssigneeRef{{SessionID: "ses_alive"}}})
+	res = hub.ObserveAssignees(context.Background(), board.SessionObservations{Refs: []board.AssigneeRef{{SessionID: "ses_alive"}}})
 	assert.True(t, res["ses_alive"].MovedSinceLastSweep, "message_count delta is renewal evidence")
 
 	// The frame leg beats the DB: no DB change, but a tool-part frame.
@@ -239,7 +238,7 @@ func TestIntegrationLeaseLiveness_HonestyMappingAndDeltas(t *testing.T) {
 		Type:              abiv1.EventType_EVENT_TYPE_PART_START,
 		InternalSessionId: "ses_alive",
 	})
-	res = hub.ObserveAssignees(board.SessionObservations{Refs: []board.AssigneeRef{{SessionID: "ses_alive"}}})
+	res = hub.ObserveAssignees(context.Background(), board.SessionObservations{Refs: []board.AssigneeRef{{SessionID: "ses_alive"}}})
 	assert.True(t, res["ses_alive"].MovedSinceLastSweep, "a PART_START frame alone is renewal evidence (tool-call START)")
 }
 
@@ -252,7 +251,7 @@ func TestIntegrationLeaseLiveness_OrdinalAnswerBothLegs(t *testing.T) {
 	hub := newBoardLivenessHub(pool)
 	seedLivenessSession(t, pool, "ws-lease-liveness-ordinal", "ses_quiet", "quiet-teapot-verifies", 2, false)
 	// Baseline the cursor (first observation is the baseline).
-	_ = hub.ObserveAssignees(board.SessionObservations{Refs: []board.AssigneeRef{{SessionID: "ses_quiet"}}})
+	_ = hub.ObserveAssignees(context.Background(), board.SessionObservations{Refs: []board.AssigneeRef{{SessionID: "ses_quiet"}}})
 
 	// The sentinel goes out; its send-mark snapshots the DB state.
 	hub.markNudge(ctx, "nudge-A", "ses_quiet")
@@ -262,16 +261,16 @@ func TestIntegrationLeaseLiveness_OrdinalAnswerBothLegs(t *testing.T) {
 		Type:              abiv1.EventType_EVENT_TYPE_MESSAGE_START,
 		InternalSessionId: "ses_quiet",
 	})
-	res := hub.ObserveAssignees(board.SessionObservations{Refs: []board.AssigneeRef{
+	res := hub.ObserveAssignees(context.Background(), board.SessionObservations{Refs: []board.AssigneeRef{
 		{SessionID: "ses_quiet", NudgeID: "nudge-A"},
 	}})
 	assert.True(t, res["ses_quiet"].EventsAfterNudge, "a frame received after the send-mark is post-sentinel activity")
 
 	// A FRESH episode with no post-sentinel anything: the wedge shape.
 	seedLivenessSession(t, pool, "ws-lease-liveness-ordinal", "ses_wedge", "wedge-teapot-verifies", 5, false)
-	_ = hub.ObserveAssignees(board.SessionObservations{Refs: []board.AssigneeRef{{SessionID: "ses_wedge"}}})
+	_ = hub.ObserveAssignees(context.Background(), board.SessionObservations{Refs: []board.AssigneeRef{{SessionID: "ses_wedge"}}})
 	hub.markNudge(ctx, "nudge-B", "ses_wedge")
-	res = hub.ObserveAssignees(board.SessionObservations{Refs: []board.AssigneeRef{
+	res = hub.ObserveAssignees(context.Background(), board.SessionObservations{Refs: []board.AssigneeRef{
 		{SessionID: "ses_wedge", NudgeID: "nudge-B"},
 	}})
 	assert.False(t, res["ses_wedge"].EventsAfterNudge, "silence after a positioned sentinel (the wedge verdict's input)")
@@ -279,7 +278,7 @@ func TestIntegrationLeaseLiveness_OrdinalAnswerBothLegs(t *testing.T) {
 	// Leg 2 — the DB backstop: a message landed after the send snapshot
 	// (no frames were ever seen for this session — the stream-less pod).
 	seedLivenessSession(t, pool, "ws-lease-liveness-ordinal", "ses_wedge", "wedge-teapot-verifies", 6, false)
-	res = hub.ObserveAssignees(board.SessionObservations{Refs: []board.AssigneeRef{
+	res = hub.ObserveAssignees(context.Background(), board.SessionObservations{Refs: []board.AssigneeRef{
 		{SessionID: "ses_wedge", NudgeID: "nudge-B"},
 	}})
 	assert.True(t, res["ses_wedge"].EventsAfterNudge, "message_count above the at-send snapshot is post-sentinel activity")
