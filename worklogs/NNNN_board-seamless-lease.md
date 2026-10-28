@@ -18,19 +18,56 @@ mid-suite-run (442s agentd suite, no watermark stamp), the row hit the attempts 
 zombie siblings from earlier attempts kept editing the worktree — coordinated to stand-down
 via agent-message, work merged from the tree.
 
-## 2. The loop (final form)
+## 2. The loop (final form, amended — see §2b)
 
 1. **Movement → renew.** The reconciler renews when the harness observed the assignee do
    ANYTHING since the last sweep (delta, never wall-clock recency). Nudge state clears.
 2. **Expiry, no movement → NUDGE.** One sentinel nudge; the row records a single nullable
-   `nudge_id` (latest only, overwritten per nudge).
+   `nudge_id` (latest only, overwritten per nudge). The nudge requires the worker to RESPOND
+   via `board_heartbeat` FIRST (the response channel — §2b), then continue / advance / fail.
 3. **Next expiry → the ordinal check:** any session events AFTER the sentinel's transcript
-   position? No → WEDGED (`failed` + evidence + reclaim). Yes → back to 1.
+   position, or any heartbeat whose arrival postdates the nudge? Neither → WEDGED (`failed` +
+   evidence + reclaim). Either → back to 1.
 
 The sentinel rides the existing agentmessage-v1 additive grammar; the wedge question is
-ORDINAL (position in the harness's totally-ordered event log — no timestamp is ever compared
-across processes). Even a thinking model emits turn-start; silence after a positioned
-sentinel is a machine verdict.
+ORDINAL (position in the harness's totally-ordered event log + the row's server-clock
+`last_heartbeat_at` — no timestamp is ever compared across processes). Even a thinking model
+emits turn-start; silence on BOTH channels after a positioned sentinel is a machine verdict.
+
+## 2b. board_heartbeat: repurposed as the nudge-response channel (2026-10-28 ruling)
+
+The branch briefly REMOVED board_heartbeat wholesale (the first addendum, f9379730b: "that
+should not exist. agent is the least reliable way to do it."). The owner superseded it hours
+later: **"When we nudge, we also require the call to board_heartbeat, rather than having to
+history dive."** The tool survives as the CONCRETE REPLY to a lease-nudge:
+
+- **Periodic self-report semantics die.** A heartbeat on a row with NO live nudge never
+  extends the lease — no standing renewal discipline anywhere (liveness is platform-observed;
+  the movement ladder renews). The arrival is still recorded (`last_heartbeat_at`, server
+  clock) because the wedge predicate reads it ordinally (arrival > nudged_at = response).
+  The 409 claim_token arbitration and the #1847 future-clamp are unchanged (worker stamps are
+  response events now, not liveness input — the future direction still never stores).
+- **A heartbeat on a nudged row renews**: nudge slot cleared, lease extended, watermark
+  stamped with the clamped observedProgressAt. Respond FIRST, then run long commands.
+- **The wedge predicate is three-legged**: nudged ∧ no post-sentinel events ∧ no post-nudge
+  heartbeat ⇒ wedge. The heartbeat is OR'd in at EVERY rung; at the no-evidence rung (Nil
+  source, degraded adapter, unindexed session) it is the ONLY wedge detector —
+  deliver-a-message + call-a-tool is the minimal harness capability (the harness-agnostic
+  wedge floor). That rung's ladder now runs nudge → heartbeat-or-wedge whenever a sender is
+  wired; pin 6's honest wall-clock lapse now applies only when there is NO sender either.
+- **The stillborn consultation leaves Heartbeat**: a zero-turn session cannot call tools, so
+  it can never answer a nudge — the wedge verdict owns corpses. The `turnEvidence` seam
+  survives (the #1959c bounce re-dispatch is its consumer).
+- **Recorded consequence (deliberate)**: `in_review` persona claims never carry a nudge slot
+  (the ladder observes and nudges `in_progress` rows only), so reviewer heartbeats no longer
+  renew — reviewers keep the 45m window, the re-arm pass's #1813 accounting, and verdict
+  writes; reviewer-side nudge machinery is out of scope for this branch (the worklog records
+  it as the known follow-up if reviewer churn reappears).
+- The nudge prose carries the FULL contract (verbatim intent): "First RESPOND (call
+  board_heartbeat once) to confirm you are active. Then: continue working if there is more
+  work to do; otherwise move your task to its next stage (board_move_stage with your
+  claimToken), or declare it failed with a reason if you cannot complete it. Do NOT restart —
+  assess your current state."
 
 ## 3. The harness-agnostic seam
 
@@ -44,9 +81,10 @@ late-bound via `ProxyHandler.SetFrameObserver`) and session_index message_count 
 Honesty mapping: deleted_at = dead-evidence; unindexed = NO-evidence (never death); a failed
 batched read degrades the sweep to no-evidence, loud.
 
-`NudgeSender` (`board_nudge.go`): the agentmessage-v1 `lease-nudge` sentinel + the surgical
-prose ("Do NOT restart; assess; advance or declare failed with a reason"), delivered over the
-V1 route with the bounce seam's fast-fail window.
+`NudgeSender` (in `board_liveness.go`): the agentmessage-v1 `lease-nudge` sentinel + the full
+contract prose (§2b: RESPOND first via board_heartbeat, then continue / advance / declare
+failed with a reason — never restart), delivered over the V1 route with the bounce seam's
+fast-fail window.
 
 ## 4. Lease default: 15m → 45m (the recorded rationale)
 
@@ -92,9 +130,14 @@ admits exactly the paired flag form plus the failed/escalated terminus.
 
 ## 7. Tests
 
-- The 8 design pins (spec §Pins) + ladder-contract pins (`pkg/board/lease_pins_test.go`):
-  deterministic RC1 via the `rc1.post` failpoint + the expireLease clock seam. Includes the
-  decisive production-wiring pin: a PART_START frame renews an expired claim (3×).
+- The 11 design pins (spec §Pins, pins 9-11 added by the §2b amendment) + ladder-contract
+  pins (`pkg/board/lease_pins_test.go`): deterministic RC1 via the `rc1.post` failpoint +
+  the expireLease clock seam. Includes the decisive production-wiring pin: a PART_START
+  frame renews an expired claim (3×).
+- The #1847 heartbeat pins re-pinned to the response semantics (`heartbeat_1847_test.go`):
+  the future-stamp rejection and mild-skew clamp survive; the evidence-gate/watermark-heal
+  pins die WITH the gate (extension no longer consults the watermark — the C1 lockout class
+  is unreachable by construction, not healed).
 - 32 old-semantics tests re-pinned to the flag/failed shapes (stage-equality assertions →
   flag assertions; transition-row counts → flag events); the re-pinning surfaced and fixed
   four real engine defects (migration constraint, stage.go fromKey alias + exit guards +

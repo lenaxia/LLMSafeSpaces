@@ -4,9 +4,9 @@
 //go:build integration
 
 // lease_pins_test.go — the seamless-lease design pins (spec §Pins,
-// reports/specs/seamless-lease-design.md; owner rulings 2026-10-27/28).
-// Eight born-precise pins over the RC1 ladder, each driving the sweep
-// DETERMINISTICALLY:
+// reports/specs/seamless-lease-design.md; owner rulings 2026-10-27/28,
+// the item-6 amendment adding pins 9-11). Eleven born-precise pins over
+// the RC1 ladder, each driving the sweep DETERMINISTICALLY:
 //
 //   - Clock: the house DB-clock seam (expireLease rewinds
 //     lease_expires_at; every ladder comparison is SQL now()-based, so
@@ -452,11 +452,13 @@ func (s *BoardSuite) TestPin_Lease5_DeadEvidenceFastReclaimNoNudgeWasted() {
 	s.Empty(nid)
 }
 
-// PIN 6 (spec §Pins 6): a silent assignee under the NIL source (no
-// evidence either way — unobservable, degraded, or unwired) → the
-// honest lapse within one window: today's wall-clock semantics, byte
-// for byte. Correctness never depends on integration depth; even a
-// wired NudgeSender stays silent without an observation to justify one.
+// PIN 6 (spec §Pins 6): a silent assignee with NO observation AND no
+// nudge seam (no evidence either way — unobservable, degraded, or
+// unwired, and no way to ask) → the honest lapse within one window:
+// today's wall-clock semantics, byte for byte. Correctness never
+// depends on integration depth. (With a sender wired, the item-6
+// heartbeat floor applies instead — pin 9/10: the no-evidence rung
+// runs nudge → heartbeat-or-wedge.)
 func (s *BoardSuite) TestPin_Lease6_NilSourceHonestLapse() {
 	ws := s.seedWorkspace()
 	p := s.seedProject(ws, 4)
@@ -465,16 +467,14 @@ func (s *BoardSuite) TestPin_Lease6_NilSourceHonestLapse() {
 
 	s.claimOrFail(ws)
 
-	nudger := &fakeNudger{}
-	recon := s.pinRecon(board.NilLiveness{}, nudger.Send) // Nil + a nudger: the nudger must stay silent
+	recon := s.pinRecon(board.NilLiveness{}, nil) // Nil + NO nudger: nobody can ask
 
 	s.expireLease(task.ID)
 	s.rc1Sweep(recon)
 
 	s.reclaimOverlay(task.ID, 1)
 	s.Equal(1, s.countEvents("reclaim"))
-	s.Equal(0, nudger.count(), "no-evidence never fabricates a quiet-verdict: no nudge without an observation")
-	s.Equal(0, s.countEvents("nudge"))
+	s.Equal(0, s.countEvents("nudge"), "no nudge without an observation AND a sender")
 }
 
 // PIN 7 (spec §Pins 7): claims issue ONLY to spawner-minted sessions —
@@ -565,7 +565,9 @@ func (s *BoardSuite) TestPin_Lease8_ClaimTokenArbitrationUntouched() {
 	c := s.claimOrFail(ws)
 	oldToken := c.ClaimToken
 
-	recon := s.pinRecon(board.NilLiveness{}, func(context.Context, string, board.NudgePayload) error { return nil })
+	// The honest lapse needs NO nudge seam (a wired sender would run the
+	// rung-3 heartbeat floor instead — pin 9/10's world).
+	recon := s.pinRecon(board.NilLiveness{}, nil)
 	s.expireLease(task.ID)
 	s.rc1Sweep(recon)
 	s.reclaimOverlay(task.ID, 1)
@@ -600,6 +602,171 @@ func (s *BoardSuite) TestPin_Lease8_ClaimTokenArbitrationUntouched() {
 	_, err = s.svc.MoveStage(context.Background(), s.agent("sess", oldToken), task.ID, "", board.StageInReview, "", "")
 	s.Require().True(errors.As(err, &guard) && guard.Code == board.GuardClaimToken,
 		"the superseded token's stage write on the new claim: 409 claim_token")
+}
+
+// PIN 9 (spec §Pins 9, the item-6 amendment): nudge → heartbeat
+// response ⇒ renewed — at EVERY rung of the ladder. The decisive arm is
+// the NO-EVIDENCE rung (Nil source): the heartbeat is the ONLY wedge
+// detector there (deliver-a-message + call-a-tool is the harness
+// floor), so the rung-3 ladder now NUDGES when a sender is wired and
+// the response renews. The observed arm pins the OR: silence on the
+// event channel + a response on the heartbeat channel = alive, never a
+// wedge.
+func (s *BoardSuite) TestPin_Lease9_HeartbeatResponseRenewsEveryRung() {
+	s.Run("no-evidence rung (Nil source): nudge → response renews", func() {
+		ws := s.seedWorkspace()
+		p := s.seedProject(ws, 4)
+		e := s.seedEpic(p, board.EpicActive)
+		task := s.seedTask(e, "hb-floor", nil, false)
+
+		c := s.claimOrFail(ws)
+		nudger := &fakeNudger{}
+		recon := s.pinRecon(board.NilLiveness{}, nudger.Send) // no observation, sender wired: the floor
+
+		s.expireLease(task.ID)
+		s.rc1Sweep(recon)
+		s.Equal(1, nudger.count(), "the no-evidence rung nudges when a sender is wired (the harness floor)")
+
+		// The worker RESPONDS FIRST — the wedge clock dies before any
+		// long command.
+		res, err := s.svc.Heartbeat(context.Background(), s.agent("sess", c.ClaimToken), task.ID, "",
+			time.Now().UTC())
+		s.Require().NoError(err)
+		s.True(res.Extended, "the nudge response renews at the only-detector rung")
+		s.leaseFuture(task.ID)
+		cleared, _ := s.nudgeState(task.ID)
+		s.Empty(cleared, "the response clears the nudge slot (the wedge clock is dead)")
+
+		// And the renewal is real: the next sweep (still inside the new
+		// window) neither re-nudges nor wedges.
+		s.rc1Sweep(recon)
+		s.Equal(1, nudger.count(), "no re-nudge inside the response-renewed window")
+		s.Equal(0, s.countEvents("wedge"))
+	})
+
+	s.Run("observed rung: event-silent, response-alive → renew not wedge", func() {
+		ws := s.seedWorkspace()
+		p := s.seedProject(ws, 4)
+		e := s.seedEpic(p, board.EpicActive)
+		task := s.seedTask(e, "hb-or", nil, false)
+
+		c := s.claimOrFail(ws)
+		assignee := s.reloadTask(task.ID).AssigneeSession
+		lives := &fakeLiveness{}
+		lives.set(assignee, liveQuiet())
+		nudger := &fakeNudger{}
+		recon := s.pinRecon(lives, nudger.Send)
+
+		s.expireLease(task.ID)
+		s.rc1Sweep(recon)
+		s.Equal(1, nudger.count())
+
+		// The observation reports NOTHING after the sentinel — but the
+		// worker answered on the heartbeat channel. Alive.
+		lives.set(assignee, board.AssigneeObservation{Observed: true, Exists: true, EventsAfterNudge: false})
+		res, err := s.svc.Heartbeat(context.Background(), s.agent("sess", c.ClaimToken), task.ID, "",
+			time.Now().UTC())
+		s.Require().NoError(err)
+		s.True(res.Extended, "the response renews at the observed rung too")
+		cleared, _ := s.nudgeState(task.ID)
+		s.Empty(cleared, "the response itself clears the slot — the wedge clock dies before any long command")
+
+		// The response ended the episode. A FULL window of renewed
+		// silence starts a FRESH episode (latest-only slot): the next
+		// sweep nudges again — it never wedges on a dead episode's
+		// ordinal question, and it never reuses the cleared sentinel.
+		s.expireLease(task.ID)
+		s.rc1Sweep(recon)
+		row := s.rawTask(task.ID)
+		s.Equal(board.StageInProgress, row.Stage, "a heartbeat response beats the wedge at the observed rung")
+		s.Require().NotNil(row.ClaimToken)
+		s.Equal(c.ClaimToken, *row.ClaimToken)
+		s.leaseFuture(task.ID)
+		s.Equal(0, s.countEvents("wedge"))
+		s.Equal(2, nudger.count(), "renewed silence opens a NEW episode (a fresh sentinel, latest-only)")
+	})
+}
+
+// PIN 10 (spec §Pins 10, the item-6 amendment): nudge → silence on
+// BOTH channels (no post-sentinel events, no post-nudge heartbeat) ⇒
+// wedge — including the no-evidence rung with only a sender wired (the
+// harness-agnostic floor). A heartbeat that predates the nudge is the
+// dead periodic discipline and saves nothing (the ordinal comparison:
+// only an ARRIVAL after nudged_at is a response).
+func (s *BoardSuite) TestPin_Lease10_SilenceOnBothChannelsWedges() {
+	ws := s.seedWorkspace()
+	p := s.seedProject(ws, 4)
+	e := s.seedEpic(p, board.EpicActive)
+	task := s.seedTask(e, "both-silent", nil, false)
+
+	c := s.claimOrFail(ws)
+	nudger := &fakeNudger{}
+	recon := s.pinRecon(board.NilLiveness{}, nudger.Send) // the floor: no observation, sender wired
+
+	// A PRE-nudge heartbeat: extended nothing (pin 11's world) and must
+	// not count as a response to a sentinel that does not exist yet.
+	res, err := s.svc.Heartbeat(context.Background(), s.agent("sess", c.ClaimToken), task.ID, "",
+		time.Now().UTC())
+	s.Require().NoError(err)
+	s.False(res.Extended, "no nudge, no extension — the periodic discipline is dead")
+
+	s.expireLease(task.ID)
+	s.rc1Sweep(recon)
+	s.Equal(1, nudger.count())
+	nid, _ := s.nudgeState(task.ID)
+	s.Require().NotEmpty(nid)
+
+	// Full window of silence on both channels.
+	s.expireLease(task.ID)
+	s.rc1Sweep(recon)
+
+	row := s.rawTask(task.ID)
+	s.Equal(board.StageFailed, row.Stage, "silence on both channels is the machine wedge verdict")
+	s.Nil(row.ClaimToken)
+	s.Nil(row.Assignee)
+	s.True(rowIsMarkedFailed(s, task.ID))
+	s.Equal(1, s.countEvents("wedge"))
+	var evidence string
+	s.Require().NoError(s.pool.QueryRow(context.Background(),
+		`SELECT payload->>'evidence' FROM board_events WHERE action='wedge' AND item_id=$1`, task.ID).Scan(&evidence))
+	s.Contains(evidence, "no post-nudge heartbeat",
+		"the rung-3 verdict names the response channel it measured")
+	s.Equal(1, s.countTransitions(task.ID, board.StageFailed))
+}
+
+// PIN 11 (spec §Pins 11, the item-6 amendment): a periodic heartbeat
+// with NO nudge never extends the lease — the standing self-report
+// discipline stays dead (liveness is platform-observed; the movement
+// ladder renews). The arrival is still recorded (the wedge predicate's
+// ordinal input) and the claim arbitration still applies.
+func (s *BoardSuite) TestPin_Lease11_PeriodicHeartbeatExtendsNothing() {
+	ws := s.seedWorkspace()
+	p := s.seedProject(ws, 4)
+	e := s.seedEpic(p, board.EpicActive)
+	task := s.seedTask(e, "periodic-dead", nil, false)
+
+	c := s.claimOrFail(ws)
+	before := s.rawTask(task.ID).LeaseExp
+	s.Require().NotNil(before)
+
+	// Fresh evidence, matching token, live claim — everything the OLD
+	// evidence gate demanded. Still no extension: no nudge, no renewal.
+	stamp := time.Now().UTC().Add(-time.Millisecond)
+	res, err := s.svc.Heartbeat(context.Background(), s.agent("sess", c.ClaimToken), task.ID, "",
+		stamp)
+	s.Require().NoError(err)
+	s.False(res.Extended, "no standing discipline: a heartbeat without a nudge extends nothing")
+	s.NotEmpty(res.Reason, "the refusal names the repurposed semantics")
+
+	after := s.rawTask(task.ID).LeaseExp
+	s.Require().NotNil(after)
+	s.WithinDuration(*before, *after, 50*time.Millisecond, "the lease is untouched")
+
+	var hbAt *time.Time
+	s.Require().NoError(s.pool.QueryRow(context.Background(),
+		`SELECT last_heartbeat_at FROM tasks WHERE id=$1`, task.ID).Scan(&hbAt))
+	s.Require().NotNil(hbAt, "the ARRIVAL is recorded — the wedge predicate's ordinal input")
+	s.Equal(0, s.countEvents("heartbeat"), "an advisory heartbeat writes no audit event")
 }
 
 // TestPin_LeaseLadder_NudgeDeliveryFailureFallsBack pins the sender

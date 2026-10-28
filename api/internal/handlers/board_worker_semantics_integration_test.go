@@ -231,25 +231,26 @@ func TestIntegrationBoardWorkerSemantics(t *testing.T) {
 		require.Equal(t, http.StatusOK, w.Code, w.Body.String())
 	})
 
-	// --- 2: evidence-gated heartbeat (#1685 through the seam) ------------------
+	// --- 2: the nudge-response gate (item 6 through the seam) -------------------
 
 	t.Run("heartbeat_evidence_gate", func(t *testing.T) {
 		shortID, _ := seed(t, false)
 		claim := claimFor(t, wsPod, shortID)
 
-		// Evidence BEFORE the stored watermark (the claim stamped
-		// last_progress_at=now()): no extension — elapsed time is not
-		// liveness.
-		stale := time.Now().UTC().Add(-time.Hour).Format(time.RFC3339)
-		w := heartbeat(t, shortID, claim.ClaimToken, stale)
-		require.Equal(t, http.StatusOK, w.Code, w.Body.String())
-		assert.Contains(t, w.Body.String(), `"extended":false`, "no new evidence → no lease extension")
-
-		// Evidence past the watermark: extends.
+		// Fresh evidence on a row with NO live nudge: advisory only —
+		// the periodic self-report discipline is dead (spec pin 11).
 		fresh := time.Now().UTC().Add(time.Minute).Format(time.RFC3339)
+		w := heartbeat(t, shortID, claim.ClaimToken, fresh)
+		require.Equal(t, http.StatusOK, w.Code, w.Body.String())
+		assert.Contains(t, w.Body.String(), `"extended":false`, "no nudge → no lease extension (no standing discipline)")
+
+		// Arm the nudge slot (the ladder-path nudge is pinned in
+		// pkg/board); the response renews through the seam.
+		_, err := pool.Exec(ctx, `UPDATE tasks SET nudge_id='nudge-seam', nudged_at=now() WHERE short_id=$1`, shortID)
+		require.NoError(t, err)
 		w = heartbeat(t, shortID, claim.ClaimToken, fresh)
 		require.Equal(t, http.StatusOK, w.Code, w.Body.String())
-		assert.Contains(t, w.Body.String(), `"extended":true`)
+		assert.Contains(t, w.Body.String(), `"extended":true`, "the nudge response renews")
 	})
 
 	// --- 3: token single-use + expiry (§6 case 1) -------------------------------
