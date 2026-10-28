@@ -146,6 +146,17 @@ func TestMigration000052_PopulatedPreStateUpAndDown(t *testing.T) {
 		t.Fatalf("untouched row unchanged: got %q", got)
 	}
 
+	// A NEW-world-only shape the downgrade must also carry: failed with
+	// NO origin (the manager move and the nudge self-fail — legal under
+	// the new paired-form constraint, unreachable in the old world).
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO tasks (id, short_id, project_id, epic_id, title, project_name, epic_name, stage)
+		VALUES ('77777777-7777-7777-7777-777777777777', 'tsk-migrate4',
+		        '22222222-2222-2222-2222-222222222222', '33333333-3333-3333-3333-333333333333',
+		        'manager-failed', 'mig-p', 'E', 'failed')`); err != nil {
+		t.Fatalf("seed new-world failed row: %v", err)
+	}
+
 	// --- DOWN from the POPULATED new world ----------------------------
 	if err := m.Steps(-1); err != nil {
 		t.Fatalf("step down from 000052 on a populated schema: %v", err)
@@ -154,6 +165,9 @@ func TestMigration000052_PopulatedPreStateUpAndDown(t *testing.T) {
 		"44444444-4444-4444-4444-444444444001": "pending_input|escalated",
 		"55555555-5555-5555-5555-555555555555": "pending_input|worker",
 		"66666666-6666-6666-6666-666666666666": "backlog|-",
+		// The old vocabulary has no failed stage: the origin-less failed
+		// row re-enters at backlog (the review round-4 reproduction).
+		"77777777-7777-7777-7777-777777777777": "backlog|-",
 	} {
 		var got string
 		if err := pool.QueryRow(ctx,
@@ -163,6 +177,21 @@ func TestMigration000052_PopulatedPreStateUpAndDown(t *testing.T) {
 		if got != want {
 			t.Fatalf("down rehome %s: got %q want %q", id, got, want)
 		}
+	}
+
+	// Re-up on the already-migrated (and now down-graded) populated
+	// schema: the operator-retry shape (idempotent re-application after
+	// a partial episode).
+	if err := m.Steps(1); err != nil {
+		t.Fatalf("re-up across 000052 after the down: %v", err)
+	}
+	if got := row("44444444-4444-4444-4444-444444444001",
+		"stage || ' flag=' || pending_input::text || ' origin=' || coalesce(pending_origin,'-')"); got != "failed flag=false origin=escalated" {
+		t.Fatalf("re-up escalated rehome: got %q", got)
+	}
+	if got := row("55555555-5555-5555-5555-555555555555",
+		"stage || ' flag=' || pending_input::text || ' origin=' || coalesce(pending_origin,'-')"); got != "in_progress flag=true origin=worker" {
+		t.Fatalf("re-up park rehome: got %q", got)
 	}
 }
 

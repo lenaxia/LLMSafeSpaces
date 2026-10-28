@@ -11,16 +11,21 @@ BEGIN;
 ALTER TABLE public.tasks DROP CONSTRAINT IF EXISTS tasks_pending_input_set;
 ALTER TABLE public.tasks DROP CONSTRAINT IF EXISTS tasks_stage_check;
 
--- Rehome both classes back to the pending_input stage: deliberate parks
--- (flagged, origin preserved) and the attempts-exhaustion terminus
--- (failed + escalated). Belt: any non-pending_input row still carrying
--- an origin loses it (the old constraint requires the paired form —
--- e.g. a manager-moved failed row keeps NULL already; the belt is for
--- anything else).
+-- Rehome every class the old vocabulary cannot express while no stage
+-- constraint is in force: deliberate parks (flagged, origin preserved)
+-- and the attempts-exhaustion terminus (failed + escalated) return to
+-- the pending_input stage; a failed row with NO origin (the manager
+-- move and the nudge self-fail shapes — legal under the new paired-form
+-- constraint's arm 2) has no pending_input-stage equivalent, so it
+-- lands backlog (the re-entry stage of failure; the review round-4
+-- reproduction class). Belt: any non-pending_input row still carrying
+-- an origin loses it (the old constraint requires the paired form).
 UPDATE public.tasks SET stage='pending_input'
     WHERE pending_input = true;
 UPDATE public.tasks SET stage='pending_input'
     WHERE stage='failed' AND pending_origin='escalated';
+UPDATE public.tasks SET stage='backlog', last_attempt_failed=true
+    WHERE stage='failed' AND pending_origin IS NULL;
 UPDATE public.tasks SET pending_origin=NULL
     WHERE stage <> 'pending_input';
 

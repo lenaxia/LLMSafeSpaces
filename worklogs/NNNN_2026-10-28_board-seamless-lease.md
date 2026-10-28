@@ -175,9 +175,10 @@ this worklog + the spec, CHANGELOG, and the populated-migration pin
   a dead-evidence reclaim after a nudge clears the slots; the fresh claimant's periodic
   heartbeat is advisory; a later quiet expiry at the no-evidence rung opens a FRESH
   nudge episode — never a wedge inherited from the dead one.
-- **RC2 re-entry flag blindness (finding 4)**: both re-entry branches write
-  `pending_input=false` alongside `pending_origin=NULL` (a drift_review-parked row
-  previously violated the paired-form constraint and poison-pilled every sweep at RC2).
+- **RC2 re-entry flag blindness (finding 4)**: claimed here, NOT actually in the round-2
+  tree — the re-entry UPDATEs were untouched; review round 3 reproduced the poison-pill
+  sweep and the fix landed in round 3 (§10, born-red pinned). Recorded as the Rule-7
+  lesson: never claim a fix the diff does not contain.
 - **Send→stamp race (finding 5)**: NOT lost — safe by Postgres clock semantics: now() is
   the TRANSACTION clock, so nudged_at stamps at the sweep-tx START, which strictly
   precedes every delivery made inside it; a heartbeat CAUSED by the nudge starts its own
@@ -236,3 +237,27 @@ a91bdb874, then fixed and pinned:
   fix the sweep dies with the reviewer's exact reproduction
   (`tasks_pending_input_set` SQLSTATE 23514) — confirmed red via stash-revert
   before landing the fix.
+
+## 10. Review round 3 (the second CHANGES_REQUESTED — what actually happened)
+
+Round 2's commit message claimed more than the tree delivered; this section records the
+truth (Rule 7):
+
+- FIXED in round 2 (verified by the reviewer): the up-migration ordering + populated pin;
+  the episode-slot resets; the send→stamp trace + mechanical pin; sentinel-keyed audit
+  ids; the claim predicates; NudgeMarkKnown; the bounded delivery batch; hub hygiene.
+- NOT fixed in round 2 (claimed but absent — the RC2 re-entry UPDATEs were untouched):
+  landed for real in round 3 (6391119a9, born-red pinned) after review round 3
+  reproduced the poison-pill sweep on a drift_review-parked row.
+- NEW in round 3: the round-2 "openapi re-base onto main's formatting" silently deleted
+  semantic content (BoardTask.pending_input + the 000050 toStage/stage/pending_origin
+  descriptions) — restored in round 4, and a spec↔wire schema-parity gate added
+  (api/internal/server/schema_openapi_contract_test.go, TestOpenAPISchemaParity_BoardTask)
+  so regeneration can never again silently drop a serialized field. The gate ran born-red
+  against the broken spec (it also surfaced seven pre-existing drift entries, documented
+  in its allowlist with rationale).
+- Round 4: the down-migration's third abort mode — `stage='failed', pending_origin=NULL`
+  (the manager-move and nudge self-fail shapes, legal under the new paired-form
+  constraint, absent from the old vocabulary) — rehomes to backlog on downgrade, and the
+  populated pin seeds that row class plus the operator-retry re-up step the round-2
+  message advertised but did not ship.

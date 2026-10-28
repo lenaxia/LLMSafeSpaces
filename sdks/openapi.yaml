@@ -13061,11 +13061,15 @@ components:
         stage:
           type: string
           enum: [backlog, in_progress, in_review, done, failed]
+          description: "000050: the stored stages — pending_input is a FLAG riding the real stage (pending_input + pending_origin on the row), never a stored stage; failed is the failure terminus (attempts exhaustion + the lease wedge verdict)."
+        pending_input:
+          type: boolean
+          description: "000050: the awaiting-input flag — true while the row waits on its owner (origin below); the row keeps its real stage."
         pending_origin:
           type: string
           nullable: true
           enum: [worker, escalated, dependency_abandoned, drift_review]
-          description: Set entering pending_input, cleared on exit (dependency_abandoned is historical — cancel is eliminated, #1747)
+          description: "000050: with pending_input=true, the awaiting-input flag's origin; alone on failed rows, the escalated marker the re-arm gates on (dependency_abandoned is historical — cancel is eliminated, #1747)"
         paused:
           type: boolean
           description: "#1747: the scheduling lever — claim candidacy off, forward writes refused while paused"
@@ -13558,6 +13562,7 @@ components:
         toStage:
           type: string
           enum: [backlog, in_progress, in_review, done, pending_input, failed]
+          description: "000050: pending_input is the flag-op alias (SET awaiting-input — the row keeps its real stage; from a flagged row the exits clear it); failed is the failure terminus (worker self-fail / manager verdict); re-arm exits it."
         evidenceUrl:
           type: string
           description: The artifact link for THIS transition — required on → done (ruling R2)
@@ -13874,7 +13879,7 @@ components:
         toStage:
           type: string
           enum: [backlog, in_progress, in_review, done, pending_input, failed]
-          description: The ONE target stage every item moves to (per-item from-stage legality stays server-arbitrated)
+          description: "The ONE target every item moves to (per-item from-stage legality stays server-arbitrated; 000050: pending_input = set the flag, failed = the failure terminus)"
         evidenceUrl:
           type: string
           description: Artifact link applied to every item's transition (required when toStage is done)

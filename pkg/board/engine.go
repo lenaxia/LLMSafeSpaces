@@ -37,13 +37,13 @@ const eligibleProjectsSQL = `
 	              WHERE t3.project_id = p.id AND e3.status = 'active'
 	                AND e3.deficit < e3.quantum
 	                AND t3.stage = 'backlog' AND NOT t3.is_blocked AND NOT t3.paused
-																	                 AND NOT t3.pending_input
+																	                AND NOT t3.pending_input
 	                AND (t3.cooldown_until IS NULL OR t3.cooldown_until < now()))
 	ORDER BY (SELECT min(e.vft) FROM epics e WHERE e.project_id = p.id AND e.status = 'active'
 	          AND e.deficit < e.quantum
 	          AND EXISTS (SELECT 1 FROM tasks t4 WHERE t4.epic_id = e.id
 	                      AND t4.stage = 'backlog' AND NOT t4.is_blocked AND NOT t4.paused
-																							                       AND NOT t4.pending_input
+																							                      AND NOT t4.pending_input
 	                      AND (t4.cooldown_until IS NULL OR t4.cooldown_until < now()))), p.id
 	FOR UPDATE OF p SKIP LOCKED LIMIT 1`
 
