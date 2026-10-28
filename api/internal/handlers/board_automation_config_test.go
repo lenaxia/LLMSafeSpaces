@@ -197,8 +197,11 @@ func TestBoardAutomationConfig_SetConfigBodyCap(t *testing.T) {
 		r := newBoardAutomationRouterWithManager(t, newFakeBoardService(), mgr)
 		req := httptest.NewRequest(http.MethodPut, "/internal/v1/automation/board/config?workspaceID=ws-1",
 			// Wrap the reader so NewRequest cannot sniff its length —
-			// ContentLength stays 0 and the body arrives chunked (the
-			// identity rides the query, the seam's query-first path).
+			// ContentLength stays UNKNOWN (-1, the chunked class; NOT 0:
+			// a present-body ContentLength of 0 would make captureBody
+			// nil-short-circuit and the refusal would render as
+			// "request body required" instead of the cap message). The
+			// identity rides the query, the seam's query-first path.
 			struct{ io.Reader }{strings.NewReader(overCap)})
 		req.Header.Set("Authorization", "Bearer whatever-the-reviewer-accepts")
 		req.Header.Set("Content-Type", "application/json")
