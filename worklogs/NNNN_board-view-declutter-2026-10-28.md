@@ -96,24 +96,31 @@ Green (rulings 1–5 as carried over, re-verified by this attempt before
 building on them): `vitest run` board suites + `tsc --noEmit` clean;
 `playwright test tests/e2e/board.spec.ts` 15 passed (2.3m).
 
-## Ruling 6 — "The worker subtree is for board workers"
+## Rulings 6+7 — the EXISTING Workers group, provenance-populated; subtasks nest under their top-level parent
 
-> "The worker subtree is for board workers." — the sidebar's worker
-> subtree must show BOARD WORKERS. Today it structurally cannot: board
-> workers are spawned parentless/top-level (the wakeability invariant —
-> subagents cannot take wake-up turns; claims issue only to
-> spawner-minted top-level sessions), so they appear as flat rows and
-> no subtree ever contains them. What the user sees under a session
-> today are that session's genuine subagents (task-tool explorers) —
-> NOT board workers.
+> 6. "The workers group is the group to use, don't create a new one."
+> 7. "Subtasks spawned by a top-level task should show up under that
+>    top-level session. There's currently a bug where the latter is not
+>    happening."
+
+(Charter history: the original attempt-1 charter carried a "Board
+workers" rename framing; the charter was rewritten mid-flight to the
+verbatim rulings above — the EXISTING "Workers" folder stays, no new
+group. The label/aria revert is commit 4.)
 
 The #1966 "Workers" folder (0.44.4) classified `origin === 'worker' ||
-!!parentId` — so the folder held subagents (mislabeled as "workers")
-while the actual board workers sat among the flat roots. Ruling 6
-inverts that: the group is populated by PROVENANCE only.
+!!parentId` AND built the main tree from user sessions only AND
+rendered the folder as a flat `children: []` map — so a user session's
+Task-tool subagent could NEVER nest under it (ruling 7's reported bug)
+and a worker's subagents could never nest either. The fix: parentage
+no longer auto-banishes — parented sessions FOLLOW THEIR PARENT
+wherever it renders; the folder's roots are origin-class workers
+only, as a real tree.
 
 ### Frontend (Sidebar.tsx + sessionWorker.ts + sessionTree.ts)
 
+- The group keeps its name/testid/aria ("Workers", `workers-group`,
+  "Expand worker sessions"/"Collapse worker sessions") — ruling 6.
 - `isWorkerSession` drops the parentId arm: origin-class `worker`
   (the spawner's stamp) is the ONE signal. New `sortByRecentActivity`
   (most recent of lastMessageAt/lastSeenAt desc; timestamp-less sink,
@@ -195,3 +202,10 @@ suites) before ruling 6 was built on top. No PR existed before this
 attempt's push. Per the binding process ruling: PR opened, iterated
 with the pr-review.yml AI reviewer to APPROVE (verdict + head SHA in
 the PR), NOT merged — merging is the orchestrator's move.
+
+Attempt-1 lease lapse (honest record): the claim lapsed at 21:17:59Z
+while awaiting the first PR Review run (a sleep-poll gap exceeded the
+lease window); the engine re-granted as attempt 2 with the charter
+rewritten to the seven-ruling form. This session landed the ruling-6
+label revert (commit 4) on the shared branch so the successor
+inherits a charter-compliant head, then ceded the board writes.

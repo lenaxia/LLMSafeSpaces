@@ -1,7 +1,7 @@
 /**
  * #1966/ruling 6 worker-classification pins (2026-10-28): the pure
  * classifier that splits a workspace's live sessions between the
- * collapsed Board workers group and the main user-facing list.
+ * collapsed EXISTING Workers group and the main user-facing list.
  *
  * ONE signal (ruling 6 — "the worker subtree is for board workers"):
  * origin-class 'worker', the spawn-path provenance mark the board

@@ -149,7 +149,7 @@ describe("Sidebar — session hierarchy", () => {
     });
   });
 
-  it("collapsing the Board workers group hides the worker rows", async () => {
+  it("collapsing the Workers group hides the worker rows", async () => {
     (workspacesApi.getSessions as ReturnType<typeof vi.fn>).mockResolvedValue([
       { id: "worker", title: "Board worker", origin: "worker", messageCount: 1, status: "idle" },
       { id: "child", title: "Worker subtask", parentId: "worker", messageCount: 1, status: "idle" },
@@ -162,7 +162,7 @@ describe("Sidebar — session hierarchy", () => {
     await waitFor(() => expect(screen.getByText("Worker subtask")).toBeInTheDocument());
 
     // A human click collapses the group again.
-    fireEvent.click(screen.getByLabelText("Collapse board workers"));
+    fireEvent.click(screen.getByLabelText("Collapse worker sessions"));
 
     expect(screen.queryByText("Worker subtask")).not.toBeInTheDocument();
   });
@@ -213,7 +213,7 @@ describe("Sidebar — session hierarchy", () => {
     });
   });
 
-  it("keeps the user-expanded Board workers group across a sessions refetch", async () => {
+  it("keeps the user-expanded Workers group across a sessions refetch", async () => {
     // User expands the group without navigating into it; a refetch
     // must not clobber that state.
     (workspacesApi.getSessions as ReturnType<typeof vi.fn>).mockResolvedValue([
@@ -223,7 +223,7 @@ describe("Sidebar — session hierarchy", () => {
     renderSidebar();
     await waitFor(() => expect(screen.getByTestId("workers-group")).toBeInTheDocument());
 
-    fireEvent.click(screen.getByLabelText("Expand board workers"));
+    fireEvent.click(screen.getByLabelText("Expand worker sessions"));
     expect(screen.getByText("Board worker")).toBeInTheDocument();
 
     // Simulate the query refetching with the same data — the
@@ -318,7 +318,7 @@ describe("Sidebar — auto-expand/collapse setting", () => {
     });
   });
 
-  it("the Board workers group stays expanded when navigating between sessions", async () => {
+  it("the Workers group stays expanded when navigating between sessions", async () => {
     (workspacesApi.getSessions as ReturnType<typeof vi.fn>).mockResolvedValue([
       { id: "worker-a", title: "Worker A", origin: "worker", messageCount: 1, status: "idle" },
       { id: "worker-b", title: "Worker B", origin: "worker", messageCount: 1, status: "idle" },

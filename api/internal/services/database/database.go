@@ -1138,7 +1138,12 @@ func (s *Service) ListSessionIndex(ctx context.Context, workspaceID string) ([]t
 	// board/engine fresh-worker spawns, stamped at spawn by the board
 	// spawner; routine/workflow/api for the trigger classes). The mark
 	// is 1:1 (session_origins is PK'd on session_id); a session with
-	// no origin row reads origin-less (a manual user session).
+	// no origin row reads origin-less (a manual user session). The
+	// workspace guard casts uuid → text — session_origins.workspace_id
+	// is uuid, session_index.workspace_id is text, and the bare
+	// column-to-column compare is a hard `operator does not exist:
+	// uuid = text` error on Postgres (the ListWorkerSessions join in
+	// pkg/workflows/store.go uses the same ::text form).
 	rows, err := s.DB.QueryContext(ctx,
 		`SELECT si.session_id, si.title, si.parent_session_id, si.last_message_at, si.message_count,
 		        si.last_seen_at,
@@ -1154,7 +1159,7 @@ func (s *Service) ListSessionIndex(ctx context.Context, workspaceID string) ([]t
 	 LEFT JOIN session_index parent
 	   ON parent.workspace_id = si.workspace_id AND parent.session_id = si.parent_session_id
 	 LEFT JOIN session_origins so
-	   ON so.session_id = si.session_id AND so.workspace_id = si.workspace_id
+	   ON so.session_id = si.session_id AND so.workspace_id::text = si.workspace_id
 	 WHERE si.workspace_id = $1
 	   AND si.deleted_at IS NULL
 	 ORDER BY si.last_message_at DESC NULLS LAST, si.created_at DESC, si.session_id ASC`, workspaceID)

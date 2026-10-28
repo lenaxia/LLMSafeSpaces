@@ -1,7 +1,7 @@
 /**
  * #1966 worker-session classification, ruling 6 (2026-10-28 owner
  * batch): the pure signal that splits a workspace's live sessions
- * between the collapsed "Board workers" group and the main
+ * between the collapsed EXISTING "Workers" group and the main
  * user-facing list. Presentation-only — the classifier feeds
  * rendering, never the list query (search composes server-side over
  * the unchanged listing).
@@ -40,7 +40,7 @@ export function isWorkerSession(s: SessionListItem): boolean {
 }
 
 /**
- * Recent-activity sort for the Board workers group (ruling 6): most
+ * Recent-activity sort for the Workers group (ruling 6): most
  * recent of lastMessageAt / lastSeenAt first; sessions with no
  * timestamps sink to the end, falling back to alpha by title so the
  * order is deterministic. Mutates nothing — returns a sorted copy.

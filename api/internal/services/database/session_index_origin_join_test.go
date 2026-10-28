@@ -29,8 +29,11 @@ func TestListSessionIndex_JoinsSessionOrigins(t *testing.T) {
 	defer func() { _ = db.Close() }()
 
 	// The expectation's pattern must match the issued SQL as a regex;
-	// the join clause is the part this test exists to pin.
-	mock.ExpectQuery("LEFT JOIN session_origins so\\s+ON so.session_id = si.session_id AND so.workspace_id = si.workspace_id").
+	// the join clause is the part this test exists to pin. The ::text
+	// cast is load-bearing: session_origins.workspace_id is uuid,
+	// session_index.workspace_id is text, and the bare compare is a
+	// hard `uuid = text` operator error on real Postgres.
+	mock.ExpectQuery("LEFT JOIN session_origins so\\s+ON so.session_id = si.session_id AND so.workspace_id::text = si.workspace_id").
 		WithArgs("ws-1").
 		WillReturnRows(sqlmock.NewRows([]string{
 			"session_id", "title", "parent_session_id", "last_message_at",

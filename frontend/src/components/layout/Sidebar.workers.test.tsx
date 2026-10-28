@@ -149,13 +149,13 @@ describe("Sidebar — Board workers group (#1966/ruling 6)", () => {
 
     const group = screen.getByTestId("workers-group");
     expect(group).toBeTruthy();
-    expect(screen.getByText("Board workers")).toBeTruthy();
+    expect(screen.getByText("Workers")).toBeTruthy();
     // Count badge: 2 workers.
     expect(screen.getByText("2")).toBeTruthy();
     // Collapsed by default: worker titles render nowhere until clicked.
     expect(screen.queryByText("lane-1964 archived drawer")).toBeNull();
     expect(screen.queryByText("Reviewer verdict on triage")).toBeNull();
-    expect(screen.getByLabelText("Expand board workers")).toBeTruthy();
+    expect(screen.getByLabelText("Expand worker sessions")).toBeTruthy();
   });
 
   it("classifies by provenance ON the listing payload too (no /session-origins fallback needed)", async () => {
@@ -166,7 +166,7 @@ describe("Sidebar — Board workers group (#1966/ruling 6)", () => {
     renderSidebar();
     await waitFor(() => expect(screen.getByTestId("workers-group")).toBeTruthy());
     expect(screen.getByText("1")).toBeTruthy();
-    fireEvent.click(screen.getByLabelText("Expand board workers"));
+    fireEvent.click(screen.getByLabelText("Expand worker sessions"));
     expect(await screen.findByText("join-carried worker")).toBeTruthy();
   });
 
@@ -179,7 +179,7 @@ describe("Sidebar — Board workers group (#1966/ruling 6)", () => {
     ]);
     renderSidebar();
     await waitFor(() => expect(screen.getByTestId("workers-group")).toBeTruthy());
-    fireEvent.click(screen.getByLabelText("Expand board workers"));
+    fireEvent.click(screen.getByLabelText("Expand worker sessions"));
 
     const busyRow = await screen.findByText("Busy worker");
     expect(busyRow).toBeTruthy();
@@ -207,7 +207,7 @@ describe("Sidebar — Board workers group (#1966/ruling 6)", () => {
     // Collapsed: neither the worker nor its child renders.
     expect(screen.queryByText("Board worker")).toBeNull();
 
-    fireEvent.click(screen.getByLabelText("Expand board workers"));
+    fireEvent.click(screen.getByLabelText("Expand worker sessions"));
     expect(await screen.findByText("Board worker")).toBeTruthy();
     // The worker's child rides its subtree INTO the group — it is NOT
     // promoted to a main-list root (it never renders outside the
@@ -242,7 +242,7 @@ describe("Sidebar — Board workers group (#1966/ruling 6)", () => {
     // session) — unlike the Archived group's deliberate friction, a
     // live worker CAN be the active session the user is reading.
     expect(await screen.findByText("triage backfill G")).toBeTruthy();
-    expect(screen.getByLabelText("Collapse board workers")).toBeTruthy();
+    expect(screen.getByLabelText("Collapse worker sessions")).toBeTruthy();
   });
 
   it("auto-expands the group when the selected session is a worker's nested subagent", async () => {
@@ -253,7 +253,7 @@ describe("Sidebar — Board workers group (#1966/ruling 6)", () => {
     ]);
     renderSidebar("/chat/ws-1/ses-sub");
     expect(await screen.findByText("Nested explorer")).toBeTruthy();
-    expect(screen.getByLabelText("Collapse board workers")).toBeTruthy();
+    expect(screen.getByLabelText("Collapse worker sessions")).toBeTruthy();
   });
 
   it("routes an archived worker to the Archived group (archive outranks the worker class)", async () => {

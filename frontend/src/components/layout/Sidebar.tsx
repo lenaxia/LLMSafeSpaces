@@ -652,10 +652,12 @@ function WorkspaceSessionList({
     [mergedSessions],
   );
 
-  // Ruling 6 (2026-10-28): the worker subtree is for BOARD WORKERS.
+  // Rulings 6+7 (2026-10-28): the worker subtree is for board workers
+  // (the EXISTING Workers group — no new group), and parentage no
+  // longer banishes — subtasks nest under their top-level parent.
   // ONE tree is built over the full live set; its forest is then
   // partitioned by PROVENANCE — origin-class 'worker' roots leave the
-  // flat main list for the "Board workers" group (their genuine
+  // flat main list for the Workers group (their genuine
   // subagent children ride their subtrees INTO the group), everything
   // else stays main-list. Parentage alone no longer folders a session:
   // a Task-tool subagent nests beneath its own parent wherever that
@@ -666,7 +668,7 @@ function WorkspaceSessionList({
   );
   const tree = useMemo(() => buildSessionTree(liveSessions), [liveSessions]);
 
-  // Board workers (current AND past — idle included), sorted by recent
+  // Workers (current AND past — idle included), sorted by recent
   // activity. Empty list hides the group entirely (ruling 6).
   const workerRootNodes = useMemo(() => {
     const workers = tree.roots.filter((n) => isWorkerSession(n.session));
@@ -795,7 +797,7 @@ function WorkspaceSessionList({
   // auto-expands it (not even selecting an archived session).
   const [archivedExpanded, setArchivedExpanded] = useState(false);
 
-  // #1966/ruling 6: the Board workers group is collapsed by default
+  // #1966/rulings 6+7: the Workers group is collapsed by default
   // (the group IS the decluttering), but — unlike Archived — a live
   // worker CAN be the session the user is reading, so selecting a
   // worker (or one of its nested subagents) expands it (the tree's
@@ -1243,17 +1245,20 @@ interface WorkersGroupProps {
 }
 
 /**
- * #1966/ruling 6: the Board workers group — every BOARD-WORKER session
- * of this workspace (origin-class 'worker': board/engine fresh-worker
- * spawns, current AND past — idle included), rendered as a top-level
- * entry INSIDE the workspace's session list. Membership is provenance,
- * never parentage: a worker's genuine subagent children nest BENEATH
- * it here; subagents of user sessions stay in the main tree under
- * their parents. Rows are sorted by recent activity and fully usable
- * when expanded: open, rename, archive, delete, force stop — grouping
- * is presentation-only. Rendered only when at least one board worker
- * exists (hidden entirely otherwise); collapsed by default with a
- * count badge so activity stays visible without clutter.
+ * #1966/rulings 6+7 (2026-10-28): the EXISTING Workers folder — no
+ * new group — now populated by worker PROVENANCE with real nesting.
+ * Roots are origin-class 'worker' sessions (board/engine fresh-worker
+ * spawns, current AND past — idle included): parentage no longer
+ * auto-banishes (ruling 7 — subtasks nest under their top-level
+ * parent wherever it renders), so a user session's Task-tool subagents
+ * nest beneath it in the main tree, and a worker's genuine subagent
+ * children nest BENEATH it here (the folder is a real tree: shared
+ * SessionTreeRow renderer, working expand state). Rows are sorted by
+ * recent activity and fully usable when expanded: open, rename,
+ * archive, delete, force stop — grouping is presentation-only.
+ * Rendered only when at least one board worker exists (hidden
+ * entirely otherwise); collapsed by default with a count badge so
+ * activity stays visible without clutter.
  */
 function WorkersGroup({
   nodes,
@@ -1280,7 +1285,7 @@ function WorkersGroup({
         <button
           onClick={onToggleExpand}
           className="flex flex-1 items-center gap-1 rounded-md px-2 py-1.5 text-left text-sm text-muted-foreground"
-          aria-label={expanded ? "Collapse board workers" : "Expand board workers"}
+          aria-label={expanded ? "Collapse worker sessions" : "Expand worker sessions"}
           aria-expanded={expanded}
         >
           {expanded ? (
@@ -1289,7 +1294,7 @@ function WorkersGroup({
             <ChevronRight className="h-3 w-3 flex-shrink-0" />
           )}
           <Bot className="h-3 w-3 flex-shrink-0" aria-hidden="true" />
-          <span className="flex-1 truncate text-muted-foreground/80">Board workers</span>
+          <span className="flex-1 truncate text-muted-foreground/80">Workers</span>
           <span className="flex-shrink-0 text-xs text-muted-foreground/60">{nodes.length}</span>
         </button>
       </div>

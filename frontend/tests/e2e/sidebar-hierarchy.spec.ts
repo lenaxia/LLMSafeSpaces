@@ -89,7 +89,7 @@ test.describe("Sidebar Board workers group (#1966/ruling 6)", () => {
     // default on the first run.
     const group = page.getByTestId("workers-group");
     await expect(group).toBeVisible({ timeout: 15_000 });
-    await expect(group.getByText("Board workers")).toBeVisible();
+    await expect(group.getByText("Workers")).toBeVisible();
     await expect(group.getByText("1")).toBeVisible({ timeout: 15_000 });
     await expect(page.getByText("lane-1966 charter worker")).not.toBeVisible();
 
@@ -100,11 +100,11 @@ test.describe("Sidebar Board workers group (#1966/ruling 6)", () => {
     await expect(page.getByText("Orphaned task")).toBeVisible();
 
     // One click expands the group; the worker rows inside.
-    await page.getByLabel("Expand board workers").click();
+    await page.getByLabel("Expand worker sessions").click();
     await expect(page.getByText("lane-1966 charter worker")).toBeVisible();
 
     // Collapsing hides it again.
-    await page.getByLabel("Collapse board workers").click();
+    await page.getByLabel("Collapse worker sessions").click();
     await expect(page.getByText("lane-1966 charter worker")).not.toBeVisible();
   });
 

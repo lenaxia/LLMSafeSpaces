@@ -147,7 +147,7 @@ describe("Sidebar — Force Stop kebab menu item", () => {
 
     // Ruling 6: the subtask nests beneath its board worker inside the
     // group — open the group, then the worker's subtree.
-    fireEvent.click(screen.getByLabelText("Expand board workers"));
+    fireEvent.click(screen.getByLabelText("Expand worker sessions"));
     fireEvent.click(screen.getByLabelText("Expand subtasks"));
     expect(screen.getByText("Subtask child")).toBeInTheDocument();
 
