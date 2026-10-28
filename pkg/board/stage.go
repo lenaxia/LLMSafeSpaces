@@ -153,13 +153,13 @@ func (s *Service) moveStageTx(ctx context.Context, tx pgx.Tx, actor Actor, taskI
 	// before the table on the alias literal); 'failed' is the new
 	// failure terminus (nudge self-fail enters it; rearm exits it).
 	legal := map[[2]string]bool{
-		{StageInProgress, StageInReview}:   true,
-		{StageInProgress, StageDone}:       true,
-		{StageInProgress, StageFailed}:     true,
-		{StageInReview, StageInProgress}:   true,
-		{StageInReview, StageDone}:         true,
-		{StageInReview, StageFailed}:       true,
-		{StageBacklog, StagePendingInput}:  true, // flag-op alias (escalation-path shape; see cases)
+		{StageInProgress, StageInReview}:     true,
+		{StageInProgress, StageDone}:         true,
+		{StageInProgress, StageFailed}:       true,
+		{StageInReview, StageInProgress}:     true,
+		{StageInReview, StageDone}:           true,
+		{StageInReview, StageFailed}:         true,
+		{StageBacklog, StagePendingInput}:    true, // flag-op alias (escalation-path shape; see cases)
 		{StageInProgress, StagePendingInput}: true, // flag set
 		{StageInReview, StagePendingInput}:   true, // flag set
 		{StagePendingInput, StageBacklog}:    true, // flag clear → re-queue
