@@ -88,14 +88,17 @@ export function EpicDrawer({
         <Dialog.Overlay className="fixed inset-0 bg-black/40 z-50" />
         <Dialog.Content
           className="fixed right-0 top-0 z-50 flex h-full w-[22rem] max-w-[90vw] flex-col overflow-y-auto border-l border-border bg-background shadow-xl"
-          aria-label={`Epic ${epic.short_id}`}
+          aria-label={`Epic ${epic.title}`}
         >
-          <div className="flex items-center justify-between border-b border-border px-4 py-3">
-            <Dialog.Title className="flex items-center gap-2 text-sm font-semibold">
-              Epic <span className="font-mono text-xs text-muted-foreground">{epic.short_id}</span>
-              <Badge variant={epic.status === "active" ? "success" : "muted"} className="text-[10px]" data-testid="epic-status">
-                {epic.status}
-              </Badge>
+          <div className="flex items-center justify-between gap-2 border-b border-border px-4 py-3">
+            {/* 2026-10-28 ruling 4: the TITLE heads the drawer; the epc-
+             * id is the secondary line (this popup is the ONE place the
+             * id renders — the board chrome never shows it). */}
+            <Dialog.Title className="flex min-w-0 flex-col gap-0.5 text-sm font-semibold" data-testid="epic-drawer-title">
+              <span className="truncate">{epic.title}</span>
+              <span className="font-mono text-[10px] font-normal text-muted-foreground" data-testid="epic-drawer-short-id">
+                {epic.short_id}
+              </span>
             </Dialog.Title>
             <Dialog.Close asChild>
               <Button variant="ghost" size="sm" aria-label="Close"><X className="h-4 w-4" /></Button>
@@ -103,9 +106,11 @@ export function EpicDrawer({
           </div>
 
           <div className="flex flex-1 flex-col gap-3 px-4 py-3 text-xs">
-            <div>
-              <span className="font-medium">{epic.title}</span>
-              <span className="ml-2 text-muted-foreground">in {epic.project_name}</span>
+            <div className="flex items-center gap-2">
+              <Badge variant={epic.status === "active" ? "success" : "muted"} className="text-[10px]" data-testid="epic-status">
+                {epic.status}
+              </Badge>
+              <span className="text-muted-foreground">in {epic.project_name}</span>
             </div>
 
             <div className="rounded-md bg-muted/50 p-2" data-testid="epic-outcome">

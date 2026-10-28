@@ -75,41 +75,31 @@ describe("BoardPage #1832 — swimlane creation buttons + epic bands", () => {
     await waitFor(() => expect(mockCreateEpic).toHaveBeenCalledWith("proj-uuid-b", expect.objectContaining({ title: "Borealis epic" })));
   });
 
-  // --- Item 2: collapsible epic bands ----------------------------------------
+  // --- Item 2: epic rows (2026-10-28 rulings 2+3) -----------------------------
 
-  it("renders one collapsible band per epic inside the swimlane, tasks grouped beneath", async () => {
+  it("renders ONE ROW per epic — no nested task list, no collapse toggle", async () => {
     renderBoard();
-    // Wait for the read model (a card) before querying derived bands.
+    // Wait for the read model (a card) before querying derived rows.
     await screen.findByTestId("task-card-tsk-aaaa0001");
     const lane = screen.getByTestId("swimlane-prj-aaaa1111");
-    const bandE1 = lane.querySelector('[data-testid="epic-band-epic-uuid-1"]')!;
-    expect(bandE1).not.toBeNull();
+    const rowE1 = lane.querySelector('[data-testid="epic-band-epic-uuid-1"]')!;
+    expect(rowE1).not.toBeNull();
     expect(screen.getByTestId("epic-band-epic-uuid-2")).toBeInTheDocument();
 
-    // Tasks grouped beneath their band (Apollo: E1 → 4 tasks, E2 → 1).
-    for (const sid of ["tsk-aaaa0001", "tsk-bbbb0002", "tsk-cccc0003", "tsk-dddd0004"]) {
-      expect(lane.querySelector(`[data-testid="band-task-epic-uuid-1-${sid}"]`)).not.toBeNull();
-    }
-    expect(lane.querySelector('[data-testid="band-task-epic-uuid-2-tsk-eeee0005"]')).not.toBeNull();
-    expect(lane.querySelector('[data-testid="band-task-epic-uuid-1-tsk-eeee0005"]')).toBeNull();
+    // Ruling 2: NO task rows underneath — the titles ride the cards in
+    // the columns; the row carries title + counts only.
+    expect(lane.querySelectorAll('[data-testid^="band-task-"]').length).toBe(0);
+    expect(lane.querySelector('[data-testid="band-title-epic-uuid-1"]')!.textContent).toBe("E1");
+    // Derived progress rides the row (E1: 1 of 5 done — failures COUNT:
+    // failure is an attribute (#1823), not a stage; the local derivation
+    // matches the server's number exactly, r3).
+    expect(rowE1.textContent).toContain("1/5");
 
-    // Derived progress rides the band header (E1: 1 of 5 done). Failed
-    // tasks COUNT: the backend epic progress (pkg/board/reads.go) is
-    // count(*) FILTER (done) / count(*) with no failure exclusion —
-    // failure is an attribute (#1823), not a stage — so the local
-    // derivation must match the server's number exactly (r3: server
-    // truth and derived truth may not disagree).
-    expect(bandE1.textContent).toContain("1/5");
-
-    // Collapse hides the band's tasks (header stays); expand restores.
-    fireEvent.click(lane.querySelector('[data-testid="band-toggle-epic-uuid-1"]')!);
-    await waitFor(() => expect(lane.querySelector('[data-testid="band-task-epic-uuid-1-tsk-aaaa0001"]')).toBeNull());
-    expect(bandE1).toBeInTheDocument();
-    fireEvent.click(lane.querySelector('[data-testid="band-toggle-epic-uuid-1"]')!);
-    await waitFor(() => expect(lane.querySelector('[data-testid="band-task-epic-uuid-1-tsk-aaaa0001"]')).not.toBeNull());
+    // The collapse toggle is GONE with the nested list (nothing to fold).
+    expect(lane.querySelectorAll('[data-testid^="band-toggle-"]').length).toBe(0);
   });
 
-  it("clicking a band highlights its tasks and dims the swimlane's others (other swimlanes untouched)", async () => {
+  it("clicking an epic row highlights its tasks and dims the swimlane's others (other swimlanes untouched)", async () => {
     renderBoard();
     await screen.findByTestId("epic-band-epic-uuid-2");
     // Borealis's only task lives in the collapsed side columns — open
@@ -117,22 +107,22 @@ describe("BoardPage #1832 — swimlane creation buttons + epic bands", () => {
     fireEvent.click(screen.getAllByTestId("side-columns-toggle")[1]!);
     await screen.findByTestId("task-card-tsk-ffff0006");
 
-    // Select E2 in Apollo's swimlane.
-    fireEvent.click(screen.getByTestId("band-header-epic-uuid-2"));
+    // Select E2 in Apollo's swimlane (the ROW is the click surface).
+    fireEvent.click(screen.getByTestId("epic-band-epic-uuid-2"));
     await waitFor(() => {
       expect(screen.getByTestId("task-card-tsk-eeee0005").getAttribute("data-highlighted")).toBe("true");
     });
     for (const sid of ["tsk-aaaa0001", "tsk-bbbb0002", "tsk-cccc0003", "tsk-dddd0004"]) {
       expect(screen.getByTestId(`task-card-${sid}`).getAttribute("data-dimmed")).toBe("true");
     }
-    // The band itself carries the selection state.
+    // The row itself carries the selection state.
     expect(screen.getByTestId("epic-band-epic-uuid-2").getAttribute("data-selected")).toBe("true");
     // Borealis has no selection — its card is neither dimmed nor highlighted.
     expect(screen.getByTestId("task-card-tsk-ffff0006").getAttribute("data-dimmed")).toBeNull();
     expect(screen.getByTestId("task-card-tsk-ffff0006").getAttribute("data-highlighted")).toBeNull();
 
     // Click again → deselect: no dims or highlights anywhere.
-    fireEvent.click(screen.getByTestId("band-header-epic-uuid-2"));
+    fireEvent.click(screen.getByTestId("epic-band-epic-uuid-2"));
     await waitFor(() => expect(screen.getByTestId("task-card-tsk-aaaa0001").getAttribute("data-dimmed")).toBeNull());
     expect(screen.getByTestId("task-card-tsk-eeee0005").getAttribute("data-highlighted")).toBeNull();
   });
@@ -144,7 +134,7 @@ describe("BoardPage #1832 — swimlane creation buttons + epic bands", () => {
     renderBoard();
     await screen.findByTestId("epic-band-epic-uuid-2");
 
-    fireEvent.click(screen.getByTestId("band-header-epic-uuid-2"));
+    fireEvent.click(screen.getByTestId("epic-band-epic-uuid-2"));
     fireEvent.click(screen.getByTestId("new-task-prj-aaaa1111"));
 
     // The dialog names the selected epic as the landing zone (the
@@ -279,7 +269,7 @@ describe("BoardPage #1832 r2 — server epics, unhappy paths, reversion guards",
 
     // Select E2, then make the read model drop it (refetch without the
     // E2 row — a drag's invalidation drives the refetch).
-    fireEvent.click(screen.getByTestId("band-header-epic-uuid-2"));
+    fireEvent.click(screen.getByTestId("epic-band-epic-uuid-2"));
     expect(screen.getByTestId("epic-band-epic-uuid-2").getAttribute("data-selected")).toBe("true");
 
     const withoutE2 = defaultTasks().filter((t) => t.id !== "task-uuid-5");
@@ -295,28 +285,17 @@ describe("BoardPage #1832 r2 — server epics, unhappy paths, reversion guards",
     expect(mockCreateTask).not.toHaveBeenCalled();
   });
 
-  // --- Finding 2: filtered bands distinguish empty from filtered-out -------
+  // --- Finding 2 (2026-10-28 rework): the epic ROW no longer nests a
+  // task list, so the filtered-vs-empty distinction moved onto the
+  // row itself — a zero-task epic keeps its row (existence) with 0/0.
 
-  it("a band whose tasks are all filtered out says so — not 'No tasks yet.'", async () => {
-    renderBoard();
-    await screen.findByTestId("epic-band-epic-uuid-2");
-
-    // E2's only task (tsk-eeee0005) is in the lane; search for E1's
-    // task titles so E2's row is filtered out of the lane.
-    const search = screen.getByTestId("board-search");
-    fireEvent.change(search, { target: { value: "Write charter" } });
-
-    const bandE2 = screen.getByTestId("epic-band-epic-uuid-2");
-    await waitFor(() => expect(bandE2.querySelector('[data-testid="band-filtered-empty-epic-uuid-2"]')).not.toBeNull());
-    expect(bandE2.querySelector('[data-testid="band-empty-epic-uuid-2"]')).toBeNull();
-  });
-
-  it("a taskless epic's band keeps 'No tasks yet.' when no filter hides anything", async () => {
+  it("a taskless epic's row keeps its 0/0 counts (existence is the row, not its rows)", async () => {
     mockListProjectEpics.mockResolvedValue([ZERO_TASK_EPIC]);
     renderBoard();
-    const band = await screen.findByTestId("epic-band-epic-uuid-zero");
-    expect(band.querySelector('[data-testid="band-empty-epic-uuid-zero"]')).not.toBeNull();
-    expect(band.querySelector('[data-testid="band-filtered-empty-epic-uuid-zero"]')).toBeNull();
+    const row = await screen.findByTestId("epic-band-epic-uuid-zero");
+    expect(row.textContent).toContain("Quiet epic");
+    expect(row.textContent).toContain("0/0");
+    expect(row.querySelectorAll('[data-testid^="band-task-"]').length).toBe(0);
   });
 
   // --- Finding 3a: unhappy paths for the new creation flows -----------------
@@ -343,7 +322,7 @@ describe("BoardPage #1832 r2 — server epics, unhappy paths, reversion guards",
     renderBoard();
     await screen.findByTestId("epic-band-epic-uuid-2");
 
-    fireEvent.click(screen.getByTestId("band-header-epic-uuid-2"));
+    fireEvent.click(screen.getByTestId("epic-band-epic-uuid-2"));
     fireEvent.click(screen.getByTestId("new-task-prj-aaaa1111"));
     const title = await screen.findByTestId("task-title");
     fireEvent.change(title, { target: { value: "Doomed task" } });
@@ -357,31 +336,32 @@ describe("BoardPage #1832 r2 — server epics, unhappy paths, reversion guards",
     expect((screen.getByTestId("task-title") as HTMLInputElement).value).toBe("Doomed task");
   });
 
-  // --- Finding 3b: reversion guards for the r1 fixes ------------------------
+  // --- Finding 3b: reversion guards for the row shape (2026-10-28
+  // rework: no nested task rows / no collapse toggle exist anymore, so
+  // the guard pins what replaced them — the row is the selection
+  // surface and the kebab never selects).
 
-  it("band container and task-row clicks never select (selection is the header row only)", async () => {
+  it("the row click selects; the kebab (the only nested control) never does", async () => {
     renderBoard();
     // epic-uuid-1 spans BOTH lanes (same-id epic across projects) —
     // scope every epic-uuid-1 query to Apollo's swimlane.
     const lane = await screen.findByTestId("swimlane-prj-aaaa1111");
-    await waitFor(() => expect(lane.querySelector('[data-testid="epic-band-epic-uuid-1"]')).not.toBeNull());
+    const rowE1 = await waitFor(() => {
+      const el = lane.querySelector('[data-testid="epic-band-epic-uuid-1"]')!;
+      expect(el).not.toBeNull();
+      return el;
+    });
 
-    // A task-row click opens the task dialog AND leaves the band
-    // unselected (a container-level onClick would select on the bubbling
-    // click — the exact hit-testing bug the r1 fix moved to the header).
-    fireEvent.click(lane.querySelector('[data-testid="band-task-epic-uuid-1-tsk-aaaa0001"]')!);
-    await screen.findByTestId("task-title");
-    expect(lane.querySelector('[data-testid="epic-band-epic-uuid-1"]')!.getAttribute("data-selected")).toBeNull();
+    // A row click selects.
+    fireEvent.click(rowE1);
+    expect(rowE1.getAttribute("data-selected")).toBe("true");
+    fireEvent.click(rowE1);
+    expect(rowE1.getAttribute("data-selected")).toBeNull();
 
-    // The toggle collapses without selecting.
-    fireEvent.click(screen.getByTestId("band-toggle-epic-uuid-2"));
-    await waitFor(() => expect(screen.queryByTestId("band-task-epic-uuid-2-tsk-eeee0005")).toBeNull());
-    expect(screen.getByTestId("epic-band-epic-uuid-2").getAttribute("data-selected")).toBeNull();
-
-    // A click on the band CONTAINER itself (outside the header row)
-    // never selects.
-    fireEvent.click(lane.querySelector('[data-testid="epic-band-epic-uuid-1"]')!);
-    expect(lane.querySelector('[data-testid="epic-band-epic-uuid-1"]')!.getAttribute("data-selected")).toBeNull();
+    // The kebab trigger stops propagation — opening the menu never
+    // toggles the selection.
+    fireEvent.click(lane.querySelector('[data-testid="epic-kebab-epic-uuid-1"]')!);
+    expect(rowE1.getAttribute("data-selected")).toBeNull();
   });
 
   it("each swimlane renders ONLY its own project's task rows (seedBoard exact-pid guard)", async () => {
@@ -466,7 +446,7 @@ describe("BoardPage #1832 r3 — server truth supersedes session-known epics", (
 
     // Select it and create a task inside (success → invalidation → the
     // epics list refetch reports the task: 0 done / 1 total).
-    fireEvent.click(screen.getByTestId("band-header-epic-uuid-live"));
+    fireEvent.click(screen.getByTestId("epic-band-epic-uuid-live"));
     fireEvent.click(screen.getByTestId("new-task-prj-aaaa1111"));
     const taskTitle = await screen.findByTestId("task-title");
     expect(screen.getByText("in Live epic")).toBeInTheDocument();
@@ -495,16 +475,19 @@ describe("BoardPage #1832 r3 — server truth supersedes session-known epics", (
     renderBoard();
     await screen.findByTestId("task-card-tsk-aaaa0001");
 
-    // Open the drawer via the epic chip's double-click (adds the known
-    // copy for an epic the task-derived model doesn't carry) — the band
-    // then renders from the known bridge.
-    fireEvent.dblClick(screen.getByText("E1", { selector: "button" }));
+    // Open the drawer via an epic ROW's double-click (the mock ignores
+    // the requested id and returns the follow epic — the GET mints the
+    // known copy for an epic the task-derived model doesn't carry) —
+    // the row then renders from the known bridge. epic-uuid-1 spans
+    // BOTH lanes (same-id epic across projects) — scope to Apollo.
+    const laneA = screen.getByTestId("swimlane-prj-aaaa1111");
+    fireEvent.dblClick(laneA.querySelector('[data-testid="epic-band-epic-uuid-1"]')!);
     await screen.findByTestId("epic-status");
     // The known bridge renders its band while the list hasn't arrived.
     await screen.findByTestId("epic-band-epic-uuid-follow");
 
     // Trigger the invalidation (any successful board write).
-    fireEvent.click(screen.getByTestId("band-header-epic-uuid-2"));
+    fireEvent.click(screen.getByTestId("epic-band-epic-uuid-2"));
     fireEvent.click(screen.getByTestId("new-task-prj-aaaa1111"));
     const t = await screen.findByTestId("task-title");
     fireEvent.change(t, { target: { value: "Trigger" } });

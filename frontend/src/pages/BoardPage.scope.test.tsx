@@ -9,8 +9,10 @@ import {
   mockListProjectTasks,
 } from "./boardTestUtils";
 
-// §4.8 scope switcher: swimlane focus (project), epic chips, tag filters,
+// §4.8 scope switcher: swimlane focus (project), tag/failed filters,
 // search with did-you-mean (0066 shape over loaded rows).
+// 2026-10-28 ruling 1: the epic pills are GONE from the toolbar —
+// only real filters (stage overlay, tag facets) remain there.
 
 describe("BoardPage — scope switcher (project/epic focus)", () => {
   beforeEach(() => {
@@ -34,26 +36,19 @@ describe("BoardPage — scope switcher (project/epic focus)", () => {
     expect(mockListProjectTasks).toHaveBeenCalledWith("proj-uuid-a", undefined);
   });
 
-  it("epic chips filter within the focused scope and reset with All epics", async () => {
+  // 2026-10-28 ruling 1: the epic pills are removed from the toolbar —
+  // the REAL filters (FAILED overlay, tag facets) stay, and no epic
+  // renders as a pill anywhere in the header.
+  it("renders NO epic pills; the tag and FAILED filters remain", async () => {
     renderBoard();
     await screen.findByTestId("task-card-tsk-aaaa0001");
-    expect(screen.getByTestId("task-card-tsk-eeee0005")).toBeInTheDocument();
 
-    // Both epic chips are visible in the All-projects scope.
-    const chipE1 = screen.getByText("E1", { selector: "button" });
-    fireEvent.click(chipE1);
-    await waitFor(() => expect(screen.queryByTestId("task-card-tsk-eeee0005")).toBeNull());
-    expect(screen.getByTestId("task-card-tsk-aaaa0001")).toBeInTheDocument();
-
-    fireEvent.click(screen.getByTestId("epic-chip-all"));
-    await waitFor(() => expect(screen.getByTestId("task-card-tsk-eeee0005")).toBeInTheDocument());
-  });
-
-  it("derives epic chips from task rows (display inheritance, R2)", async () => {
-    renderBoard();
-    await screen.findByTestId("task-card-tsk-aaaa0001");
-    expect(screen.getByText("E1", { selector: "button" })).toBeInTheDocument();
-    expect(screen.getByText("E2", { selector: "button" })).toBeInTheDocument();
+    expect(screen.queryByTestId("epic-chip-all")).toBeNull();
+    expect(screen.queryByText("E1", { selector: "button" })).toBeNull();
+    expect(screen.queryByText("E2", { selector: "button" })).toBeNull();
+    // The actual filters stay.
+    expect(screen.getByTestId("failed-filter-toggle")).toBeInTheDocument();
+    expect(screen.getByTestId("tag-filter-pr:1702")).toBeInTheDocument();
   });
 
   it("tag chips filter by tag", async () => {
@@ -81,18 +76,20 @@ describe("BoardPage — scope switcher (project/epic focus)", () => {
     expect(screen.queryByTestId("task-card-tsk-aaaa0001")).toBeNull();
   });
 
-  it("renders did-you-mean suggestions on a near-miss short id search (0066 shape)", async () => {
+  it("renders did-you-mean suggestions on a near-miss id search (title labels, 0066 shape)", async () => {
     renderBoard();
     await screen.findByTestId("task-card-tsk-aaaa0001");
 
     fireEvent.change(screen.getByTestId("board-search"), { target: { value: "tsk-aaaa0009" } });
     const miss = await screen.findByTestId("board-search-miss");
     expect(miss.textContent).toContain("No match");
-    // one edit from tsk-aaaa0001 → suggested
-    expect(miss.textContent).toContain("tsk-aaaa0001");
+    // 2026-10-28 ruling 4: the suggestion is labeled by TITLE (one edit
+    // from tsk-aaaa0001 → suggested); the id never renders in the chrome.
+    expect(miss.textContent).toContain("Write charter");
+    expect(miss.textContent).not.toContain("tsk-aaaa0001");
 
-    // clicking the suggestion applies it
-    fireEvent.click(screen.getByText("tsk-aaaa0001"));
+    // clicking the suggestion applies it (searches by the title)
+    fireEvent.click(screen.getByText("Write charter"));
     await waitFor(() => expect(screen.getByTestId("task-card-tsk-aaaa0001")).toBeInTheDocument());
     expect(screen.queryByTestId("board-search-miss")).toBeNull();
   });

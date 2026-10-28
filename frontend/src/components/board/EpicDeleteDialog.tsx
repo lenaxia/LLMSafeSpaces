@@ -58,8 +58,11 @@ export function EpicDeleteDialog({ open, onOpenChange, epic, epicTasks, onDelete
           className="fixed left-1/2 top-1/2 z-50 flex w-[28rem] max-w-[calc(100vw-2rem)] -translate-x-1/2 -translate-y-1/2 flex-col gap-3 rounded-md border border-border bg-background p-4 shadow-xl"
           data-testid="epic-delete-modal"
         >
-          <Dialog.Title className="text-sm font-semibold">
-            Delete epic <span className="font-mono text-xs">{epic?.short_id}</span>
+          <Dialog.Title className="text-sm font-semibold" data-testid="epic-delete-title">
+            {/* 2026-10-28 ruling 4: the TITLE leads; the id is the
+             * secondary mono ref (click-through popup — ids allowed). */}
+            Delete epic <span className="font-medium">{epic?.title}</span>{" "}
+            <span className="font-mono text-xs text-muted-foreground">{epic?.short_id}</span>
           </Dialog.Title>
           <Dialog.Description className="text-xs text-muted-foreground">
             Destructive and permanent — “{epic?.title}” and every task under it are removed (each
@@ -87,8 +90,9 @@ export function EpicDeleteDialog({ open, onOpenChange, epic, epicTasks, onDelete
               </span>
               <ul className="ml-3 list-disc">
                 {inFlight.map((t) => (
-                  <li key={t.short_id} className="font-mono text-[11px]">
-                    {t.short_id} <span className="font-sans text-muted-foreground">{t.title}</span>
+                  <li key={t.short_id} className="text-[11px]">
+                    <span className="font-sans">{t.title}</span>{" "}
+                    <span className="font-mono text-[10px] text-muted-foreground">{t.short_id}</span>
                     <span className="ml-1 font-sans text-[10px] text-muted-foreground/70">
                       ({t.assignee_session})
                     </span>

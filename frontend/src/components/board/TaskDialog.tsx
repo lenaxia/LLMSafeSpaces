@@ -130,7 +130,10 @@ export function TaskDialog({
             <Dialog.Title className="text-sm font-semibold">
               {editing ? (
                 <>
-                  Task <span className="font-mono text-xs text-muted-foreground">{task?.short_id}</span>
+                  {/* 2026-10-28 ruling 4: the TITLE leads; the id is the
+                   * secondary mono ref (click-through popup — ids allowed). */}
+                  Task <span className="font-medium">{task?.title}</span>{" "}
+                  <span className="font-mono text-xs text-muted-foreground">{task?.short_id}</span>
                   {epic === null && task && <span className="ml-2 text-xs text-muted-foreground">{task.epic_name}</span>}
                 </>
               ) : (
