@@ -227,10 +227,10 @@ describe("BoardPage #1832 item 3 — kebab menus + delete flows", () => {
 
     // The in-flight worker is surfaced from the read model, pre-flight.
     expect(screen.getByTestId("epic-delete-inflight").textContent).toContain("tsk-bbbb0002");
-    // The cascade size is honest (6 tasks carry this epic id after
-    // #1823's failed-state fixture joined epic-uuid-1: the five Apollo
-    // rows + the Borealis row sharing the fixture's epic id).
-    expect(screen.getByTestId("epic-delete-cascade-count")).toHaveTextContent("6");
+    // The cascade size is honest (7 tasks carry this epic id after the
+    // failed-state and escalated fixtures joined epic-uuid-1: the five
+    // Apollo rows + the two Borealis rows sharing the fixture's epic id).
+    expect(screen.getByTestId("epic-delete-cascade-count")).toHaveTextContent("7");
 
     // First attempt: NO force (matches the API's refuse-unless-force).
     fireEvent.click(screen.getByTestId("confirm-delete-epic"));

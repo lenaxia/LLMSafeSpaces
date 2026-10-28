@@ -534,6 +534,10 @@ export interface BoardTask {
   title: string;
   description: string;
   stage: string;
+  /** 000050: pending_input is a FLAG riding the real stage (never a
+   * stored stage; `failed` is the stored failure terminus) — render a
+   * badge where the work lives. */
+  pending_input: boolean;
   paused: boolean;
   waiting_on?: string;
   backpressure?: string;
@@ -569,7 +573,9 @@ export interface BoardClaim {
   claim_token?: string;
   assignee?: string;
   lease_expires_at?: string;
-  /** true = attempts cap reached; the task waits in pending_input instead. */
+  /** true = attempts cap reached; the grant was withheld and the row
+   * landed `failed` with origin `escalated` (000050 — the failure
+   * terminus the re-arm exits; pending_input is a flag, not a stage). */
   escalated: boolean;
   task?: BoardTask;
 }

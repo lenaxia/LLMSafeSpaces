@@ -101,20 +101,25 @@ describe("BoardPage — kanban/swimlanes render (§4.8)", () => {
     expect(card.querySelector("[data-pr-anchor]")?.textContent).toBe("pr:1702");
   });
 
-  it("collapses Pending Input + Cancelled side columns until toggled", async () => {
+  it("collapses the Failed side column until toggled", async () => {
     renderBoard();
     await screen.findByTestId("swimlane-prj-aaaa1111");
-    expect(screen.queryByTestId("stage-drop-pending_input")).toBeNull();
+    expect(screen.queryByTestId("stage-drop-failed")).toBeNull();
     screen.getAllByTestId("side-columns-toggle")[0]!.click();
-    await waitFor(() => expect(screen.getAllByTestId("stage-drop-pending_input").length).toBeGreaterThan(0));
+    await waitFor(() => expect(screen.getAllByTestId("stage-drop-failed").length).toBeGreaterThan(0));
   });
 
-  it("shows the pending-origin badge on pending rows", async () => {
+  it("shows the pending badge on the REAL stage (000050: a flag, never a costume column)", async () => {
     renderBoard();
-    await screen.findByTestId("task-card-tsk-bbbb0002");
+    // The flagged in_progress row wears its badge in the work column…
+    const flagged = await screen.findByTestId("task-card-tsk-ffff0006");
+    expect(flagged.dataset.stage).toBe("in_progress");
+    expect(flagged.textContent).toContain("Worker question");
+    // …and the escalated FAILED row carries the re-arm marker in the
+    // side column.
     screen.getAllByTestId("side-columns-toggle")[0]!.click();
-    const card = await screen.findByTestId("task-card-tsk-ffff0006");
-    expect(card.textContent).toContain("Escalated");
+    const escalated = await screen.findByTestId("task-card-tsk-ffff0008");
+    expect(escalated.textContent).toContain("Escalated");
   });
 
   it("renders the empty state when no projects exist", async () => {

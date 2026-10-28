@@ -164,24 +164,24 @@ describe("BoardPage — drag: optimistic, server-arbitrated, honest guards", () 
     await waitFor(() => expect(mockMoveStage).toHaveBeenCalledWith("tsk-cccc0003", "done", "https://pr/1"));
   });
 
-  it("drops onto the collapsed side columns too (pending_input exit)", async () => {
+  it("drops onto the collapsed Failed side column too (the in_review exit)", async () => {
     const seeded = seedBoard();
     mockMoveStage.mockImplementation(async () => {
-      // The server's authoritative row lands pending_input; the reseed
-      // (query invalidation) must reflect it or the card snaps back.
-      const updated = { ...TASK_IN_REVIEW, stage: "pending_input", pending_origin: "worker" };
+      // The server's authoritative row lands failed; the reseed (query
+      // invalidation) must reflect it or the card snaps back.
+      const updated = { ...TASK_IN_REVIEW, stage: "failed", pending_origin: "escalated" };
       seedBoard(seeded.map((t) => (t.short_id === updated.short_id ? updated : t)));
       return updated;
     });
     renderBoard();
     await screen.findByTestId("task-card-tsk-cccc0003");
     screen.getAllByTestId("side-columns-toggle")[0]!.click();
-    await screen.findAllByTestId("stage-drop-pending_input");
+    await screen.findAllByTestId("stage-drop-failed");
 
-    dragCardTo("tsk-cccc0003", "pending_input");
-    await waitFor(() => expect(mockMoveStage).toHaveBeenCalledWith("tsk-cccc0003", "pending_input", undefined));
+    dragCardTo("tsk-cccc0003", "failed");
+    await waitFor(() => expect(mockMoveStage).toHaveBeenCalledWith("tsk-cccc0003", "failed", undefined));
     await waitFor(() => {
-      expect(screen.getByTestId("task-card-tsk-cccc0003").closest('[data-stage-drop="pending_input"]')).not.toBeNull();
+      expect(screen.getByTestId("task-card-tsk-cccc0003").closest('[data-stage-drop="failed"]')).not.toBeNull();
     });
   });
 

@@ -57,6 +57,11 @@ export interface BoardTask {
   title: string;
   description: string;
   stage: string;
+  /** 000050: pending_input is a FLAG riding the real stage (never a
+   * stored stage) — render a badge where the work lives, not a costume
+   * column. pending_origin carries the flag's provenance (also set on
+   * failed/escalated rows: the re-arm queue's marker). */
+  pending_input: boolean;
   pending_origin?: string | null;
   paused: boolean;
   waiting_on?: string;

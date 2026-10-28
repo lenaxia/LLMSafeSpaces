@@ -23,25 +23,40 @@
  */
 
 // --- Stages (ruling R2's binding vocabulary) ----------------------------------
+//
+// 000050 (the seamless lease): `pending_input` is a FLAG on the row, not
+// a stored stage — a flagged task keeps its real stage (the blocked
+// thing lives where the work lives) and renders a badge; `failed` is the
+// failure terminus (attempts exhaustion + the wedge verdict), the side
+// column where escalated rows park pending a re-arm. The WIRE keeps the
+// pending_input literal as the flag-op alias (filters and move-stage
+// targets translate engine-side), so STAGE_PENDING_INPUT below remains
+// the OP vocabulary, never a column.
 
 export const STAGE_BACKLOG = "backlog";
 export const STAGE_IN_PROGRESS = "in_progress";
 export const STAGE_IN_REVIEW = "in_review";
 export const STAGE_DONE = "done";
-export const STAGE_PENDING_INPUT = "pending_input";
+export const STAGE_FAILED = "failed";
 
+/** The stored-stage vocabulary (what columns can hold). */
 export const BOARD_STAGES = [
   STAGE_BACKLOG,
   STAGE_IN_PROGRESS,
   STAGE_IN_REVIEW,
   STAGE_DONE,
-  STAGE_PENDING_INPUT,
+  STAGE_FAILED,
 ] as const;
 
 export type BoardStage = (typeof BOARD_STAGES)[number];
 
-/** The four through-flow columns; Pending Input + Cancelled render as
- * collapsible side columns (§4.8 "Kanban"). */
+/** The pending_input WIRE alias — the flag-op target for moves and the
+ * flag filter literal (the engine maps both); never a rendered column. */
+export const STAGE_PENDING_INPUT = "pending_input";
+
+/** The four through-flow columns; Failed renders as the collapsible
+ * side column (§4.8 "Kanban"; pending_input rows stay in their real
+ * stage wearing the badge). */
 export const MAIN_STAGES: BoardStage[] = [
   STAGE_BACKLOG,
   STAGE_IN_PROGRESS,
@@ -49,14 +64,14 @@ export const MAIN_STAGES: BoardStage[] = [
   STAGE_DONE,
 ];
 
-export const SIDE_STAGES: BoardStage[] = [STAGE_PENDING_INPUT];
+export const SIDE_STAGES: BoardStage[] = [STAGE_FAILED];
 
 export const STAGE_LABELS: Record<BoardStage, string> = {
   [STAGE_BACKLOG]: "Backlog",
   [STAGE_IN_PROGRESS]: "In Progress",
   [STAGE_IN_REVIEW]: "In Review",
   [STAGE_DONE]: "Done",
-  [STAGE_PENDING_INPUT]: "Pending Input",
+  [STAGE_FAILED]: "Failed",
 };
 
 /** pending_origin (§4.1) — the health grouping's by-origin labels. */
@@ -70,23 +85,36 @@ export const PENDING_ORIGIN_LABELS: Record<string, string> = {
 // --- The stage machine, manager-surface view ----------------------------------
 //
 // The engine's enumerated set (stage.go moveStageTx): in_progress →
-// {in_review, done, pending_input}, in_review → {in_progress, done,
-// pending_input}, pending_input → {backlog, in_progress}. backlog rows
-// leave via the engine's claim (task_start is the manual path), and
-// from-stage in_progress writes additionally require the LIVE CLAIM
-// TOKEN — which the REST manager surface never holds (§4.2: in-flight
-// writes fail the token guard and snap back). So the UI's drag-affordance
-// mirror for the owner omits in_progress sources; a raced/claimed drag
-// still attempts and renders the engine's honest 409 (claim_token /
+// {in_review, done, pending_input-flag, failed}, in_review →
+// {in_progress, done, pending_input-flag, failed}, a FLAGGED row →
+// {backlog, in_progress} (the flag-op alias — the row's real stage never
+// moved), failed → backlog (re-arm only). backlog rows leave via the
+// engine's claim (task_start is the manual path), and from-stage
+// in_progress writes additionally require the LIVE CLAIM TOKEN — which
+// the REST manager surface never holds (§4.2: in-flight writes fail the
+// token guard and snap back). So the UI's drag-affordance mirror for the
+// owner omits unflagged in_progress sources; a raced/claimed drag still
+// attempts and renders the engine's honest 409 (claim_token /
 // stage_transition).
 
 const MANAGER_DRAG_TRANSITIONS = new Set<string>([
   `${STAGE_IN_REVIEW}→${STAGE_IN_PROGRESS}`,
   `${STAGE_IN_REVIEW}→${STAGE_DONE}`,
+  `${STAGE_IN_REVIEW}→${STAGE_FAILED}`,
+  // The flag-op alias: TO pending_input parks an UNFLAGGED in_review
+  // row (deliberate/drift-review park); FROM pending_input is the drag
+  // key of a FLAGGED row (its exits clear the flag).
   `${STAGE_IN_REVIEW}→${STAGE_PENDING_INPUT}`,
   `${STAGE_PENDING_INPUT}→${STAGE_BACKLOG}`,
   `${STAGE_PENDING_INPUT}→${STAGE_IN_PROGRESS}`,
 ]);
+
+/** stageDragKey is the drag source key for the affordance mirror: a
+ * pending_input-FLAGGED task drags as the flag alias (its exits are the
+ * flag-op pairs), everything else as its real stage. */
+export function stageDragKey(task: { stage: string; pending_input?: boolean }): string {
+  return task.pending_input ? STAGE_PENDING_INPUT : task.stage;
+}
 
 /** Whether the owner's drag affordance should offer from→to at all
  * (mirror of stage.go's legal map minus the token-guarded in_progress
