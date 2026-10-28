@@ -2,7 +2,7 @@
  * #1966/ruling 6 (2026-10-28 owner batch) Sidebar Board-workers-group
  * tests: board/engine-spawned worker sessions (origin-class 'worker'
  * spawn provenance — current AND past, idle included) render inside a
- * collapsed-by-default "Board workers" group with a count badge —
+ * collapsed-by-default "Workers" group with a count badge —
  * never as flat roots of the main list — while user-facing sessions
  * keep the main list. Membership is provenance, NEVER parentage: a
  * worker's genuine subagent children nest BENEATH it inside the group,
@@ -20,6 +20,9 @@ import { Sidebar } from "./Sidebar";
 import { AuthProvider } from "../../providers/AuthProvider";
 
 const busySessions = new Set<string>();
+// Pending-action ids the mocked provider reports (the pending-input
+// indicator gate is one of the things this suite pins).
+const pendingActionSessions = new Set<string>();
 
 vi.mock("../../providers/SessionActivityProvider", () => ({
   useIsSessionAborted: () => false,
@@ -29,7 +32,7 @@ vi.mock("../../providers/SessionActivityProvider", () => ({
   useWorkspaceHung: () => false,
   useClearPendingUnread: () => () => {},
   useIsSessionPendingAction: () => false,
-  useSessionPendingActions: () => new Set<string>(),
+  useSessionPendingActions: () => new Set(pendingActionSessions),
   useAddPendingAction: () => () => {},
   useAddPendingQuestion: () => () => {},
   useAddPendingPermission: () => () => {},
@@ -86,7 +89,7 @@ function session(id: string, title: string, overrides: Record<string, unknown> =
   };
 }
 
-describe("Sidebar — Board workers group (#1966/ruling 6)", () => {
+describe("Sidebar — Workers group (#1966/ruling 6)", () => {
   let qc: QueryClient;
 
   beforeEach(() => {
@@ -267,9 +270,62 @@ describe("Sidebar — Board workers group (#1966/ruling 6)", () => {
     renderSidebar();
     await waitFor(() => expect(screen.getByTestId("archived-group")).toBeTruthy());
     // Archived workers count only under Archived — not a second time
-    // under Board workers.
+    // under the Workers group.
     expect(screen.queryByTestId("workers-group")).toBeNull();
   });
+
+  it("roots an ORPHANED worker in the group too (provenance follows orphans — never a flat main-list root)", async () => {
+    // Review r1 edge: a worker-origin session whose parentId points at
+    // a DELETED session (tree.orphans). The provenance split must hold
+    // for orphans exactly as for roots: the worker rows inside the
+    // group; the main list never gains a flat worker root.
+    (workspacesApi.getSessions as ReturnType<typeof vi.fn>).mockResolvedValue([
+      session("ses-user", "My chat"),
+      // Parent ses-deleted-parent is absent from the listing.
+      session("ses-orphan-worker", "Orphaned lane worker", { origin: "worker", parentId: "ses-deleted-parent" }),
+      // A non-worker orphan still promotes to a visible main-list row.
+      session("ses-orphan-user", "Orphaned user subagent", { parentId: "ses-deleted-parent" }),
+    ]);
+    renderSidebar();
+    await waitFor(() => expect(screen.getByTestId("workers-group")).toBeTruthy());
+    // Group count 1: the orphaned worker counts as a worker root.
+    expect(screen.getByText("1")).toBeTruthy();
+    fireEvent.click(screen.getByLabelText("Expand worker sessions"));
+    expect(await screen.findByText("Orphaned lane worker")).toBeTruthy();
+
+    // The non-worker orphan stays visible in the main list (promoted
+    // top-level row); the worker does NOT render there.
+    expect(screen.getByText("My chat")).toBeTruthy();
+    expect(screen.getByText("Orphaned user subagent")).toBeTruthy();
+    expect(screen.queryByText("Orphaned lane worker")).toBeTruthy(); // only inside the (now expanded) group
+  });
+
+  it("shows the pending-input indicator on a worker awaiting input INSIDE the group (group roots are bubble targets)", async () => {
+    // Review r1: the pending gate used to fire only at depth === 0,
+    // which the group's indented rows (depth 1) never reached — the
+    // claimed "pending indicators bubble worker subtrees" was inert.
+    // Group roots are top-level in the indicator sense now: a worker
+    // with a pending action pulses inside the group.
+    pendingActionSessions.add("ses-worker-pending");
+    (workspacesApi.getSessions as ReturnType<typeof vi.fn>).mockResolvedValue([
+      session("ses-user", "My chat"),
+      session("ses-worker-pending", "Worker awaiting input", { origin: "worker" }),
+      session("ses-worker-quiet", "Quiet worker", { origin: "worker" }),
+    ]);
+    renderSidebar();
+    await waitFor(() => expect(screen.getByTestId("workers-group")).toBeTruthy());
+    fireEvent.click(screen.getByLabelText("Expand worker sessions"));
+
+    const pendingTitle = await screen.findByText("Worker awaiting input");
+    expect(pendingTitle).toBeTruthy();
+    // The pending row carries the HelpCircle pulse; the quiet worker's
+    // row does not.
+    const pendingRowButton = pendingTitle.closest("button");
+    expect(pendingRowButton?.querySelector(".animate-unread-pulse")).toBeTruthy();
+    const quietTitle = screen.getByText("Quiet worker");
+    expect(quietTitle.closest("button")?.querySelector(".animate-unread-pulse")).toBeNull();
+  });
+
 
   it("keeps fetching the full list (presentation-only grouping; search composes server-side)", async () => {
     (workspacesApi.getSessions as ReturnType<typeof vi.fn>).mockResolvedValue([

@@ -209,3 +209,35 @@ lease window); the engine re-granted as attempt 2 with the charter
 rewritten to the seven-ruling form. This session landed the ruling-6
 label revert (commit 4) on the shared branch so the successor
 inherits a charter-compliant head, then ceded the board writes.
+
+## Review r1 (pr-review.yml, REQUEST_CHANGES on 027388d1e) — fixes landed
+
+Attempt 2 (claim re-granted 21:19:26Z after attempt 1's lease lapse)
+drove the review loop. CI fully green on 027388d1e (33 checks — the
+uuid=text join fix + go-jose 4.1.6 verified); the AI reviewer
+REQUEST_CHANGES with four findings, all addressed in commit 5:
+
+1. **Stale "Board workers" naming** (the ruling-6 revert left it in
+   consumer-facing docs): fixed in `sdks/openapi.yaml`,
+   `sdks/go/types.go`, `sdks/typescript/src/types.ts`, CHANGELOG, and
+   the test titles/comments (`Sidebar.workers`, `Sidebar.hierarchy`,
+   `sidebar-hierarchy.spec.ts`, `session_index_origin_join_test.go`).
+2. **Overstated pending-indicator claim — the gate is FIXED, not the
+   claim**: `SessionTreeRow` gains `rootLevel`; group roots render at
+   depth 1 but are top-level in the indicator sense, so the
+   pending-input indicator (and the unread pulse) now genuinely fires
+   on workers awaiting input inside the group. Born-green pin added
+   ("shows the pending-input indicator on a worker awaiting input
+   INSIDE the group" — quiet-worker negative arm included).
+3. **Orphaned workers**: the orphan promotion no longer bypasses the
+   provenance split — `tree.orphans` is partitioned like `tree.roots`
+   (orphaned workers root the Workers group; non-worker orphans keep
+   promoting to main-list top-level rows). Born-green pin added
+   ("roots an ORPHANED worker in the group too").
+4. **Zero-slack cap math**: `max-h-[7.75rem]` → `max-h-[8.5rem]`
+   (4 rows + gaps + headroom), plus a new e2e pin: at exactly 4 rows
+   the list does NOT scroll internally (`scrollHeight ===
+   clientHeight`) and the 4th row's box is fully inside the window.
+
+go-jose riding the fix commit: reviewer called it acceptable; left
+as-is (history rewrite would invalidate the reviewed head).

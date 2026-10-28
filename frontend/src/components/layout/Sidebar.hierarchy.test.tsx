@@ -1,12 +1,12 @@
 /**
  * Sidebar hierarchy tests, ruling 6 (2026-10-28 owner batch): subagent
- * (subtask) sessions nest under their parent again — the Board workers
+ * (subtask) sessions nest under their parent again — the Workers
  * group is populated by worker PROVENANCE (origin-class 'worker'),
  * never parentage. These pins hold the contract: user sessions render
  * flat in the main list with their subtask children nested beneath
  * them; orphaned subtasks promote to top-level rows (the synthetic
  * Orphaned-subtasks group stays dead); board workers leave the flat
- * roots for the collapsed Board workers group, whose expand/collapse
+ * roots for the collapsed Workers group, whose expand/collapse
  * owns their visibility.
  */
 import { describe, expect, it, vi, beforeEach } from "vitest";

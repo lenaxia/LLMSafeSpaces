@@ -669,23 +669,32 @@ function WorkspaceSessionList({
   const tree = useMemo(() => buildSessionTree(liveSessions), [liveSessions]);
 
   // Workers (current AND past — idle included), sorted by recent
-  // activity. Empty list hides the group entirely (ruling 6).
+  // activity. Empty list hides the group entirely (ruling 6). Roots
+  // are the origin-class worker forest nodes PLUS orphaned workers
+  // (parentId pointing at a deleted session — provenance still roots
+  // the group; an orphaned worker is never a flat main-list row).
   const workerRootNodes = useMemo(() => {
-    const workers = tree.roots.filter((n) => isWorkerSession(n.session));
+    const workers = [
+      ...tree.roots.filter((n) => isWorkerSession(n.session)),
+      ...tree.orphans.filter((n) => isWorkerSession(n.session)),
+    ];
     const byId = new Map(workers.map((n) => [n.session.id, n]));
     return sortByRecentActivity(workers.map((n) => n.session))
       .map((s) => byId.get(s.id))
       .filter((n): n is SessionTreeNode => !!n);
   }, [tree]);
 
-  // Main list: non-worker roots, plus orphan-by-parentage rows
-  // promoted to top-level so they stay visible (their parent is gone;
-  // pre-ruling they foldered into the worker group by their parentId —
-  // the synthetic "Orphaned subtasks" group stays dead).
+  // Main list: non-worker roots, plus NON-WORKER orphan-by-parentage
+  // rows promoted to top-level so they stay visible (their parent is
+  // gone; pre-ruling they foldered into the worker group by their
+  // parentId — the synthetic "Orphaned subtasks" group stays dead).
+  // Orphaned WORKERS follow the provenance split like every other
+  // worker: they root the Workers group (below), never a flat
+  // main-list row.
   const mainRootNodes = useMemo(
     () => [
       ...tree.roots.filter((n) => !isWorkerSession(n.session)),
-      ...tree.orphans,
+      ...tree.orphans.filter((n) => !isWorkerSession(n.session)),
     ],
     [tree],
   );
@@ -922,6 +931,15 @@ function WorkspaceSessionList({
 interface SessionTreeRowProps {
   node: SessionTreeNode;
   depth: number;
+  /**
+   * True for rows rendered as ROOTS inside a collapsed group (the
+   * Workers group renders its roots at depth 1 for indentation). The
+   * depth===0 gates below express "is this a top-level row" — a
+   * group root is top-level in that sense (pending-input indicators
+   * and the unread pulse must fire for workers awaiting input inside
+   * the group, exactly as they would on a main-list root).
+   */
+  rootLevel?: boolean;
   workspaceId: string;
   selectedSessionId?: string;
   expanded: Set<string>;
@@ -945,6 +963,7 @@ interface SessionTreeRowProps {
 function SessionTreeRow({
   node,
   depth,
+  rootLevel = false,
   workspaceId,
   selectedSessionId,
   expanded,
@@ -972,11 +991,14 @@ function SessionTreeRow({
   // running).
   const aborted = useIsSessionAborted(s.id);
   const isSelected = s.id === selectedSessionId;
+  // A group root (rootLevel) is top-level in the indicator sense even
+  // though it renders indented at depth 1 — see SessionTreeRowProps.
+  const isTopLevel = depth === 0 || rootLevel;
   const rowStatus: SessionDisplayStatus =
-    depth === 0 && pendingIndicatorIds.has(s.id) ? "pending_input"
+    isTopLevel && pendingIndicatorIds.has(s.id) ? "pending_input"
     : status === "pending_input" ? "busy"
     : status;
-  const showPulse = rowStatus === "unread" && !isSelected && depth === 0;
+  const showPulse = rowStatus === "unread" && !isSelected && isTopLevel;
   const contextUsed = contextBySessionId.get(s.id);
 
   if (isRenaming) {
@@ -1304,6 +1326,7 @@ function WorkersGroup({
             key={node.session.id}
             node={node}
             depth={1}
+            rootLevel
             workspaceId={workspaceId}
             selectedSessionId={selectedSessionId}
             expanded={nodeExpanded}

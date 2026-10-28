@@ -137,7 +137,7 @@ export interface SessionListItem {
   status: string;
   /**
    * Session spawn provenance (#1966/ruling 6): "worker" marks a
-   * board/engine fresh-worker spawn (the sidebar's Board workers group
+   * board/engine fresh-worker spawn (the sidebar's Workers group
    * is populated from this); "routine" | "workflow" | "api" mark the
    * trigger classes. ABSENT means a manual user session.
    */

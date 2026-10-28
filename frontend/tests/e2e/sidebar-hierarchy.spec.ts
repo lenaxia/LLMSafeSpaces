@@ -1,6 +1,6 @@
 /**
  * E2E test for the sidebar session list, ruling 6 (2026-10-28 owner
- * batch): the "Board workers" group is populated by worker PROVENANCE
+ * batch): the "Workers" group is populated by worker PROVENANCE
  * (origin-class 'worker', carried ON the session list payload — the
  * server-side session_origins join; the /session-origins endpoint is
  * the compatibility fallback), never by parentage. Subagent (subtask)
@@ -72,7 +72,7 @@ async function setupAPIMocks(page: Page) {
   await mockIdleContractStream(page, `${API_PREFIX}/workspaces/${WORKSPACE_ID}/contract-events`, ROOT_SESSION);
 }
 
-test.describe("Sidebar Board workers group (#1966/ruling 6)", () => {
+test.describe("Sidebar Workers group (#1966/ruling 6)", () => {
   test.beforeEach(async ({ page }) => {
     await setupAPIMocks(page);
   });
@@ -82,7 +82,7 @@ test.describe("Sidebar Board workers group (#1966/ruling 6)", () => {
 
     await expect(page.getByText("Main task")).toBeVisible({ timeout: 10_000 });
 
-    // The Board workers group renders with a count badge (1 — the
+    // The Workers group renders with a count badge (1 — the
     // provenance-marked worker ONLY; the parented subagent and the
     // orphan do NOT count) and is collapsed by default. Explicit
     // timeout: cold-start (dev-server compile) can exceed the 5s
@@ -132,7 +132,7 @@ test.describe("Sidebar Board workers group (#1966/ruling 6)", () => {
     await expect(page.getByText("Orphaned subtasks")).not.toBeVisible();
   });
 
-  test("no Board workers group when every session is user-facing", async ({ page }) => {
+  test("no Workers group when every session is user-facing", async ({ page }) => {
     // Override the default mock with a worker-free list.
     await page.route(`${API_PREFIX}/workspaces/${WORKSPACE_ID}/sessions?*`, async (route: Route) => {
       await route.fulfill({

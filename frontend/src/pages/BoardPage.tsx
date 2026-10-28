@@ -812,7 +812,11 @@ export function BoardPage() {
             <span className="px-1 text-[10px] text-muted-foreground/70">No epics yet — use New epic above.</span>
           ) : (
             <div
-              className="flex max-h-[7.75rem] flex-col gap-1 overflow-y-auto"
+              // 8.5rem = 4 × 1.75rem rows + 3 × gap-1 + slack: the cap
+              // fits exactly 4 rows with headroom (zoom/min-font row
+              // growth clips nothing) while >4 rows scroll INSIDE this
+              // region — pinned in tests/e2e/board.spec.ts.
+              className="flex max-h-[8.5rem] flex-col gap-1 overflow-y-auto"
               data-testid={`epic-list-${project.short_id}`}
               data-max-visible={EPIC_LIST_MAX_VISIBLE}
             >

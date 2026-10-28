@@ -328,7 +328,7 @@ type SessionListItem struct {
 	Status        string     `json:"status"`
 	// Origin is the session's spawn provenance (#1966/ruling 6):
 	// "worker" marks a board/engine fresh-worker spawn (the sidebar's
-	// Board workers group is populated from this); "routine" |
+	// Workers group is populated from this); "routine" |
 	// "workflow" | "api" mark the trigger classes; ABSENT means a
 	// manual user session.
 	Origin string `json:"origin,omitempty"`

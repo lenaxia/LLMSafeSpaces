@@ -1188,6 +1188,54 @@ test.describe("2026-10-28 board declutter — capped epic list, mobile columns/w
     ]);
   });
 
+  test("epic list at exactly the cap shows all 4 rows fully visible — no internal scroll", async ({ page }) => {
+    // The cap's complement (ruling 3 + review r1): >4 rows must scroll
+    // (pinned above); exactly 4 rows must fit with ZERO internal
+    // scrolling — every row fully visible, scrollHeight === the client
+    // window. Guards the zero-slack regression class (a max-h shaved
+    // to exactly 4×row+3×gap clips the 4th row under any row growth).
+    const state = await openBoard(page, {
+      epics: [
+        zeroTaskEpic(1, "Alpha quiet", "2026-10-01T00:00:00Z"),
+        zeroTaskEpic(2, "Bravo busy", "2026-10-07T00:00:00Z"),
+      ],
+    });
+    expect(state.epics.length).toBe(2);
+
+    const lane = page.getByTestId(`swimlane-${PROJECT_A}`);
+    const list = lane.getByTestId(`epic-list-${PROJECT_A}`);
+    await expect(list).toBeVisible();
+
+    // E1, E2 (task-derived) + Alpha + Bravo = exactly EPIC_LIST_MAX_VISIBLE rows.
+    await expect(list.locator('[data-testid^="epic-band-"]')).toHaveCount(4);
+
+    const metrics = await list.evaluate((el) => {
+      const cs = getComputedStyle(el);
+      return {
+        overflowY: cs.overflowY,
+        scrollHeight: el.scrollHeight,
+        clientHeight: el.clientHeight,
+      };
+    });
+    expect(["auto", "scroll"]).toContain(metrics.overflowY);
+    expect(metrics.scrollHeight).toBe(metrics.clientHeight);
+
+    // The LAST row's box sits entirely inside the list's client
+    // window (fully visible, not clipped by the cap).
+    const lastRow = list.locator('[data-testid^="epic-band-"]').nth(3);
+    await expect(lastRow).toBeVisible();
+    const listBox = await list.evaluate((el) => {
+      const b = el.getBoundingClientRect();
+      return { top: b.top, bottom: b.bottom };
+    });
+    const rowBox = await lastRow.evaluate((el) => {
+      const b = el.getBoundingClientRect();
+      return { top: b.top, bottom: b.bottom };
+    });
+    expect(rowBox.top).toBeGreaterThanOrEqual(listBox.top - 0.5);
+    expect(rowBox.bottom).toBeLessThanOrEqual(listBox.bottom + 0.5);
+  });
+
   test("mobile: 2-column grid, long titles wrap INSIDE the card, action buttons never bleed", async ({ page }) => {
     // Ruling 5: 4 columns cannot wrap cleanly at mobile widths — the
     // grid collapses to 2 columns on small screens (4 from md up), the

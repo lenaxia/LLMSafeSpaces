@@ -7,7 +7,7 @@ package database
 
 // session_index_origin_join_test.go — ruling 6 (2026-10-28 board
 // declutter batch): the session LIST payload itself must expose each
-// session's spawn provenance so the sidebar's Board workers group is
+// session's spawn provenance so the sidebar's Workers group is
 // populated by board-worker PROVENANCE end-to-end. The spawner already
 // stamps the mark at spawn (session_origins row, origin='worker',
 // kind='session' — #1966); this test pins the read side: the listing
