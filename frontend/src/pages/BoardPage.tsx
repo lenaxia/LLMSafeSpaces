@@ -16,8 +16,10 @@ import { BoardErrorNotice } from "../components/board/BoardErrorNotice";
 import { TaskCard } from "../components/board/TaskCard";
 import { TaskDialog } from "../components/board/TaskDialog";
 import { TaskDrawer } from "../components/board/TaskDrawer";
+import { BoardDefaultsDialog, ProjectConfigTrigger } from "../components/board/BoardConfigPanels";
 import { EpicDrawer } from "../components/board/EpicDrawer";
-import { Archive, KanbanSquare, ChevronRight } from "lucide-react";
+import { Archive, KanbanSquare, ChevronRight, Settings2 } from "lucide-react";
+import { useSearchParams } from "react-router-dom";
 import { cn } from "../lib/utils";
 import { boardApi, type BoardEpic, type BoardProject, type BoardTask, type BoardEventPayload } from "../api/board";
 import { subscribeBoardEvents } from "../lib/boardFeed";
@@ -75,6 +77,17 @@ export function BoardPage() {
   // collapsed by default and open only on a human click; nothing
   // auto-expands them (not even an archive landing mid-session).
   const [archivedDrawerExpanded, setArchivedDrawerExpanded] = useState(false);
+  // Board config ON the board (owner ruling 2026-10-28): the defaults
+  // dialog's open state. The /settings/board-config redirect rides
+  // ?config=defaults to auto-open it once (muscle memory lands on the
+  // config, not on a bare board).
+  const [searchParams, setSearchParams] = useSearchParams();
+  const [defaultsOpen, setDefaultsOpen] = useState(searchParams.get("config") === "defaults");
+  useEffect(() => {
+    if (searchParams.get("config") === "defaults") {
+      setSearchParams({}, { replace: true });
+    }
+  }, [searchParams, setSearchParams]);
   const [expandedArchivedProjects, setExpandedArchivedProjects] = useState<ReadonlySet<string>>(new Set());
   const toggleArchivedProject = useCallback((projectId: string) => {
     setExpandedArchivedProjects((prev) => {
@@ -759,8 +772,11 @@ export function BoardPage() {
           {/* #1832 item 1: contextual creation — the swimlane IS
             * the selection (New epic / New task land here, no
             * dropdown needed; New task honors the selected epic
-            * band, else the picker). */}
+            * band, else the picker). The Configure gear is the
+            * project's config entry point ON the board (owner
+            * ruling 2026-10-28 — "alongside the projects"). */}
           <div className="ml-auto flex items-center gap-1">
+            <ProjectConfigTrigger project={project} />
             <Button
               variant="outline"
               size="sm"
@@ -1029,6 +1045,21 @@ export function BoardPage() {
             data-testid="board-search"
           />
           <div className="ml-auto flex items-center gap-2">
+            {/* Board config lives ON the board (owner ruling
+             * 2026-10-28: "There are no configuration options for the
+             * board" — relocated out of Settings): the defaults dialog
+             * carries review column, auto-review, worker slots, and
+             * the stage-persona editor; each swimlane header carries
+             * its project's Configure gear. */}
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setDefaultsOpen(true)}
+              data-testid="board-defaults-button"
+            >
+              <Settings2 className="h-4 w-4" aria-hidden />
+              Board defaults
+            </Button>
             {/* #1832 item 1: the global button stays, but the swimlane
              * headers carry the contextual path (never greyed-only). */}
             <Button
@@ -1590,6 +1621,10 @@ export function BoardPage() {
         error={deleteError}
         onDismissError={() => setDeleteError(null)}
       />
+
+      {/* --- Board defaults (the relocated Settings tab, owner ruling
+       * 2026-10-28 — config ON the board) --------------------------------- */}
+      <BoardDefaultsDialog open={defaultsOpen} onOpenChange={setDefaultsOpen} />
     </div>
   );
 }

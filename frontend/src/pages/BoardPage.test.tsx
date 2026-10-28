@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 import { fireEvent, screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import {
   renderBoard,
@@ -20,6 +21,36 @@ describe("BoardPage — kanban/swimlanes render (§4.8)", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     seedBoard();
+  });
+
+  // Board config lives ON the board (owner ruling 2026-10-28 — "alongside
+  // the projects and on the board itself"): defaults reachable from the
+  // header, every project's config reachable from its swimlane, all in
+  // one interaction.
+  it("carries a Board defaults affordance opening the defaults dialog from the board view", async () => {
+    const user = userEvent.setup();
+    renderBoard();
+    await screen.findByTestId("swimlane-prj-aaaa1111");
+    await user.click(screen.getByTestId("board-defaults-button"));
+    expect(await screen.findByTestId("board-defaults-modal")).toBeInTheDocument();
+    // The persona editor is right there (both tiers share it).
+    expect(screen.getByTestId("cfg-personas-user")).toBeInTheDocument();
+  });
+
+  it("?config=defaults auto-opens the defaults dialog (the /settings/board-config redirect target)", async () => {
+    renderBoard("/board?config=defaults");
+    expect(await screen.findByTestId("board-defaults-modal")).toBeInTheDocument();
+  });
+
+  it("carries a per-project Configure affordance on every swimlane opening the project's config", async () => {
+    const user = userEvent.setup();
+    renderBoard();
+    await screen.findByTestId("swimlane-prj-aaaa1111");
+    await user.click(screen.getByTestId("project-config-prj-aaaa1111"));
+    expect(await screen.findByTestId("project-config-modal-prj-aaaa1111")).toBeInTheDocument();
+    // Worker slots + the project-tier persona editor ride the panel.
+    expect(screen.getByTestId("cfg-slots-prj-aaaa1111")).toBeInTheDocument();
+    expect(screen.getByTestId("cfg-personas-prj-aaaa1111")).toBeInTheDocument();
   });
 
   it("renders one swimlane per project with the project short id + slot budget", async () => {

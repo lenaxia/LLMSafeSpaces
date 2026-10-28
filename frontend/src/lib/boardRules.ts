@@ -59,6 +59,36 @@ export const STAGE_LABELS: Record<BoardStage, string> = {
   [STAGE_PENDING_INPUT]: "Pending Input",
 };
 
+// --- Stage personas (mirror pkg/board/persona.go + config.go) ------------------
+//
+// PERSONA_ELIGIBLE_STAGES mirrors pkg/board's personaEligibleStages:
+// exactly the stages a LIVE CLAIM can exist in. backlog is the claim
+// pool, done is terminal, and pending_input keeps its suspended
+// worker — the server rejects a persona key on any other stage
+// ("persona-eligible stages: in_progress, in_review"), so the client
+// editor only offers these two.
+export const PERSONA_ELIGIBLE_STAGES = [STAGE_IN_PROGRESS, STAGE_IN_REVIEW] as const;
+
+export type PersonaEligibleStage = (typeof PERSONA_ELIGIBLE_STAGES)[number];
+
+/** The persona the LEGACY config composition (reviewColumn=auto AND
+ * autoAssignReviewer=true, no explicit stagePersonas.in_review)
+ * renders — a verbatim mirror of pkg/board's DefaultReviewerPersona.
+ * Keep byte-identical with the Go source: it is the one-click import
+ * the BoardConfigTab editor offers (go test
+ * TestDefaultReviewerPersona_FrontendMirror pins the parity). */
+export const DEFAULT_REVIEWER_PERSONA: { name: string; instructions: string } = {
+  name: "reviewer",
+  instructions:
+    "Verify EACH acceptance criterion adversarially, with evidence. Record ONE structured verdict: " +
+    "board_record_verdict with verdict=approve (requires the task's evidence URL and ALL criteria met — the Done guard applies regardless) " +
+    "or verdict=fail with findings [{severity blocker|major|minor, pointer, criterionIndex}]. A fail bounces the task to its next claimant " +
+    "with your findings embedded. Never merge, never push. " +
+    "Recording criteria flags: as the reviewer persona you hold this row's claim — record each verified criterion with " +
+    "board_update_task {taskId, claimToken, setCriteriaMet:{index, met}} (#1946: your OWN claimed row only); " +
+    "with every criterion flagged and the evidence URL in hand, board_move_stage→done completes the review.",
+};
+
 /** pending_origin (§4.1) — the health grouping's by-origin labels. */
 export const PENDING_ORIGIN_LABELS: Record<string, string> = {
   worker: "Worker question",
