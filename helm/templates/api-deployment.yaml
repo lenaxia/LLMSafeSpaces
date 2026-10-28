@@ -155,7 +155,7 @@ spec:
             - name: LLMSAFESPACES_BOARD_ATTEMPTSCAP
               value: {{ dig "attemptsCap" 3 .Values.board | quote }}
             - name: LLMSAFESPACES_BOARD_LEASESECONDS
-              value: {{ dig "leaseSeconds" 900 .Values.board | quote }}
+              value: {{ dig "leaseSeconds" 2700 .Values.board | quote }}
             - name: LLMSAFESPACES_BOARD_THROTTLEBACKOFFSECONDS
               value: {{ dig "throttleBackoffSeconds" 300 .Values.board | quote }}
             # #1813: failed-attempt auto-return-to-ready base backoff.

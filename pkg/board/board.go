@@ -47,7 +47,12 @@ type EngineConfig struct {
 	// granting. Default 3.
 	AttemptsCap int
 	// LeaseDuration is how long a claim holds without progress evidence
-	// (#1685 semantics: elapsed time is not liveness). Default 15m.
+	// (#1685 semantics: elapsed time is not liveness). Default 45m
+	// (000050: wall-clock is the DEATH detector, not the liveness
+	// detector — the RC1 ladder renews on observed movement and nudges
+	// the quiet case, so the window only bounds how long a PROVABLY
+	// gone assignee's row can stay pinned; 15m burned live workers
+	// mid-verification on long tool calls the watermark never stamped).
 	LeaseDuration time.Duration
 	// ThrottleBackoff is the cooldown applied by report_throttle to both
 	// the task (cooldown_until) and the project (slot_cooldown_until).
@@ -90,7 +95,7 @@ func DefaultEngineConfig() EngineConfig {
 	return EngineConfig{
 		AttemptsCap:       3,
 		FailureBackoff:    time.Minute,
-		LeaseDuration:     15 * time.Minute,
+		LeaseDuration:     45 * time.Minute,
 		ThrottleBackoff:   5 * time.Minute,
 		DRRQuantum:        1,
 		SweepInterval:     30 * time.Second,

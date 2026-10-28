@@ -540,10 +540,10 @@ func (r *raceSpawner) Spawn(ctx context.Context, c *board.Claim) (string, error)
 	}
 	r.once.Do(func() {
 		r.minted = id
-		_, rerr := r.suite.pool.Exec(context.Background(),
+		_, rerr := r.suite.pool.Exec(ctx,
 			`UPDATE tasks SET stage='backlog', stage_entered_at=now(),
 				claim_token=NULL, lease_expires_at=NULL, assignee_session=NULL
-			 WHERE id=$1 AND claim_token=$2`, r.taskID, c.ClaimToken)
+		 WHERE id=$1 AND claim_token=$2`, r.taskID, c.ClaimToken)
 		r.suite.Require().NoError(rerr)
 	})
 	return id, nil

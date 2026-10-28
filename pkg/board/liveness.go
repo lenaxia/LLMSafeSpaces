@@ -5,8 +5,9 @@ package board
 
 import "context"
 
-// liveness.go — the seamless lease's harness-agnostic observation seam
-// (reports/specs/seamless-lease-design.md, owner-approved 2026-10-28).
+// AssigneeLivenessSource is the seamless lease's harness-agnostic
+// observation seam (reports/specs/seamless-lease-design.md,
+// owner-approved 2026-10-28).
 //
 // The engine NEVER imports harness internals: everything it knows about an
 // assignee session's state arrives through AssigneeLivenessSource, an
