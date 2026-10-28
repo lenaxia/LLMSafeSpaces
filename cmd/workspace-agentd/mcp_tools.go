@@ -2163,7 +2163,8 @@ func mcpAutomation(ctx context.Context, password, name string, body map[string]a
 		"board_move_stage_bulk",
 		"board_delete_tasks",
 		"board_import_plan",
-		"board_list", "board_health":
+		"board_list", "board_health",
+		"board_get_config", "board_set_config":
 		res, err = dispatchBoardManagerTool(ctx, client, password, name, body, saToken, workspaceID)
 	default:
 		return "", fmt.Errorf("unknown automation tool: %s", name)

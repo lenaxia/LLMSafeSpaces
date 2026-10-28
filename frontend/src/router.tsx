@@ -19,7 +19,6 @@ import { Spinner } from "./components/ui/Spinner";
 import { UserSettingsTab } from "./components/settings/UserSettingsTab";
 import { UserProviderCredentialsTab } from "./components/settings/UserProviderCredentialsTab";
 import { SecretsTab } from "./components/settings/SecretsTab";
-import { BoardConfigTab } from "./components/settings/BoardConfigTab";
 import { ApiKeysTab } from "./components/settings/ApiKeysTab";
 import { PromptsTab } from "./components/settings/PromptsTab";
 import { MyOrganisationTab } from "./components/settings/MyOrganisationTab";
@@ -137,7 +136,12 @@ export const router = createBrowserRouter([
               { path: "preferences", element: <UserSettingsTab /> },
               { path: "provider-keys", element: <UserProviderCredentialsTab /> },
               { path: "mcp-servers", element: <UserMcpServersTab scope="user" /> },
-              { path: "board-config", element: <BoardConfigTab /> },
+              // Board config relocated ONTO the board (owner ruling
+              // 2026-10-28: "Configuration should be alongside the
+              // projects and on the board itself") — the Settings tab
+              // is removed; the redirect keeps muscle memory landing
+              // on the board's defaults dialog (?config=defaults).
+              { path: "board-config", element: <Navigate to="/board?config=defaults" replace /> },
               { path: "secrets", element: <SecretsTab /> },
               { path: "prompts", element: <PromptsTab /> },
               { path: "api-keys", element: <ApiKeysTab /> },

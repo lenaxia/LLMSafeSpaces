@@ -368,16 +368,16 @@ export const boardApi = {
   // /me/board/config + /me/projects/:id/config (#1832 item 6 — the
   // config surface. Overrides are PARTIAL: absent keys inherit; on the
   // wire an unset key is ABSENT, never null. The PROJECT tier never
-  // carries defaultWorkerSlots — a user-level key the server rejects.)
+  // carries defaultWorkerSlots — a user-level key the server rejects.
+  // NOTE: no requestId rides these PUTs — the config body is a strict
+  // key-gated map (unknown keys reject 400; the config PUT has no
+  // idempotency seam), unlike the entity routes above.
   getUserBoardConfig: (): Promise<BoardConfig> => api.get<BoardConfig>("/me/board/config"),
   setUserBoardConfig: (input: BoardConfigOverride): Promise<BoardConfig> =>
-    api.put<BoardConfig>("/me/board/config", { ...input, requestId: newBoardRequestId() }),
+    api.put<BoardConfig>("/me/board/config", input),
   getProjectBoardConfig: (idOrShort: string): Promise<ProjectBoardConfig> =>
     api.get<ProjectBoardConfig>(`/me/projects/${encodeURIComponent(idOrShort)}/config`),
   setProjectBoardConfig: (idOrShort: string, input: ProjectBoardConfigOverrideInput): Promise<ProjectBoardConfig> =>
-    api.put<ProjectBoardConfig>(`/me/projects/${encodeURIComponent(idOrShort)}/config`, {
-      ...input,
-      requestId: newBoardRequestId(),
-    }),
+    api.put<ProjectBoardConfig>(`/me/projects/${encodeURIComponent(idOrShort)}/config`, input),
 };
 

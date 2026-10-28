@@ -231,6 +231,12 @@ func boardToolFileSpec(name string) boardFileSpec {
 		return boardFileSpec{fileKey: "patchFile", inline: []string{"epicId"}}
 	case "board_import_plan":
 		return boardFileSpec{fileKey: "planFile", inline: []string{"projectId", "dryRun"}}
+	case "board_set_config":
+		// The config override map rides its file (design 0070); the
+		// tier selector + project addressing are routing keys, inline
+		// only (a file spelling would be silently unread by the wire
+		// call's routing reads — the placement rule).
+		return boardFileSpec{fileKey: "configFile", inline: []string{"tier", "projectId"}}
 	}
 	return boardFileSpec{}
 }
@@ -395,6 +401,13 @@ func boardManagerWireCall(ctx context.Context, client *opencode.Client, name, sa
 			boardRefArg(args, "projectId"), boardRefArg(args, "stage"), boardRefArg(args, "failed"))
 	case "board_health":
 		return client.BoardManagerHealth(ctx, saToken, workspaceID, sessionID)
+	case "board_get_config":
+		return client.BoardGetConfig(ctx, saToken, workspaceID, sessionID, boardRefArg(args, "projectId"))
+	case "board_set_config":
+		// The tier selector rides the wire body with the config keys
+		// (both stamped verbatim; the platform validates the tier and
+		// the key vocabulary — agentd re-models nothing).
+		return client.BoardSetConfig(ctx, saToken, workspaceID, sessionID, wire)
 	case "board_create_project":
 		return client.BoardCreateProject(ctx, saToken, workspaceID, sessionID, wire)
 	case "board_update_project":

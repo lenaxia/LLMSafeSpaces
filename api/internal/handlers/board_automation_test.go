@@ -134,6 +134,8 @@ func newBoardAutomationRouterWithManager(t *testing.T, svc *fakeBoardService, mg
 	b.GET("/tasks/:id", h.BoardTaskGet)
 	b.GET("/projects/:id/tasks", h.BoardManagerListTasks)
 	b.GET("/health", h.BoardManagerHealth)
+	b.GET("/config", h.BoardGetConfig) // board_get_config: source-annotated config view (read-open)
+	b.PUT("/config", h.BoardSetConfig) // board_set_config: tier-selected REPLACE write
 	b.POST("/tasks/heartbeat", h.BoardHeartbeat)
 	b.POST("/tasks/throttle", h.BoardReportThrottle)
 	b.POST("/tasks/verdict", h.BoardRecordVerdict) // #1947: the spawned reviewer's verdict channel

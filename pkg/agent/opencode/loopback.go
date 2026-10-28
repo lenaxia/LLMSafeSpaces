@@ -1044,6 +1044,42 @@ func (c *Client) BoardManagerHealth(ctx context.Context, saToken, workspaceID, s
 		"/internal/v1/automation/board/health?"+q.Encode(), saToken, nil)
 }
 
+// BoardGetConfig is board_get_config: the source-annotated config
+// view at either tier — no projectId (the user tier's board-wide
+// defaults) or one project's merged view. A READ, open to any
+// in-workspace session (the #1747 §5 repeal); identity rides the
+// query as audit attribution (board_list's body-less GET pattern).
+func (c *Client) BoardGetConfig(ctx context.Context, saToken, workspaceID, sessionID, projectID string) (*AutomationResponse, error) {
+	if projectID != "" {
+		if err := validateBoardRef(projectID); err != nil {
+			return nil, err
+		}
+	}
+	q := url.Values{}
+	q.Set("workspaceID", workspaceID)
+	if sessionID != "" {
+		q.Set("sessionId", sessionID)
+	}
+	if projectID != "" {
+		q.Set("projectId", projectID)
+	}
+	return c.automationCall(ctx, http.MethodGet,
+		"/internal/v1/automation/board/config?"+q.Encode(), saToken, nil)
+}
+
+// BoardSetConfig is board_set_config: the tier-selected REPLACE write.
+// The body carries {tier, projectId?, <config keys verbatim>} — the
+// config payload rode a workspace file to the dispatch (design 0070's
+// configFile discipline); here it is stamped and passed through. The
+// platform validates; agentd re-models nothing.
+func (c *Client) BoardSetConfig(ctx context.Context, saToken, workspaceID, sessionID string, body json.RawMessage) (*AutomationResponse, error) {
+	stamped, err := boardManagerBody(body, workspaceID, sessionID)
+	if err != nil {
+		return nil, err
+	}
+	return c.automationCall(ctx, http.MethodPut, "/internal/v1/automation/board/config", saToken, stamped)
+}
+
 // BoardManagerProjectAction serves the project lifecycle verbs
 // (archive/unarchive/pause/resume).
 func (c *Client) BoardManagerProjectAction(ctx context.Context, saToken, workspaceID, sessionID, projectID, verb string) (*AutomationResponse, error) {

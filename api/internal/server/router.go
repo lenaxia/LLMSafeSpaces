@@ -1367,6 +1367,8 @@ func registerInternalAutomationRoutes(router *gin.Engine, cfg RouterConfig) {
 		b.GET("/tasks/:id", h.BoardTaskGet)
 		b.GET("/projects/:id/tasks", h.BoardManagerListTasks) // #1837 P2a board_list
 		b.GET("/health", h.BoardManagerHealth)                // #1837 P2a board_health
+		b.GET("/config", h.BoardGetConfig)                    // board_get_config: source-annotated config view, either tier (read-open)
+		b.PUT("/config", h.BoardSetConfig)                    // board_set_config: tier-selected REPLACE write (manager set)
 		b.POST("/tasks/heartbeat", h.BoardHeartbeat)
 		b.POST("/tasks/throttle", h.BoardReportThrottle)
 		b.POST("/tasks/verdict", h.BoardRecordVerdict) // #1947: the spawned reviewer persona's verdict channel (token-guarded)

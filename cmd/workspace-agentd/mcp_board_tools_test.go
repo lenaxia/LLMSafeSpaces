@@ -70,6 +70,10 @@ func TestMCPBoard_RegistryShape(t *testing.T) {
 		"board_resume_task", "board_rearm_task", "board_import_plan",
 		// Manager reads (#1837 P2a): the orchestrator's overview.
 		"board_list", "board_health",
+		// Config parity (owner ruling 2026-10-28 — api/sdk/mcp/ux are
+		// all first-class citizens): the read-open source-annotated
+		// view + the tier-selected REPLACE write.
+		"board_get_config", "board_set_config",
 		// #1836: the bulk complete (the bulk claim follows task_start's
 		// owner-surface-only boundary and is deliberately absent).
 		"board_move_stage_bulk",
