@@ -18,6 +18,7 @@ UPDATE public.tasks SET stage='pending_input'
 ALTER TABLE public.tasks DROP CONSTRAINT IF EXISTS tasks_stage_check;
 ALTER TABLE public.tasks ADD CONSTRAINT tasks_stage_check
     CHECK ((stage = ANY (ARRAY['backlog'::text, 'in_progress'::text, 'in_review'::text, 'done'::text, 'pending_input'::text])));
+ALTER TABLE public.tasks DROP CONSTRAINT IF EXISTS tasks_pending_origin_set;
 ALTER TABLE public.tasks ADD CONSTRAINT tasks_pending_origin_set
     CHECK ((stage = 'pending_input'::text) = (pending_origin IS NOT NULL));
 

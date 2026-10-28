@@ -30,7 +30,7 @@ ALTER TABLE public.tasks ADD CONSTRAINT tasks_stage_check
     CHECK ((stage = ANY (ARRAY['backlog'::text, 'in_progress'::text, 'in_review'::text, 'done'::text, 'failed'::text])));
 
 ALTER TABLE public.tasks DROP CONSTRAINT IF EXISTS tasks_pending_origin_set;
-ALTER TABLE public.tasks ADD COLUMN pending_input boolean NOT NULL DEFAULT false;
+ALTER TABLE public.tasks ADD COLUMN IF NOT EXISTS pending_input boolean NOT NULL DEFAULT false;
 -- The flag and its origin travel together for INPUT WAITS, with one
 -- deliberate exception: the attempts-exhaustion terminus carries
 -- pending_origin='escalated' on an UNflagged failed row — the marker
@@ -39,13 +39,14 @@ ALTER TABLE public.tasks ADD COLUMN pending_input boolean NOT NULL DEFAULT false
 -- writer (claim, dispatch, persona, wedge verdict) writes exactly that
 -- shape; the constraint admits it and nothing else outside the paired
 -- form.
+ALTER TABLE public.tasks DROP CONSTRAINT IF EXISTS tasks_pending_input_set;
 ALTER TABLE public.tasks ADD CONSTRAINT tasks_pending_input_set
     CHECK ((pending_input = true AND pending_origin IS NOT NULL)
         OR (pending_input = false AND pending_origin IS NULL)
         OR (pending_input = false AND pending_origin = 'escalated' AND stage = 'failed'));
 
-ALTER TABLE public.tasks ADD COLUMN nudge_id text;
-ALTER TABLE public.tasks ADD COLUMN nudged_at timestamptz;
+ALTER TABLE public.tasks ADD COLUMN IF NOT EXISTS nudge_id text;
+ALTER TABLE public.tasks ADD COLUMN IF NOT EXISTS nudged_at timestamptz;
 -- The nudge-RESPONSE channel (item 6 amendment): board_heartbeat survives
 -- as the concrete reply to a lease-nudge, so the row records the latest
 -- heartbeat ARRIVAL (server clock — never the client-declared stamp). The
@@ -54,7 +55,7 @@ ALTER TABLE public.tasks ADD COLUMN nudged_at timestamptz;
 -- in at every rung, and the ONLY wedge detector when no liveness source
 -- can answer. An arrival BEFORE the nudge is the dead periodic
 -- discipline and saves nothing.
-ALTER TABLE public.tasks ADD COLUMN last_heartbeat_at timestamptz;
+ALTER TABLE public.tasks ADD COLUMN IF NOT EXISTS last_heartbeat_at timestamptz;
 
 UPDATE public.tasks SET stage='failed'
     WHERE stage='pending_input' AND pending_origin='escalated';
