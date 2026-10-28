@@ -241,3 +241,25 @@ REQUEST_CHANGES with four findings, all addressed in commit 5:
 
 go-jose riding the fix commit: reviewer called it acceptable; left
 as-is (history rewrite would invalidate the reviewed head).
+
+## r1.5 — merge origin/main (PR #1975 board-config-parity landed mid-review), 2026-10-28 ~23:10Z
+
+Main moved 12 commits under the branch after the r1 APPROVE
+(058f7fdaa): PR #1975 merged board-config-parity, leaving PR #1976
+`mergeable: CONFLICTING` — the APPROVE was on a head the orchestrator
+could no longer merge. Merged origin/main into the branch
+(ae825e20b); two conflicts, both mechanical unions:
+
+- `CHANGELOG.md` — both [Unreleased] sections kept (ours: rulings
+  6+7 + rulings 1-5; main's: board config parity).
+- `frontend/src/pages/BoardPage.test.tsx` — main's three new
+  board-config tests kept + our ruling-4 swimlane rename kept (main
+  hadn't touched the title; the bodies merged clean).
+
+Verification on the merge head: BoardPage/declutter/config-panels
+seams 49/49; full vitest 222 files / 2548 tests green (2527 + main's
+21); `tsc --noEmit` clean; `go build ./...` clean; eslint clean on
+the touched test file; e2e board + sidebar-hierarchy + board-config
+37 passed. Pushed for a fresh PR Review round on ae825e20b (every
+push re-earns its own APPROVE — the 058f7fdaa verdict died with the
+conflict).
