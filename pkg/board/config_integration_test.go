@@ -660,6 +660,20 @@ func (s *BoardSuite) TestBoardConfig_ViewGuards() {
 	s.Require().NoError(err, "the user tier carries no project ref — no binding to violate")
 	s.Equal("user", v.Scope)
 
+	// The WRITE perimeter mirrors the read's: board_set_config's
+	// project arm (SetProjectBoardConfig) refuses the same
+	// foreign-workspace binding at the guard — BEFORE any write lands
+	// (the override rows never appear; the guard runs ahead of the
+	// replace, structural in SetProjectBoardConfig's ordering).
+	_, err = s.svc.SetProjectBoardConfig(ctx, agent, p.ID, "",
+		&board.BoardConfigOverride{AutoAssignReviewer: boolVal(true)})
+	s.Require().ErrorAs(err, &guard)
+	s.Equal(board.GuardWorkspaceBinding, guard.Code)
+	var rows int
+	s.Require().NoError(s.pool.QueryRow(ctx,
+		`SELECT count(*) FROM board_project_config_overrides WHERE project_id=$1`, p.ID).Scan(&rows))
+	s.Zero(rows, "the refused set writes nothing — the binding guard precedes the replace")
+
 	// Foreign project: the scoped 404 (never disclosed).
 	_, err = s.svc.GetBoardConfigView(ctx, s.owner(), "0ea0c65c-0000-4000-8000-000000000001", "")
 	s.Require().Error(err)
