@@ -42,6 +42,13 @@ func (h *PodAutomationHandler) BoardGetConfig(c *gin.Context) {
 	c.JSON(http.StatusOK, view)
 }
 
+// boardConfigMaxBodyBytes is the seam config PUT's body cap — the
+// SAME 64 KiB its REST twin deliberately enforces (board_config.go):
+// the config body is a 3-key object, and the cap keeps an
+// authenticated peer from parking an unbounded body in pod memory
+// through the automation route.
+const boardConfigMaxBodyBytes = 64 << 10
+
 // BoardSetConfig is board_set_config: REPLACE-writes one tier's config
 // map. The body carries the tier selector ("user" | "project"),
 // projectId (required for the project tier, refused for the user
@@ -52,8 +59,28 @@ func (h *PodAutomationHandler) BoardGetConfig(c *gin.Context) {
 // the source-annotated view board_get_config renders — the caller sees
 // the merged result, not just the raw echo.
 func (h *PodAutomationHandler) BoardSetConfig(c *gin.Context) {
+	// Cap BEFORE the resolve captures the body. The reader allows up to
+	// cap+1 bytes: a legitimate ≤cap body captures whole (a body of
+	// exactly cap is legal), while an over-cap body deterministically
+	// surfaces as cap+1 captured bytes below (parity with the REST
+	// twin's MaxBytesReader — same cap, same refusal class).
+	if c.Request.ContentLength > boardConfigMaxBodyBytes {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error": "config body exceeds the 64 KiB cap (the config map is a small keyed object)",
+			"code":  board.GuardInput,
+		})
+		return
+	}
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, boardConfigMaxBodyBytes+1)
 	raw, ws, owner, session, ok := h.resolveManager(c)
 	if !ok {
+		return
+	}
+	if len(raw) > boardConfigMaxBodyBytes {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error": "config body exceeds the 64 KiB cap (the config map is a small keyed object)",
+			"code":  board.GuardInput,
+		})
 		return
 	}
 	var req struct {

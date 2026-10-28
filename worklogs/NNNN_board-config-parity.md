@@ -63,3 +63,15 @@ The live finding behind the third line: the ONLY board config UI hid under Setti
 ## SDK/openapi
 
 UNAFFECTED — no /me wire shape changed (the annotated view exists only on the internal automation seam, which openapi does not describe). The codegen freshness gate has nothing to regenerate (criterion 5, first arm).
+
+## Review round 1 (pr-review.yml REQUEST_CHANGES on b29190fc → addressed on this head)
+
+Findings and their resolutions:
+
+1. **"e2e never updated — still drives the removed settings URL" (the CI Frontend FAILURE)** — fixed. `board-config.spec.ts` now walks the relocated two-dialog flow end to end: `/settings/board-config` → the redirect auto-opens the defaults dialog over the board (the old `getByText("Board defaults")` assertion was a strict-mode collision between the trigger button and the dialog heading) → save-global (full-config PUT, no `requestId` — the stale expectation would have failed row 3 next) → close → the project's Configure gear on the swimlane header → provenance + effective view → the override save carrying only the set keys. Added the UNHAPPY tier: a refused save surfaces inline (`cfg-error-global` / `cfg-error-<project>`) in whichever surface sent it, dialog stays open.
+2. **"Service.GetBoardConfigView has zero real-wiring coverage"** — added `TestBoardConfig_ViewRealWiring` + `TestBoardConfig_ViewGuards` (BoardSuite, real PG): user tier (raw stored map, per-key sources, the flipped composition rendering `default_reviewer` with the built-in persona payload), project tier (its own raw map, the overlay order per key, persona provenance `project_override`/`none_explicit` with payload), empty-actor authz both tiers, the #1747 workspace binding on the agent surface's project arm, the scoped 404, short-id/UUID resolution parity.
+3. **"GetUserBoardConfigSurfaces + UserBoardConfig are dead code"** — removed both (the annotated `BoardConfigView` — which `GetBoardConfigView` builds internally — carries strictly more information; no caller anywhere, no test referenced them).
+4. **"the seam config PUT lacks the 64 KiB cap its REST twin enforces"** — added `boardConfigMaxBodyBytes` (64 KiB): an early ContentLength refusal plus a cap+1 `MaxBytesReader` under the resolve's capture (a legitimate exactly-cap body parses; an over-cap body deterministically surfaces as cap+1 captured bytes → the same 400 refusal class), pinned for sized AND chunked (no ContentLength) bodies with the "no write fired" assertion.
+5. **go-jose CVE-2026-116587 (the Security-scan red)** — bumped v4.1.4 → v4.1.6 (the prior claimant's commit, pushed in this round). The arm64 build red was a transient `go mod download` network error (retried clean on this head).
+
+Local verification on this head: `go build ./...`; `go test ./cmd/workspace-agentd/... ./pkg/board/...` (372s, all ok); `go test -tags=integration -run TestBoardSuite ./pkg/board/` (race, real PG); handlers config suites; vitest 2535/2535; tsc clean; playwright board-config spec 2/2 (happy + unhappy); `golangci-lint run ./api/... ./pkg/board/...` → 0 issues.

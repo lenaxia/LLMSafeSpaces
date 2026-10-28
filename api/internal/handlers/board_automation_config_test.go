@@ -13,7 +13,10 @@ package handlers
 
 import (
 	"context"
+	"io"
 	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -167,5 +170,42 @@ func TestBoardAutomationConfig_SetConfig(t *testing.T) {
 		require.Equal(t, http.StatusOK, w.Code, w.Body.String())
 		require.NotNil(t, mgr.lastGlobalConfigSet)
 		assert.Nil(t, mgr.lastGlobalConfigSet.DefaultWorkerSlots)
+	})
+}
+
+// TestBoardAutomationConfig_SetConfigBodyCap: the seam config PUT
+// enforces the SAME 64 KiB cap its REST twin deliberately does
+// (board_config.go) — the padding rides a LEGAL key (a persona's
+// instructions), so the cap is the only refusal that can fire.
+func TestBoardAutomationConfig_SetConfigBodyCap(t *testing.T) {
+	overCap := `{"workspaceID":"ws-1","tier":"user","stagePersonas":{"in_review":{"name":"n","instructions":"` +
+		strings.Repeat("a", 70*1024) + `"}}}`
+
+	t.Run("sized body: refused 400 with the cap message, no write fires", func(t *testing.T) {
+		mgr := newFakeBoardManager()
+		r := newBoardAutomationRouterWithManager(t, newFakeBoardService(), mgr)
+		w := doBoard(t, r, http.MethodPut, "/internal/v1/automation/board/config", overCap)
+		assert.Equal(t, http.StatusBadRequest, w.Code)
+		assert.Contains(t, w.Body.String(), "64 KiB")
+		assert.Contains(t, w.Body.String(), board.GuardInput)
+		assert.Zero(t, mgr.calls["set_user_board_config"], "no write fired")
+		assert.Zero(t, mgr.calls["set_project_board_config"], "no write fired")
+	})
+
+	t.Run("chunked body (no ContentLength): the capped reader surfaces it too", func(t *testing.T) {
+		mgr := newFakeBoardManager()
+		r := newBoardAutomationRouterWithManager(t, newFakeBoardService(), mgr)
+		req := httptest.NewRequest(http.MethodPut, "/internal/v1/automation/board/config?workspaceID=ws-1",
+			// Wrap the reader so NewRequest cannot sniff its length —
+			// ContentLength stays 0 and the body arrives chunked (the
+			// identity rides the query, the seam's query-first path).
+			struct{ io.Reader }{strings.NewReader(overCap)})
+		req.Header.Set("Authorization", "Bearer whatever-the-reviewer-accepts")
+		req.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+		assert.Equal(t, http.StatusBadRequest, w.Code)
+		assert.Contains(t, w.Body.String(), "64 KiB")
+		assert.Zero(t, mgr.calls["set_user_board_config"], "no write fired")
 	})
 }

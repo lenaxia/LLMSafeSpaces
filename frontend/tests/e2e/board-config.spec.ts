@@ -119,3 +119,45 @@ test("config surfaces render defaults + provenance, save globally, and overrides
   expect(Object.keys(puts.project[0] as object).sort()).toEqual(["autoAssignReviewer", "reviewColumn"]);
   expect(puts.project[0]).toMatchObject({ autoAssignReviewer: true, reviewColumn: "auto" });
 });
+
+// The unhappy tier: a refused save surfaces INSIDE the dialog it came
+// from — the error renders inline (no silent close, no toast-only
+// loss), and the dialog stays open for a corrective edit.
+test("a refused save surfaces the error inline in whichever config surface sent it", async ({ page }) => {
+  const puts = { user: [] as unknown[], project: [] as unknown[] };
+  await mockConfigRoutes(page, puts);
+  // Both PUTs refuse with the server's shape (the strict key-gate
+  // vocabulary, as a real drift would produce).
+  await page.route(`${API}/me/board/config`, (r: Route) => {
+    if (r.request().method() === "PUT") {
+      return r.fulfill({ status: 400, json: { error: "unknown config key: defaultWorkerSlats", code: "invalid_input" } });
+    }
+    return r.fulfill({ json: USER_CFG });
+  });
+  await page.route(`${API}/me/projects/${PROJECT_A}/config`, (r: Route) => {
+    if (r.request().method() === "PUT") {
+      return r.fulfill({ status: 400, json: { error: "unknown config key: reviewColum", code: "invalid_input" } });
+    }
+    return r.fulfill({ json: PC });
+  });
+
+  // Defaults dialog: save → the refusal renders inline, dialog stays.
+  await page.goto("/board?config=defaults");
+  await expect(page.getByTestId("board-defaults-modal")).toBeVisible();
+  const slots = page.getByTestId("cfg-defaultWorkerSlots").locator("input");
+  await slots.fill("4");
+  await slots.blur();
+  await page.getByTestId("cfg-save-global").click();
+  await expect(page.getByTestId("cfg-error-global")).toContainText("unknown config key");
+  await expect(page.getByTestId("board-defaults-modal")).toBeVisible();
+
+  // Project panel: same refusal shape, its own error slot.
+  await page.getByTestId("board-defaults-close").click();
+  await page.getByTestId(`project-config-${PROJECT_A}`).click();
+  await expect(page.getByTestId(`project-config-modal-${PROJECT_A}`)).toBeVisible();
+  await page.getByTestId(`cfg-ov-${PROJECT_A}-reviewColumn`).click();
+  await page.getByRole("option", { name: "manual", exact: true }).click();
+  await page.getByTestId(`cfg-save-${PROJECT_A}`).click();
+  await expect(page.getByTestId(`cfg-error-${PROJECT_A}`)).toContainText("unknown config key");
+  await expect(page.getByTestId(`project-config-modal-${PROJECT_A}`)).toBeVisible();
+});

@@ -152,18 +152,6 @@ type ProjectBoardConfig struct {
 	Effective BoardConfig         `json:"effective"`
 }
 
-// UserBoardConfig is the user tier's twin of ProjectBoardConfig: the
-// raw stored defaults plus the effective merged row. The REST surface
-// renders only the effective row (its contract, pinned by openapi);
-// this surfaces read exists for the agent seam's source annotations
-// (inherited vs override needs the RAW map, which the merged row
-// cannot disclose — a user-set value equal to the code default is
-// indistinguishable in the merge).
-type UserBoardConfig struct {
-	Overrides BoardConfigOverride `json:"overrides"`
-	Effective BoardConfig         `json:"effective"`
-}
-
 // Board config value sources — WHERE one effective key came from (the
 // board_get_config source annotations). The vocabulary is ordered by
 // the merge itself: a project override wins, then a user default,
@@ -625,25 +613,6 @@ func (s *Service) SetUserBoardConfig(ctx context.Context, actor Actor, in *Board
 		"user_id", actor.UserID, "actor.kind", actor.Kind, "actor.surface", actor.Surface,
 		"keys", len(in.rows()))
 	return s.GetUserBoardConfig(ctx, actor)
-}
-
-// GetUserBoardConfigSurfaces renders the user tier's TWO surfaces —
-// the raw stored defaults map and the effective merged row — the
-// user-tier twin of GetProjectBoardConfig. Same guards as the
-// effective-only read (the read perimeter does not widen because the
-// raw map rides along: still the acting user's own row).
-func (s *Service) GetUserBoardConfigSurfaces(ctx context.Context, actor Actor) (*UserBoardConfig, error) {
-	if actor.UserID == "" {
-		return nil, &GuardError{Code: GuardAuthz, Detail: "board config defaults are user-scoped — an authenticated acting user is required"}
-	}
-	o, err := s.userBoardConfigOverride(ctx, actor.UserID)
-	if err != nil {
-		return nil, err
-	}
-	return &UserBoardConfig{
-		Overrides: *o,
-		Effective: MergeBoardConfig(DefaultBoardConfig(), o),
-	}, nil
 }
 
 // buildBoardConfigView renders the source-annotated view from the two
