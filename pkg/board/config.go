@@ -152,6 +152,53 @@ type ProjectBoardConfig struct {
 	Effective BoardConfig         `json:"effective"`
 }
 
+// UserBoardConfig is the user tier's twin of ProjectBoardConfig: the
+// raw stored defaults plus the effective merged row. The REST surface
+// renders only the effective row (its contract, pinned by openapi);
+// this surfaces read exists for the agent seam's source annotations
+// (inherited vs override needs the RAW map, which the merged row
+// cannot disclose — a user-set value equal to the code default is
+// indistinguishable in the merge).
+type UserBoardConfig struct {
+	Overrides BoardConfigOverride `json:"overrides"`
+	Effective BoardConfig         `json:"effective"`
+}
+
+// Board config value sources — WHERE one effective key came from (the
+// board_get_config source annotations). The vocabulary is ordered by
+// the merge itself: a project override wins, then a user default,
+// then the code default.
+const (
+	ConfigSourceCodeDefault     = "code_default"
+	ConfigSourceUserDefault     = "user_default"
+	ConfigSourceProjectOverride = "project_override"
+)
+
+// BoardPersonaView is one persona-eligible stage's rendered provenance
+// in BoardConfigView: the source vocabulary of
+// PersonaProvenanceForStage plus the persona that source renders
+// (absent for the none shapes — none_explicit renders the
+// explicit-map semantics, none renders nothing configured).
+type BoardPersonaView struct {
+	Source  string         `json:"source"`
+	Persona *PersonaConfig `json:"persona,omitempty"`
+}
+
+// BoardConfigView is board_get_config's rendered shape at EITHER tier:
+// the tier's raw override map, the effective merged row, per-key
+// source annotations (code_default | user_default |
+// project_override), and per-stage persona provenance — the read an
+// agent (or the board UI) needs to see not just WHAT is effective but
+// WHERE each piece came from and which tier to override.
+type BoardConfigView struct {
+	Scope     string                      `json:"scope"` // "user" | "project"
+	ProjectID string                      `json:"project_id,omitempty"`
+	Overrides BoardConfigOverride         `json:"overrides"`
+	Effective BoardConfig                 `json:"effective"`
+	Sources   map[string]string           `json:"sources"`
+	Personas  map[string]BoardPersonaView `json:"personas"`
+}
+
 // DefaultBoardConfig returns the code defaults (owner ruling
 // 2026-10-24 — "flip defaults for review to on"): auto review column
 // with auto reviewer assignment, worker slots 2, no stage personas. A
@@ -578,6 +625,132 @@ func (s *Service) SetUserBoardConfig(ctx context.Context, actor Actor, in *Board
 		"user_id", actor.UserID, "actor.kind", actor.Kind, "actor.surface", actor.Surface,
 		"keys", len(in.rows()))
 	return s.GetUserBoardConfig(ctx, actor)
+}
+
+// GetUserBoardConfigSurfaces renders the user tier's TWO surfaces —
+// the raw stored defaults map and the effective merged row — the
+// user-tier twin of GetProjectBoardConfig. Same guards as the
+// effective-only read (the read perimeter does not widen because the
+// raw map rides along: still the acting user's own row).
+func (s *Service) GetUserBoardConfigSurfaces(ctx context.Context, actor Actor) (*UserBoardConfig, error) {
+	if actor.UserID == "" {
+		return nil, &GuardError{Code: GuardAuthz, Detail: "board config defaults are user-scoped — an authenticated acting user is required"}
+	}
+	o, err := s.userBoardConfigOverride(ctx, actor.UserID)
+	if err != nil {
+		return nil, err
+	}
+	return &UserBoardConfig{
+		Overrides: *o,
+		Effective: MergeBoardConfig(DefaultBoardConfig(), o),
+	}, nil
+}
+
+// buildBoardConfigView renders the source-annotated view from the two
+// RAW override maps (either may be nil): effective row, per-key
+// sources, per-stage persona provenance. Pure — the service seam only
+// loads the maps, so the annotation logic is pinnable without a DB.
+func buildBoardConfigView(scope, projectID string, u, p *BoardConfigOverride) BoardConfigView {
+	eff := MergeBoardConfig(MergeBoardConfig(DefaultBoardConfig(), u), p)
+	has := func(o *BoardConfigOverride, key string) bool {
+		if o == nil {
+			return false
+		}
+		switch key {
+		case ConfigKeyReviewColumn:
+			return o.ReviewColumn != nil
+		case ConfigKeyAutoAssignReviewer:
+			return o.AutoAssignReviewer != nil
+		case ConfigKeyDefaultWorkerSlots:
+			return o.DefaultWorkerSlots != nil
+		case ConfigKeyStagePersonas:
+			return o.StagePersonas != nil
+		}
+		return false
+	}
+	sources := make(map[string]string, len(BoardConfigKeys()))
+	for _, key := range BoardConfigKeys() {
+		switch {
+		case has(p, key):
+			sources[key] = ConfigSourceProjectOverride
+		case has(u, key):
+			sources[key] = ConfigSourceUserDefault
+		default:
+			sources[key] = ConfigSourceCodeDefault
+		}
+	}
+	personas := make(map[string]BoardPersonaView, len(personaEligibleStages))
+	for stage := range personaEligibleStages {
+		v := BoardPersonaView{Source: PersonaProvenanceForStage(u, p, eff, stage)}
+		switch v.Source {
+		case PersonaSourceProjectOverride:
+			persona := (*p.StagePersonas)[stage]
+			v.Persona = &persona
+		case PersonaSourceUserDefault:
+			persona := (*u.StagePersonas)[stage]
+			v.Persona = &persona
+		case PersonaSourceDefaultReviewer:
+			persona := DefaultReviewerPersona
+			v.Persona = &persona
+		}
+		personas[stage] = v
+	}
+	out := BoardConfigView{
+		Scope:     scope,
+		Overrides: BoardConfigOverride{},
+		Effective: eff,
+		Sources:   sources,
+		Personas:  personas,
+	}
+	if p != nil {
+		out.ProjectID = projectID
+		out.Overrides = *p
+	} else if u != nil {
+		out.Overrides = *u
+	}
+	return out
+}
+
+// GetBoardConfigView renders the source-annotated config view for
+// EITHER tier: no project ref → the user tier (the board-wide
+// defaults), a project ref → the project tier (the caller's workspace
+// binding still applies on the agent surface — the project resolves
+// through the same scoped read as GetProjectBoardConfig). The read
+// perimeter is GetUserBoardConfig's own: a user-scoped read needs a
+// real acting user.
+func (s *Service) GetBoardConfigView(ctx context.Context, actor Actor, projectID, shortIDOrID string) (*BoardConfigView, error) {
+	if actor.UserID == "" {
+		return nil, &GuardError{Code: GuardAuthz, Detail: "board config is user-scoped — an authenticated acting user is required"}
+	}
+	u, err := s.userBoardConfigOverride(ctx, actor.UserID)
+	if err != nil {
+		return nil, err
+	}
+	if pick(projectID, shortIDOrID) == "" {
+		view := buildBoardConfigView("user", "", u, nil)
+		return &view, nil
+	}
+	p, err := s.store.resolveProject(ctx, s.q(), actor.UserID, pick(projectID, shortIDOrID))
+	if err != nil {
+		return nil, err
+	}
+	// The #1747 workspace binding on the agent surfaces' project reads
+	// (the board_list discipline: a foreign workspace's project is not
+	// this pod's business); REST/external surfaces scope by ownership
+	// alone.
+	if err := requireManagerAction(actor, p); err != nil {
+		return nil, err
+	}
+	rawOv, err := s.store.loadBoardProjectConfigOverrides(ctx, s.q(), p.ID)
+	if err != nil {
+		return nil, err
+	}
+	ov, err := decodeBoardConfigRows("project overrides", rawOv)
+	if err != nil {
+		return nil, err
+	}
+	view := buildBoardConfigView("project", p.ID, u, ov)
+	return &view, nil
 }
 
 // GetProjectBoardConfig renders one project's config surfaces: the raw
