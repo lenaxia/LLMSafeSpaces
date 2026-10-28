@@ -249,19 +249,27 @@ var boardParityMatrix = []parityRow{
 	// #1832 item 6 config rows: the config system's read/write surfaces
 	// are the owner's REST projection (user-scoped board-wide defaults
 	// per the R7 ruling on PR #1840 + owner-scoped per-project
-	// overrides). Declared absent on BOTH MCP columns BY DESIGN in this
-	// slice: board config is a UI-facing surface (PR-A2 consumes it);
-	// MCP tools for it are future work, and the external column's tool
-	// scan pins the absence.
+	// overrides). The agent column went LIVE with the config-parity
+	// slice (owner ruling 2026-10-28 — "api/sdk/mcp/ux are all first
+	// class citizens"): board_get_config (read-open, either tier via
+	// the optional projectId) and board_set_config (the tier-selected
+	// REPLACE write, configFile discipline) over the automation seam.
+	// The external column stays absent BY DESIGN: external MCP callers
+	// are not the board's config audience (the UI and the in-workspace
+	// agent are), and the external tool scan pins the absence.
 	{action: "get_user_board_config", restMethods: []string{"GetUserBoardConfig"}, rest: liveCell,
-		externalMCP: absentCell, agent: absentCell},
+		externalMCP: absentCell, agent: liveCell,
+		agentTools: []string{"board_get_config"}},
 	{action: "set_user_board_config", restMethods: []string{"SetUserBoardConfig"}, rest: liveCell,
-		externalMCP: absentCell, agent: absentCell,
+		externalMCP: absentCell, agent: liveCell,
+		agentTools: []string{"board_set_config"},
 		denyErr: &board.GuardError{Code: board.GuardInput, Detail: "unknown config key"}, denyCode: http.StatusBadRequest},
 	{action: "get_project_board_config", restMethods: []string{"GetProjectBoardConfig"}, rest: liveCell,
-		externalMCP: absentCell, agent: absentCell},
+		externalMCP: absentCell, agent: liveCell,
+		agentTools: []string{"board_get_config"}},
 	{action: "set_project_board_config", restMethods: []string{"SetProjectBoardConfig"}, rest: liveCell,
-		externalMCP: absentCell, agent: absentCell,
+		externalMCP: absentCell, agent: liveCell,
+		agentTools: []string{"board_set_config"},
 		denyErr: &board.GuardError{Code: board.GuardInput, Detail: "unknown config key"}, denyCode: http.StatusBadRequest},
 	// Worker-only rows: absent on REST BY DESIGN (no owner surface
 	// delivers them — §4.7) and absent on external MCP BY DESIGN (§4.3b:
@@ -457,6 +465,7 @@ func TestBoardParity_AgentColumn(t *testing.T) {
 		"DELETE /internal/v1/automation/board/epics/:id",
 		"DELETE /internal/v1/automation/board/tasks/:id",
 		"DELETE /internal/v1/automation/board/tasks/:id/dependencies/:dependsOnId",
+		"GET /internal/v1/automation/board/config",
 		"GET /internal/v1/automation/board/health",
 		"GET /internal/v1/automation/board/projects/:id/tasks",
 		"GET /internal/v1/automation/board/tasks/:id",
@@ -488,6 +497,7 @@ func TestBoardParity_AgentColumn(t *testing.T) {
 		"POST /internal/v1/automation/board/tasks/set-criteria-met", // #1946: the reviewer-persona claim's scoped criteria-flags write
 		"POST /internal/v1/automation/board/tasks/throttle",
 		"POST /internal/v1/automation/board/tasks/verdict", // #1947: the spawned reviewer persona's verdict channel (token-guarded)
+		"PUT /internal/v1/automation/board/config",        // board_set_config: tier-selected REPLACE write (manager set)
 	}, seamBoardRoutes(t),
 		"agent seam route table: worker + manager (#1747) routes + resource-pressure telemetry; claim_next/task_start never route")
 
