@@ -1039,7 +1039,14 @@ func (s *Service) rc2Drift(ctx context.Context, cutoff time.Time) (done, review,
 				tag, err := tx.Exec(ctx, `
 					UPDATE tasks SET stage='done', stage_entered_at=now(),
 						claim_token=NULL, lease_expires_at=NULL, claim_incremented_attempts=false, claim_persona=NULL,
-						failure_count=0, last_attempt_failed=false, last_failure_at=NULL
+						failure_count=0, last_attempt_failed=false, last_failure_at=NULL,
+						-- a stage move resolves the flag with the move
+						-- (updateStageTx's rule): a drift_review-parked row
+						-- whose criteria were met while parked must not
+						-- land done still flagged (review round 2,
+						-- finding 4's sibling).
+						pending_input=false, pending_origin=NULL,
+						nudge_id=NULL, nudged_at=NULL, last_heartbeat_at=NULL
 					WHERE id=$1 AND stage='in_review'`, t.ID)
 				if err != nil {
 					_ = tx.Rollback(ctx)
@@ -1134,7 +1141,14 @@ func (s *Service) rc2Drift(ctx context.Context, cutoff time.Time) (done, review,
 					UPDATE tasks SET stage='in_progress', stage_entered_at=now(),
 						claim_token=$2, lease_expires_at=now()+make_interval(secs=>$3::float8),
 						last_progress_at=now(), assignee_session=NULL,
-						claim_incremented_attempts=false, claim_persona=NULL, pending_origin=NULL
+						claim_incremented_attempts=false, claim_persona=NULL,
+						-- The re-entry lands a NEW lease episode: resolve the
+						-- flag with the move (paired form — a drift_review
+						-- park reaching closed-unmerged must not violate
+						-- tasks_pending_input_set, review round 2 finding 4)
+						-- and reset the episode evidence slots.
+						pending_input=false, pending_origin=NULL,
+						nudge_id=NULL, nudged_at=NULL, last_heartbeat_at=NULL
 					WHERE id=$1 AND stage='in_review'`,
 					t.ID, newToken, s.cfg.LeaseDuration.Seconds())
 				if err != nil {
@@ -1147,7 +1161,13 @@ func (s *Service) rc2Drift(ctx context.Context, cutoff time.Time) (done, review,
 				// (pre-existing) but drops the persona provenance —
 				// claim_persona rides ONLY a live persona claim.
 				tag, err := tx.Exec(ctx, `
-					UPDATE tasks SET stage='backlog', stage_entered_at=now(), claim_persona=NULL, pending_origin=NULL
+					UPDATE tasks SET stage='backlog', stage_entered_at=now(), claim_persona=NULL,
+						-- Paired-form flag resolution + episode reset (the
+						-- backlog twin of finding 4: a no-identity parked
+						-- row lands backlog flag-free, never a constraint
+						-- violation that poisons the sweep).
+						pending_input=false, pending_origin=NULL,
+						nudge_id=NULL, nudged_at=NULL, last_heartbeat_at=NULL
 					WHERE id=$1 AND stage='in_review'`, t.ID)
 				if err != nil {
 					_ = tx.Rollback(ctx)

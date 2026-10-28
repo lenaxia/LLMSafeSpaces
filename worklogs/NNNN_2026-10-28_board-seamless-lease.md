@@ -214,3 +214,25 @@ this worklog + the spec, CHANGELOG, and the populated-migration pin
   only the semantic hunks remain — 55 diff lines).
 - **Worklog filename**: carries the `NNNN_YYYY-MM-DD_slug` date segment the renumber
   bot's sentinel requires (repolint WorklogSentinelPattern).
+
+## 10. Review round 3 (the finding-4 residue, caught before the reviewer's verdict)
+
+§9's finding-4 bullet was WRITTEN but not LANDED: the dead claimant fixed the
+rc1 worker-flag exit (a different UPDATE) and left both pr.Closed re-entry
+branches + the merged-done branch flag-blind. Verified by direct read of
+a91bdb874, then fixed and pinned:
+
+- Both pr.Closed re-entry branches (re-claim AND no-identity backlog) write the
+  paired form `pending_input=false, pending_origin=NULL` AND reset the episode
+  slots (nudge_id/nudged_at/last_heartbeat_at) — the re-entry mints a new lease
+  episode exactly like every other mint.
+- The merged-done branch (parked row whose criteria were met while parked —
+  reviewer-prep flag flips) now resolves the flag with the move too: RC2 drift's
+  direct SQL must not be the one stage move that leaves a done row flagged
+  (updateStageTx's rule, applied uniformly).
+- Born-red pin (mutation-checked locally): TestKill_ClosedUnmergedReentryAfterParkResolvesFlag
+  drives all THREE branches in one sweep (parked+identity → in_progress,
+  parked+no-identity → backlog, parked+criteria-met+merged → done); without the
+  fix the sweep dies with the reviewer's exact reproduction
+  (`tasks_pending_input_set` SQLSTATE 23514) — confirmed red via stash-revert
+  before landing the fix.
