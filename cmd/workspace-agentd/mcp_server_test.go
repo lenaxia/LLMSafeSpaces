@@ -1326,23 +1326,27 @@ func TestMCPHandler_ToolDescriptionGuidance(t *testing.T) {
 	})
 
 	// #1701 (design 0067 §4.3c): the board worker tools' descriptions
-	// are contract — the claim-token discipline, the evidence-gated
-	// heartbeat, the manager-surface refusals, and the recovery path
+	// are contract — the claim-token discipline, the nudge-response
+	// heartbeat (item 6: RESPOND when nudged; no periodic discipline),
+	// the manager-surface refusals, and the recovery path
 	// (a 409 claim_token means STOP, not retry) are load-bearing for a
 	// fresh worker that knows nothing but its charter envelope.
 	t.Run("board_heartbeat guidance", func(t *testing.T) {
 		d, ok := descs["board_heartbeat"]
 		require.True(t, ok, "board_heartbeat in tools/list")
 		for _, want := range []string{
-			"claim token from your charter envelope", // the in-flight guard's provenance
-			"new progress evidence",                  // #1685: evidence, not elapsed time
-			"does NOT extend",                        // the no-evidence outcome is named
-			"observedProgressAt",                     // the evidence field
-			"claim_token",                            // the 409 code that means the claim is gone
-			"re-read the task",                       // the recovery path
+			"claim token from your charter envelope",      // the in-flight guard's provenance
+			"lease-nudge RESPONSE channel",                // item 6: the tool's sole extending shape
+			"NO periodic heartbeat discipline",            // the standing discipline is dead
+			"does NOT extend",                             // the no-nudge outcome is named
+			"BOARD LEASE NUDGE",                           // the trigger the worker is told to watch for
+			"observedProgressAt",                          // the response's stamp field
+			"claim_token",                                 // the 409 code that means the claim is gone
+			"re-read the task",                            // the recovery path
 		} {
 			assert.Contains(t, d, want)
 		}
+		assert.NotContains(t, d, "periodic heartbeat every", "no standing cadence is ever suggested")
 	})
 
 	t.Run("board_report_throttle guidance", func(t *testing.T) {

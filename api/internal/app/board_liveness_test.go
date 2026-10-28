@@ -57,13 +57,20 @@ func TestLeaseNudgeText_SentinelGrammarAndProse(t *testing.T) {
 	assert.Equal(t, "lease-nudge", sent.Mode)
 	assert.Equal(t, "tsk-quiet-worker", sent.TaskID)
 	assert.Equal(t, "nudge-1234", sent.NudgeID)
-	assert.Equal(t, "advance|fail", sent.Expects)
+	assert.Equal(t, "respond|advance|fail", sent.Expects)
 
-	// The surgical prose (owner ruling, verbatim intent).
-	assert.Contains(t, lines[1], "Do NOT restart")
+	// The full nudge contract (item 6 amendment, verbatim intent):
+	// RESPOND first via board_heartbeat, then continue / advance /
+	// declare failure — never restart.
+	assert.Contains(t, lines[1], "First RESPOND (call board_heartbeat once, with your claimToken)",
+		"the response instruction leads")
+	assert.Contains(t, lines[1], "respond before running any long command",
+		"the worker is told to clear the wedge clock FIRST")
+	assert.Contains(t, lines[1], "continue working if there is more work to do")
+	assert.Contains(t, lines[1], "board_move_stage")
 	assert.Contains(t, lines[1], "declare it failed")
+	assert.Contains(t, lines[1], "Do NOT restart")
 	assert.Contains(t, lines[1], "tsk-quiet-worker", "the prose names the task")
-	assert.Contains(t, lines[1], "renews the lease", "the worker is told any response counts")
 }
 
 // --- Unit: the frame index + nudge marks (no PG) ------------------------------
