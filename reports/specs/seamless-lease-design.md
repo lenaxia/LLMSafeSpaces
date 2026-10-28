@@ -129,3 +129,13 @@ type Observation struct {
   knobs (over-knobbling), affinity state machines (re-create stuck rows), nudge-grace tiers
   (mid-turn nudge undeliverable), attested sentinels (over-engineering per ruling), per-episode
   nudge bounds (superseded by latest-nudge-only).
+
+## Ruling addendum (2026-10-28): board_heartbeat is REMOVED
+
+"that should not exist. agent is the least reliable way to do it." — the agent-facing
+self-report surface dies with this branch (agentd catalog + dispatch + tests), completing
+the #1847 arc that already "retires worker-declared stamps as the liveness input entirely."
+The engine-internal watermark survives, fed SOLELY by platform observation (the adapter).
+Rung 3 (Nil liveness) becomes pure wall-clock + headroom — honest, and the incentive to
+wire an adapter is the correct pressure. The rung-3 "worker heartbeat fallback" language
+above is superseded by this addendum.
