@@ -263,14 +263,14 @@ var boardParityMatrix = []parityRow{
 	{action: "set_user_board_config", restMethods: []string{"SetUserBoardConfig"}, rest: liveCell,
 		externalMCP: absentCell, agent: liveCell,
 		agentTools: []string{"board_set_config"},
-		denyErr: &board.GuardError{Code: board.GuardInput, Detail: "unknown config key"}, denyCode: http.StatusBadRequest},
+		denyErr:    &board.GuardError{Code: board.GuardInput, Detail: "unknown config key"}, denyCode: http.StatusBadRequest},
 	{action: "get_project_board_config", restMethods: []string{"GetProjectBoardConfig"}, rest: liveCell,
 		externalMCP: absentCell, agent: liveCell,
 		agentTools: []string{"board_get_config"}},
 	{action: "set_project_board_config", restMethods: []string{"SetProjectBoardConfig"}, rest: liveCell,
 		externalMCP: absentCell, agent: liveCell,
 		agentTools: []string{"board_set_config"},
-		denyErr: &board.GuardError{Code: board.GuardInput, Detail: "unknown config key"}, denyCode: http.StatusBadRequest},
+		denyErr:    &board.GuardError{Code: board.GuardInput, Detail: "unknown config key"}, denyCode: http.StatusBadRequest},
 	// Worker-only rows: absent on REST BY DESIGN (no owner surface
 	// delivers them — §4.7) and absent on external MCP BY DESIGN (§4.3b:
 	// external actors hold no claim tokens); live on the agent seam
@@ -497,7 +497,7 @@ func TestBoardParity_AgentColumn(t *testing.T) {
 		"POST /internal/v1/automation/board/tasks/set-criteria-met", // #1946: the reviewer-persona claim's scoped criteria-flags write
 		"POST /internal/v1/automation/board/tasks/throttle",
 		"POST /internal/v1/automation/board/tasks/verdict", // #1947: the spawned reviewer persona's verdict channel (token-guarded)
-		"PUT /internal/v1/automation/board/config",        // board_set_config: tier-selected REPLACE write (manager set)
+		"PUT /internal/v1/automation/board/config",         // board_set_config: tier-selected REPLACE write (manager set)
 	}, seamBoardRoutes(t),
 		"agent seam route table: worker + manager (#1747) routes + resource-pressure telemetry; claim_next/task_start never route")
 
