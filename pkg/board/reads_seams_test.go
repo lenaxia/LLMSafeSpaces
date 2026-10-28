@@ -188,10 +188,10 @@ func (s *BoardSuite) TestReads_Health() {
 
 	claim := s.claimOrFail(ws)
 
-	// A pending_input row (origin: escalated), a task cooldown, a project
+	// A failed/escalated row (rearm's queue), a task cooldown, a project
 	// slot cooldown, and one prior reclaim event.
 	_, err := s.pool.Exec(ctx,
-		`UPDATE tasks SET stage='pending_input', pending_origin='escalated' WHERE id=$1`, waiting.ID)
+		`UPDATE tasks SET stage='failed', pending_origin='escalated' WHERE id=$1`, waiting.ID)
 	require.NoError(s.T(), err)
 	_, err = s.pool.Exec(ctx,
 		`UPDATE tasks SET cooldown_until = now() + interval '1 hour' WHERE id=$1`, t1.ID)

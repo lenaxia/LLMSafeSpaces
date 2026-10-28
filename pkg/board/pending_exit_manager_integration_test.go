@@ -79,11 +79,12 @@ func (s *BoardSuite) TestPendingExit_AgentManagerEscalatedRowLandsBacklogReset()
 	s.Require().NoError(err)
 	s.Require().NotNil(c.Task)
 	s.Require().True(c.Escalated, "the exhausted row escalates")
-	require.Equal(s.T(), board.StagePendingInput, s.reloadTask(t.ID).Stage)
+	require.Equal(s.T(), board.StageFailed, s.reloadTask(t.ID).Stage,
+		"000050: the escalation terminus")
 
-	// No recorded assignee: the manager exit re-queues (the backlog
-	// branch of the enumerated human exit).
-	out, err := s.svc.MoveStage(context.Background(), s.agentManager(ws, "orchestrator-session-2"), "", t.ShortID, board.StageBacklog, "", "")
+	// The terminus exit is REARM (the manager re-pool judgment) —
+	// re-queued to backlog with the fresh-judgment ledger.
+	out, err := s.svc.RearmTask(context.Background(), s.agentManager(ws, "orchestrator-session-2"), "", t.ShortID, "")
 	s.Require().NoError(err)
 	require.Equal(s.T(), board.StageBacklog, out.Stage)
 	require.Equal(s.T(), 0, s.rawTask(t.ID).Attempts, "re-pooled with a fresh judgment ledger")
@@ -95,7 +96,7 @@ func (s *BoardSuite) TestPendingExit_AgentManagerWorkspaceBindingHolds() {
 	e := s.seedEpic(p, board.EpicActive)
 	t := s.seedTask(e, "foreign", nil, false)
 	_, execErr := s.pool.Exec(context.Background(),
-		`UPDATE tasks SET stage='pending_input', stage_entered_at=now(), pending_origin='escalated' WHERE id=$1`, t.ID)
+		`UPDATE tasks SET stage='failed', stage_entered_at=now(), pending_origin='escalated' WHERE id=$1`, t.ID)
 	s.Require().NoError(execErr)
 
 	// An agent-manager actor bound to a DIFFERENT workspace cannot
@@ -112,7 +113,7 @@ func (s *BoardSuite) TestPendingExit_AgentManagerWorkspaceBindingHolds() {
 	var nf *board.NotFoundError
 	require.ErrorAs(s.T(), err, &nf, "the foreign row resolves as a plain miss — never disclosed, never moved")
 	require.Empty(s.T(), nf.Suggestions, "no cross-tenant suggestions (r1-S1 scoping)")
-	require.Equal(s.T(), board.StagePendingInput, s.reloadTask(t.ID).Stage, "the row was never touched")
+	require.Equal(s.T(), board.StageFailed, s.reloadTask(t.ID).Stage, "the row was never touched")
 }
 
 // The surface vocabulary pin: the manager-grade agent surface is a

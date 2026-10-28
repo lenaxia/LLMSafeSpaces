@@ -35,7 +35,8 @@ func (s *BoardSuite) TestRearm_EscalatedRowRePoolsWithFreshLedger() {
 	s.Require().NoError(err)
 	s.Require().NotNil(c.Task)
 	s.Require().True(c.Escalated)
-	require.Equal(s.T(), board.StagePendingInput, s.reloadTask(t.ID).Stage)
+	require.Equal(s.T(), board.StageFailed, s.reloadTask(t.ID).Stage,
+		"000050: the escalation terminus (rearm's gate)")
 
 	// The re-arm: the manager-grade surface, open to any in-workspace
 	// session (the manager-grant gate is repealed, ruling 2026-10-27).
@@ -63,7 +64,7 @@ func (s *BoardSuite) TestRearm_ReplayReturnsOriginalOutcome() {
 	e := s.seedEpic(p, board.EpicActive)
 	t := s.seedTask(e, "rearm-replay", nil, false)
 	_, execErr := s.pool.Exec(ctx,
-		`UPDATE tasks SET stage='pending_input', stage_entered_at=now(), pending_origin='escalated', attempts=$2 WHERE id=$1`,
+		`UPDATE tasks SET stage='failed', stage_entered_at=now(), pending_origin='escalated', attempts=$2 WHERE id=$1`,
 		t.ID, s.cfg.AttemptsCap)
 	s.Require().NoError(execErr)
 
@@ -86,7 +87,7 @@ func (s *BoardSuite) TestRearm_ReplayReturnsOriginalOutcome() {
 		"the replay returns the LIVE row (the claim moved it); it must not re-write anything")
 	require.Equal(s.T(), 1, s.countEvents("rearm"), "exactly one rearm event — the replay added none")
 	require.Equal(s.T(), 1, s.countTransitions(t.ID, board.StageBacklog),
-		"exactly one pending_input->backlog transition — the replay added none")
+		"exactly one failed->backlog transition — the replay added none")
 	claimed := s.rawTask(t.ID)
 	require.NotEmpty(s.T(), claimed.ClaimToken, "the claim survived the replay untouched")
 	require.Equal(s.T(), 1, claimed.Attempts, "the fresh round's attempt ledger survived the replay")

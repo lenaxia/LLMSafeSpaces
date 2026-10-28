@@ -174,13 +174,17 @@ func personaClaimEventTx(ctx context.Context, tx pgx.Tx, projectID, taskID, stag
 // It lives HERE (not engine.go/reconciler.go) to keep the persona
 // seam's query vocabulary beside its resolution logic — the
 // ownership-agnostic pin (§4.7) holds either way: the SQL touches
-// rows and pause flags only.
+// rows and pause flags only. 000050: pending_input is a FLAG on
+// in_review rows — the NOT t.pending_input predicate keeps an
+// owner-blocked park (drift_review) out of the persona re-arm feed
+// (the claim-predicate pin: stage ∈ claimable AND !flag).
 const personaRearmCandidatesSQL = `
 	SELECT t.id, t.project_id, t.failure_count
 	FROM tasks t
 	JOIN epics e ON e.id = t.epic_id
 	JOIN projects p ON p.id = t.project_id
 	WHERE t.stage='in_review' AND t.claim_token IS NULL AND t.lease_expires_at IS NULL
+	  AND NOT t.pending_input
 	  AND NOT t.paused AND e.status <> 'paused' AND NOT p.paused
 	  AND (t.cooldown_until IS NULL OR t.cooldown_until < now())`
 

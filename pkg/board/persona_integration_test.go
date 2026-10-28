@@ -316,7 +316,7 @@ func (s *BoardSuite) TestPersona_DeadWorkerLeaseLapseFreshReclaim() {
 	s.clearTaskBackoff(task.ID)
 	s.sweep()
 	row = s.rawTask(task.ID)
-	s.Equal(board.StagePendingInput, row.Stage, "failure_count at the cap escalates — the human-only exit arbitrates the loop")
+	s.Equal(board.StageFailed, row.Stage, "000050: failure_count at the cap escalates to the terminus — rearm arbitrates the loop")
 	require.NotNil(s.T(), row.PendingOrigin)
 	s.Equal("escalated", *row.PendingOrigin)
 	s.Require().Nil(row.ClaimToken)

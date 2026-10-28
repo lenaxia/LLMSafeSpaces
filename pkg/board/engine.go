@@ -366,7 +366,7 @@ func (s *Service) claimOnce(ctx context.Context, workerID, workspaceID string) (
 		if tag.RowsAffected() == 0 {
 			return nil, "project_empty", projectID, nil // raced away: retry
 		}
-		if err := writeTransition(ctx, txQ{tx}, taskID, StageBacklog, StagePendingInput, "", sysActor); err != nil {
+		if err := writeTransition(ctx, txQ{tx}, taskID, StageBacklog, StageFailed, "", sysActor); err != nil {
 			return nil, "", "", err
 		}
 		evt, err := recordEventTx(ctx, tx, projectID, engineEventID("escalate", taskID, attempts), "escalate",
@@ -576,8 +576,8 @@ func (s *Service) spawnFor(ctx context.Context, taskID, token string) {
 		return
 	}
 	t := s.mustTask(ctx, taskID)
-	if t == nil || t.ClaimToken != token || t.Stage == StageDone || t.Stage == StageBacklog || t.Stage == StagePendingInput {
-		return
+	if t == nil || t.ClaimToken != token || t.Stage == StageDone || t.Stage == StageBacklog || t.Stage == StageFailed || t.PendingInput {
+		return // 000050: failed has no worker to spawn; a flagged row's worker is suspended, never replaced
 	}
 	p := s.projectFor(ctx, t.ProjectID)
 	if p == nil {

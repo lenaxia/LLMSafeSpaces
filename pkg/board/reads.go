@@ -478,10 +478,15 @@ func (s *Service) healthCooldowns(ctx context.Context, userID string, h *Health)
 }
 
 func (s *Service) healthPendingInput(ctx context.Context, userID string, h *Health) error {
+	// 000050: the panel's question is "what awaits the owner" — the
+	// flagged parks AND the failed/escalated terminus (rearm's queue)
+	// both answer it; the stage swap must not hide the escalation
+	// backlog the panel has always shown.
 	rows, err := s.q().Query(ctx, `
 		SELECT coalesce(t.pending_origin, 'unknown'), count(*)
 		FROM tasks t JOIN projects p ON p.id = t.project_id
-		WHERE p.user_id = $1 AND t.pending_input
+		WHERE p.user_id = $1
+		  AND (t.pending_input OR (t.stage='failed' AND t.pending_origin='escalated'))
 		GROUP BY 1`, userID)
 	if err != nil {
 		return err
@@ -671,7 +676,8 @@ func (s *Service) BoardHealthInWorkspace(ctx context.Context, workspaceID string
 	orows, err := s.q().Query(ctx, `
 		SELECT coalesce(t.pending_origin, 'unknown'), count(*)
 		FROM tasks t JOIN projects p ON p.id = t.project_id
-		WHERE p.target_workspace_id = $1::uuid AND t.pending_input
+		WHERE p.target_workspace_id = $1::uuid
+		  AND (t.pending_input OR (t.stage='failed' AND t.pending_origin='escalated'))
 		GROUP BY 1`, workspaceID)
 	if err != nil {
 		return nil, err

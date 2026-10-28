@@ -398,6 +398,7 @@ func (s *BoardSuite) reloadEpic(id string) *board.Epic {
 type taskRow struct {
 	Stage         string
 	PendingOrigin *string
+	PendingInput  bool
 	Assignee      *string
 	ClaimToken    *string
 	LeaseExp      *time.Time
@@ -409,12 +410,24 @@ type taskRow struct {
 func (s *BoardSuite) rawTask(id string) taskRow {
 	var r taskRow
 	err := s.pool.QueryRow(context.Background(),
-		`SELECT stage, pending_origin, assignee_session, claim_token::text, lease_expires_at,
+		`SELECT stage, pending_origin, pending_input, assignee_session, claim_token::text, lease_expires_at,
 		        attempts, claim_incremented_attempts, is_blocked
 		 FROM tasks WHERE id=$1`, id).
-		Scan(&r.Stage, &r.PendingOrigin, &r.Assignee, &r.ClaimToken, &r.LeaseExp, &r.Attempts, &r.ClaimIncr, &r.IsBlocked)
+		Scan(&r.Stage, &r.PendingOrigin, &r.PendingInput, &r.Assignee, &r.ClaimToken, &r.LeaseExp, &r.Attempts, &r.ClaimIncr, &r.IsBlocked)
 	s.Require().NoError(err)
 	return r
+}
+
+// parkedPin asserts the 000050 parked shape: the REAL stage kept, the
+// pending_input flag set with the given origin (the stage-form's
+// "fixture parked" assertion, flag-translated).
+func (s *BoardSuite) parkedPin(id, stage, origin string) taskRow {
+	row := s.rawTask(id)
+	s.Equal(stage, row.Stage, "the park keeps the real stage (flag-not-stage)")
+	s.True(row.PendingInput, "the pending_input flag is set")
+	s.Require().NotNil(row.PendingOrigin)
+	s.Equal(origin, *row.PendingOrigin)
+	return row
 }
 
 func (s *BoardSuite) epicStatus(id string) string {

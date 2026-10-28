@@ -147,9 +147,10 @@ func (s *BoardSuite) TestKill_EscalationAtClaimNPlusOne() {
 	s.Empty(c.ClaimToken, "escalation mints nothing (grant withheld)")
 
 	row := s.rawTask(tired.ID)
-	s.Equal(board.StagePendingInput, row.Stage)
+	s.Equal(board.StageFailed, row.Stage, "000050: escalation lands the failure terminus")
 	s.Require().NotNil(row.PendingOrigin)
 	s.Equal(board.PendingOriginEscalated, *row.PendingOrigin)
+	s.False(row.PendingInput, "the terminus is unflagged (rearm's gate is the origin)")
 	s.Nil(row.ClaimToken)
 	s.Nil(row.LeaseExp)
 	s.Nil(row.Assignee)
@@ -278,22 +279,25 @@ func (s *BoardSuite) TestKill_ThrottlePendingInputTokenRejected() {
 	task := s.seedTask(e, "pending", nil, false)
 
 	c := s.claimOrFail(ws)
-	// Worker-origin pending_input: the token is retained (the worker still
-	// holds the work; the lease clock is suspended by the stage predicate).
+	// Worker-origin pending_input FLAG: the token is retained (the worker
+	// still holds the work; the lease clock is suspended by the RC1
+	// scan's flag exclusion — 000050: the row keeps in_progress).
 	_, err := s.svc.MoveStage(context.Background(), s.agent("sess", c.ClaimToken), task.ID, "", board.StagePendingInput, "", "")
 	s.Require().NoError(err)
 	row := s.rawTask(task.ID)
-	s.NotNil(row.ClaimToken, "pending_input keeps its token")
+	s.parkedPin(task.ID, board.StageInProgress, board.PendingOriginWorker)
+	s.NotNil(row.ClaimToken, "the flag keeps its token")
 	s.Equal(c.ClaimToken, *row.ClaimToken)
 
 	_, err = s.svc.ReportThrottle(context.Background(), s.agent("sess", c.ClaimToken), task.ID, "", time.Minute, "")
 	s.Require().Error(err)
 	var ge *board.GuardError
 	s.Require().ErrorAs(err, &ge)
-	s.Equal(board.GuardClaimToken, ge.Code, "stage guard rejects: a throttle concerns a live claim")
+	s.Equal(board.GuardClaimToken, ge.Code, "flag guard rejects: a worker cannot self-exit the input wait through the 429 path")
 
 	row2 := s.rawTask(task.ID)
-	s.Equal(board.StagePendingInput, row2.Stage, "no self-exit")
+	s.Equal(board.StageInProgress, row2.Stage, "no self-exit")
+	s.True(row2.PendingInput, "the flag still holds")
 	s.Equal(1, row2.Attempts)
 	s.Equal(c.ClaimToken, *row2.ClaimToken, "token untouched")
 }

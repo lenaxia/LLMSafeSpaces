@@ -148,10 +148,15 @@ func (s *Service) moveStageTx(ctx context.Context, tx pgx.Tx, actor Actor, taskI
 	// class regardless of the token), then the claim-token guard for the
 	// legal in-flight writes (§4.2): manager surfaces hold no token — an
 	// optimistic drag on a claimed row snaps back. 000050: pending_input
-	// is a flag-op alias, not a stored stage — its enter/exit pairs are
-	// legal from/to their REAL stage (the flag cases below dispatch
-	// before the table on the alias literal); 'failed' is the new
-	// failure terminus (nudge self-fail enters it; rearm exits it).
+	// is a flag-op alias, not a stored stage — a FLAGGED row (real stage
+	// in_progress/in_review, flag set) addresses its exits through the
+	// alias: fromKey maps the flagged row onto the pending_input column
+	// of the table so the two exit pairs match (a stored 'pending_input'
+	// from-stage no longer exists to key on), and every OTHER target
+	// from a flagged row refuses here exactly as the stage form did (the
+	// owner question gates forward progress until resolved). 'failed' is
+	// the new failure terminus (nudge self-fail enters it; rearm exits
+	// it).
 	legal := map[[2]string]bool{
 		{StageInProgress, StageInReview}:     true,
 		{StageInProgress, StageDone}:         true,
@@ -159,16 +164,25 @@ func (s *Service) moveStageTx(ctx context.Context, tx pgx.Tx, actor Actor, taskI
 		{StageInReview, StageInProgress}:     true,
 		{StageInReview, StageDone}:           true,
 		{StageInReview, StageFailed}:         true,
-		{StageBacklog, StagePendingInput}:    true, // flag-op alias (escalation-path shape; see cases)
 		{StageInProgress, StagePendingInput}: true, // flag set
 		{StageInReview, StagePendingInput}:   true, // flag set
 		{StagePendingInput, StageBacklog}:    true, // flag clear → re-queue
 		{StagePendingInput, StageInProgress}: true, // flag clear → re-claim
 	}
-	if !legal[[2]string{from, toStage}] {
+	fromKey := from
+	if cur.PendingInput {
+		fromKey = StagePendingInput // the flag rides the real stage; exits address the alias
+	}
+	if !legal[[2]string{fromKey, toStage}] {
 		return res, nudge{}, &GuardError{Code: GuardStage, Detail: "stage transition " + from + "→" + toStage + " is not enumerated in the machine"}
 	}
-	if from == StageInProgress && actor.ClaimToken != cur.ClaimToken {
+	// 000050 parity on the token guard: the old flag-exit writes moved
+	// FROM the pending_input stage, which the guard never covered — a
+	// flagged row keeps its real stage (in_progress) AND its token, so
+	// the guard would newly refuse the human exit it always allowed.
+	// Skip the guard on the EXIT side only (flagged rows); entry and
+	// every other in_progress write keep it.
+	if from == StageInProgress && !cur.PendingInput && actor.ClaimToken != cur.ClaimToken {
 		return res, nudge{}, &GuardError{Code: GuardClaimToken, Detail: "stage writes on a claimed task require its live claim token"}
 	}
 
@@ -253,7 +267,7 @@ func (s *Service) moveStageTx(ctx context.Context, tx pgx.Tx, actor Actor, taskI
 		}
 		resulting = from // the stage is unchanged; the flag rides it
 
-	case from == StageInReview && toStage == StageInProgress:
+	case from == StageInReview && toStage == StageInProgress && !cur.PendingInput:
 		// The bounce (#1959): re-claim for the ORIGINAL IMPLEMENTER —
 		// fresh token + lease minted in the same statement, flag=false
 		// (its 429 never decrements), attempts unchanged, and
@@ -629,16 +643,20 @@ func (s *Service) bounceTx(ctx context.Context, tx pgx.Tx, taskID, implementer s
 	return StageInProgress, nudge{taskID: taskID, token: token, spawn: true}, nil
 }
 
-// exitPendingReclaim is the flag-clear's re-claim branch (000050: the
-// row's REAL stage was never left — this clears the flag, resets the
-// ledger, and mints the fresh claim): fresh token+lease with the
+// exitPendingReclaim is the flag-clear's re-claim branch (000050: this
+// clears the flag, resets the ledger, LANDS the enumerated in_progress
+// end state, and mints the fresh claim): fresh token+lease with the
 // recorded identity cleared (the interim-state shape), the superseded
 // session aborted (its question is void with the exit — the interrupt
 // seam, merged-doc §4.1), and the fresh worker spawned after commit.
 func (s *Service) exitPendingReclaim(ctx context.Context, tx pgx.Tx, actor Actor, cur *Task) (string, bool, nudge, error) {
 	token := uuidNew()
+	// stage='in_progress' is explicit: a no-op for the common
+	// worker-origin park (the row kept in_progress), and the enumerated
+	// LANDING for a drift_review park on in_review — the real stage moves
+	// with the re-claim, and the transition row below records that move.
 	tag, err := tx.Exec(ctx, `
-		UPDATE tasks SET stage_entered_at=now(), pending_input=false, pending_origin=NULL,
+		UPDATE tasks SET stage='in_progress', stage_entered_at=now(), pending_input=false, pending_origin=NULL,
 			nudge_id=NULL, nudged_at=NULL,
 			claim_token=$2, lease_expires_at=now()+make_interval(secs=>$3::float8), last_progress_at=now(),
 			assignee_session=NULL, implementer_session=NULL, claim_incremented_attempts=false, claim_persona=NULL, attempts=0,
@@ -650,6 +668,14 @@ func (s *Service) exitPendingReclaim(ctx context.Context, tx pgx.Tx, actor Actor
 	}
 	if tag.RowsAffected() == 0 {
 		return "", false, nudge{}, &GuardError{Code: GuardStage, Detail: "row moved — the exit raced (server-arbitrated)"}
+	}
+	if cur.Stage != StageInProgress {
+		// A real stage move accompanies the flag-clear (the drift_review
+		// shape): the transition row audits the MOVE; the flag event
+		// below audits the flag side for every exit.
+		if err := writeTransition(ctx, txQ{tx}, cur.ID, cur.Stage, StageInProgress, "", actor); err != nil {
+			return "", false, nudge{}, err
+		}
 	}
 	if _, err := recordEventTx(ctx, tx, cur.ProjectID, engineEventID("flagclear", cur.ID, cur.Attempts), "pending_input_flag",
 		"task", cur.ID, actor, map[string]any{"task_id": cur.ID, "flag": false, "reclaimed": true}); err != nil {
@@ -693,7 +719,10 @@ func (s *Service) Heartbeat(ctx context.Context, actor Actor, taskID, shortIDOrI
 	// holds the same token+lease and renews under the same evidence
 	// rule). An UNCLAIMED in_review row has a NULL token and rejects
 	// (empty token never matches) — today's semantics, unchanged.
-	claimStage := t.Stage == StageInProgress || (t.Stage == StageInReview && t.ClaimToken != "")
+	// 000050: a flagged row (the old pending_input stage) rejects the
+	// same way — the input wait suspends the claim lifecycle, and the
+	// resume lane re-arms the lease itself.
+	claimStage := (t.Stage == StageInProgress || (t.Stage == StageInReview && t.ClaimToken != "")) && !t.PendingInput
 	if !claimStage || actor.ClaimToken == "" || actor.ClaimToken != t.ClaimToken {
 		return HeartbeatResult{}, &GuardError{Code: GuardClaimToken, Detail: "heartbeat requires a live claim (stage + token)"}
 	}
@@ -762,7 +791,7 @@ func (s *Service) ReportThrottle(ctx context.Context, actor Actor, taskID, short
 	if err != nil {
 		return nil, err
 	}
-	if t.Stage != StageInProgress || actor.ClaimToken == "" || actor.ClaimToken != t.ClaimToken {
+	if t.Stage != StageInProgress || t.PendingInput || actor.ClaimToken == "" || actor.ClaimToken != t.ClaimToken {
 		return nil, &GuardError{Code: GuardClaimToken, Detail: "a throttle concerns a live claim (stage + token guard)"}
 	}
 	if retryAfter <= 0 {

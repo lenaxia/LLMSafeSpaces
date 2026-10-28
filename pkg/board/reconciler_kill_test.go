@@ -158,10 +158,7 @@ func (s *BoardSuite) TestKill_MergePRConvergesToDone() {
 	s.drift.set(43, board.PRState{Merged: true, URL: "https://git.example/pr/43"})
 	res = s.sweep()
 	s.Equal(1, res.DriftReview)
-	row = s.rawTask(unmet.ID)
-	s.Equal(board.StagePendingInput, row.Stage)
-	s.Require().NotNil(row.PendingOrigin)
-	s.Equal(board.PendingOriginDriftReview, *row.PendingOrigin)
+	s.parkedPin(unmet.ID, board.StageInReview, board.PendingOriginDriftReview)
 	s.Equal(board.StageDone, s.rawTask(prTask.ID).Stage, "unrelated rows untouched")
 }
 
@@ -441,25 +438,23 @@ func (s *BoardSuite) TestKill_PendingInputResumeRearmsLease() {
 	assignee := s.reloadTask(task.ID).AssigneeSession
 	s.True(s.reloadTask(task.ID).ClaimIncremented)
 
-	// The worker asks a question: pending-input projection flips.
+	// The worker asks a question: pending-input projection flips (000050:
+	// the FLAG — the row keeps in_progress, the token/provenance ride it).
 	s.pending.set(assignee, true)
 	res := s.sweep()
 	s.Equal(1, res.PendingStaged)
-	row := s.rawTask(task.ID)
-	s.Equal(board.StagePendingInput, row.Stage)
-	s.Require().NotNil(row.PendingOrigin)
-	s.Equal(board.PendingOriginWorker, *row.PendingOrigin)
+	row := s.parkedPin(task.ID, board.StageInProgress, board.PendingOriginWorker)
 	s.Equal(c.ClaimToken, *row.ClaimToken, "auto-stage keeps the token (no mint)")
 	s.True(row.ClaimIncr, "and keeps the provenance flag (claim-token provenance)")
 
-	// The lease ages out under pending_input by more than a lease window:
-	// still never reclaimed (stage predicate excludes pending_input).
+	// The lease ages out under the flag by more than a lease window:
+	// still never reclaimed (the RC1 scan excludes flagged rows).
 	_, err := s.pool.Exec(context.Background(),
 		`UPDATE tasks SET lease_expires_at = now() - interval '1 hour' WHERE id=$1`, task.ID)
 	s.Require().NoError(err)
 	res = s.sweep()
-	s.Equal(0, res.Reclaims, "pending_input suspends the lease clock by construction")
-	s.Equal(board.StagePendingInput, s.rawTask(task.ID).Stage)
+	s.Equal(0, res.Reclaims, "the input wait suspends the lease clock by construction")
+	s.True(s.rawTask(task.ID).PendingInput, "still flagged")
 
 	// Human answers: resume re-arms the lease, token + flag untouched.
 	s.pending.set(assignee, false)
@@ -467,6 +462,7 @@ func (s *BoardSuite) TestKill_PendingInputResumeRearmsLease() {
 	s.Equal(1, res.Resumes)
 	row = s.rawTask(task.ID)
 	s.Equal(board.StageInProgress, row.Stage)
+	s.False(row.PendingInput, "the resume clears the flag in place (the stage never moved)")
 	s.Require().NotNil(row.LeaseExp, "resume re-arms the lease (now()+lease)")
 	s.Require().NotNil(row.ClaimToken)
 	s.Equal(c.ClaimToken, *row.ClaimToken, "resume is a NO-MINT preserve-case (r11 fix)")

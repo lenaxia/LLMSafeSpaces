@@ -347,7 +347,7 @@ func (s *Service) rc1Reclaims(ctx context.Context) (int, error) {
 			// transition, NO audit event (design: renewals never flood
 			// the trail), NO overlay.
 			if _, err := tx.Exec(ctx, `
-				UPDATE tasks SET lease_expires_at=now()+make_interval(secs::$2::float8),
+				UPDATE tasks SET lease_expires_at=now()+make_interval(secs=>$2::float8),
 					last_progress_at=now(), nudge_id=NULL, nudged_at=NULL, updated_at=now()
 				WHERE id=$1 AND stage='in_progress'`,
 				v.id, s.cfg.LeaseDuration.Seconds()); err != nil {
@@ -361,7 +361,7 @@ func (s *Service) rc1Reclaims(ctx context.Context) (int, error) {
 			// measurement point for the ordinal question.
 			if _, err := tx.Exec(ctx, `
 				UPDATE tasks SET nudge_id=$2, nudged_at=now(),
-					lease_expires_at=now()+make_interval(secs::$3::float8), updated_at=now()
+					lease_expires_at=now()+make_interval(secs=>$3::float8), updated_at=now()
 				WHERE id=$1 AND stage='in_progress'`,
 				v.id, nudgeIDs[v.id], s.cfg.LeaseDuration.Seconds()); err != nil {
 				return 0, err
