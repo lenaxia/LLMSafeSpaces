@@ -782,8 +782,9 @@ func TestBoardTools_AdapterStageValidation(t *testing.T) {
 	m5 := &MockAPIClient{} // no expectations: validation must precede any call
 	h5 := &handlers{client: m5, timeout: 30 * time.Second}
 	res5, _ := callBoardTool(t, h5, "board_read", map[string]any{"project_id": "prj-aaaa1111", "stage": rejectedStageLiteral})
-	assert.True(t, res5.IsError, "stage=%s must be rejected at the tool tier (five-stage vocabulary)", rejectedStageLiteral)
-	assert.Contains(t, boardResultText(res5), "pending_input", "the error advertises the FIVE live stages")
+	assert.True(t, res5.IsError, "stage=%s must be rejected at the tool tier (wire stage vocabulary)", rejectedStageLiteral)
+	assert.Contains(t, boardResultText(res5), "pending_input", "the error advertises the flag-op alias")
+	assert.Contains(t, boardResultText(res5), "failed", "the error advertises the failure terminus")
 	assert.NotContains(t, boardResultText(res5), rejectedStageLiteral, "the error must not advertise the eliminated stage")
 }
 

@@ -203,10 +203,17 @@ var _ = wireStageVocabulary // populated below; kept separate for clarity
 
 func init() { wireStageVocabulary = append(wireStageVocabulary, StagePendingInput) }
 
-// StageVocabulary renders the five stages (joined) for caller-facing
-// validation errors.
+// StageVocabulary renders the five storable stages (joined) for
+// caller-facing validation errors.
 func StageVocabulary() string {
 	return strings.Join(stageVocabulary, ", ")
+}
+
+// WireStageVocabulary renders the WIRE acceptance set (joined) — the
+// storable stages plus the pending_input flag-op alias (000050: surfaces
+// send the literal; the engine maps it to flag semantics).
+func WireStageVocabulary() string {
+	return strings.Join(wireStageVocabulary, ", ")
 }
 
 // StageInVocabulary reports whether a literal is one of the WIRE

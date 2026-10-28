@@ -110,12 +110,15 @@ func (h *BoardHandler) boardActor(c *gin.Context) board.Actor {
 	return board.Actor{Kind: board.ActorUser, UserID: c.GetString("userID"), Surface: board.SurfaceREST}
 }
 
-// boardStages is the enumerated stage filter set (ruling R2's binding
-// vocabulary, #1747-amended: five stages — cancel is eliminated).
+// boardStages is the WIRE stage set (000050): the five storable stages
+// (backlog, in_progress, in_review, done, failed) plus the pending_input
+// flag-op alias — surfaces still SEND the literal (filter = flagged rows,
+// move = set the flag) and the engine maps it; board.StageInVocabulary
+// is the same set's single source.
 func boardStages() map[string]bool {
 	return map[string]bool{
 		board.StageBacklog: true, board.StageInProgress: true, board.StageInReview: true,
-		board.StageDone: true, board.StagePendingInput: true,
+		board.StageDone: true, board.StageFailed: true, board.StagePendingInput: true,
 	}
 }
 
@@ -329,8 +332,9 @@ func (h *BoardHandler) UnarchiveProject(c *gin.Context) {
 }
 
 // ListProjectTasks lists a project's tasks, optionally filtered by one
-// of the five stages (the adapter validates the filter; the engine owns
-// everything else).
+// of the wire stages (000050: the five storable stages plus the
+// pending_input flag filter — flagged rows wherever they sit; the
+// adapter validates the filter; the engine owns everything else).
 func (h *BoardHandler) ListProjectTasks(c *gin.Context) {
 	p, ok := h.ownerProject(c, c.Param("id"))
 	if !ok {
@@ -338,7 +342,7 @@ func (h *BoardHandler) ListProjectTasks(c *gin.Context) {
 	}
 	stage := c.Query("stage")
 	if stage != "" && !boardStages()[stage] {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "stage filter must be one of backlog, in_progress, in_review, done, pending_input"})
+		c.JSON(http.StatusBadRequest, gin.H{"error": "stage filter must be one of backlog, in_progress, in_review, done, failed, pending_input (pending_input = the flag filter: rows awaiting input wherever they sit)"})
 		return
 	}
 	// #1813: the failed-state overlay filter — tri-state boolean.
@@ -389,7 +393,7 @@ func (h *BoardHandler) BoardSearch(c *gin.Context) {
 	}
 	stage := c.Query("stage")
 	if stage != "" && !boardStages()[stage] {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "stage filter must be one of the five stages: backlog, in_progress, in_review, done, pending_input"})
+		c.JSON(http.StatusBadRequest, gin.H{"error": "stage filter must be one of the wire stages: backlog, in_progress, in_review, done, failed, pending_input (pending_input = the flag filter)"})
 		return
 	}
 	res, err := h.board.SearchTasks(c.Request.Context(), c.GetString("userID"), q, board.SearchFilters{

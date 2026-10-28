@@ -909,13 +909,13 @@ func TestBoardREST_BindingValidation(t *testing.T) {
 		})
 	}
 
-	// The stage filter accepts exactly the five stages (ruling R2's
-	// binding set, #1747-amended: cancel is eliminated) and rejects
-	// everything else.
+	// The stage filter accepts exactly the wire stage set (000050: the
+	// five storable stages — failed included — plus the pending_input
+	// flag-op alias) and rejects everything else.
 	svc := newFakeBoardManager()
 	svc.projects = []board.Project{{ID: "p1", ShortID: "prj-aaaa1111", UserID: "user-1", Status: board.ProjectActive}}
 	r := newBoardRESTRouter(t, svc)
-	for _, stage := range []string{"backlog", "in_progress", "in_review", "done", "pending_input"} {
+	for _, stage := range []string{"backlog", "in_progress", "in_review", "done", "failed", "pending_input"} {
 		w := doBoardREST(t, r, http.MethodGet, "/api/v1/me/projects/prj-aaaa1111/tasks?stage="+stage, "")
 		assert.Equal(t, http.StatusOK, w.Code, stage)
 	}

@@ -78,7 +78,8 @@ func TestBoardAutomation_ManagerMoveStageBulkBinding(t *testing.T) {
 	w = doBoard(t, r, http.MethodPost, "/internal/v1/automation/board/tasks/move-stage-bulk",
 		`{"workspaceID":"ws-1","sessionId":"ses_x","toStage":"cancel","taskIds":["tsk-bulk1111"]}`)
 	assert.Equal(t, http.StatusBadRequest, w.Code, w.Body.String())
-	assert.Contains(t, w.Body.String(), "five stages")
+	assert.Contains(t, w.Body.String(), "wire stages")
+	assert.Contains(t, w.Body.String(), "failed")
 
 	w = doBoard(t, r, http.MethodPost, "/internal/v1/automation/board/tasks/move-stage-bulk",
 		`{"workspaceID":"ws-1","sessionId":"ses_x","toStage":"done","taskIds":[]}`)

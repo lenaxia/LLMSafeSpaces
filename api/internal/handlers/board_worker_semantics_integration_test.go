@@ -408,14 +408,17 @@ func TestIntegrationBoardWorkerSemantics(t *testing.T) {
 		claim := claimFor(t, wsPod, shortID)
 
 		// The worker's session holds an unanswered question: the sweep
-		// stages the task pending_input — KEEPING the token (the claim
-		// is not dead; the human is deciding).
+		// raises the pending_input FLAG — KEEPING the token (the claim
+		// is not dead; the human is deciding) and the real stage
+		// (000050: the flag rides the row, never a costume stage).
 		pending.set("sess-" + shortID)
 		_, err := recon.Sweep(ctx)
 		require.NoError(t, err)
 		code, body := boardGet(t, shortID)
 		require.Equal(t, http.StatusOK, code)
-		require.Equal(t, board.StagePendingInput, body["stage"], w3(body))
+		require.Equal(t, board.StageInProgress, body["stage"], w3(body))
+		require.Equal(t, true, body["pending_input"], w3(body))
+		require.Equal(t, board.PendingOriginWorker, body["pending_origin"], w3(body))
 
 		// The still-held token does NOT unlock the exit: a delegated
 		// worker is not the human the exit exists for (§4.2).
