@@ -54,6 +54,20 @@ func WithWorkerMessenger(m WorkerMessenger) Option {
 	return func(s *Service) { s.messenger = m }
 }
 
+// WithLivenessSource installs the seamless lease's observation seam
+// (000050). Nil (or absent) resolves to NilLiveness — the inert
+// contract: no observation, no renewal, no nudge; wall-clock semantics.
+func WithLivenessSource(src AssigneeLivenessSource) Option {
+	return func(s *Service) { s.lives = src }
+}
+
+// WithNudgeSender installs the lease-nudge sentinel's delivery seam
+// (000050). Nil = the nudge ladder is inert; expiry with no movement
+// falls to the wall-clock reclaim path.
+func WithNudgeSender(n NudgeSender) Option {
+	return func(s *Service) { s.nudger = n }
+}
+
 // WithBounceRedispatcher installs the #1959 bounce re-dispatch seam:
 // delivery of a re-dispatch turn (fresh bounce claim token + embedded
 // verdict chain) to the ORIGINAL implementer's existing session — the
@@ -95,6 +109,15 @@ type Service struct {
 	// (#1747 pause-must-pause). Nil = no delivery (the flags stay
 	// authoritative; tests pin the nil-seam behavior).
 	messenger WorkerMessenger
+	// lives is the seamless lease's observation seam (000050): movement
+	// deltas, dead-evidence, and the ordinal post-sentinel query. Nil
+	// resolves to NilLiveness — the inert contract: wall-clock + heartbeat
+	// semantics, every existing guarantee intact.
+	lives AssigneeLivenessSource
+	// nudger delivers the lease-nudge sentinel to a quiet assignee's
+	// session. Nil = no nudge ladder (expiry with no observation falls
+	// to today's wall-clock reclaim).
+	nudger NudgeSender
 	// redispatcher delivers the #1959 bounce re-dispatch turn to the
 	// ORIGINAL implementer's existing session (the ruling's
 	// bounce-target semantics). Nil = no delivery seam: the bounce
@@ -131,7 +154,11 @@ func NewService(pool *pgxpool.Pool, cfg EngineConfig, opts ...Option) *Service {
 		cfg.AttemptsCap = 3
 	}
 	if cfg.LeaseDuration <= 0 {
-		cfg.LeaseDuration = 15 * time.Minute
+		// 000050: the wall-clock lease is the DEATH detector, not the
+		// liveness detector — 45m absorbs the longest legitimate silent
+		// stretch (full-suite verification + model thinking between
+		// commands) while observation-based renewal carries liveness.
+		cfg.LeaseDuration = 45 * time.Minute
 	}
 	if cfg.ThrottleBackoff <= 0 {
 		cfg.ThrottleBackoff = 5 * time.Minute

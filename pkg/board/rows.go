@@ -85,6 +85,9 @@ type Task struct {
 	Description        string                `json:"description"`
 	Stage              string                `json:"stage"`
 	PendingOrigin      *string               `json:"pending_origin,omitempty"`
+	PendingInput       bool                  `json:"pending_input"`
+	NudgeID            string                `json:"nudge_id,omitempty"`
+	NudgedAt           *time.Time            `json:"nudged_at,omitempty"`
 	ProjectName        string                `json:"project_name"`
 	EpicName           string                `json:"epic_name"`
 	Tags               []string              `json:"tags"`

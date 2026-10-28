@@ -172,18 +172,36 @@ func (c EngineConfig) failureBackoff(n int) time.Duration {
 // outright; the machine is forward-moving with the one enumerated
 // backward bounce and the human pending_input exits).
 const (
-	StageBacklog      = "backlog"
-	StageInProgress   = "in_progress"
-	StageInReview     = "in_review"
-	StageDone         = "done"
+	StageBacklog    = "backlog"
+	StageInProgress = "in_progress"
+	StageInReview   = "in_review"
+	StageDone       = "done"
+	// StageFailed is the failure terminus (000050: the attempts-exhaustion
+	// escalation and the wedge verdict land here; rearm is the exit —
+	// NEVER a pending_input costume, per the owner ruling "exhausted
+	// retries should be failed status").
+	StageFailed = "failed"
+	// StagePendingInput remains a WIRE literal only (000050: flag-not-
+	// stage). moveStage still ACCEPTS it as the flag-op alias — set the
+	// pending_input flag (enter) / clear it + take the enumerated exit
+	// (leave) — but no row STORES it; the storable vocabulary below
+	// excludes it and the DB CHECK enforces that.
 	StagePendingInput = "pending_input"
 )
 
-// stageVocabulary is the five-stage binding set's single source (the
-// read filter's vocabulary, the batch move's target vocabulary, and the
+// stageVocabulary is the STORABLE stage set's single source (the read
+// filter's vocabulary, the batch move's target vocabulary, and the
 // adapters' presence checks all render from here — #1836 review r1:
 // the inline literal maps had begun to drift).
-var stageVocabulary = []string{StageBacklog, StageInProgress, StageInReview, StageDone, StagePendingInput}
+var stageVocabulary = []string{StageBacklog, StageInProgress, StageInReview, StageDone, StageFailed}
+
+// wireStageVocabulary is the acceptance set: the storable stages plus
+// the pending_input flag-op alias (000050 — surfaces send the literal;
+// the engine maps it to flag semantics and never persists it).
+var wireStageVocabulary = append([]string{}, stageVocabulary...)
+var _ = wireStageVocabulary // populated below; kept separate for clarity
+
+func init() { wireStageVocabulary = append(wireStageVocabulary, StagePendingInput) }
 
 // StageVocabulary renders the five stages (joined) for caller-facing
 // validation errors.
@@ -191,10 +209,11 @@ func StageVocabulary() string {
 	return strings.Join(stageVocabulary, ", ")
 }
 
-// StageInVocabulary reports whether a literal is one of the five
-// stages (case-sensitive — the binding vocabulary is lowercase).
+// StageInVocabulary reports whether a literal is one of the WIRE
+// stages — the storable set PLUS the pending_input flag-op alias
+// (000050: surfaces still send the literal; the engine maps it).
 func StageInVocabulary(stage string) bool {
-	for _, s := range stageVocabulary {
+	for _, s := range wireStageVocabulary {
 		if s == stage {
 			return true
 		}

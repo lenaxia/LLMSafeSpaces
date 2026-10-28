@@ -204,12 +204,15 @@ func (s *Service) TaskStart(ctx context.Context, actor Actor, taskID, shortIDOrI
 	if cur.Attempts >= s.cfg.AttemptsCap {
 		// #1813 (r10): no overlay write here either — see claimOnce
 		// (the invariant is rc1's; exhaustion is its own signal).
+		// 000050: exhaustion lands FAILED (owner ruling: "exhausted
+		// retries should be failed status") — pending_origin='escalated'
+		// stays as provenance, but the STAGE is the failure terminus.
 		if _, err := tx.Exec(ctx, `
-			UPDATE tasks SET stage='pending_input', stage_entered_at=now(), pending_origin='escalated'
+			UPDATE tasks SET stage='failed', stage_entered_at=now(), pending_origin='escalated', pending_input=false
 			WHERE id=$1 AND stage='backlog'`, t.ID); err != nil {
 			return nil, err
 		}
-		if err := writeTransition(ctx, txQ{tx}, t.ID, StageBacklog, StagePendingInput, "",
+		if err := writeTransition(ctx, txQ{tx}, t.ID, StageBacklog, StageFailed, "",
 			Actor{Kind: ActorSystem, Surface: SurfaceReconciler}); err != nil {
 			return nil, err
 		}
@@ -350,10 +353,12 @@ func (s *Service) claimOnce(ctx context.Context, workerID, workspaceID string) (
 		// stamping last_failure_at would REPLACE the reclaim's real
 		// failure moment with the escalation one. The exhaustion signal
 		// is pending_origin='escalated' + attempts at cap (+ the
-		// exhausted=true audit event below).
+		// exhausted=true audit event below). 000050: the STAGE is
+		// 'failed' — the failure terminus, never a pending_input
+		// costume.
 		tag, err := tx.Exec(ctx, `
-			UPDATE tasks SET stage='pending_input', stage_entered_at=now(),
-				pending_origin='escalated'
+			UPDATE tasks SET stage='failed', stage_entered_at=now(),
+				pending_origin='escalated', pending_input=false
 			WHERE id=$1 AND stage='backlog'`, taskID)
 		if err != nil {
 			return nil, "", "", err

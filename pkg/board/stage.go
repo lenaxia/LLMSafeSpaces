@@ -120,14 +120,15 @@ func (s *Service) moveStageTx(ctx context.Context, tx pgx.Tx, actor Actor, taskI
 	from := cur.Stage
 	res := moveStageResult{TaskID: taskID, FromStage: from, RequestedTo: toStage}
 
-	// The pending_input exits are manager-surface-only for WORKERS (a
-	// delegated worker is not the human the exit exists for; its token
+	// The pending_input (flag) exits are manager-surface-only for WORKERS
+	// (a delegated worker is not the human the exit exists for; its token
 	// does not unlock self-exit). #1832 WS2: the pod seam's
 	// manager-grade agent surface (SurfaceAgentManager — open to ANY
 	// in-workspace session since the #1747 §5 manager grant's repeal,
 	// ruling 2026-10-27 / tsk-copper-refectory-generates) is a manager
-	// surface; the ordinary-worker rule is unchanged.
-	if from == StagePendingInput && actor.Surface == SurfaceAgent {
+	// surface; the ordinary-worker rule is unchanged. 000050: the flag
+	// replaces the stage — the guard keys on the flag, not the stage.
+	if cur.PendingInput && actor.Surface == SurfaceAgent {
 		return res, nudge{}, &GuardError{Code: GuardManagerSurface, Detail: "pending_input exits are human or manager decisions (the worker surface is denied; the manager route — board_move_stage without a claim token — is the agent-manager surface)"}
 	}
 
@@ -146,16 +147,23 @@ func (s *Service) moveStageTx(ctx context.Context, tx pgx.Tx, actor Actor, taskI
 	// Enumerated-transition check FIRST (an illegal drag reports its own
 	// class regardless of the token), then the claim-token guard for the
 	// legal in-flight writes (§4.2): manager surfaces hold no token — an
-	// optimistic drag on a claimed row snaps back.
+	// optimistic drag on a claimed row snaps back. 000050: pending_input
+	// is a flag-op alias, not a stored stage — its enter/exit pairs are
+	// legal from/to their REAL stage (the flag cases below dispatch
+	// before the table on the alias literal); 'failed' is the new
+	// failure terminus (nudge self-fail enters it; rearm exits it).
 	legal := map[[2]string]bool{
-		{StageInProgress, StageInReview}:     true,
-		{StageInProgress, StageDone}:         true,
-		{StageInProgress, StagePendingInput}: true,
-		{StageInReview, StageInProgress}:     true,
-		{StageInReview, StageDone}:           true,
-		{StageInReview, StagePendingInput}:   true,
-		{StagePendingInput, StageBacklog}:    true,
-		{StagePendingInput, StageInProgress}: true,
+		{StageInProgress, StageInReview}:   true,
+		{StageInProgress, StageDone}:       true,
+		{StageInProgress, StageFailed}:     true,
+		{StageInReview, StageInProgress}:   true,
+		{StageInReview, StageDone}:         true,
+		{StageInReview, StageFailed}:       true,
+		{StageBacklog, StagePendingInput}:  true, // flag-op alias (escalation-path shape; see cases)
+		{StageInProgress, StagePendingInput}: true, // flag set
+		{StageInReview, StagePendingInput}:   true, // flag set
+		{StagePendingInput, StageBacklog}:    true, // flag clear → re-queue
+		{StagePendingInput, StageInProgress}: true, // flag clear → re-claim
 	}
 	if !legal[[2]string{from, toStage}] {
 		return res, nudge{}, &GuardError{Code: GuardStage, Detail: "stage transition " + from + "→" + toStage + " is not enumerated in the machine"}
@@ -227,10 +235,23 @@ func (s *Service) moveStageTx(ctx context.Context, tx pgx.Tx, actor Actor, taskI
 		}
 
 	case from == StageInProgress && toStage == StagePendingInput:
-		// Enter pending from live work: token + identity retained (the
-		// lease clock is suspended by the stage predicate).
-		resulting, err = s.updateStageTx(ctx, tx, taskID, from, toStage,
-			`pending_origin='worker'`, evidenceURL, actor)
+		// FLAG SET from live work (000050: pending_input is a flag, not a
+		// stage — the row keeps in_progress, the clock suspended by the
+		// RC1 scan's flag exclusion). Token + identity retained.
+		tag, err := tx.Exec(ctx, `
+			UPDATE tasks SET pending_input=true, pending_origin='worker', updated_at=now()
+			WHERE id=$1 AND stage=$2 AND NOT pending_input`, taskID, from)
+		if err != nil {
+			return res, nudge{}, err
+		}
+		if tag.RowsAffected() == 0 {
+			return res, nudge{}, &GuardError{Code: GuardStage, Detail: "the row moved or was already flagged — server-arbitrated refusal"}
+		}
+		if _, err := recordEventTx(ctx, tx, cur.ProjectID, engineEventID("flag", taskID, cur.Attempts), "pending_input_flag",
+			"task", taskID, actor, map[string]any{"task_id": taskID, "flag": true, "origin": "worker"}); err != nil {
+			return res, nudge{}, err
+		}
+		resulting = from // the stage is unchanged; the flag rides it
 
 	case from == StageInReview && toStage == StageInProgress:
 		// The bounce (#1959): re-claim for the ORIGINAL IMPLEMENTER —
@@ -266,11 +287,26 @@ func (s *Service) moveStageTx(ctx context.Context, tx pgx.Tx, actor Actor, taskI
 		}
 
 	case from == StageInReview && toStage == StagePendingInput:
-		resulting, err = s.updateStageTx(ctx, tx, taskID, from, toStage,
-			`pending_origin='worker'`, evidenceURL, actor)
+		// FLAG SET from review (000050: flag-not-stage; row stays in_review).
+		tag, err := tx.Exec(ctx, `
+			UPDATE tasks SET pending_input=true, pending_origin='worker', updated_at=now()
+			WHERE id=$1 AND stage=$2 AND NOT pending_input`, taskID, from)
+		if err != nil {
+			return res, nudge{}, err
+		}
+		if tag.RowsAffected() == 0 {
+			return res, nudge{}, &GuardError{Code: GuardStage, Detail: "the row moved or was already flagged — server-arbitrated refusal"}
+		}
+		if _, err := recordEventTx(ctx, tx, cur.ProjectID, engineEventID("flag", taskID, cur.Attempts), "pending_input_flag",
+			"task", taskID, actor, map[string]any{"task_id": taskID, "flag": true, "origin": "worker"}); err != nil {
+			return res, nudge{}, err
+		}
+		resulting = from
 
-	case from == StagePendingInput && (toStage == StageBacklog || toStage == StageInProgress):
-		// The human exit — the ONE write that resets attempts (a human
+	case cur.PendingInput && (toStage == StageBacklog || toStage == StageInProgress):
+		// FLAG CLEAR — the human exit (000050: the row's REAL stage was
+		// never left; the exit clears the flag and takes the enumerated
+		// end state). The ONE write that resets attempts (a human
 		// re-queue is a fresh judgment). Identity present → re-claim
 		// branch (fresh token+lease, nudge); none → backlog branch (the
 		// dead worker is never re-nudged). The branch keys on identity
@@ -288,6 +324,28 @@ func (s *Service) moveStageTx(ctx context.Context, tx pgx.Tx, actor Actor, taskI
 				`claim_token=NULL, lease_expires_at=NULL, assignee_session=NULL, implementer_session=NULL, claim_persona=NULL,
 				 claim_incremented_attempts=false, attempts=0, failure_count=0, last_attempt_failed=false, last_failure_at=NULL`, evidenceURL, actor)
 		}
+
+	case (from == StageInProgress || from == StageInReview) && toStage == StageFailed:
+		// The nudge self-fail (000050): a worker that cannot complete
+		// declares failure per the lease-nudge prose. Counts as the
+		// attempt's failure; rearm is the exit. Token+identity cleared.
+		tag, err := tx.Exec(ctx, `
+			UPDATE tasks SET stage='failed', stage_entered_at=now(), pending_input=false, pending_origin=NULL,
+				nudge_id=NULL, nudged_at=NULL,
+				claim_token=NULL, lease_expires_at=NULL, assignee_session=NULL, implementer_session=NULL,
+				claim_incremented_attempts=false, claim_persona=NULL,
+				last_attempt_failed=true, failure_count=failure_count+1, last_failure_at=now()
+			WHERE id=$1 AND stage=$2`, taskID, from)
+		if err != nil {
+			return res, nudge{}, err
+		}
+		if tag.RowsAffected() == 0 {
+			return res, nudge{}, &GuardError{Code: GuardStage, Detail: "the row moved — server-arbitrated refusal"}
+		}
+		if err := writeTransition(ctx, txQ{tx}, taskID, from, StageFailed, evidenceURL, actor); err != nil {
+			return res, nudge{}, err
+		}
+		resulting = StageFailed
 
 	default:
 		return res, nudge{}, &GuardError{Code: GuardStage, Detail: "stage transition " + from + "→" + toStage + " is not enumerated in the machine"}
@@ -453,12 +511,12 @@ func (s *Service) doneCascade(ctx context.Context, tx pgx.Tx, t *Task, evidenceU
 }
 
 // updateStageTx applies one transition's column updates + the transition
-// row. extra is spliced verbatim into SET (pending_origin entries set it
-// there; every other transition clears it via the CASE).
+// row. extra is spliced verbatim into SET. 000050: every STAGE
+// transition clears the flag + nudge state (the flag ops above never
+// route through here — a stage move off a flagged row resolves the
+// flag with the move).
 func (s *Service) updateStageTx(ctx context.Context, tx pgx.Tx, taskID, from, toStage, extra, evidenceURL string, actor Actor) (string, error) {
-	if toStage != StagePendingInput {
-		extra += `, pending_origin=NULL`
-	}
+	extra += `, pending_origin=NULL, pending_input=false, nudge_id=NULL, nudged_at=NULL`
 	tag, err := tx.Exec(ctx, `
 		UPDATE tasks SET stage=$2, stage_entered_at=now(), `+extra+`
 		WHERE id=$1 AND stage=$3`, taskID, toStage, from)
@@ -571,19 +629,21 @@ func (s *Service) bounceTx(ctx context.Context, tx pgx.Tx, taskID, implementer s
 	return StageInProgress, nudge{taskID: taskID, token: token, spawn: true}, nil
 }
 
-// exitPendingReclaim is the pending_input exit's re-claim branch: attempts
-// reset, fresh token+lease with the recorded identity cleared (the
-// interim-state shape), the superseded session aborted (its question is
-// void with the exit — the interrupt seam, merged-doc §4.1), and the
-// fresh worker spawned after commit.
+// exitPendingReclaim is the flag-clear's re-claim branch (000050: the
+// row's REAL stage was never left — this clears the flag, resets the
+// ledger, and mints the fresh claim): fresh token+lease with the
+// recorded identity cleared (the interim-state shape), the superseded
+// session aborted (its question is void with the exit — the interrupt
+// seam, merged-doc §4.1), and the fresh worker spawned after commit.
 func (s *Service) exitPendingReclaim(ctx context.Context, tx pgx.Tx, actor Actor, cur *Task) (string, bool, nudge, error) {
 	token := uuidNew()
 	tag, err := tx.Exec(ctx, `
-		UPDATE tasks SET stage='in_progress', stage_entered_at=now(),
+		UPDATE tasks SET stage_entered_at=now(), pending_input=false, pending_origin=NULL,
+			nudge_id=NULL, nudged_at=NULL,
 			claim_token=$2, lease_expires_at=now()+make_interval(secs=>$3::float8), last_progress_at=now(),
-			assignee_session=NULL, implementer_session=NULL, claim_incremented_attempts=false, claim_persona=NULL, pending_origin=NULL, attempts=0,
+			assignee_session=NULL, implementer_session=NULL, claim_incremented_attempts=false, claim_persona=NULL, attempts=0,
 			failure_count=0, last_attempt_failed=false, last_failure_at=NULL
-		WHERE id=$1 AND stage='pending_input'`,
+		WHERE id=$1 AND pending_input`,
 		cur.ID, token, s.cfg.LeaseDuration.Seconds())
 	if err != nil {
 		return "", false, nudge{}, err
@@ -591,7 +651,8 @@ func (s *Service) exitPendingReclaim(ctx context.Context, tx pgx.Tx, actor Actor
 	if tag.RowsAffected() == 0 {
 		return "", false, nudge{}, &GuardError{Code: GuardStage, Detail: "row moved — the exit raced (server-arbitrated)"}
 	}
-	if err := writeTransition(ctx, txQ{tx}, cur.ID, StagePendingInput, StageInProgress, "", actor); err != nil {
+	if _, err := recordEventTx(ctx, tx, cur.ProjectID, engineEventID("flagclear", cur.ID, cur.Attempts), "pending_input_flag",
+		"task", cur.ID, actor, map[string]any{"task_id": cur.ID, "flag": false, "reclaimed": true}); err != nil {
 		return "", false, nudge{}, err
 	}
 	return StageInProgress, true, nudge{taskID: cur.ID, token: token, spawn: true, abortAssignee: cur.AssigneeSession}, nil
