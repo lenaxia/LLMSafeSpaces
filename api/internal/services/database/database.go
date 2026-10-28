@@ -1133,6 +1133,12 @@ func (s *Service) ResolveSessionAlerts(ctx context.Context, workspaceID string) 
 // the sidebar's archived badge a page-local count. Death-marked rows
 // (#1882) are filtered ahead of the ordering.
 func (s *Service) ListSessionIndex(ctx context.Context, workspaceID string) ([]types.SessionListItem, error) {
+	// #1966/ruling 6: LEFT JOIN session_origins so the listing payload
+	// itself carries each session's spawn provenance ('worker' for
+	// board/engine fresh-worker spawns, stamped at spawn by the board
+	// spawner; routine/workflow/api for the trigger classes). The mark
+	// is 1:1 (session_origins is PK'd on session_id); a session with
+	// no origin row reads origin-less (a manual user session).
 	rows, err := s.DB.QueryContext(ctx,
 		`SELECT si.session_id, si.title, si.parent_session_id, si.last_message_at, si.message_count,
 		        si.last_seen_at,
@@ -1142,10 +1148,13 @@ func (s *Service) ListSessionIndex(ctx context.Context, workspaceID string) ([]t
 		        si.archived,
 		        si.short_id,
 		        si.created_at,
-		        parent.short_id
+		        parent.short_id,
+		        so.origin
 	 FROM session_index si
 	 LEFT JOIN session_index parent
 	   ON parent.workspace_id = si.workspace_id AND parent.session_id = si.parent_session_id
+	 LEFT JOIN session_origins so
+	   ON so.session_id = si.session_id AND so.workspace_id = si.workspace_id
 	 WHERE si.workspace_id = $1
 	   AND si.deleted_at IS NULL
 	 ORDER BY si.last_message_at DESC NULLS LAST, si.created_at DESC, si.session_id ASC`, workspaceID)
@@ -1165,8 +1174,12 @@ func (s *Service) ListSessionIndex(ctx context.Context, workspaceID string) ([]t
 		var shortID sql.NullString
 		var createdAt sql.NullTime
 		var parentShortID sql.NullString
-		if err := rows.Scan(&item.InternalID, &title, &parentID, &lastMsg, &item.MessageCount, &lastSeen, &item.HasUnread, &contextUsed, &item.Archived, &shortID, &createdAt, &parentShortID); err != nil {
+		var origin sql.NullString
+		if err := rows.Scan(&item.InternalID, &title, &parentID, &lastMsg, &item.MessageCount, &lastSeen, &item.HasUnread, &contextUsed, &item.Archived, &shortID, &createdAt, &parentShortID, &origin); err != nil {
 			return nil, err
+		}
+		if origin.Valid {
+			item.Origin = origin.String
 		}
 		if title.Valid {
 			item.Title = title.String

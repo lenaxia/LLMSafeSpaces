@@ -136,6 +136,13 @@ export interface SessionListItem {
   messageCount: number;
   status: string;
   /**
+   * Session spawn provenance (#1966/ruling 6): "worker" marks a
+   * board/engine fresh-worker spawn (the sidebar's Board workers group
+   * is populated from this); "routine" | "workflow" | "api" mark the
+   * trigger classes. ABSENT means a manual user session.
+   */
+  origin?: string;
+  /**
    * Present and true when the session is archived (read-only: chat
    * sends are rejected with 409 session_archived; history stays
    * viewable; unarchiving restores chat instantly). ABSENT means not
