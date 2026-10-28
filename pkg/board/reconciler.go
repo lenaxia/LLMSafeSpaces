@@ -439,10 +439,10 @@ func (s *Service) rc1Reclaims(ctx context.Context) (int, error) {
 			if err := writeTransition(ctx, txQ{tx}, v.id, StageInProgress, StageFailed, "", sys); err != nil {
 				return 0, err
 			}
-		evt, err := recordEventTx(ctx, tx, v.project, engineEventID("wedge", v.id, int(v.failures)), "wedge",
-			"task", v.id, sys,
-			map[string]any{"task_id": v.id, "nudge_id": v.nudgeID, "verdict": "wedge",
-				"evidence": wedgeEvidence[v.id]})
+			evt, err := recordEventTx(ctx, tx, v.project, engineEventID("wedge", v.id, int(v.failures)), "wedge",
+				"task", v.id, sys,
+				map[string]any{"task_id": v.id, "nudge_id": v.nudgeID, "verdict": "wedge",
+					"evidence": wedgeEvidence[v.id]})
 			if err != nil {
 				return 0, err
 			}

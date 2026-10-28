@@ -25,11 +25,11 @@
 
 BEGIN;
 
-ALTER TABLE public.tasks DROP CONSTRAINT tasks_stage_check;
+ALTER TABLE public.tasks DROP CONSTRAINT IF EXISTS tasks_stage_check;
 ALTER TABLE public.tasks ADD CONSTRAINT tasks_stage_check
     CHECK ((stage = ANY (ARRAY['backlog'::text, 'in_progress'::text, 'in_review'::text, 'done'::text, 'failed'::text])));
 
-ALTER TABLE public.tasks DROP CONSTRAINT tasks_pending_origin_set;
+ALTER TABLE public.tasks DROP CONSTRAINT IF EXISTS tasks_pending_origin_set;
 ALTER TABLE public.tasks ADD COLUMN pending_input boolean NOT NULL DEFAULT false;
 -- The flag and its origin travel together for INPUT WAITS, with one
 -- deliberate exception: the attempts-exhaustion terminus carries

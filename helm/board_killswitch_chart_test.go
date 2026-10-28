@@ -33,7 +33,7 @@ func TestBoardKillSwitch_ChartDefaults(t *testing.T) {
 	env := apiEnv(t, apiDeployment(t, helmTemplate(t, "")))
 	assert.Equal(t, "true", env["LLMSAFESPACES_BOARD_ENABLED"])
 	assert.Equal(t, "3", env["LLMSAFESPACES_BOARD_ATTEMPTSCAP"])
-	assert.Equal(t, "900", env["LLMSAFESPACES_BOARD_LEASESECONDS"])
+	assert.Equal(t, "2700", env["LLMSAFESPACES_BOARD_LEASESECONDS"], "000050: the seamless-lease 45m default (wall-clock is the DEATH detector, not the liveness detector)")
 	assert.Equal(t, "300", env["LLMSAFESPACES_BOARD_THROTTLEBACKOFFSECONDS"])
 	assert.Equal(t, "1", env["LLMSAFESPACES_BOARD_DRRQUANTUM"])
 	assert.Equal(t, "30", env["LLMSAFESPACES_BOARD_SWEEPSECONDS"])
