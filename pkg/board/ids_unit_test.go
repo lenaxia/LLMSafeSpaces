@@ -66,8 +66,8 @@ func TestDefaultEngineConfigR6(t *testing.T) {
 	if cfg.AttemptsCap != 3 {
 		t.Errorf("ruling R6: attempts-cap default is 3, got %d", cfg.AttemptsCap)
 	}
-	if cfg.LeaseDuration != 15*time.Minute {
-		t.Errorf("lease default 15m, got %v", cfg.LeaseDuration)
+	if cfg.LeaseDuration != 45*time.Minute {
+		t.Errorf("seamless-lease default 45m (wall-clock is the death detector, not the liveness detector), got %v", cfg.LeaseDuration)
 	}
 	if cfg.DRRQuantum != 1 {
 		t.Errorf("DRR quantum default 1, got %d", cfg.DRRQuantum)
