@@ -280,15 +280,18 @@ type Health struct {
 	ProjectSlots         []HealthProjectSlots    `json:"project_slots"`
 }
 
-// HeartbeatResult reports the evidence gate's decision: a heartbeat with no
-// progress evidence does not extend the lease (#1685: elapsed time is not
-// liveness).
+// HeartbeatResult reports the nudge-response channel's decision (item 6
+// amendment): a heartbeat on a row carrying no live nudge does not extend
+// the lease — the PERIODIC self-report discipline is dead (liveness is
+// platform-observed); only the response to a lease-nudge renews.
 type HeartbeatResult struct {
 	Extended       bool      `json:"extended"`
 	LeaseExpiresAt time.Time `json:"lease_expires_at"`
 	LastProgressAt time.Time `json:"last_progress_at"`
-	// Reason names a refusal class (#1832 WS4): "stillborn: zero turn
-	// evidence for the assignee session". Empty on every extension.
+	// Reason explains a non-extending heartbeat: today exactly one
+	// class — "no active lease nudge" (the periodic discipline is
+	// dead; the arrival is still recorded for the wedge predicate).
+	// Empty on every extension (a nudge response).
 	Reason string `json:"reason,omitempty"`
 }
 

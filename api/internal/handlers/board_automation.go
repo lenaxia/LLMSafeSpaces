@@ -64,9 +64,12 @@ func (h *PodAutomationHandler) boardActor(ownerID, workspaceID, claimToken strin
 	}
 }
 
-// BoardHeartbeat is board_heartbeat: evidence-bearing lease renewal
-// (#1685 semantics — a heartbeat with no progress evidence does not
-// extend). Requires the task's live claim token.
+// BoardHeartbeat is board_heartbeat: the lease-nudge RESPONSE channel
+// (item 6 amendment, 2026-10-28). Extends ONLY on a row carrying a live
+// nudge (the reply the nudge prose demands); the periodic self-report
+// discipline is dead — a heartbeat with no nudge records the arrival and
+// extends nothing. #1847 future-clamping applies to the stamp. Requires
+// the task's live claim token.
 func (h *PodAutomationHandler) BoardHeartbeat(c *gin.Context) {
 	raw, workspaceID, ownerID, ok := h.resolve(c)
 	if !ok {

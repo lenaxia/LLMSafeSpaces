@@ -334,23 +334,27 @@ type leaseNudgeSentinel struct {
 }
 
 // leaseNudgeText composes the sentinel message: the v1 marker line
-// carrying the ordinal anchor, then the surgical prose (owner ruling:
-// nudge the thread — advance or declare failed; NEVER a restart).
+// carrying the ordinal anchor, then the surgical prose — the FULL
+// nudge contract (item 6 amendment, owner ruling 2026-10-28: respond
+// via board_heartbeat FIRST, then continue / advance / declare
+// failure; NEVER a restart).
 func leaseNudgeText(shortID string, p board.NudgePayload) string {
 	payload, _ := json.Marshal(leaseNudgeSentinel{
 		Mode:    "lease-nudge",
 		TaskID:  shortID,
 		NudgeID: p.NudgeID,
-		Expects: "advance|fail",
+		Expects: "respond|advance|fail",
 	})
 	var b strings.Builder
 	b.WriteString("<!-- lsp:agent-message-v1 ")
 	b.Write(payload)
 	b.WriteString(" -->\n")
-	fmt.Fprintf(&b, "BOARD LEASE NUDGE: your claim on task %s has gone quiet. Do NOT restart. "+
-		"Assess your current state: either move the task to its next stage (board_move_stage with your "+
-		"claim token), or declare it failed with a reason if you cannot complete it. Any activity you "+
-		"produce in response — including a plain reply — renews the lease.", shortID)
+	fmt.Fprintf(&b, "BOARD LEASE NUDGE: your claim on task %s has gone quiet. "+
+		"First RESPOND (call board_heartbeat once, with your claimToken) to confirm you are active — "+
+		"respond before running any long command so the wedge clock clears. "+
+		"Then: continue working if there is more work to do; otherwise move your task to its next stage "+
+		"(board_move_stage with your claimToken), or declare it failed with a reason if you cannot complete it. "+
+		"Do NOT restart — assess your current state.", shortID)
 	return b.String()
 }
 

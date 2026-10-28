@@ -133,7 +133,7 @@ func (s *Service) GetProject(ctx context.Context, projectID, shortIDOrID string)
 }
 
 // TaskEvents-window knobs: the audit timeline is a display read over
-// board_events, so it is bounded (heartbeats write a row per call — a
+// board_events, so it is bounded (response-channel audits write a row per call — a
 // long-lived claim would otherwise render unbounded). The window keeps
 // the NEWEST rows; order is always chronological (oldest→newest).
 const (

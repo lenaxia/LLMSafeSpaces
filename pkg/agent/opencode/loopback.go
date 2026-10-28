@@ -937,9 +937,9 @@ func (c *Client) boardWorkerPost(ctx context.Context, saToken, workspaceID, path
 	return c.automationCall(ctx, http.MethodPost, path, saToken, stamped)
 }
 
-// BoardHeartbeat is board_heartbeat: evidence-bearing lease renewal
-// (#1685 — extends only when the progress watermark moved). Requires
-// the task's live claim token; the platform arbitrates.
+// BoardHeartbeat is board_heartbeat: the lease-nudge response channel —
+// extends only on a row carrying a live nudge (no periodic discipline).
+// Requires the task's live claim token; the platform arbitrates.
 func (c *Client) BoardHeartbeat(ctx context.Context, saToken, workspaceID string, body json.RawMessage) (*AutomationResponse, error) {
 	return c.boardWorkerPost(ctx, saToken, workspaceID, "/internal/v1/automation/board/tasks/heartbeat", body)
 }

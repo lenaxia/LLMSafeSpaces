@@ -85,11 +85,13 @@ func boardCharterPrompt(c *board.Claim) string {
 	// keeps today's trailer byte-identically.
 	if c.Persona != nil {
 		fmt.Fprintf(&b, "Deliver the '%s' persona's outcome for stage %s per its instructions above — the task\n", c.Persona.Name, stage)
-		b.WriteString("body is your working context, not an implementer loop to run. Report progress via board\n")
-		b.WriteString("heartbeats. The claim token above authorizes your in-flight writes for this task only.\n")
+		b.WriteString("body is your working context, not an implementer loop to run. If a BOARD LEASE NUDGE\n")
+		b.WriteString("message arrives, call board_heartbeat ONCE immediately, then continue. The claim token above\n")
+		b.WriteString("authorizes your in-flight writes for this task only.\n")
 	} else {
-		b.WriteString("Work the task to completion. Report progress via board heartbeats; move the\n")
-		b.WriteString("task to in_review when the work is done, attaching evidence. The claim token\n")
+		b.WriteString("Work the task to completion. If a BOARD LEASE NUDGE message arrives (your claim has gone\n")
+		b.WriteString("quiet): FIRST call board_heartbeat once to confirm you are active, then continue working if\n")
+		b.WriteString("there is more work to do; otherwise move the task to in_review with evidence. The claim token\n")
 		b.WriteString("above authorizes your in-flight writes for this task only.\n")
 	}
 	return b.String()

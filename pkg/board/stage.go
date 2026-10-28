@@ -5,6 +5,7 @@ package board
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -476,7 +477,7 @@ func bounceRedispatchText(t *Task, token string, verdicts []Verdict) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "BOARD BOUNCE RE-DISPATCH: your task %s failed review (verdict: fail) and was bounced back to in_progress.\n", t.ShortID)
 	fmt.Fprintf(&b, "You are the ORIGINAL implementer — you hold the work's context. Address every outstanding finding below,\n")
-	fmt.Fprintf(&b, "then move the task back to in_review with evidence. Report progress via board heartbeats.\n\n")
+	fmt.Fprintf(&b, "then move the task back to in_review with evidence.\n\n")
 	fmt.Fprintf(&b, "Your FRESH claim token: %s (your prior token is void; this token authorizes your in-flight writes for this task only).\n\n", token)
 	if len(t.AcceptanceCriteria) > 0 {
 		b.WriteString("Acceptance criteria (all must be met before done, with evidence):\n")
@@ -684,31 +685,41 @@ func (s *Service) exitPendingReclaim(ctx context.Context, tx pgx.Tx, actor Actor
 	return StageInProgress, true, nudge{taskID: cur.ID, token: token, spawn: true, abortAssignee: cur.AssigneeSession}, nil
 }
 
-// --- Heartbeat + throttle -----------------------------------------------------------
+// --- Heartbeat (nudge response) + throttle -------------------------------------------
 
 // heartbeatFutureTolerance bounds honest client-clock drift: an
 // observedProgressAt up to this far ahead of the SERVER clock is clamped
 // to the server clock (a FUTURE stamp is never stored — the C1 poison
 // direction); a stamp beyond it is a hallucinated estimate, not
-// evidence, and rejects outright (#1847 PR1: the C1 incident class — a
-// future watermark is unrenewable by construction, so one accepted
-// future stamp locked the worker out of its own lease). PAST-skewed
-// client stamps remain client-trusted (only the future direction can
-// poison the evidence gate); the #1847 rework retires worker-declared
-// stamps as the liveness input entirely.
+// evidence, and rejects outright (#1847 PR1: the C1 incident class).
+// PAST-skewed client stamps remain client-trusted. The tolerance
+// SURVIVES the repurposing (item 6 amendment): worker stamps are
+// RESPONSE events now, not the liveness input — but a response stamp
+// is still stored on the row, so the future direction stays clamped.
 const heartbeatFutureTolerance = 2 * time.Minute
 
-// Heartbeat refreshes the lease ONLY when it carries new progress evidence
-// (the worker's message-level watermark moved — #1685: elapsed time is not
-// liveness). Requires the matching claim token. #1847: the server clock is
-// the authority over the FUTURE direction — a client-observed timestamp
-// beyond heartbeatFutureTolerance ahead of the server clock rejects
-// (invalid evidence), one within it clamps to now (a future stamp is
-// never stored), and a stored watermark already reading future (pre-fix
-// C1 damage, or DB-ahead/app-behind clock skew) reads as stale so an
-// honest present-t observation heals it — ONE evidence-free extend,
-// bounded: the heal overwrites the watermark, so a re-sent identical
-// stamp does not extend again (pinned TestKill_HeartbeatHealIsOneShot).
+// Heartbeat is the NUDGE-RESPONSE channel (item 6 amendment,
+// 2026-10-28: "when we nudge, we also require the call to
+// board_heartbeat, rather than having to history dive").
+//
+// The PERIODIC self-report semantics are DEAD: a heartbeat on a row
+// carrying NO live nudge never extends the lease — there is no standing
+// renewal discipline anywhere (liveness is platform-observed through
+// the AssigneeLivenessSource; the reconciler renews on movement). The
+// call still validates the claim (409 claim_token arbitration,
+// unchanged) and records the arrival (last_heartbeat_at, server clock)
+// — the ordinal input the wedge predicate reads: a heartbeat arriving
+// AFTER nudged_at is the strong ALIVE signal OR'd in at every rung of
+// the ladder, and the ONLY wedge detector when no liveness source can
+// answer (deliver-a-message + call-a-tool is the harness-agnostic
+// floor).
+//
+// A heartbeat on a NUDGED row (nudge_id set) is the response the nudge
+// prose demands ("First RESPOND (call board_heartbeat once) to confirm
+// you are active"): the lease renews, the nudge slot clears, and the
+// wedge clock is dead — the worker may then run long commands safely.
+// Requires the matching claim token; #1847 future-clamping applies to
+// the carried stamp in every shape.
 func (s *Service) Heartbeat(ctx context.Context, actor Actor, taskID, shortIDOrID string, observedProgressAt time.Time) (HeartbeatResult, error) {
 	t, err := s.resolveTaskForActor(ctx, actor, pick(taskID, shortIDOrID))
 	if err != nil {
@@ -716,12 +727,12 @@ func (s *Service) Heartbeat(ctx context.Context, actor Actor, taskID, shortIDOrI
 	}
 	// A live claim exists in in_progress (the worker grant/re-claim)
 	// and in in_review (the stage-persona claim — a persona worker
-	// holds the same token+lease and renews under the same evidence
-	// rule). An UNCLAIMED in_review row has a NULL token and rejects
-	// (empty token never matches) — today's semantics, unchanged.
-	// 000050: a flagged row (the old pending_input stage) rejects the
-	// same way — the input wait suspends the claim lifecycle, and the
-	// resume lane re-arms the lease itself.
+	// holds the same token+lease). An UNCLAIMED in_review row has a
+	// NULL token and rejects (empty token never matches) — today's
+	// semantics, unchanged. 000050: a flagged row (the old
+	// pending_input stage) rejects the same way — the input wait
+	// suspends the claim lifecycle, and the resume lane re-arms the
+	// lease itself.
 	claimStage := (t.Stage == StageInProgress || (t.Stage == StageInReview && t.ClaimToken != "")) && !t.PendingInput
 	if !claimStage || actor.ClaimToken == "" || actor.ClaimToken != t.ClaimToken {
 		return HeartbeatResult{}, &GuardError{Code: GuardClaimToken, Detail: "heartbeat requires a live claim (stage + token)"}
@@ -733,53 +744,57 @@ func (s *Service) Heartbeat(ctx context.Context, actor Actor, taskID, shortIDOrI
 			"observedProgressAt %s is stamped in the future (server clock %s) — future stamps are not progress evidence; send the timestamp of your LAST observed progress, never an estimate",
 			observedProgressAt.Format(time.RFC3339), serverNow.Format(time.RFC3339))}
 	case observedProgressAt.After(serverNow):
-		observedProgressAt = serverNow // clamp: THIS stamp stores server-clock — the future direction never stores a client stamp (past-skewed stamps store verbatim)
+		observedProgressAt = serverNow // clamp: a future stamp never stores — the server clock is the authority over the poison direction
 	}
-	// Evidence gate: extend only when the watermark moved past the stored
-	// progress watermark. A stored watermark ahead of the server clock is
-	// pre-fix poison (the C1 lockout) and reads as stale — never as
-	// unbeatable evidence.
-	extends := t.LastProgressAt == nil || t.LastProgressAt.After(serverNow) || observedProgressAt.After(*t.LastProgressAt)
-	// #1832 WS4 stillborn guard (the narrow evidence fix — the
-	// platform-derived liveness rework is #1847's, another lane): a
-	// POSITIVE zero-message report for the assignee session refuses the
-	// extension — a spawn that never turned is not alive, whatever
-	// timestamps say (the lease-keeper-renews-the-corpse class). A
-	// source ERROR fails OPEN (a transient blip must not kill a live
-	// worker's renewal; the rework owns the stronger posture). Nil seam
-	// or no recorded assignee: today's semantics, unchanged.
-	if extends && s.turnEvidence != nil && t.AssigneeSession != "" {
-		turns, terr := s.turnEvidence.SessionTurnEvidence(ctx, t.AssigneeSession)
-		if terr != nil {
-			slog.WarnContext(ctx, "board: turn-evidence source unavailable — heartbeat falls back to the timestamp rule (#1832 WS4 fail-open)",
-				"task", t.ShortID, "assignee", t.AssigneeSession, "err", terr.Error())
-		} else if turns <= 0 {
-			return HeartbeatResult{
-				Extended:       false,
-				LeaseExpiresAt: derefTime(t.LeaseExpiresAt),
-				LastProgressAt: derefTime(t.LastProgressAt),
-				Reason:         "stillborn: zero turn evidence for the assignee session — updated_at alone is not liveness (#1832 WS4)",
-			}, nil
-		}
-	}
-	var lease time.Time
-	if extends {
-		if err := s.q().QueryRow(ctx, `
-			UPDATE tasks SET last_progress_at=$2, lease_expires_at=now()+make_interval(secs=>$3::float8)
-			WHERE id=$1 AND stage IN ('in_progress','in_review') AND claim_token=$4
-			RETURNING lease_expires_at`,
-			t.ID, observedProgressAt, s.cfg.LeaseDuration.Seconds(), actor.ClaimToken).Scan(&lease); err != nil {
-			return HeartbeatResult{}, err
-		}
-		s.writeAudit(ctx, t.ProjectID, "heartbeat", "task", t.ID, actor)
-	} else {
-		lease = derefTime(t.LeaseExpiresAt)
-	}
-	progress := derefTime(t.LastProgressAt)
-	if extends {
+	// The response arm: ONE guarded write decides atomically whether a
+	// live nudge was answered. The nudge_id predicate makes the race
+	// safe — a heartbeat landing between the reconciler's nudge send
+	// and its row write either sees the slot (and clears it) or the
+	// next sweep's predicate sees last_heartbeat_at > nudged_at. The
+	// stillborn consultation is GONE from this path: a zero-turn
+	// session cannot call tools, so it can never answer a nudge — the
+	// wedge verdict owns corpses (the turnEvidence seam survives for
+	// the #1959c bounce re-dispatch).
+	var lease, progress time.Time
+	responded := false
+	err = s.q().QueryRow(ctx, `
+		UPDATE tasks SET last_heartbeat_at=now(),
+			last_progress_at=$2, lease_expires_at=now()+make_interval(secs=>$3::float8),
+			nudge_id=NULL, nudged_at=NULL, updated_at=now()
+		WHERE id=$1 AND stage IN ('in_progress','in_review') AND claim_token=$4
+		  AND NOT pending_input AND nudge_id IS NOT NULL
+		RETURNING lease_expires_at`,
+		t.ID, observedProgressAt, s.cfg.LeaseDuration.Seconds(), actor.ClaimToken).Scan(&lease)
+	switch {
+	case err == nil:
+		responded = true
 		progress = observedProgressAt
+		s.writeAudit(ctx, t.ProjectID, "heartbeat", "task", t.ID, actor)
+	case errors.Is(err, pgx.ErrNoRows):
+		// No live nudge (or the claim raced away): record the arrival
+		// — the advisory shape. The lease is NOT extended (the
+		// standing discipline stays dead); a raced claim falls through
+		// the token re-check below.
+		lease = derefTime(t.LeaseExpiresAt)
+		progress = derefTime(t.LastProgressAt)
+		tag, terr := s.q().Exec(ctx, `
+			UPDATE tasks SET last_heartbeat_at=now(), updated_at=now()
+			WHERE id=$1 AND stage IN ('in_progress','in_review') AND claim_token=$2 AND NOT pending_input`,
+			t.ID, actor.ClaimToken)
+		if terr != nil {
+			return HeartbeatResult{}, terr
+		}
+		if tag.RowsAffected() == 0 {
+			return HeartbeatResult{}, &GuardError{Code: GuardClaimToken, Detail: "the claim moved during the heartbeat — re-read the task (the token no longer arbitrates)"}
+		}
+	default:
+		return HeartbeatResult{}, err
 	}
-	return HeartbeatResult{Extended: extends, LeaseExpiresAt: lease, LastProgressAt: progress}, nil
+	res := HeartbeatResult{Extended: responded, LeaseExpiresAt: lease, LastProgressAt: progress}
+	if !responded {
+		res.Reason = "no active lease nudge — periodic heartbeats do not extend the lease (no standing renewal discipline); respond when nudged"
+	}
+	return res, nil
 }
 
 // ReportThrottle is the 429 path (§4.4): requeue to backlog WITHOUT

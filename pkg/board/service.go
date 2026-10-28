@@ -111,8 +111,9 @@ type Service struct {
 	messenger WorkerMessenger
 	// lives is the seamless lease's observation seam (000050): movement
 	// deltas, dead-evidence, and the ordinal post-sentinel query. Nil
-	// resolves to NilLiveness — the inert contract: wall-clock + heartbeat
-	// semantics, every existing guarantee intact.
+	// resolves to NilLiveness — the inert contract: honest wall-clock
+	// semantics (the nudge ladder + heartbeat response floor still run
+	// when a nudger is wired), every existing guarantee intact.
 	lives AssigneeLivenessSource
 	// nudger delivers the lease-nudge sentinel to a quiet assignee's
 	// session. Nil = no nudge ladder (expiry with no observation falls

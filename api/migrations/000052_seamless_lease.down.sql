@@ -9,6 +9,7 @@ BEGIN;
 ALTER TABLE public.tasks DROP CONSTRAINT tasks_pending_input_set;
 ALTER TABLE public.tasks DROP COLUMN IF EXISTS nudge_id;
 ALTER TABLE public.tasks DROP COLUMN IF EXISTS nudged_at;
+ALTER TABLE public.tasks DROP COLUMN IF EXISTS last_heartbeat_at;
 ALTER TABLE public.tasks DROP COLUMN IF EXISTS pending_input;
 
 UPDATE public.tasks SET stage='pending_input'

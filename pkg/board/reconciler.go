@@ -258,7 +258,8 @@ func (s *Service) rc1Reclaims(ctx context.Context) (int, error) {
 
 	rows, err := tx.Query(ctx, `
 		SELECT t.id, t.project_id, COALESCE(t.lease_expires_at::text, 'null'), t.failure_count,
-			COALESCE(t.assignee_session,''), COALESCE(t.nudge_id,''), COALESCE(t.short_id,'')
+			COALESCE(t.assignee_session,''), COALESCE(t.nudge_id,''), COALESCE(t.short_id,''),
+			t.nudged_at, t.last_heartbeat_at
 		FROM tasks t
 		WHERE t.stage='in_progress' AND NOT t.pending_input
 		  AND (t.lease_expires_at IS NULL OR t.lease_expires_at < now())
@@ -271,11 +272,14 @@ func (s *Service) rc1Reclaims(ctx context.Context) (int, error) {
 		failures             int32
 		assignee, nudgeID    string
 		shortID              string
+		nudgedAt             *time.Time
+		lastHeartbeat        *time.Time
 	}
 	var victims []victim
 	for rows.Next() {
 		var v victim
-		if err := rows.Scan(&v.id, &v.project, &v.episode, &v.failures, &v.assignee, &v.nudgeID, &v.shortID); err != nil {
+		if err := rows.Scan(&v.id, &v.project, &v.episode, &v.failures, &v.assignee, &v.nudgeID, &v.shortID,
+			&v.nudgedAt, &v.lastHeartbeat); err != nil {
 			rows.Close()
 			return 0, err
 		}
@@ -302,26 +306,61 @@ func (s *Service) rc1Reclaims(ctx context.Context) (int, error) {
 	type ladderDecision uint8
 	const (
 		ladderReclaim ladderDecision = iota // wall-clock fallback (today's path)
-		ladderRenew                         // observed movement / post-sentinel reaction
+		ladderRenew                         // observed movement / post-sentinel reaction / heartbeat response
 		ladderNudge                         // quiet: send the sentinel, measure next expiry
 		ladderWedge                         // sentinel positioned, nothing after it: failed
 	)
 	decisions := make(map[string]ladderDecision, len(victims))
+	wedgeEvidence := make(map[string]string, len(victims))
 	nudgeIDs := make(map[string]string, len(victims))
 	for _, v := range victims {
 		decisions[v.id] = ladderReclaim
 		if v.assignee == "" {
 			continue // no identity to observe or nudge: the honest wall-clock path
 		}
+		// The heartbeat RESPONSE — OR'd in at EVERY rung (item 6
+		// amendment): a board_heartbeat arriving after the sentinel is
+		// the strong ALIVE signal, whatever the observation seam says.
+		// Both timestamps are server-clock row writes — the comparison
+		// is ordinal in one clock domain, never cross-process.
+		hbAfterNudge := v.nudgeID != "" && v.nudgedAt != nil && v.lastHeartbeat != nil &&
+			v.lastHeartbeat.After(*v.nudgedAt)
 		o, ok := observations[v.assignee]
-		if !ok || !o.Observed {
-			continue // no-evidence (Nil source, degraded adapter): NEVER death
-		}
+		observed := ok && o.Observed
 		switch {
-		case o.MovedSinceLastSweep, v.nudgeID != "" && o.EventsAfterNudge:
+		case hbAfterNudge:
+			decisions[v.id] = ladderRenew // the worker answered the nudge on the response channel
+			continue
+		case !observed:
+			// RUNG 3 — no-evidence (Nil source, degraded adapter,
+			// unindexed session): NEVER death, but not blindness
+			// either when a nudge seam exists (item 6's
+			// harness-agnostic wedge floor: deliver-a-message +
+			// call-a-tool is the MINIMAL harness capability — the
+			// heartbeat is the ONLY wedge detector at this rung).
+			if s.nudger == nil {
+				continue // no way to ask: the honest wall-clock path (pin 6)
+			}
+			if v.nudgeID == "" {
+				id := uuidNew()
+				if err := s.nudger(ctx, v.assignee, NudgePayload{
+					NudgeID: id, TaskID: v.id, TaskShortID: v.shortID,
+				}); err != nil {
+					continue // delivery failed: undecidable this sweep — wall-clock path
+				}
+				nudgeIDs[v.id] = id
+				decisions[v.id] = ladderNudge
+				continue
+			}
+			decisions[v.id] = ladderWedge
+			wedgeEvidence[v.id] = "no response to the sentinel (no post-nudge heartbeat; no observation available)"
+			continue
+		case o.MovedSinceLastSweep, o.EventsAfterNudge:
 			decisions[v.id] = ladderRenew // alive by delta or by reaction to the sentinel
+			continue
 		case !o.Exists:
 			decisions[v.id] = ladderReclaim // dead-evidence: the fast wall-clock path below
+			continue
 		case s.nudger == nil:
 			// observed-quiet but no nudge seam: fall back (the nudge
 			// ladder is inert without a sender)
@@ -336,6 +375,7 @@ func (s *Service) rc1Reclaims(ctx context.Context) (int, error) {
 			decisions[v.id] = ladderNudge
 		case !o.EventsAfterNudge:
 			decisions[v.id] = ladderWedge // sentinel positioned, zero events after it
+			wedgeEvidence[v.id] = "no session events after the sentinel"
 		default:
 			decisions[v.id] = ladderRenew // reaction arrived between the arms
 		}
@@ -399,10 +439,10 @@ func (s *Service) rc1Reclaims(ctx context.Context) (int, error) {
 			if err := writeTransition(ctx, txQ{tx}, v.id, StageInProgress, StageFailed, "", sys); err != nil {
 				return 0, err
 			}
-			evt, err := recordEventTx(ctx, tx, v.project, engineEventID("wedge", v.id, int(v.failures)), "wedge",
-				"task", v.id, sys,
-				map[string]any{"task_id": v.id, "nudge_id": v.nudgeID, "verdict": "wedge",
-					"evidence": "no session events after the sentinel"})
+		evt, err := recordEventTx(ctx, tx, v.project, engineEventID("wedge", v.id, int(v.failures)), "wedge",
+			"task", v.id, sys,
+			map[string]any{"task_id": v.id, "nudge_id": v.nudgeID, "verdict": "wedge",
+				"evidence": wedgeEvidence[v.id]})
 			if err != nil {
 				return 0, err
 			}

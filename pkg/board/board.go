@@ -3,7 +3,7 @@
 
 // Package board implements the Task Board backend (design 0067, issue
 // #1696/#1698): the BoardService action layer, the Postgres-arbitrated
-// dispatch engine (atomic claims, leases, evidence heartbeats, DRR
+// dispatch engine (atomic claims, leases, movement-observed renewals, DRR
 // fairness), and the self-healing convergence reconciler (RC1-RC5).
 //
 // Rulings conformed (2026-10-16, #1696): R1 epic+task only; R2 field model

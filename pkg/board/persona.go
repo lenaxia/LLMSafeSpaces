@@ -33,19 +33,19 @@ import (
 // reviewColumn=auto + autoAssignReviewer=true composition now renders
 // the default reviewer PERSONA for in_review and rides the same
 // claim-then-spawn as every other persona (one lease, one token,
-// heartbeat-gated liveness, reconciler re-arm on lapse — the
+// movement-observed liveness, reconciler re-arm on lapse — the
 // sub-orchestrator board test's design recommendation, generalized).
 //
 // Semantics preserved exactly: claim-before-spawn (never a spawn
 // without a lease); token-gated forward writes (the stage machine's
-// existing guard rule is untouched); liveness = new progress evidence
-// (the #1832 WS4 stillborn guard treats a zero-turn persona worker as
-// stillborn — its refused renewals lapse the lease, and the lapse
-// path below re-pools a FRESH persona worker with the #1813 failure
+// existing guard rule is untouched); liveness = movement observation
+// + the nudge ladder (a zero-turn persona worker never answers its
+// sentinel — the wedge verdict fails it, and the re-arm pass below
+// re-pools a FRESH persona worker with the #1813 failure
 // accounting and backoff); attempts/cooldown accounting (persona
 // mints never increment attempts; a lapse counts consecutively and
 // parks behind doubling backoff; failure_count at the attempts cap
-// escalates to pending_input — the human-only exit).
+// escalates to failed/escalated — the human-only exit (rearm).
 //
 // Stages with NO persona configured behave byte-identically to today:
 // →in_review clears token+lease and spawns nothing (the dormant path

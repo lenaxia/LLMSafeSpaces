@@ -24,7 +24,7 @@ import "context"
 //   - Exists: false = dead-evidence — the session provably no longer
 //     exists (reaped, deleted). Absence of evidence NEVER decodes as
 //     death: an unobservable session is no-evidence, and no-evidence
-//     degrades to wall-clock + heartbeat semantics, never a fast reclaim.
+//     degrades to the honest wall-clock path, never a fast reclaim.
 //   - EventsAfterNudge: the ordinal wedge query — are there any session
 //     events AFTER the transcript position of the message carrying the
 //     row's latest nudge marker? Answered in the harness's totally
@@ -33,6 +33,17 @@ import "context"
 //     is ever compared across processes. Even a thinking model emits a
 //     turn-start; silence after a positioned sentinel is a machine
 //     wedge verdict, not a heuristic.
+//
+// The wedge predicate is THREE-legged (item 6 amendment): nudged ∧ no
+// post-sentinel events ∧ no post-nudge HEARTBEAT ⇒ wedge. The
+// heartbeat (board_heartbeat, the nudge-response channel) is a strong
+// ALIVE signal OR'd in at EVERY rung — its arrival is recorded on the
+// row at server clock (last_heartbeat_at), so a response later than
+// nudged_at saves the worker whatever the observation seam reports. At
+// the no-evidence rung (Nil source, degraded adapter, unindexed
+// session) the heartbeat is the ONLY wedge detector: deliver-a-message
+// + call-a-tool is the minimal harness capability — the
+// harness-agnostic wedge floor.
 //
 // Call hygiene: implementations must be cheap (~2s budget per call — the
 // reconciler sweeps on a cadence and stalls here stall reclaims GLOBALLY,
@@ -91,9 +102,11 @@ type SessionObservations struct {
 type SessionObservationResults map[string]AssigneeObservation
 
 // NilLiveness is the inert source: every question answered with the zero
-// observation. The engine degrades to today's semantics — wall-clock
-// lease + worker heartbeat + clean arbitration — which is correct,
-// merely less seamless. Correctness never depends on integration depth.
+// observation. The engine degrades honestly — with no nudge seam either,
+// pure wall-clock lease + clean arbitration (today's semantics, correct,
+// merely less seamless); with a nudge seam, the ladder still runs its
+// nudge → heartbeat-or-wedge floor (the response channel needs no
+// observation). Correctness never depends on integration depth.
 type NilLiveness struct{}
 
 func (NilLiveness) ObserveAssignees(sess SessionObservations) SessionObservationResults {
@@ -107,9 +120,11 @@ func (NilLiveness) ObserveAssignees(sess SessionObservations) SessionObservation
 // NudgePayload is one lease-nudge sentinel: the id the engine minted and
 // stored on the row (nudge_id — the ordinal anchor the next observation
 // sweep's EventsAfterNudge answers against), the task it concerns, and
-// the directive prose contract ("advance or declare failed"). The
-// harness-side sender composes the agentmessage-v1 sentinel + the
-// surgical prose and delivers through the session-message machinery.
+// the directive prose contract (item 6: RESPOND first via
+// board_heartbeat, then continue working, advance the stage, or declare
+// failure — never restart). The harness-side sender composes the
+// agentmessage-v1 sentinel + the surgical prose and delivers through
+// the session-message machinery.
 type NudgePayload struct {
 	NudgeID     string
 	TaskShortID string
