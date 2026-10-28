@@ -91,6 +91,58 @@ func personaForStage(eff BoardConfig, stage string) *PersonaConfig {
 	return nil
 }
 
+// Persona provenance vocabulary (PersonaProvenanceForStage's answers):
+// WHERE one stage's effective persona comes from, in the same
+// precedence personaForStage applies at spawn time.
+const (
+	// PersonaSourceProjectOverride: the stage is listed in the
+	// project's explicit stagePersonas override.
+	PersonaSourceProjectOverride = "project_override"
+	// PersonaSourceUserDefault: the stage is listed in the user's
+	// explicit stagePersonas defaults (inherited by the project).
+	PersonaSourceUserDefault = "user_default"
+	// PersonaSourceDefaultReviewer: no explicit map anywhere and the
+	// legacy auto-review composition (reviewColumn=auto +
+	// autoAssignReviewer) renders DefaultReviewerPersona for in_review.
+	PersonaSourceDefaultReviewer = "default_reviewer"
+	// PersonaSourceNoneExplicit: an explicit map OWNS the stage and
+	// lists no persona for it (the explicit-key-owns-all-stages
+	// semantics — rendered, never silent).
+	PersonaSourceNoneExplicit = "none_explicit"
+	// PersonaSourceNone: no persona, no map, no composition.
+	PersonaSourceNone = "none"
+)
+
+// PersonaProvenanceForStage names WHERE one stage's effective persona
+// comes from, from the two raw override maps (either may be nil) — the
+// display twin of personaForStage's spawn-time resolution, sharing its
+// precedence: a project explicit map owns every stage; else a user
+// explicit map owns every stage; else the legacy composition renders
+// the default reviewer for in_review; else none. eff is the tier's
+// EFFECTIVE row (composition inputs read from it). Non-eligible stages
+// render none.
+func PersonaProvenanceForStage(user, project *BoardConfigOverride, eff BoardConfig, stage string) string {
+	if !personaEligibleStages[stage] {
+		return PersonaSourceNone
+	}
+	if project != nil && project.StagePersonas != nil {
+		if _, ok := (*project.StagePersonas)[stage]; ok {
+			return PersonaSourceProjectOverride
+		}
+		return PersonaSourceNoneExplicit
+	}
+	if user != nil && user.StagePersonas != nil {
+		if _, ok := (*user.StagePersonas)[stage]; ok {
+			return PersonaSourceUserDefault
+		}
+		return PersonaSourceNoneExplicit
+	}
+	if stage == StageInReview && eff.ReviewColumn == ReviewColumnAuto && eff.AutoAssignReviewer {
+		return PersonaSourceDefaultReviewer
+	}
+	return PersonaSourceNone
+}
+
 // stagePersona resolves the effective persona for one stage of ONE
 // project. Config-read failures degrade to no-persona WITH a warn
 // line (the observability parity the absorbed maybeAutoAssignReview

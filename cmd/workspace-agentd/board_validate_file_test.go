@@ -106,6 +106,17 @@ func TestBoardPayloadSchema_DTOParity(t *testing.T) {
 		}
 	})
 
+	t.Run("set_config", func(t *testing.T) {
+		props, err := boardPayloadSchemaPropertyNames(raw["set_config"])
+		require.NoError(t, err)
+		// The config override map mirrors the platform's own override
+		// DTO verbatim — board.BoardConfigOverride is the type both the
+		// REST adapter and the automation seam decode. tier/projectId
+		// are routing keys (inline-only, refused in the file by the
+		// placement pre-check) and are NOT DTO fields.
+		parity("set_config", props, reflect.TypeOf(board.BoardConfigOverride{}), nil)
+	})
+
 	t.Run("import_plan", func(t *testing.T) {
 		props, err := boardPayloadSchemaPropertyNames(raw["import_plan"])
 		require.NoError(t, err)

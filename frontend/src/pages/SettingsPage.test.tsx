@@ -70,6 +70,11 @@ describe("SettingsPage", () => {
     expect(screen.queryByText("Platform Credentials")).not.toBeInTheDocument();
     expect(screen.queryByText("Platform Audit")).not.toBeInTheDocument();
     expect(screen.queryByText("Admin")).not.toBeInTheDocument();
+    // Board config relocated ON the board (owner ruling 2026-10-28 —
+    // "alongside the projects and on the board itself"): no Task Board
+    // tab in Settings; /settings/board-config redirects to the board.
+    expect(screen.queryByText("Task Board")).not.toBeInTheDocument();
+    expect(screen.queryByText("Task Board Config")).not.toBeInTheDocument();
   });
 
   it("redirects /settings to /settings/preferences", async () => {
