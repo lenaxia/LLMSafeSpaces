@@ -542,6 +542,14 @@ export interface BoardTask {
   waiting_on?: string;
   backpressure?: string;
   pending_origin?: string | null;
+  /** 000052: the live lease-nudge sentinel's id — set while a nudge
+   * episode is open, cleared at every episode boundary (renewal,
+   * reclaim, wedge, re-claim). */
+  nudge_id?: string | null;
+  /** 000052: when the live sentinel was positioned (the sweep
+   * transaction's clock) — a post-nudge heartbeat or session activity
+   * answers it. */
+  nudged_at?: string | null;
   project_name?: string;
   epic_name?: string;
   tags: string[];

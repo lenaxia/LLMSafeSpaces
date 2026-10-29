@@ -217,7 +217,6 @@ this worklog + the spec, CHANGELOG, and the populated-migration pin
   bot's sentinel requires (repolint WorklogSentinelPattern).
 
 ## 10. Review round 3 (the finding-4 residue, caught before the reviewer's verdict)
-
 §9's finding-4 bullet was WRITTEN but not LANDED: the dead claimant fixed the
 rc1 worker-flag exit (a different UPDATE) and left both pr.Closed re-entry
 branches + the merged-done branch flag-blind. Verified by direct read of
@@ -238,7 +237,7 @@ a91bdb874, then fixed and pinned:
   (`tasks_pending_input_set` SQLSTATE 23514) — confirmed red via stash-revert
   before landing the fix.
 
-## 10. Review round 3 (the second CHANGES_REQUESTED — what actually happened)
+## 11. Review rounds 3-4 (the records, corrected — Rule 7)
 
 Round 2's commit message claimed more than the tree delivered; this section records the
 truth (Rule 7):
@@ -262,7 +261,7 @@ truth (Rule 7):
   populated pin seeds that row class plus the operator-retry re-up step the round-2
   message advertised but did not ship.
 
-Round-4 fold-ins (the 23:42Z verdict on 6391119a9 — its two standing
+### Round-4 fold-ins (the 23:42Z verdict on 6391119a9 — its two standing
 blockers are this commit's down-migration + openapi work; three smaller
 items folded in before push):
 
@@ -274,7 +273,21 @@ items folded in before push):
   refuses flagged rows — but the paired-form discipline now has no
   exceptions; finding 6).
 - nudge_id/nudged_at are spec-declared on BoardTask (000052 lease-
-  episode state) instead of allowlisted: the wire and both shipped SDKs
-  already carry them — the spec is the contract source, so declaring
-  them is the convergent move; the parity gate's allowlist shrinks to
-  the pre-existing drift only.
+  episode state) instead of allowlisted: the spec is the contract
+  source. SDK reality, corrected (round 5's Rule-7 finding — this
+  section's earlier text claimed "both shipped SDKs already carry
+  them", which was FALSE): only sdks/go carried the two fields; the
+  TypeScript BoardTask now declares them (hand-applied — generate-ts
+  is a US-14.3 stub); the Python SDK's board surface returns untyped
+  dicts (no typed BoardTask model exists there to drift — US-14.4).
+  The parity gate's allowlist shrinks to the pre-existing drift only.
+
+### Round-5 close-out (the 00:59Z verdict on 3b6a728a3 — both blockers
+verified CLOSED by the reviewer; the small items landed):
+
+- The false SDK claim corrected above (Rule 7) + the drift itself
+  closed: sdks/typescript BoardTask declares nudge_id/nudged_at;
+  Python's board surface documented as untyped (no model to drift).
+- The populated pin now asserts last_attempt_failed=true on the
+  rehomed origin-less failed row — deleting the down.sql clause turns
+  the pin red (the reviewer's one-line gap).

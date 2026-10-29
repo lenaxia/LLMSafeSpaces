@@ -178,6 +178,18 @@ func TestMigration000052_PopulatedPreStateUpAndDown(t *testing.T) {
 			t.Fatalf("down rehome %s: got %q want %q", id, got, want)
 		}
 	}
+	// The rehome also stamps the failure overlay — assert it, so
+	// deleting the last_attempt_failed clause from the down turns this
+	// pin red (review round 5's one-line gap).
+	var failedFlag bool
+	if err := pool.QueryRow(ctx,
+		`SELECT last_attempt_failed FROM tasks WHERE id=$1`,
+		"77777777-7777-7777-7777-777777777777").Scan(&failedFlag); err != nil {
+		t.Fatalf("read rehomed failed row: %v", err)
+	}
+	if !failedFlag {
+		t.Fatalf("rehomed origin-less failed row must carry last_attempt_failed=true")
+	}
 
 	// Re-up on the already-migrated (and now down-graded) populated
 	// schema: the operator-retry shape (idempotent re-application after
