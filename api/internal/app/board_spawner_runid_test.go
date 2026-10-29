@@ -80,6 +80,53 @@ func TestBoardSpawnRequest_WiresTheRunID(t *testing.T) {
 	if p, _ := spec["prompt"].(string); !strings.Contains(p, "probe charter") {
 		t.Fatalf("charter prompt not carried: %q", p)
 	}
+	// A persona-less dispatch carries NO agent key (the default
+	// worker's harness agent stands).
+	if _, ok := spec["agent"]; ok {
+		t.Fatalf("persona-less dispatch must not pin an agent role: %+v", spec)
+	}
+}
+
+// TestBoardSpawnRequest_RoleRidesTheDispatch (owner ruling
+// 2026-10-29): a persona carrying a role reference rides the agent
+// dispatch as the spec's `agent` key (the opencode agentID — the
+// workflow engine's routine-fire seam, spec["agent"]). The role is
+// the single source of truth for the spawned worker's
+// model/tools/system-prompt; a role-less persona (legacy shape)
+// carries no agent key.
+func TestBoardSpawnRequest_RoleRidesTheDispatch(t *testing.T) {
+	mk := func(p *board.PersonaConfig) map[string]any {
+		c := &board.Claim{
+			TaskID: "3eec1981-b775-4934-bd52-90e9baca03da", Stage: board.StageInReview,
+			ProjectID: "e2fa7e6a-6216-406f-9ff6-45ef337fb155", ClaimToken: "tok-role",
+			Persona: p,
+			Task:    &board.Task{Description: "probe"},
+		}
+		var spec map[string]any
+		if err := json.Unmarshal(boardSpawnRequest(c).Spec, &spec); err != nil {
+			t.Fatalf("spec not json: %v", err)
+		}
+		return spec
+	}
+	// Role-bearing: the reference rides the dispatch. A role-first
+	// persona with NO name: the charter's persona line renders the
+	// reference (Label), the dispatch carries it as the agent key.
+	spec := mk(&board.PersonaConfig{RoleID: "11111111-1111-1111-1111-111111111111"})
+	if spec["agent"] != "11111111-1111-1111-1111-111111111111" {
+		t.Fatalf("role reference must ride the agent dispatch: %+v", spec)
+	}
+	if p, _ := spec["prompt"].(string); !strings.Contains(p, "'11111111-1111-1111-1111-111111111111' persona") {
+		t.Fatalf("the label fallback must render the reference: %q", p)
+	}
+	// Legacy (role-less) persona: no agent key, instructions still
+	// ride the charter.
+	spec = mk(&board.PersonaConfig{Name: "auditor", Instructions: "Verify."})
+	if _, ok := spec["agent"]; ok {
+		t.Fatalf("role-less persona must not pin an agent role: %+v", spec)
+	}
+	if p, _ := spec["prompt"].(string); !strings.Contains(p, "Verify.") {
+		t.Fatalf("legacy instructions still ride the charter: %q", p)
+	}
 }
 
 // TestBoardSpawner_DispatchCarriesEpisodeRunID (#1957 r4): THE dispatch

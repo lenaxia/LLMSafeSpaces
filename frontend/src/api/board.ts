@@ -246,9 +246,14 @@ export function newBoardRequestId(): string {
 // --- #1832 item 6: board config shapes (mirror pkg/board/config.go) ------------
 
 /** One stage's configured agent persona (stage-persona
- * claim-then-spawn; instructions are an optional charter preamble). */
+ * claim-then-spawn). Role-first (owner ruling 2026-10-29): roleId
+ * references a platform agent role (id or slug — the spawned worker's
+ * model/tools/system-prompt come from the role); instructions are the
+ * optional override layered on the role's system prompt. The legacy
+ * name+instructions shape still decodes (name is the display label). */
 export type BoardPersonaConfig = {
-  name: string;
+  roleId?: string;
+  name?: string;
   instructions?: string;
 };
 

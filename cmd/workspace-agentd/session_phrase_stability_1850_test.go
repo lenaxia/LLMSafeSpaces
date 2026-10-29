@@ -169,7 +169,7 @@ func TestCreateSession_PhraseStableAcrossFirstTurnBoundary(t *testing.T) {
 	platform := newPlatServer(t, plat.handler(t))
 	setupPodSessionEnv(t, platform)
 
-	out, err := mcpCreateSession(context.Background(), mcpTestPassword, "do the work", "worker-1")
+	out, err := mcpCreateSession(context.Background(), mcpTestPassword, "do the work", "worker-1", false, "")
 	require.NoError(t, err)
 
 	var created struct {

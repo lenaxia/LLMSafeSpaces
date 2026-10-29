@@ -222,7 +222,7 @@ func (s *Service) moveStageTx(ctx context.Context, tx pgx.Tx, actor Actor, taskI
 				 implementer_session=assignee_session`+reset_overlay, evidenceURL, actor)
 			if err == nil {
 				var token string
-				token, err = s.personaClaimMintTx(ctx, tx, taskID, StageInReview, entryPersona.Name)
+				token, err = s.personaClaimMintTx(ctx, tx, taskID, StageInReview, entryPersona.Label())
 				if err == nil {
 					var evt Event
 					evt, err = personaClaimEventTx(ctx, tx, cur.ProjectID, taskID, StageInReview, entryPersona, "engine", cur.Attempts)

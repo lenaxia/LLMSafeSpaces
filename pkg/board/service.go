@@ -70,11 +70,23 @@ func WithNudgeSender(n NudgeSender) Option {
 
 // WithBounceRedispatcher installs the #1959 bounce re-dispatch seam:
 // delivery of a re-dispatch turn (fresh bounce claim token + embedded
-// verdict chain) to the ORIGINAL implementer's existing session — the
+// verdict chain) to the ORIGINAL implementer's EXISTING session — the
 // owner ruling's bounce-target semantics. Nil = no delivery seam: the
 // bounce falls back to a fresh-implementer spawn (today's shape).
 func WithBounceRedispatcher(r BounceRedispatcher) Option {
 	return func(s *Service) { s.redispatcher = r }
+}
+
+// WithRoleDirectory installs the agent-role vocabulary seam (owner
+// ruling 2026-10-29: stage personas REFERENCE the platform's agent
+// roles instead of redefining model/tools/system-prompt per persona).
+// Installed, it validates persona role references on writes, resolves
+// legacy name-only personas to roles on reads (the lazy migration),
+// and points the default reviewer composition at the reviewer role.
+// Nil keeps the persona seam role-blind (legacy prose personas run
+// byte-identically).
+func WithRoleDirectory(d RoleDirectory) Option {
+	return func(s *Service) { s.roles = d }
 }
 
 // WithPRDriftSource installs the RC2 external-truth source.
@@ -124,6 +136,12 @@ type Service struct {
 	// bounce-target semantics). Nil = no delivery seam: the bounce
 	// falls back to a fresh-implementer spawn.
 	redispatcher BounceRedispatcher
+	// roles resolves the agent-role vocabulary stagePersonas may
+	// reference (owner ruling 2026-10-29 — personas REUSE the platform's
+	// agent roles). Nil = role-blind: personas decode and run in the
+	// legacy prose-only shape; role references in SET bodies reject
+	// (nothing can silently store a reference nobody can resolve).
+	roles RoleDirectory
 	// pressureMu guards the last resource-pressure sample per workspace
 	// (#1747 round 3): agentd pushes over the seam; the claim choke
 	// point skips pressured workspaces; reads surface the note.

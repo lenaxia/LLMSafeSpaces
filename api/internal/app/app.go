@@ -1680,6 +1680,14 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 				// the session index's message_count (positive-zero
 				// refuses heartbeat extension; errors fail open).
 				board.WithTurnEvidenceSource(&boardTurnEvidence{pool: boardPool}),
+				// Owner ruling 2026-10-29: stage personas REFERENCE the
+				// platform's agent roles (single source of truth for
+				// model/tools/system-prompt) — the directory backs
+				// set-config role validation, the read-path name→role
+				// migration, and the default reviewer's pointer at the
+				// reviewer role. Shared by the service AND the
+				// reconciler (spawnOpts feeds both).
+				board.WithRoleDirectory(newBoardRoleDirectory(pgOrgStore)),
 			}
 			// Event-driven drive half (§4.4): work-becoming-ready actions
 			// poke the queue; this consumer drives the affected project

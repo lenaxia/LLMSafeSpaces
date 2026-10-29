@@ -5675,6 +5675,31 @@ paths:
                 $ref: "#/components/schemas/BoardHealth"
         "401":
           $ref: "#/components/responses/Unauthorized"
+  /auth/me/agent-roles:
+    get:
+      tags: [agent-roles]
+      summary: List the acting user's selectable agent roles
+      description: |
+        Member-readable agent-role vocabulary: platform-scoped roles
+        plus the acting user's org roles when they belong to one. This
+        is the surface the board persona editor's per-stage dropdown
+        consumes and the set stagePersonas roleId references validate
+        against (owner ruling 2026-10-29 — personas reference agent
+        roles instead of redefining them). Read-only; the CRUD routes
+        (/admin/agent-roles, /orgs/{orgId}/agent-roles) stay
+        admin-gated.
+      operationId: listMyAgentRoles
+      responses:
+        "200":
+          description: The acting user's available agent roles (platform + org)
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/AgentRole"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
   /me/board/config:
     get:
       tags: [board]
@@ -12827,20 +12852,35 @@ components:
     BoardPersonaConfig:
       type: object
       description: |
-        One stage's configured agent persona — a name plus optional
-        charter instructions. Unknown stages and unknown fields reject
+        One stage's configured agent persona — ROLE-FIRST (owner ruling
+        2026-10-29: personas REFERENCE the platform's agent roles
+        instead of redefining model/tools/system-prompt per persona):
+        roleId names the referenced role (id or slug — the role is the
+        single source of truth for the spawned worker's model, tool
+        surface, and system prompt; board_set_config validates the
+        reference against the available set, GET /api/v1/auth/me/agent-roles).
+        instructions is the OPTIONAL override layered on the role's
+        system prompt. The legacy name+instructions shape still decodes
+        (name is the display label; a stored name-only persona
+        migrates to a role reference at read time where the name
+        matches an available role — unresolvable names keep the
+        instructions as a role-less override). A persona object must
+        carry roleId or name; unknown stages and unknown fields reject
         (400); a persona is configurable only on stages a live claim
         can exist in (in_progress, in_review).
-      required: [name]
       properties:
+        roleId:
+          type: string
+          maxLength: 128
+          description: The referenced agent role (id or slug — validated against the available set on writes; resolved to the canonical id on reads)
         name:
           type: string
           maxLength: 64
-          description: The persona's name (arbitrary — rendered in the spawned charter and audit events)
+          description: The persona's display label (legacy shape; rendered in the spawned charter and audit events)
         instructions:
           type: string
           maxLength: 4096
-          description: Optional charter preamble rendered verbatim in the persona worker's charter
+          description: Optional charter preamble layered over the referenced role's system prompt
       additionalProperties: false
     BoardConfigOverride:
       type: object
