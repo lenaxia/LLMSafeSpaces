@@ -86,7 +86,10 @@ describe("BoardPage — kanban/swimlanes render (§4.8)", () => {
 
   it("filters to failed-attempt rows via the #1813 FAILED toggle", async () => {
     renderBoard();
-    const toggle = await screen.findByTestId("failed-filter-toggle");
+    await screen.findByTestId("task-card-tsk-aaaa0001");
+    // The filters live in the drawer (owner ruling 2026-10-29) — open it.
+    fireEvent.click(screen.getByTestId("board-filter-button"));
+    const toggle = screen.getByTestId("failed-filter-toggle");
     fireEvent.click(toggle);
     // Only the failed fixture survives; the clean backlog row is gone.
     expect(screen.getByTestId("task-card-tsk-ffff0009")).toBeDefined();
