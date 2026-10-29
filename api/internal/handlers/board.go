@@ -89,6 +89,9 @@ type boardManager interface {
 	SetUserBoardConfig(ctx context.Context, actor board.Actor, in *board.BoardConfigOverride) (*board.BoardConfig, error)
 	GetProjectBoardConfig(ctx context.Context, actor board.Actor, projectID, shortIDOrID string) (*board.ProjectBoardConfig, error)
 	SetProjectBoardConfig(ctx context.Context, actor board.Actor, projectID, shortIDOrID string, in *board.BoardConfigOverride) (*board.ProjectBoardConfig, error)
+	// GetBoardConfigView is board_get_config's source-annotated read
+	// (the agent seam's config surface, either tier).
+	GetBoardConfigView(ctx context.Context, actor board.Actor, projectID, shortIDOrID string) (*board.BoardConfigView, error)
 }
 
 // BoardHandler renders the owner's board over REST (user-level, R7).

@@ -196,7 +196,9 @@ describe("BoardPage — OR4 pr:N tag validation (create/edit surfaces)", () => {
     // dblclick the E2 chip opens the drawer; use the drawer's New task
     // (the swimlane headers carry their own New task since #1832 —
     // disambiguate via the drawer button's testid).
-    fireEvent.dblClick(screen.getByText("E2", { selector: "button" }));
+    // 2026-10-28 ruling 1: chips are gone — the epic ROW's double-click
+    // opens the drawer.
+    fireEvent.dblClick(screen.getByTestId("epic-band-epic-uuid-2"));
     const drawer = await screen.findByTestId("epic-outcome");
     expect(drawer).toBeInTheDocument();
     fireEvent.click(screen.getByTestId("drawer-new-task"));

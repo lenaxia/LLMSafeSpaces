@@ -2,15 +2,18 @@
  * #1702 — Task Board UI e2e (design 0067 §4.8, Lane 4).
  *
  * Rows:
- *   1. Board renders: swimlanes = projects, columns = stages, cards with
- *      short id / pause-waiting chips / tags / blocked badge.
+ *   1. Board renders: swimlanes = projects, columns = stages, cards
+ *      titled by their human title (2026-10-28 ruling 4: no raw ids in
+ *      the chrome) with pause-waiting chips / tags / blocked badge.
  *   2. Drag = server-arbitrated move_stage: optimistic move + confirm;
  *      refused drag (409 + guard code) snaps back with the code rendered.
  *   3. Done drop collects the evidence URL (required on → done, R2).
  *   4. SSE live update: a board.event on the user stream moves the card
  *      (fetch monkey-patch streams frames — route.fulfill cannot stream;
  *      the known limitation documented in chat-scroll-tail.spec.ts).
- *   5. Scope switcher: project focus + epic chips + search did-you-mean.
+ *   5. Scope switcher: project focus + real filters + search did-you-mean
+ *      (2026-10-28 ruling 1: the epic pills are gone — the epic ROWS'
+ *      click-highlight is the epic→task path).
  *   6. OR4 pr:N tag validation on the task editor.
  *
  * All backend APIs are mocked via Playwright route interception, the SSE
@@ -476,8 +479,11 @@ test.describe("Task Board UI (#1702)", () => {
     await expect(page.getByTestId(`swimlane-${PROJECT_B}`)).toBeVisible();
     const card = page.getByTestId("task-card-tsk-aaaa0001");
     await expect(card).toBeVisible();
-    await expect(card).toContainText("tsk-aaaa0001");
+    // 2026-10-28 ruling 4: the TITLE is the card's label — the raw
+    // tsk- id never renders in the chrome (only the click-through
+    // drawers carry it).
     await expect(card).toContainText("Write charter");
+    await expect(card).not.toContainText("tsk-aaaa0001");
 
     // Stage columns in the swimlane grid.
     const laneA = page.getByTestId(`swimlane-${PROJECT_A}`);
@@ -564,31 +570,39 @@ test.describe("Task Board UI (#1702)", () => {
     await expect(page.getByTestId("task-card-tsk-cccc0003")).toHaveAttribute("data-stage", "done", { timeout: 8000 });
   });
 
-  test("scope switcher: project focus, epic chips, search did-you-mean", async ({ page }) => {
+  test("scope switcher: project focus, NO epic pills, search did-you-mean titles", async ({ page }) => {
     await openBoard(page);
 
-    // Project focus.
-    await page.getByTestId("project-focus").selectOption({ label: "Borealis (prj-bbbb2222)" });
+    // Project focus (2026-10-28 ruling 4: options are named by project
+    // NAME — the prj- id rides the option's value, never its label).
+    await page.getByTestId("project-focus").selectOption({ label: "Borealis" });
     await expect(page.getByTestId(`swimlane-${PROJECT_B}`)).toBeVisible();
     await expect(page.getByTestId(`swimlane-${PROJECT_A}`)).toHaveCount(0);
 
-    // Back to all; epic chip filters (#1832 r2: chips carry the SERVER
-    // epic short_id from GET /me/projects/:id/epics — the mock mints
-    // epc-epic2000 for epic-2 — no longer the derived epic-<id8> form).
+    // Back to all projects.
     await page.getByTestId("project-focus").selectOption({ value: "all" });
     await expect(page.getByTestId(`swimlane-${PROJECT_A}`)).toBeVisible();
-    await page.getByTestId("epic-chip-epc-epic2000").click();
-    await expect(page.getByTestId("task-card-tsk-eeee0005")).toBeVisible();
-    await expect(page.getByTestId("task-card-tsk-aaaa0001")).toHaveCount(0);
-    await page.getByTestId("epic-chip-all").click();
-    await expect(page.getByTestId("task-card-tsk-aaaa0001")).toBeVisible();
 
-    // Search near-miss → did-you-mean suggestion (0066 shape).
+    // 2026-10-28 ruling 1: the epic pills are GONE from the toolbar —
+    // no All-epics chip, no per-epic chips; the REAL filters (the
+    // #1813 FAILED overlay, tag facets) stay.
+    await expect(page.getByTestId("epic-chip-all")).toHaveCount(0);
+    await expect(page.locator('button[data-testid^="epic-chip-"]')).toHaveCount(0);
+    await expect(page.getByTestId("failed-filter-toggle")).toBeVisible();
+    // Epic association stays reachable: the epic ROW selects → its
+    // cards highlight (pinned in the swimlane block below).
+    await page.getByTestId("epic-band-epic-2").click();
+    await expect(page.getByTestId("task-card-tsk-eeee0005")).toHaveAttribute("data-highlighted", "true");
+    await page.getByTestId("epic-band-epic-2").click();
+
+    // Search near-miss → did-you-mean suggestion (0066 shape,
+    // 2026-10-28 ruling 4: the suggestion is labeled by TITLE).
     await page.getByTestId("board-search").fill("tsk-aaaa0009");
     const miss = page.getByTestId("board-search-miss");
     await expect(miss).toContainText("No match");
-    await expect(miss).toContainText("tsk-aaaa0001");
-    await miss.getByRole("button", { name: "tsk-aaaa0001" }).click();
+    await expect(miss).toContainText("Write charter");
+    await expect(miss).not.toContainText("tsk-aaaa0001");
+    await miss.getByRole("button", { name: "Write charter" }).click();
     await expect(page.getByTestId("task-card-tsk-aaaa0001")).toBeVisible();
   });
 
@@ -745,29 +759,25 @@ test.describe("#1832 items 1-2 — swimlane creation buttons + collapsible epic 
     await expect(page.getByTestId("epic-title")).toHaveCount(0, { timeout: 8000 });
   });
 
-  test("epic bands render inside the swimlane with tasks grouped beneath; collapse hides the group", async ({ page }) => {
+  test("one epic ROW per epic in the swimlane — no nested task list, no collapse toggle", async ({ page }) => {
     await openBoard(page);
 
     const lane = page.getByTestId(`swimlane-${PROJECT_A}`);
-    const bandE1 = lane.getByTestId("epic-band-epic-1");
-    await expect(bandE1).toBeVisible();
-    await expect(bandE1).toContainText("1/4");
+    const rowE1 = lane.getByTestId("epic-band-epic-1");
+    await expect(rowE1).toBeVisible();
+    await expect(rowE1).toContainText("1/4");
+    await expect(rowE1).toContainText("E1");
     await expect(lane.getByTestId("epic-band-epic-2")).toBeVisible();
 
-    // Tasks grouped beneath their band.
-    await expect(lane.getByTestId("band-task-epic-1-tsk-aaaa0001")).toBeVisible();
-    await expect(lane.getByTestId("band-task-epic-2-tsk-eeee0005")).toBeVisible();
-    await expect(lane.getByTestId("band-task-epic-1-tsk-eeee0005")).toHaveCount(0);
-
-    // Collapse: rows hide, band stays.
-    await lane.getByTestId("band-toggle-epic-1").click();
-    await expect(lane.getByTestId("band-task-epic-1-tsk-aaaa0001")).toHaveCount(0);
-    await expect(bandE1).toBeVisible();
-    await lane.getByTestId("band-toggle-epic-1").click();
-    await expect(lane.getByTestId("band-task-epic-1-tsk-aaaa0001")).toBeVisible();
+    // 2026-10-28 ruling 2: NO task rows rendered underneath the epic
+    // rows (the tasks live in the stage columns; the row's click
+    // highlights its cards — pinned in the next test), and no collapse
+    // toggle exists anymore (nothing to fold).
+    await expect(lane.locator('[data-testid^="band-task-"]')).toHaveCount(0);
+    await expect(lane.locator('[data-testid^="band-toggle-"]')).toHaveCount(0);
   });
 
-  test("clicking a band highlights its tasks and dims the swimlane's others", async ({ page }) => {
+  test("clicking an epic row highlights its tasks and dims the swimlane's others", async ({ page }) => {
     await openBoard(page);
 
     // Borealis's only task is FLAGGED (000050: pending_input is a badge
@@ -775,7 +785,7 @@ test.describe("#1832 items 1-2 — swimlane creation buttons + collapsible epic 
     // main in_progress lane wearing the awaiting-input badge.
     await expect(page.getByTestId("task-card-tsk-ffff0006")).toBeVisible();
 
-    await page.getByTestId("band-header-epic-2").click();
+    await page.getByTestId("epic-band-epic-2").click();
     await expect(page.getByTestId("task-card-tsk-eeee0005")).toHaveAttribute("data-highlighted", "true");
     await expect(page.getByTestId("task-card-tsk-aaaa0001")).toHaveAttribute("data-dimmed", "true");
     await expect(page.getByTestId("task-card-tsk-dddd0004")).toHaveAttribute("data-dimmed", "true");
@@ -783,7 +793,7 @@ test.describe("#1832 items 1-2 — swimlane creation buttons + collapsible epic 
     await expect(page.getByTestId("task-card-tsk-ffff0006")).not.toHaveAttribute("data-dimmed");
 
     // Click again → deselect: dims and highlights clear.
-    await page.getByTestId("band-header-epic-2").click();
+    await page.getByTestId("epic-band-epic-2").click();
     await expect(page.getByTestId("task-card-tsk-aaaa0001")).not.toHaveAttribute("data-dimmed");
     await expect(page.getByTestId("task-card-tsk-eeee0005")).not.toHaveAttribute("data-highlighted");
   });
@@ -791,7 +801,7 @@ test.describe("#1832 items 1-2 — swimlane creation buttons + collapsible epic 
   test("the selected epic scopes New task (POST lands on that epic's route)", async ({ page }) => {
     const state = await openBoard(page);
 
-    await page.getByTestId("band-header-epic-2").click();
+    await page.getByTestId("epic-band-epic-2").click();
     await page.getByTestId(`new-task-${PROJECT_A}`).click();
 
     // The dialog names the selected epic as the landing zone.
@@ -806,9 +816,9 @@ test.describe("#1832 items 1-2 — swimlane creation buttons + collapsible epic 
     expect(req.postDataJSON()).toMatchObject({ title: "Scoped follow-up" });
 
     // Authoritative row after the invalidation refetch: card in Backlog
-    // and grouped beneath the E2 band.
+    // (the epic ROW carries no nested task list anymore — the card IS
+    // the task's rendered home).
     await expect(page.getByTestId("task-card-tsk-new0007")).toHaveAttribute("data-stage", "backlog", { timeout: 8000 });
-    await expect(page.getByTestId("band-task-epic-2-tsk-new0007")).toBeVisible();
     expect(state.tasks.some((t) => t.title === "Scoped follow-up")).toBe(true);
   });
 
@@ -865,10 +875,9 @@ test.describe("#1832 r2 — server-listed epics, unhappy paths, picker escape ha
     await page.getByTestId("task-save").click();
 
     // The authoritative row lands (no parent task existed — the project
-    // rides the epic list, then the card + band row render).
+    // rides the epic list, then the card renders in its column).
     await expect(page.getByTestId("task-card-tsk-new0007")).toHaveAttribute("data-stage", "backlog", { timeout: 8000 });
-    await expect(page.getByTestId("band-task-epic-created-prj-bbbb2222-tsk-new0007")).toBeVisible();
-    // r3 finding 1+2: the band's progress must follow the refetched
+    // r3 finding 1+2: the epic row's progress must follow the refetched
     // server list (row-derived 0 done / 1 total) — the session's stale
     // 0/0 create response must not survive the list's arrival.
     await expect(band).toContainText("0/1", { timeout: 8000 });
@@ -923,7 +932,7 @@ test.describe("#1832 r2 — server-listed epics, unhappy paths, picker escape ha
   test("a failed New-task POST renders the error in the still-open TaskDialog (fields preserved)", async ({ page }) => {
     await openBoard(page, { failTaskCreate: true });
 
-    await page.getByTestId("band-header-epic-2").click();
+    await page.getByTestId("epic-band-epic-2").click();
     await page.getByTestId(`new-task-${PROJECT_A}`).click();
     await expect(page.getByText("New task in E2", { exact: true })).toBeVisible();
     await page.getByTestId("task-title").fill("Doomed task");
@@ -1118,5 +1127,181 @@ test.describe("#1832 item 3 — kebab menus + delete flows", () => {
     // epic-2 survives (scoped blast radius).
     await expect(page.getByTestId("task-card-tsk-eeee0005")).toBeVisible();
     expect(state.tasks.some((t) => t.epic_id === "epic-1")).toBe(false);
+  });
+});
+
+// --- 2026-10-28 owner rulings: capped epic list + mobile layout ------------------
+
+test.describe("2026-10-28 board declutter — capped epic list, mobile columns/wrap", () => {
+  function zeroTaskEpic(n: number, title: string, updatedAt: string): E2EEpic {
+    return {
+      id: `epic-capped-${n}`, project_id: PROJECT_A, short_id: `epc-cap000${n}`,
+      title, outcome: "", status: "active", tags: [],
+      created_at: "2026-10-01T00:00:00Z", updated_at: updatedAt,
+      progress_done: 0, progress_total: 0, progress_derived: false,
+    };
+  }
+
+  test("epic list caps visible rows and scrolls internally (not page growth), activity-first order", async ({ page }) => {
+    // 7 zero-task server epics + the 2 task-derived rows (E1, E2) = 9
+    // rows; the visible window is 4 — the rest scroll INSIDE the list.
+    const state = await openBoard(page, {
+      epics: [
+        zeroTaskEpic(1, "Alpha quiet", "2026-10-01T00:00:00Z"),
+        zeroTaskEpic(2, "Bravo busy", "2026-10-07T00:00:00Z"),
+        zeroTaskEpic(3, "Charlie mid", "2026-10-05T00:00:00Z"),
+        zeroTaskEpic(4, "Delta late", "2026-10-06T00:00:00Z"),
+        zeroTaskEpic(5, "Echo quiet", "2026-10-01T00:00:00Z"),
+        zeroTaskEpic(6, "Foxtrot older", "2026-10-02T00:00:00Z"),
+        zeroTaskEpic(7, "Hotel busy2", "2026-10-08T00:00:00Z"),
+      ],
+    });
+    expect(state.epics.length).toBe(7);
+
+    const lane = page.getByTestId(`swimlane-${PROJECT_A}`);
+    const list = lane.getByTestId(`epic-list-${PROJECT_A}`);
+    await expect(list).toBeVisible();
+
+    // Every row renders (the cap is VISUAL — scrolling reaches the rest).
+    await expect(list.locator('[data-testid^="epic-band-"]')).toHaveCount(9);
+
+    // The list is its OWN scroll region: overflow clips vertically and
+    // the content exceeds the capped client window.
+    const metrics = await list.evaluate((el) => {
+      const cs = getComputedStyle(el);
+      return {
+        overflowY: cs.overflowY,
+        scrollHeight: el.scrollHeight,
+        clientHeight: el.clientHeight,
+        boxHeight: el.getBoundingClientRect().height,
+      };
+    });
+    expect(["auto", "scroll"]).toContain(metrics.overflowY);
+    expect(metrics.scrollHeight).toBeGreaterThan(metrics.clientHeight);
+    // ~4 visible rows: the capped window stays a bounded region (the
+    // PAGE never grows with the epic count).
+    expect(metrics.boxHeight).toBeLessThan(150);
+
+    // Activity-first order (ruling 3): the task-derived E1/E2 ride
+    // their rows' 2026-10-10 activity, then the seeded epics by their
+    // own updated_at desc (Hotel 10-08, Bravo 10-07, Delta 10-06,
+    // Charlie 10-05, Foxtrot 10-02), quiet rows alpha-last.
+    const titles = await list.locator('[data-testid^="band-title-"]').allTextContents();
+    expect(titles).toEqual([
+      "E1", "E2", "Hotel busy2", "Bravo busy", "Delta late", "Charlie mid", "Foxtrot older", "Alpha quiet", "Echo quiet",
+    ]);
+  });
+
+  test("epic list at exactly the cap shows all 4 rows fully visible — no internal scroll", async ({ page }) => {
+    // The cap's complement (ruling 3 + review r1): >4 rows must scroll
+    // (pinned above); exactly 4 rows must fit with ZERO internal
+    // scrolling — every row fully visible, scrollHeight === the client
+    // window. Guards the zero-slack regression class (a max-h shaved
+    // to exactly 4×row+3×gap clips the 4th row under any row growth).
+    const state = await openBoard(page, {
+      epics: [
+        zeroTaskEpic(1, "Alpha quiet", "2026-10-01T00:00:00Z"),
+        zeroTaskEpic(2, "Bravo busy", "2026-10-07T00:00:00Z"),
+      ],
+    });
+    expect(state.epics.length).toBe(2);
+
+    const lane = page.getByTestId(`swimlane-${PROJECT_A}`);
+    const list = lane.getByTestId(`epic-list-${PROJECT_A}`);
+    await expect(list).toBeVisible();
+
+    // E1, E2 (task-derived) + Alpha + Bravo = exactly EPIC_LIST_MAX_VISIBLE rows.
+    await expect(list.locator('[data-testid^="epic-band-"]')).toHaveCount(4);
+
+    const metrics = await list.evaluate((el) => {
+      const cs = getComputedStyle(el);
+      return {
+        overflowY: cs.overflowY,
+        scrollHeight: el.scrollHeight,
+        clientHeight: el.clientHeight,
+      };
+    });
+    expect(["auto", "scroll"]).toContain(metrics.overflowY);
+    expect(metrics.scrollHeight).toBe(metrics.clientHeight);
+
+    // The LAST row's box sits entirely inside the list's client
+    // window (fully visible, not clipped by the cap).
+    const lastRow = list.locator('[data-testid^="epic-band-"]').nth(3);
+    await expect(lastRow).toBeVisible();
+    const listBox = await list.evaluate((el) => {
+      const b = el.getBoundingClientRect();
+      return { top: b.top, bottom: b.bottom };
+    });
+    const rowBox = await lastRow.evaluate((el) => {
+      const b = el.getBoundingClientRect();
+      return { top: b.top, bottom: b.bottom };
+    });
+    expect(rowBox.top).toBeGreaterThanOrEqual(listBox.top - 0.5);
+    expect(rowBox.bottom).toBeLessThanOrEqual(listBox.bottom + 0.5);
+  });
+
+  test("mobile: 2-column grid, long titles wrap INSIDE the card, action buttons never bleed", async ({ page }) => {
+    // Ruling 5: 4 columns cannot wrap cleanly at mobile widths — the
+    // grid collapses to 2 columns on small screens (4 from md up), the
+    // card wraps its own content, and the kebab/start cluster is
+    // shrink-0 (contained inside the card's bounds).
+    await page.setViewportSize({ width: 375, height: 667 });
+    const longTitle =
+      "Implement the reconciliation sweep for the lease-busy guard with a deliberately long unbroken token " +
+      "supercalifragilisticexpialidocious-reconciliation-sweep-implementation-title so word-wrap is exercised";
+    const base = freshState();
+    base.tasks.push(task({
+      short_id: "tsk-long0001", title: longTitle, stage: "backlog",
+      project_id: PROJECT_A, epic_id: "epic-1",
+    }));
+    await openBoard(page, { tasks: base.tasks });
+
+    const grid = page.getByTestId(`stage-grid-${PROJECT_A}`);
+    await expect(grid).toBeVisible();
+
+    // 2 columns at 375px …
+    const colsMobile = await grid.evaluate((el) => getComputedStyle(el).gridTemplateColumns.split(" ").length);
+    expect(colsMobile).toBe(2);
+    // … and 4 from md up (768px).
+    await page.setViewportSize({ width: 768, height: 900 });
+    await expect(grid).toBeVisible();
+    const colsMd = await grid.evaluate((el) => getComputedStyle(el).gridTemplateColumns.split(" ").length);
+    expect(colsMd).toBe(4);
+    await page.setViewportSize({ width: 375, height: 667 });
+
+    // No horizontal page overflow at the narrow width.
+    const docOverflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
+    expect(docOverflow).toBeLessThanOrEqual(1);
+
+    // The long-title card: the title WRAPS (multi-line height) and
+    // stays inside the card, the card inside its column cell.
+    const card = page.getByTestId("task-card-tsk-long0001");
+    await expect(card).toBeVisible();
+    const title = card.getByTestId("card-title-tsk-long0001");
+    await expect(title).toBeVisible();
+    const boxes = await card.evaluate((el) => {
+      const cardBox = el.getBoundingClientRect();
+      const titleEl = el.querySelector('[data-testid="card-title-tsk-long0001"]')!;
+      const titleBox = titleEl.getBoundingClientRect();
+      const kebabEl = el.querySelector('[data-testid="task-kebab-tsk-long0001"]')!;
+      const kebabBox = kebabEl.getBoundingClientRect();
+      const cellBox = (el.closest('[data-stage-drop]') as HTMLElement)!.getBoundingClientRect();
+      return {
+        titleRight: titleBox.right, titleHeight: titleBox.height,
+        cardRight: cardBox.right, cardLeft: cardBox.left,
+        kebabRight: kebabBox.right, kebabLeft: kebabBox.left,
+        cellRight: cellBox.right, cellLeft: cellBox.left,
+      };
+    });
+    // Title wraps to multiple lines (a 170+ char title in a ~160px
+    // column cannot fit one line) — wrapped, not clipped/overflowed.
+    expect(boxes.titleHeight).toBeGreaterThan(32);
+    // Containment: title, kebab and the card itself all stay inside the
+    // column cell's bounds (no bleed into the neighbor column).
+    expect(boxes.titleRight).toBeLessThanOrEqual(boxes.cardRight + 0.5);
+    expect(boxes.cardRight).toBeLessThanOrEqual(boxes.cellRight + 0.5);
+    expect(boxes.cardLeft).toBeGreaterThanOrEqual(boxes.cellLeft - 0.5);
+    expect(boxes.kebabRight).toBeLessThanOrEqual(boxes.cardRight + 0.5);
+    expect(boxes.kebabLeft).toBeGreaterThanOrEqual(boxes.cardLeft - 0.5);
   });
 });

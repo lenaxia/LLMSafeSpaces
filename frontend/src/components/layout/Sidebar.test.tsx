@@ -477,7 +477,7 @@ describe("Sidebar — activity spinner and unread pulsation (US-37.5/37.6)", () 
   // Only top-level (parent) sessions pulsate when they have an unread response.
   // Subtasks (children) stay quiet when done — pulsating every completed
   // subtask is noise. Children still show the blue spinner while busy.
-  it("only main-list sessions pulse; foldered subtask rows do not pulse when unread (#1966)", async () => {
+  it("only main-list sessions pulse; nested subtask rows do not pulse when unread (ruling 6)", async () => {
     mockIsSessionUnread = (sid: string) => sid === "sess-parent" || sid === "sess-child";
     (workspacesApi.getSessions as ReturnType<typeof vi.fn>).mockResolvedValue([
       { id: "sess-parent", title: "Parent session", messageCount: 2, status: "idle", hasUnread: true },
@@ -488,22 +488,22 @@ describe("Sidebar — activity spinner and unread pulsation (US-37.5/37.6)", () 
 
     await screen.findByText("Parent session");
 
-    // #1966: the subtask lives in the Workers folder — expand it so
-    // the child row renders.
+    // Ruling 6: the subtask nests beneath its parent in the main tree
+    // (provenance-only worker grouping) — expand the subtree.
     await act(async () => {
-      screen.getByLabelText("Expand worker sessions").click();
+      screen.getByLabelText("Expand subtasks").click();
     });
 
     await screen.findByText("Child task");
 
-    // The main-list row (depth 0) title pulses; the folder row does not.
+    // The main-list row (depth 0) title pulses; the child row does not.
     const parentTitle = screen.getByText("Parent session");
     const childTitle = screen.getByText("Child task");
     expect(parentTitle.className).toContain("animate-unread-pulse");
     expect(childTitle.className).not.toContain("animate-unread-pulse");
   });
 
-  it("foldered subtask still shows blue spinner when busy", async () => {
+  it("nested subtask still shows blue spinner when busy", async () => {
     mockIsSessionBusy = (sid: string) => sid === "sess-child";
     mockWorkspaceBusyCount = (wsid: string) => wsid === "ws-1" ? 1 : 0;
     (workspacesApi.getSessions as ReturnType<typeof vi.fn>).mockResolvedValue([
@@ -516,7 +516,7 @@ describe("Sidebar — activity spinner and unread pulsation (US-37.5/37.6)", () 
     await screen.findByText("Parent session");
 
     await act(async () => {
-      screen.getByLabelText("Expand worker sessions").click();
+      screen.getByLabelText("Expand subtasks").click();
     });
 
     await screen.findByText("Child task");
@@ -620,7 +620,7 @@ describe("Sidebar — pending action indicator", () => {
     expect(row.querySelector("[data-busy]")).toBeFalsy();
   });
 
-  it("pending subtask indicator: no bubble-up to the main list — the folder owns the row (#1966)", async () => {
+  it("pending subtask indicator bubbles up to the nesting parent row (ruling 6 restores the subtree)", async () => {
     mockSessionPendingActions = () => new Set(["sess-child"]);
     (workspacesApi.getSessions as ReturnType<typeof vi.fn>).mockResolvedValue([
       { id: "sess-parent", title: "Parent", messageCount: 1, status: "idle", hasUnread: false },
@@ -631,18 +631,20 @@ describe("Sidebar — pending action indicator", () => {
 
     await screen.findByText("Parent");
 
-    // #1966: the child is worker-foldered — the pre-#1966 bubble-up
-    // to the parent row is retired with the nesting (the parent no
-    // longer carries the subtree). The parent shows NO indicator…
+    // Ruling 6: the child nests beneath its parent again — the tree's
+    // bubble-up design (indicator rides the ancestor so the top-level
+    // row catches attention) applies once more: the parent row pulses.
     const parentTitle = screen.getByText("Parent");
     const parentRowTitle = parentTitle.closest("button")?.querySelector("span");
-    expect(parentRowTitle?.className).not.toContain("animate-unread-pulse");
+    expect(parentRowTitle?.className).toContain("animate-unread-pulse");
 
-    // …and the pending child stays reachable one click away.
-    await act(async () => { screen.getByLabelText("Expand worker sessions").click(); });
+    // The pending child stays reachable one click away: its own row
+    // renders the pending treatment (the depth-1 row shows the
+    // indicator, not the depth-0 pulse class).
+    await act(async () => { screen.getByLabelText("Expand subtasks").click(); });
     await screen.findByText("Child with prompt");
-    const childTitle = screen.getByText("Child with prompt");
-    expect(childTitle.className).not.toContain("animate-unread-pulse");
+    const childRow = screen.getByText("Child with prompt").closest("button")!;
+    expect(childRow.querySelector(".text-amber-500,[data-busy]")).toBeTruthy();
   });
 
   it("pending indicator shows even when session is unread", async () => {

@@ -1,7 +1,7 @@
 // Copyright (C) 2026 Michael Kao
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-import { screen, fireEvent, waitFor } from "@testing-library/react";
+import { screen, fireEvent, waitFor, within } from "@testing-library/react";
 import { describe, it, expect, beforeEach, vi } from "vitest";
 // boardTestUtils FIRST (its vi.mock registrations must evaluate before
 // BoardPage resolves ../api/board).
@@ -95,7 +95,9 @@ describe("BoardPage r1 — delete / lifecycle / start / feed / concurrency", () 
     mockActivateEpic.mockResolvedValue({ ...EPIC_ROW, status: "active" });
     renderBoard();
     await screen.findByTestId("task-card-tsk-aaaa0001");
-    fireEvent.dblClick(screen.getByText("E1", { selector: "button" }));
+    // 2026-10-28 ruling 1: chips are gone — the epic ROW's double-click
+    // opens the drawer (epic-uuid-1 spans both lanes: scope to Apollo).
+    fireEvent.dblClick(within(screen.getByTestId("swimlane-prj-aaaa1111")).getByTestId("epic-band-epic-uuid-1"));
 
     await screen.findByTestId("epic-outcome");
     expect(screen.getByTestId("epic-status").textContent).toBe("paused");
@@ -110,7 +112,9 @@ describe("BoardPage r1 — delete / lifecycle / start / feed / concurrency", () 
     mockPauseEpic.mockResolvedValue({ ...EPIC_ROW, status: "paused" });
     renderBoard();
     await screen.findByTestId("task-card-tsk-aaaa0001");
-    fireEvent.dblClick(screen.getByText("E1", { selector: "button" }));
+    // 2026-10-28 ruling 1: chips are gone — the epic ROW's double-click
+    // opens the drawer (epic-uuid-1 spans both lanes: scope to Apollo).
+    fireEvent.dblClick(within(screen.getByTestId("swimlane-prj-aaaa1111")).getByTestId("epic-band-epic-uuid-1"));
     await screen.findByTestId("epic-outcome");
     fireEvent.click(screen.getByTestId("epic-pause"));
     await waitFor(() => expect(mockPauseEpic).toHaveBeenCalled());
@@ -124,7 +128,9 @@ describe("BoardPage r1 — delete / lifecycle / start / feed / concurrency", () 
     );
     renderBoard();
     await screen.findByTestId("task-card-tsk-aaaa0001");
-    fireEvent.dblClick(screen.getByText("E1", { selector: "button" }));
+    // 2026-10-28 ruling 1: chips are gone — the epic ROW's double-click
+    // opens the drawer (epic-uuid-1 spans both lanes: scope to Apollo).
+    fireEvent.dblClick(within(screen.getByTestId("swimlane-prj-aaaa1111")).getByTestId("epic-band-epic-uuid-1"));
     await screen.findByTestId("epic-outcome");
     fireEvent.click(screen.getByTestId("epic-activate"));
 
@@ -263,7 +269,9 @@ describe("BoardPage r1 — delete / lifecycle / start / feed / concurrency", () 
     mockGetEpic.mockResolvedValue(EPIC_ROW);
     renderBoard();
     await screen.findByTestId("task-card-tsk-aaaa0001");
-    fireEvent.dblClick(screen.getByText("E1", { selector: "button" }));
+    // 2026-10-28 ruling 1: chips are gone — the epic ROW's double-click
+    // opens the drawer (epic-uuid-1 spans both lanes: scope to Apollo).
+    fireEvent.dblClick(within(screen.getByTestId("swimlane-prj-aaaa1111")).getByTestId("epic-band-epic-uuid-1"));
     await screen.findByTestId("epic-activity");
 
     await act(async () => {
@@ -348,7 +356,9 @@ describe("BoardPage r1 — delete / lifecycle / start / feed / concurrency", () 
     );
     renderBoard();
     await screen.findByTestId("task-card-tsk-aaaa0001");
-    fireEvent.dblClick(screen.getByText("E1", { selector: "button" }));
+    // 2026-10-28 ruling 1: chips are gone — the epic ROW's double-click
+    // opens the drawer (epic-uuid-1 spans both lanes: scope to Apollo).
+    fireEvent.dblClick(within(screen.getByTestId("swimlane-prj-aaaa1111")).getByTestId("epic-band-epic-uuid-1"));
 
     const notice = await screen.findByRole("alert");
     expect(notice.textContent).toContain("not found");

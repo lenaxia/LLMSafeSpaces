@@ -169,6 +169,19 @@ func boardManagerTools() []mcpTool {
 			InputSchema: map[string]any{"type": "object", "properties": map[string]any{}},
 		},
 		{
+			Name:        "board_get_config",
+			Annotations: annot(true, false, false),
+			Description: "Read the Task Board's configuration — the effective merged view with SOURCE annotations (per key: code_default | user_default | project_override) and per-stage persona provenance (project_override | user_default | default_reviewer | none_explicit | none, the persona included). No projectId → the user tier (board-wide defaults: reviewColumn, autoAssignReviewer, defaultWorkerSlots, stagePersonas); a projectId → that project's view (its raw override map plus the merged row). The same truth the board UI's config panels render. READ: open to any in-workspace session (the #1747 §5 manager-grant repeal); no claim token, no gate.",
+			InputSchema: map[string]any{"type": "object", "properties": map[string]any{
+				"projectId": map[string]any{"type": "string", "description": "Optional project short id (prj-… or UUID) — omit for the user tier's board-wide defaults"},
+			}},
+		},
+		{
+			Name:        "board_set_config",
+			Description: "REPLACE-write one tier of the Task Board's configuration. tier=user sets the board-wide defaults ({reviewColumn?, autoAssignReviewer?, defaultWorkerSlots?, stagePersonas?}); tier=project sets ONE project's override map (projectId required; defaultWorkerSlots refuses — a user-level key). Absent keys revert to inheritance, exactly the REST contract: an explicit stagePersonas map OWNS every stage it does not list ({} = the no-personas opt-out, suppressing even the built-in auto-reviewer); a map without an in_review entry suppresses the default reviewer — add its persona back if that is not intended. PAYLOAD IS FILE-ONLY (design 0070 cutover): write the config JSON with the write tool, check it with board_validate_file (op set_config), then submit configFile — the file is DELETED after a successful set. The response is board_get_config's source-annotated view of the written tier. Open to any in-workspace session (the manager-grant gate is repealed, ruling 2026-10-27, tsk-copper-refectory-generates).",
+			InputSchema: json.RawMessage(`{"properties":{"tier":{"description":"Which tier this set writes","enum":["user","project"],"type":"string"},"projectId":{"description":"REQUIRED for tier=project (refused for tier=user) — the project short id whose override map is written","type":"string"},"configFile":{"description":"REQUIRED — workspace file holding the config override JSON {reviewColumn?, autoAssignReviewer?, defaultWorkerSlots?, stagePersonas?} (relative paths resolve against the workspace root; tier/projectId ride the tool call, not the file)","type":"string"}},"required":["tier","configFile"],"type":"object"}`),
+		},
+		{
 			// Task Board MANAGER tools (#1747, design 0067 §4.3c as
 			// amended): the collaboration-to-execution loop — take a
 			// user-approved design, create the epics/tasks, activate
@@ -367,8 +380,8 @@ func boardManagerTools() []mcpTool {
 			// (write → validate → submit; validate-first is UX).
 			Name:        "board_validate_file",
 			Annotations: annot(true, false, false),
-			Description: "Validate one board payload FILE locally before submitting it — zero wire calls, purely advisory: the platform stays the authority, and for import_plan the existing dryRun checks GRAPH semantics (cycles, caps) while this checks the file's SHAPE. The canonical workflow for board_create_task/board_create_epic/board_update_task/board_update_epic/board_import_plan: write the JSON payload with the write tool → board_validate_file → submit the tool call with bodyFile/patchFile/planFile (the file auto-deletes on success). Checks, in order: file discipline (regular file, 256 KiB cap, UTF-8); strict JSON (single document, duplicate keys refused, object top level); placement (file params and routing/control keys do not belong INSIDE the file); the op's compiled schema (admitted fields derived from the platform request DTOs — unknown fields, required fields, types, shapes, caps, with JSON instance paths like tasks[2].acceptanceCriteria[0].text); #1849 atomic-create (non-empty description AND >=1 criterion); the placeholder-class token scan on titles/descriptions/criteria; plan-key uniqueness; exactly-one-of epic|epicId for import_plan. Findings carry {path, rule, severity error|warning, problem, fix, expected, actual}; warnings never block (e.g. acceptanceCriteria in an update patch REPLACES the full criteria set). The SAME findings refuse the CRUD call at submit time if you skip this step. This tool never deletes the file.",
-			InputSchema: json.RawMessage(`{"properties":{"op":{"description":"The payload kind the file will be submitted as","enum":["create_task","create_epic","update_task_patch","update_epic_patch","import_plan"],"type":"string"},"file":{"description":"Workspace file path holding the JSON payload (relative paths resolve against the workspace root)","type":"string"}},"required":["op","file"],"type":"object"}`),
+			Description: "Validate one board payload FILE locally before submitting it — zero wire calls, purely advisory: the platform stays the authority, and for import_plan the existing dryRun checks GRAPH semantics (cycles, caps) while this checks the file's SHAPE. The canonical workflow for board_create_task/board_create_epic/board_update_task/board_update_epic/board_import_plan/board_set_config: write the JSON payload with the write tool → board_validate_file → submit the tool call with bodyFile/patchFile/planFile/configFile (the file auto-deletes on success). Checks, in order: file discipline (regular file, 256 KiB cap, UTF-8); strict JSON (single document, duplicate keys refused, object top level); placement (file params and routing/control keys do not belong INSIDE the file); the op's compiled schema (admitted fields derived from the platform request DTOs — unknown fields, required fields, types, shapes, caps, with JSON instance paths like tasks[2].acceptanceCriteria[0].text); #1849 atomic-create (non-empty description AND >=1 criterion); the placeholder-class token scan on titles/descriptions/criteria; plan-key uniqueness; exactly-one-of epic|epicId for import_plan. Findings carry {path, rule, severity error|warning, problem, fix, expected, actual}; warnings never block (e.g. acceptanceCriteria in an update patch REPLACES the full criteria set). The SAME findings refuse the CRUD call at submit time if you skip this step. This tool never deletes the file.",
+			InputSchema: json.RawMessage(`{"properties":{"op":{"description":"The payload kind the file will be submitted as","enum":["create_task","create_epic","update_task_patch","update_epic_patch","import_plan","set_config"],"type":"string"},"file":{"description":"Workspace file path holding the JSON payload (relative paths resolve against the workspace root)","type":"string"}},"required":["op","file"],"type":"object"}`),
 		},
 	}
 }
@@ -1166,6 +1179,7 @@ func callMCPTool(ctx context.Context, password, name string, args map[string]any
 		"workflow_list", "workflow_create", "workflow_update", "workflow_delete", "workflow_run", "workflow_runs",
 		"board_read", "board_heartbeat", "board_report_throttle", "board_move_stage",
 		"board_list", "board_health",
+		"board_get_config", "board_set_config",
 		"board_create_project", "board_update_project",
 		"board_project_archive", "board_project_unarchive", "board_project_pause", "board_project_resume",
 		"board_create_epic", "board_update_epic",

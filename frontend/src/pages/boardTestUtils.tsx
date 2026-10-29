@@ -32,6 +32,13 @@ export const mockDeleteEpic = vi.fn();
 export const mockArchiveProject = vi.fn();
 export const mockUnarchiveProject = vi.fn();
 export const mockWorkspacesList = vi.fn();
+// Board config ON the board (owner ruling 2026-10-28): the defaults
+// dialog + per-project Configure panels run inside BoardPage.
+export const mockGetUserBoardConfig = vi.fn();
+export const mockSetUserBoardConfig = vi.fn();
+export const mockGetProjectBoardConfig = vi.fn();
+export const mockSetProjectBoardConfig = vi.fn();
+export const mockUpdateProject = vi.fn();
 
 vi.mock("../api/board", () => ({
   boardApi: {
@@ -54,7 +61,13 @@ vi.mock("../api/board", () => ({
     deleteEpic: (id: string, force?: boolean) => mockDeleteEpic(id, force),
     archiveProject: (id: string) => mockArchiveProject(id),
     unarchiveProject: (id: string) => mockUnarchiveProject(id),
+    getUserBoardConfig: () => mockGetUserBoardConfig(),
+    setUserBoardConfig: (input: unknown) => mockSetUserBoardConfig(input),
+    getProjectBoardConfig: (id: string) => mockGetProjectBoardConfig(id),
+    setProjectBoardConfig: (id: string, input: unknown) => mockSetProjectBoardConfig(id, input),
+    updateProject: (id: string, input: unknown) => mockUpdateProject(id, input),
   },
+  BOARD_REVIEW_COLUMNS: ["off", "manual", "auto"],
   newBoardRequestId: () => "req-test",
 }));
 
@@ -234,14 +247,25 @@ export function seedBoard(tasks: BoardTask[] = defaultTasks(), projects: BoardPr
   mockWorkspacesList.mockResolvedValue({
     items: [{ id: "ws-1", name: "Main", userId: "u1", runtime: "python", storageSize: "1Gi", createdAt: "", updatedAt: "" }],
   });
+  // Board config (the on-board panels): the flipped-default posture —
+  // auto review + auto reviewer, no stored personas anywhere.
+  mockGetUserBoardConfig.mockResolvedValue({ reviewColumn: "auto", autoAssignReviewer: true, defaultWorkerSlots: 2 });
+  mockSetUserBoardConfig.mockImplementation(async (input: unknown) => input);
+  mockGetProjectBoardConfig.mockResolvedValue({
+    project_id: "p",
+    overrides: {},
+    effective: { reviewColumn: "auto", autoAssignReviewer: true, defaultWorkerSlots: 2 },
+  });
+  mockSetProjectBoardConfig.mockImplementation(async (_id: string, input: unknown) => input);
+  mockUpdateProject.mockImplementation(async (_id: string, input: unknown) => input);
   return tasks;
 }
 
-export function renderBoard(): RenderResult & { queryClient: QueryClient } {
+export function renderBoard(initialEntry = "/board"): RenderResult & { queryClient: QueryClient } {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
   const utils = render(
     <QueryClientProvider client={qc}>
-      <MemoryRouter initialEntries={["/board"]}>
+      <MemoryRouter initialEntries={[initialEntry]}>
         <BoardPage />
       </MemoryRouter>
     </QueryClientProvider>,

@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 import { fireEvent, screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import {
   renderBoard,
@@ -22,13 +23,47 @@ describe("BoardPage — kanban/swimlanes render (§4.8)", () => {
     seedBoard();
   });
 
-  it("renders one swimlane per project with the project short id + slot budget", async () => {
+  // Board config lives ON the board (owner ruling 2026-10-28 — "alongside
+  // the projects and on the board itself"): defaults reachable from the
+  // header, every project's config reachable from its swimlane, all in
+  // one interaction.
+  it("carries a Board defaults affordance opening the defaults dialog from the board view", async () => {
+    const user = userEvent.setup();
+    renderBoard();
+    await screen.findByTestId("swimlane-prj-aaaa1111");
+    await user.click(screen.getByTestId("board-defaults-button"));
+    expect(await screen.findByTestId("board-defaults-modal")).toBeInTheDocument();
+    // The persona editor is right there (both tiers share it).
+    expect(screen.getByTestId("cfg-personas-user")).toBeInTheDocument();
+  });
+
+  it("?config=defaults auto-opens the defaults dialog (the /settings/board-config redirect target)", async () => {
+    renderBoard("/board?config=defaults");
+    expect(await screen.findByTestId("board-defaults-modal")).toBeInTheDocument();
+  });
+
+  it("carries a per-project Configure affordance on every swimlane opening the project's config", async () => {
+    const user = userEvent.setup();
+    renderBoard();
+    await screen.findByTestId("swimlane-prj-aaaa1111");
+    await user.click(screen.getByTestId("project-config-prj-aaaa1111"));
+    expect(await screen.findByTestId("project-config-modal-prj-aaaa1111")).toBeInTheDocument();
+    // Worker slots + the project-tier persona editor ride the panel.
+    expect(screen.getByTestId("cfg-slots-prj-aaaa1111")).toBeInTheDocument();
+    expect(screen.getByTestId("cfg-personas-prj-aaaa1111")).toBeInTheDocument();
+  });
+
+  it("renders one swimlane per project, named by title (ruling 4: no raw ids)", async () => {
     renderBoard();
     await screen.findByTestId("swimlane-prj-aaaa1111");
     expect(screen.getByTestId("swimlane-prj-aaaa1111")).toBeInTheDocument();
     expect(screen.getByTestId("swimlane-prj-bbbb2222")).toBeInTheDocument();
-    expect(screen.getByText("Apollo")).toBeInTheDocument();
-    expect(screen.getByText("Borealis")).toBeInTheDocument();
+    // The lane header is the project NAME — the prj- id never renders
+    // in the chrome (2026-10-28 ruling 4); scope to the lane since the
+    // focus select's options carry the same names.
+    expect(screen.getByTestId("swimlane-prj-aaaa1111").textContent).toContain("Apollo");
+    expect(screen.getByTestId("swimlane-prj-bbbb2222").textContent).toContain("Borealis");
+    expect(screen.getByTestId("swimlane-prj-aaaa1111").textContent).not.toContain("prj-aaaa1111");
     // slots in use: Apollo has 1 in_progress of 2 slots (settles once tasks land)
     await waitFor(() => expect(screen.getByTestId("slots-prj-aaaa1111").textContent).toContain("1/2"));
   });
@@ -41,12 +76,12 @@ describe("BoardPage — kanban/swimlanes render (§4.8)", () => {
     }
   });
 
-  it("places cards in their stage columns (short id mono, title)", async () => {
+  it("places cards in their stage columns (title is the label — no raw id, ruling 4)", async () => {
     renderBoard();
     const card = await screen.findByTestId("task-card-tsk-aaaa0001");
     expect(card.closest('[data-stage-drop="backlog"]')).not.toBeNull();
-    expect(card.textContent).toContain("tsk-aaaa0001");
     expect(card.textContent).toContain("Write charter");
+    expect(card.textContent).not.toContain("tsk-aaaa0001");
   });
 
   it("filters to failed-attempt rows via the #1813 FAILED toggle", async () => {
@@ -86,12 +121,14 @@ describe("BoardPage — kanban/swimlanes render (§4.8)", () => {
     expect(badge.textContent).toContain("1");
   });
 
-  it("expands the blocked-by view with live dependency stage chips", async () => {
+  it("expands the blocked-by view with live dependency stage chips (dep named by title)", async () => {
     renderBoard();
     const badge = await screen.findByTestId("blocked-badge-tsk-eeee0005");
     badge.click();
     const view = await screen.findByTestId("blocked-by-tsk-eeee0005");
-    expect(view.textContent).toContain("tsk-cccc0003");
+    // Ruling 4: the dependency is named by its TITLE (id in tooltip).
+    expect(view.textContent).toContain("Review drag arm");
+    expect(view.textContent).not.toContain("tsk-cccc0003");
     expect(view.querySelector('[data-dep-stage="in_review"]')).not.toBeNull();
   });
 

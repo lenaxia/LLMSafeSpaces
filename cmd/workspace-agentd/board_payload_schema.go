@@ -47,6 +47,8 @@ import (
 
 	"github.com/santhosh-tekuri/jsonschema/v6"
 	"github.com/santhosh-tekuri/jsonschema/v6/kind"
+
+	"github.com/lenaxia/llmsafespaces/pkg/board"
 )
 
 // boardValidateOps maps the validator's op vocabulary to the manager
@@ -57,6 +59,7 @@ var boardValidateOps = map[string]string{
 	"update_task_patch": "board_update_task",
 	"update_epic_patch": "board_update_epic",
 	"import_plan":       "board_import_plan",
+	"set_config":        "board_set_config",
 }
 
 // boardOpForTool is the inverse lookup (the CRUD gate's tool → op).
@@ -72,7 +75,9 @@ func boardOpForTool(tool string) string {
 // Agent-surface caps expressed in the schemas. The design sets title at
 // 200 characters; the tag/criterion caps mirror the platform's
 // MaxTags/MaxTagBytes/MaxCriterionBytes in schema-expressible form —
-// the platform's own byte caps stay authoritative on the wire.
+// the platform's own byte caps stay authoritative on the wire. The
+// persona caps mirror board.PersonaNameMax/PersonaInstructionsMax
+// (same values, platform-authoritative on the wire).
 const (
 	boardPayloadTitleMaxChars = 200
 	boardPayloadTagMaxItems   = 16
@@ -205,8 +210,30 @@ const boardPayloadSchemaImportPlan = `{
 	"required": ["tasks"]
 }`
 
+// The config override map (board_set_config's configFile): the pure
+// key vocabulary of board.BoardConfigOverride — every key optional
+// ({} is the legal full-inheritance reset), an unknown key refuses.
+// tier/projectId are ROUTING keys and stay inline on the tool call
+// (the placement pre-check refuses them in the file). stagePersonas
+// values are {name, instructions?} with the platform's caps; the
+// stage-key vocabulary (persona-eligible stages only) is the SEMANTIC
+// check's to name — a propertyNames enum would collapse the finding
+// to "does not satisfy propertyNames" without naming the stage.
+const boardPayloadSchemaSetConfig = `{
+	"type": "object",
+	"additionalProperties": false,
+	"properties": {
+		"reviewColumn":       {"type": "string", "enum": ["off", "manual", "auto"]},
+		"autoAssignReviewer": {"type": "boolean"},
+		"defaultWorkerSlots": {"type": "integer", "minimum": 1},
+		"stagePersonas": {"type": "object",
+			"additionalProperties": {"$ref": "#/$defs/persona"}}
+	}
+}`
+
 // boardPayloadSchemasRaw stitches the shared $defs (the criterion item
-// mirrors board.AcceptanceCriterion {text, met}) and stamps the cap
+// mirrors board.AcceptanceCriterion {text, met}; the persona item
+// mirrors board.PersonaConfig {name, instructions?}) and stamps the cap
 // placeholders (the placeholders keep the caps single-sourced as named
 // constants above); one raw schema per op.
 func boardPayloadSchemasRaw() map[string]string {
@@ -216,13 +243,18 @@ func boardPayloadSchemasRaw() map[string]string {
 		// stamp the cap placeholders over the WHOLE document.
 		stitched := `{"$defs": {"criterion": {"type": "object", "additionalProperties": false,` +
 			`"properties": {"text": {"type": "string", "minLength": 1, "maxLength": boardCritCap}, "met": {"type": "boolean"}},` +
-			`"required": ["text"]}}, ` +
+			`"required": ["text"]}, "persona": {"type": "object", "additionalProperties": false,` +
+			`"properties": {"name": {"type": "string", "minLength": 1, "maxLength": boardPersonaNameCap},` +
+			`"instructions": {"type": "string", "maxLength": boardPersonaInstrCap}},` +
+			`"required": ["name"]}}, ` +
 			strings.TrimSpace(strings.TrimPrefix(body, "{"))
 		r := strings.NewReplacer(
 			"boardTitleCap", strconv.Itoa(boardPayloadTitleMaxChars),
 			"boardTagCap", strconv.Itoa(boardPayloadTagMaxChars),
 			"boardTagItems", strconv.Itoa(boardPayloadTagMaxItems),
 			"boardCritCap", strconv.Itoa(boardPayloadCritMaxChars),
+			"boardPersonaNameCap", strconv.Itoa(board.PersonaNameMax),
+			"boardPersonaInstrCap", strconv.Itoa(board.PersonaInstructionsMax),
 		)
 		return r.Replace(stitched)
 	}
@@ -232,6 +264,7 @@ func boardPayloadSchemasRaw() map[string]string {
 		"update_task_patch": withDefs(boardPayloadSchemaUpdateTaskPatch),
 		"update_epic_patch": withDefs(boardPayloadSchemaUpdateEpicPatch),
 		"import_plan":       withDefs(boardPayloadSchemaImportPlan),
+		"set_config":        withDefs(boardPayloadSchemaSetConfig),
 	}
 }
 
@@ -357,7 +390,7 @@ func validateBoardPayload(op string, payload map[string]any) boardValidateReport
 // deletes (a validate pass must leave the file for the submit).
 func validateBoardPayloadFile(op, path string) (string, error) {
 	if _, ok := boardValidateOps[op]; !ok {
-		return "", fmt.Errorf("unknown op %q — one of create_task, create_epic, update_task_patch, update_epic_patch, import_plan", op)
+		return "", fmt.Errorf("unknown op %q — one of create_task, create_epic, update_task_patch, update_epic_patch, import_plan, set_config", op)
 	}
 	report := boardValidateReport{Op: op, Fields: []string{}, Findings: []boardPayloadFinding{}}
 	content, _, err := boardReadFileField("file", path, boardPayloadFileMaxBytes)
@@ -603,6 +636,45 @@ func boardSemanticFindings(op string, payload map[string]any) []boardPayloadFind
 		}
 	case "create_epic", "update_epic_patch":
 		addPlaceholder("title", payload["title"])
+	case "set_config":
+		// The stage-key vocabulary check the schema deliberately leaves
+		// to semantics (naming the stage, not "propertyNames"): a
+		// persona key on a stage a live claim cannot exist in would
+		// render an "effective" config the engine never honors.
+		if personas, ok := payload["stagePersonas"].(map[string]any); ok {
+			for stage := range personas {
+				if stage != board.StageInProgress && stage != board.StageInReview {
+					out = append(out, boardPayloadFinding{
+						Path: "stagePersonas." + stage, Rule: "stage-not-eligible", Severity: "error",
+						Problem:  fmt.Sprintf("stage %q cannot hold a persona (persona-eligible stages: in_progress, in_review — backlog is the claim pool, done is terminal, pending_input keeps its suspended worker)", stage),
+						Fix:      "move the persona to in_progress or in_review, or drop the key",
+						Expected: "in_progress | in_review",
+						Actual:   stage,
+					})
+				}
+			}
+		}
+		// The two tier-dependent advisories the schema cannot see (the
+		// file carries no tier): warnings, never errors — the platform
+		// refuses the user-level-key shape at the project tier, and a
+		// suppression here is a legitimate opt-out the caller must
+		// merely make deliberately.
+		if _, ok := payload["defaultWorkerSlots"]; ok {
+			out = append(out, boardPayloadFinding{
+				Path: "defaultWorkerSlots", Rule: "tier-scope", Severity: "warning",
+				Problem: "defaultWorkerSlots is a USER-level key — it refuses at tier=project (a project's slots are fixed at create; set them via board_update_project)",
+				Fix:     "send tier=user for the board-wide default, or drop the key from a project-tier set",
+			})
+		}
+		if personas, ok := payload["stagePersonas"].(map[string]any); ok {
+			if _, listed := personas["in_review"]; !listed {
+				out = append(out, boardPayloadFinding{
+					Path: "stagePersonas", Rule: "reviewer-suppression", Severity: "warning",
+					Problem: "an explicit stagePersonas map OWNS every stage it does not list — this one has no in_review entry, so whatever in_review runs on today (an inherited persona, or the built-in auto-reviewer under the reviewColumn=auto + autoAssignReviewer composition) is suppressed",
+					Fix:     fmt.Sprintf("deliberate opt-out: keep it; otherwise add an in_review entry — the default reviewer is %q (board_get_config renders it under personas.in_review when the composition is live)", board.DefaultReviewerPersona.Name),
+				})
+			}
+		}
 	case "import_plan":
 		// The unified plan document's arm rule (§1a): exactly one of
 		// the epic object (create) / epicId (attach). Schema oneOf

@@ -63,8 +63,11 @@ export function TaskDeleteDialog({ open, onOpenChange, task, projectTasks, onDel
           className="fixed left-1/2 top-1/2 z-50 flex w-[26rem] max-w-[calc(100vw-2rem)] -translate-x-1/2 -translate-y-1/2 flex-col gap-3 rounded-md border border-border bg-background p-4 shadow-xl"
           data-testid="task-delete-modal"
         >
-          <Dialog.Title className="text-sm font-semibold">
-            Delete task <span className="font-mono text-xs">{task?.short_id}</span>
+          <Dialog.Title className="text-sm font-semibold" data-testid="task-delete-title">
+            {/* 2026-10-28 ruling 4: the TITLE leads; the id is the
+             * secondary mono ref (click-through popup — ids allowed). */}
+            Delete task <span className="font-medium">{task?.title}</span>{" "}
+            <span className="font-mono text-xs text-muted-foreground">{task?.short_id}</span>
           </Dialog.Title>
           <Dialog.Description className="text-xs text-muted-foreground">
             Destructive and permanent — the object is removed (the audit log keeps the full
@@ -82,8 +85,9 @@ export function TaskDeleteDialog({ open, onOpenChange, task, projectTasks, onDel
                 </span>
                 <ul className="ml-3 list-disc">
                   {dependents.map((d) => (
-                    <li key={d.short_id} className="font-mono text-[11px]">
-                      {d.short_id} <span className="font-sans text-muted-foreground">{d.title}</span>
+                    <li key={d.short_id} className="text-[11px]">
+                      <span className="font-sans">{d.title}</span>{" "}
+                      <span className="font-mono text-[10px] text-muted-foreground">{d.short_id}</span>
                     </li>
                   ))}
                 </ul>

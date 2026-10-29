@@ -5,7 +5,10 @@ const allTabs = [
   { id: "preferences", label: "Preferences" },
   { id: "provider-keys", label: "Provider Keys" },
   { id: "mcp-servers", label: "MCP Servers" },
-  { id: "board-config", label: "Task Board" },
+  // Board config lives ON the board now (owner ruling 2026-10-28 —
+  // "alongside the projects and on the board itself"); the old
+  // 'Task Board' tab is relocated, not duplicated. /settings/board-config
+  // redirects to the board's defaults dialog.
   { id: "secrets", label: "Secrets" },
   { id: "prompts", label: "Prompts" },
   { id: "api-keys", label: "API Keys" },

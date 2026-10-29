@@ -535,6 +535,160 @@ func (s *BoardSuite) TestBoardConfig_CrossScopeParity() {
 	s.Equal(2, pc.Effective.DefaultWorkerSlots, "U=B/P=A: slots re-inherit the code default — a legal mixed row, not a union")
 }
 
+// TestBoardConfig_ViewRealWiring: GetBoardConfigView against the REAL
+// store (the round-2 review finding: the handler tests fake the
+// manager and the pkg tests pinned only the pure builder — this is
+// the missing service-seam wiring). The user tier renders the RAW
+// stored map with per-key sources; the project tier resolves through
+// the scoped read, overlays both RAW maps, and annotates every config
+// key and persona-eligible stage.
+func (s *BoardSuite) TestBoardConfig_ViewRealWiring() {
+	ctx := context.Background()
+	ws := s.seedWorkspace()
+	p := s.seedProject(ws, 0)
+
+	// The harness seeds the owner's user-tier stagePersonas opt-out
+	// ({}); this REPLACE write (one key) reverts it — absent keys
+	// revert, so the raw user map below is EXACTLY {defaultWorkerSlots}.
+	// The slots key (not reviewColumn) keeps the flipped composition
+	// (reviewColumn=auto + autoAssignReviewer=true) live for the
+	// persona-provenance assertions below.
+	_, err := s.svc.SetUserBoardConfig(ctx, s.owner(), &board.BoardConfigOverride{
+		DefaultWorkerSlots: intVal(5),
+	})
+	s.Require().NoError(err)
+
+	// --- user tier: no project ref ------------------------------------------------
+	v, err := s.svc.GetBoardConfigView(ctx, s.owner(), "", "")
+	s.Require().NoError(err)
+	s.Equal("user", v.Scope)
+	s.Empty(v.ProjectID)
+	// The RAW stored map rides (not just the merge): exactly the one
+	// key written; the seeded opt-out is gone (REPLACE semantics).
+	s.Require().NotNil(v.Overrides.DefaultWorkerSlots)
+	s.Equal(5, *v.Overrides.DefaultWorkerSlots)
+	s.Nil(v.Overrides.StagePersonas, "the REPLACE write reverted the harness-seeded {} opt-out")
+	s.Nil(v.Overrides.ReviewColumn)
+	// Effective = code defaults ⊕ the raw map.
+	s.Equal(board.ReviewColumnAuto, v.Effective.ReviewColumn)
+	s.True(v.Effective.AutoAssignReviewer)
+	s.Equal(5, v.Effective.DefaultWorkerSlots)
+	// Per-key sources, ordered by the merge: user default, else code.
+	s.Equal(board.ConfigSourceCodeDefault, v.Sources[board.ConfigKeyReviewColumn])
+	s.Equal(board.ConfigSourceCodeDefault, v.Sources[board.ConfigKeyAutoAssignReviewer])
+	s.Equal(board.ConfigSourceUserDefault, v.Sources[board.ConfigKeyDefaultWorkerSlots])
+	s.Equal(board.ConfigSourceCodeDefault, v.Sources[board.ConfigKeyStagePersonas])
+	// Personas with NO explicit map anywhere: the flipped composition
+	// (reviewColumn=auto + autoAssignReviewer=true) renders in_review
+	// as the BUILT-IN default reviewer; in_progress has no composition.
+	s.Equal(board.PersonaSourceDefaultReviewer, v.Personas[board.StageInReview].Source)
+	s.Require().NotNil(v.Personas[board.StageInReview].Persona)
+	s.Equal(board.DefaultReviewerPersona.Name, v.Personas[board.StageInReview].Persona.Name)
+	s.Equal(board.PersonaSourceNone, v.Personas[board.StageInProgress].Source)
+	s.Nil(v.Personas[board.StageInProgress].Persona)
+
+	// --- project tier: one config key + one persona stage overridden --------------
+	pers := map[string]board.PersonaConfig{
+		board.StageInReview: {Name: "proj reviewer", Instructions: "Check the pins."},
+	}
+	_, err = s.svc.SetProjectBoardConfig(ctx, s.owner(), p.ID, "", &board.BoardConfigOverride{
+		ReviewColumn:  strVal(board.ReviewColumnAuto),
+		StagePersonas: &pers,
+	})
+	s.Require().NoError(err)
+
+	v, err = s.svc.GetBoardConfigView(ctx, s.owner(), p.ID, "")
+	s.Require().NoError(err)
+	s.Equal("project", v.Scope)
+	s.Equal(p.ID, v.ProjectID)
+	// The project tier's overrides are ITS OWN raw map (what THIS tier
+	// stores — not the merge, not the user's rows).
+	s.Require().NotNil(v.Overrides.ReviewColumn)
+	s.Equal(board.ReviewColumnAuto, *v.Overrides.ReviewColumn)
+	s.Nil(v.Overrides.AutoAssignReviewer, "unset at the project tier")
+	s.Nil(v.Overrides.DefaultWorkerSlots, "a user-level key — never stored at the project tier")
+	s.Require().NotNil(v.Overrides.StagePersonas)
+	s.Len(*v.Overrides.StagePersonas, 1)
+	// Effective: the project overlay wins; the rest inherit (the
+	// user's slots default included).
+	s.Equal(board.ReviewColumnAuto, v.Effective.ReviewColumn)
+	s.True(v.Effective.AutoAssignReviewer, "unset key inherits the (code) default")
+	s.Equal(5, v.Effective.DefaultWorkerSlots, "unset key inherits the USER default")
+	// Sources: project override > user default > code, per key.
+	s.Equal(board.ConfigSourceProjectOverride, v.Sources[board.ConfigKeyReviewColumn])
+	s.Equal(board.ConfigSourceCodeDefault, v.Sources[board.ConfigKeyAutoAssignReviewer])
+	s.Equal(board.ConfigSourceUserDefault, v.Sources[board.ConfigKeyDefaultWorkerSlots])
+	s.Equal(board.ConfigSourceProjectOverride, v.Sources[board.ConfigKeyStagePersonas])
+	// Persona provenance: in_review from the project map (payload
+	// included); in_progress UNLISTED in the explicit map → none.
+	s.Equal(board.PersonaSourceProjectOverride, v.Personas[board.StageInReview].Source)
+	s.Require().NotNil(v.Personas[board.StageInReview].Persona)
+	s.Equal("proj reviewer", v.Personas[board.StageInReview].Persona.Name)
+	s.Equal(board.PersonaSourceNoneExplicit, v.Personas[board.StageInProgress].Source)
+	s.Nil(v.Personas[board.StageInProgress].Persona)
+}
+
+// TestBoardConfig_ViewGuards: the view read's refusal shapes on the
+// real seam — the empty-actor authz guard (both tiers), the #1747
+// workspace binding on the agent surface's project arm, the scoped
+// 404 for a foreign project, and short-id resolution parity.
+func (s *BoardSuite) TestBoardConfig_ViewGuards() {
+	ctx := context.Background()
+	ws := s.seedWorkspace()
+	p := s.seedProject(ws, 0)
+
+	// Empty actor: both tiers refuse the user-scoped guard.
+	_, err := s.svc.GetBoardConfigView(ctx, board.Actor{Kind: board.ActorUser, Surface: board.SurfaceREST}, "", "")
+	var guard *board.GuardError
+	s.Require().ErrorAs(err, &guard)
+	s.Equal(board.GuardAuthz, guard.Code)
+
+	_, err = s.svc.GetBoardConfigView(ctx, board.Actor{Kind: board.ActorUser, Surface: board.SurfaceREST}, p.ID, "")
+	s.Require().ErrorAs(err, &guard)
+	s.Equal(board.GuardAuthz, guard.Code)
+
+	// Agent manager surface, foreign workspace: the #1747 binding
+	// refuses the project arm (the read does not disclose foreign
+	// rows); the user tier (no project ref) is unaffected by the
+	// binding — it is the caller's own row.
+	agent := board.Actor{Kind: board.ActorUser, UserID: testUser, Surface: board.SurfaceAgentManager, WorkspaceID: "ws-not-mine"}
+	_, err = s.svc.GetBoardConfigView(ctx, agent, p.ID, "")
+	s.Require().ErrorAs(err, &guard)
+	s.Equal(board.GuardWorkspaceBinding, guard.Code)
+
+	v, err := s.svc.GetBoardConfigView(ctx, agent, "", "")
+	s.Require().NoError(err, "the user tier carries no project ref — no binding to violate")
+	s.Equal("user", v.Scope)
+
+	// The WRITE perimeter mirrors the read's: board_set_config's
+	// project arm (SetProjectBoardConfig) refuses the same
+	// foreign-workspace binding at the guard — BEFORE any write lands
+	// (the override rows never appear; the guard runs ahead of the
+	// replace, structural in SetProjectBoardConfig's ordering).
+	_, err = s.svc.SetProjectBoardConfig(ctx, agent, p.ID, "",
+		&board.BoardConfigOverride{AutoAssignReviewer: boolVal(true)})
+	s.Require().ErrorAs(err, &guard)
+	s.Equal(board.GuardWorkspaceBinding, guard.Code)
+	var rows int
+	s.Require().NoError(s.pool.QueryRow(ctx,
+		`SELECT count(*) FROM board_project_config_overrides WHERE project_id=$1`, p.ID).Scan(&rows))
+	s.Zero(rows, "the refused set writes nothing — the binding guard precedes the replace")
+
+	// Foreign project: the scoped 404 (never disclosed).
+	_, err = s.svc.GetBoardConfigView(ctx, s.owner(), "0ea0c65c-0000-4000-8000-000000000001", "")
+	s.Require().Error(err)
+	var nf *board.NotFoundError
+	s.Require().ErrorAs(err, &nf)
+
+	// Short-id resolution parity: the same project renders by
+	// short_id and by UUID.
+	byShort, err := s.svc.GetBoardConfigView(ctx, s.owner(), "", p.ShortID)
+	s.Require().NoError(err)
+	byID, err := s.svc.GetBoardConfigView(ctx, s.owner(), p.ID, "")
+	s.Require().NoError(err)
+	s.Equal(byID, byShort, "short-id and UUID resolve the same view")
+}
+
 // Local pointer helpers (external test package: unexported helpers in
 // config_test.go are out of reach).
 func boolVal(b bool) *bool    { return &b }

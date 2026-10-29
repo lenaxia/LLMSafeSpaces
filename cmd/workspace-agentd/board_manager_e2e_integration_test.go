@@ -263,6 +263,114 @@ func (s *boardE2ESeam) managerMoveStage(c *gin.Context) {
 	c.JSON(http.StatusOK, t)
 }
 
+// resolveQuery is resolve's GET twin (board_list's body-less pattern):
+// the SA token proves the identity, the workspace binding rides the
+// QUERY, and the session is audit attribution only (the #1747 §5
+// repeal — no gate beyond the pod SA resolve on the config read).
+func (s *boardE2ESeam) resolveQuery(c *gin.Context) (workspaceID, ownerID, sessionID string, ok bool) {
+	token := strings.TrimPrefix(c.GetHeader("Authorization"), "Bearer ")
+	if token == "" {
+		s.fail(c, http.StatusUnauthorized, "", "missing authorization")
+		return "", "", "", false
+	}
+	tr, err := s.cs.AuthenticationV1().TokenReviews().Create(c.Request.Context(), &authv1.TokenReview{
+		Spec: authv1.TokenReviewSpec{Token: token},
+	}, metav1.CreateOptions{})
+	if err != nil || !tr.Status.Authenticated {
+		s.fail(c, http.StatusUnauthorized, "", "token not authenticated")
+		return "", "", "", false
+	}
+	saNamespace, saWorkspaceID, principalOK := boardE2EParseSAPrincipal(tr.Status.User.Username)
+	workspaceID = c.Query("workspaceID")
+	if saNamespace != s.expectedNS || saWorkspaceID != workspaceID || !principalOK {
+		s.fail(c, http.StatusForbidden, "", "workspace identity mismatch")
+		return "", "", "", false
+	}
+	ws, lerr := boardE2ELookup{}.GetWorkspace(c.Request.Context(), workspaceID)
+	if lerr != nil || ws == nil {
+		s.fail(c, http.StatusInternalServerError, "", "workspace lookup failed")
+		return "", "", "", false
+	}
+	return workspaceID, ws.UserID, c.Query("sessionId"), true
+}
+
+// getConfig mirrors the production GET /config seam handler
+// (BoardGetConfig): the source-annotated view at either tier, no
+// claim token, no gate beyond the pod SA resolve.
+func (s *boardE2ESeam) getConfig(c *gin.Context) {
+	ws, owner, session, ok := s.resolveQuery(c)
+	if !ok {
+		return
+	}
+	view, err := s.svc.GetBoardConfigView(c.Request.Context(),
+		s.managerActor(owner, ws, session), "", c.Query("projectId"))
+	if err != nil {
+		s.engineError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, view)
+}
+
+// setConfig mirrors the production PUT /config seam handler
+// (BoardSetConfig): the tier selector rides the body, the routing
+// keys are popped, and the remainder runs the SAME strict key-gate
+// decode the platform runs (board.DecodeBoardConfigOverride) — the
+// response is the annotated view of the written tier.
+func (s *boardE2ESeam) setConfig(c *gin.Context) {
+	fields, ws, owner, session, ok := s.resolve(c)
+	if !ok {
+		return
+	}
+	var req struct {
+		Tier      string `json:"tier"`
+		ProjectID string `json:"projectId"`
+	}
+	_ = json.Unmarshal(boardE2EFieldsJSON(fields), &req)
+	for _, k := range []string{"tier", "projectId", "workspaceID", "sessionId"} {
+		delete(fields, k)
+	}
+	in, err := board.DecodeBoardConfigOverride(fields)
+	if err != nil {
+		s.fail(c, http.StatusBadRequest, board.GuardInput, err.Error())
+		return
+	}
+	actor := s.managerActor(owner, ws, session)
+	var projectRef string
+	switch req.Tier {
+	case "user":
+		if req.ProjectID != "" {
+			s.fail(c, http.StatusBadRequest, board.GuardInput,
+				"tier=user writes the board-wide defaults — projectId does not ride a user-tier set")
+			return
+		}
+		if _, err := s.svc.SetUserBoardConfig(c.Request.Context(), actor, in); err != nil {
+			s.engineError(c, err)
+			return
+		}
+	case "project":
+		if req.ProjectID == "" {
+			s.fail(c, http.StatusBadRequest, board.GuardInput,
+				"tier=project requires projectId — the project whose override map this set writes")
+			return
+		}
+		if _, err := s.svc.SetProjectBoardConfig(c.Request.Context(), actor, req.ProjectID, "", in); err != nil {
+			s.engineError(c, err)
+			return
+		}
+		projectRef = req.ProjectID
+	default:
+		s.fail(c, http.StatusBadRequest, board.GuardInput,
+			`tier must be "user" (the board-wide defaults) or "project" (one project's override map)`)
+		return
+	}
+	view, err := s.svc.GetBoardConfigView(c.Request.Context(), actor, projectRef, "")
+	if err != nil {
+		s.engineError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, view)
+}
+
 func boardE2EFieldsJSON(fields map[string]json.RawMessage) []byte {
 	b, _ := json.Marshal(fields)
 	return b
@@ -317,7 +425,8 @@ func TestIntegrationBoardManagerE2E(t *testing.T) {
 		mgrSession = "ses_plugin_injected_mgr"
 	)
 	_, err = pool.Exec(ctx, `
-		TRUNCATE TABLE board_events, board_transitions, board_dependencies, board_sweeps, tasks, epics, projects
+		TRUNCATE TABLE board_events, board_transitions, board_dependencies, board_sweeps,
+			tasks, epics, projects, board_config_defaults
 		CASCADE
 	`)
 	require.NoError(t, err)
@@ -366,6 +475,8 @@ func TestIntegrationBoardManagerE2E(t *testing.T) {
 	b.POST("/epics/:id/activate", seam.epicActivate)
 	b.POST("/tasks/:id/move-stage", seam.managerMoveStage)
 	b.POST("/tasks/:id/rearm", seam.managerRearm)
+	b.GET("/config", seam.getConfig)
+	b.PUT("/config", seam.setConfig)
 
 	srv := httptest.NewServer(r)
 	t.Cleanup(srv.Close)
@@ -533,6 +644,13 @@ func TestIntegrationBoardManagerE2E(t *testing.T) {
 	// file→store byte-identical + corruption refusal — the real
 	// dispatch, the real wire, the real engine, real PG.
 	e2eFileBackedCharterSections(t, ctx, client, svc, pool, &epic, mgrSession, wsPod)
+
+	// --- I: the config tools end to end (board_get_config /
+	// board_set_config) — the file payload through the real dispatch,
+	// wire, seam, engine, and PG; the write proven by the follow-up
+	// read; the tier refusals and the #1747 foreign-workspace binding
+	// on the project set.
+	e2eBoardConfigSections(t, ctx, client, svc, pool, &proj, mgrSession, wsPod)
 }
 
 // e2eFileBackedCharterSections (#1837 rounds 2/3, relabeled G+H past
@@ -616,4 +734,150 @@ func e2ePayloadFile(t *testing.T, payload string) string {
 	path := filepath.Join(t.TempDir(), "payload.json")
 	require.NoError(t, os.WriteFile(path, []byte(payload), 0o600))
 	return path
+}
+
+// e2eBoardConfigSections (section I): the config tools' composed
+// real-wiring arc — board_get_config both tiers and board_set_config's
+// configFile payload through the real dispatch → loopback → seam →
+// BoardService → PG, the write proven by the follow-up read, and the
+// guard shapes (tier routing refusals, the #1747 foreign-workspace
+// binding on the project set) riding the same wire.
+func e2eBoardConfigSections(t *testing.T, ctx context.Context, client *opencode.Client, svc *board.Service, pool *pgxpool.Pool, proj *struct {
+	ID      string `json:"id"`
+	ShortID string `json:"short_id"`
+}, mgrSession, wsPod string) {
+	t.Helper()
+
+	// The read before any write: the user tier renders the code
+	// defaults, every key sourced code_default.
+	resp, err := dispatchBoardManagerTool(ctx, client, e2eMCPPassword, "board_get_config", map[string]any{
+		"lsp_injected_session": mgrSession,
+	}, "sa-token", wsPod)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, resp.Status, resp.Body)
+	var userView board.BoardConfigView
+	require.NoError(t, json.Unmarshal([]byte(resp.Body), &userView))
+	assert.Equal(t, "user", userView.Scope)
+	assert.Equal(t, board.ConfigSourceCodeDefault, userView.Sources["autoAssignReviewer"])
+
+	// The user-tier write: the config map rides its FILE (design
+	// 0070), the tier selector inline. The response is the annotated
+	// view of the written tier.
+	resp, err = dispatchBoardManagerTool(ctx, client, e2eMCPPassword, "board_set_config", map[string]any{
+		"lsp_injected_session": mgrSession,
+		"tier":                 "user",
+		"configFile": e2ePayloadFile(t, `{"autoAssignReviewer":true,`+
+			`"stagePersonas":{"in_review":{"name":"E2E Reviewer",`+
+			`"instructions":"Read the acceptance criteria; refuse hollow evidence."}}}`),
+	}, "sa-token", wsPod)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, resp.Status, resp.Body)
+	require.NoError(t, json.Unmarshal([]byte(resp.Body), &userView))
+	assert.Equal(t, "user", userView.Scope)
+	assert.Equal(t, board.ConfigSourceUserDefault, userView.Sources["autoAssignReviewer"])
+	assert.True(t, userView.Effective.AutoAssignReviewer)
+	rev := userView.Personas["in_review"]
+	assert.Equal(t, board.PersonaSourceUserDefault, rev.Source)
+	require.NotNil(t, rev.Persona, "the stored persona renders in the view")
+	assert.Equal(t, "E2E Reviewer", rev.Persona.Name)
+
+	// The write landed in PG (the user defaults table carries the row).
+	var n int
+	require.NoError(t, pool.QueryRow(ctx,
+		`SELECT count(*) FROM board_config_defaults WHERE user_id='user-7' AND key='stagePersonas'`).Scan(&n))
+	assert.Equal(t, 1, n, "the stagePersonas write reached the store")
+
+	// The project tier's read: no override stored yet — the persona
+	// inherits from the user tier.
+	resp, err = dispatchBoardManagerTool(ctx, client, e2eMCPPassword, "board_get_config", map[string]any{
+		"lsp_injected_session": mgrSession,
+		"projectId":            proj.ShortID,
+	}, "sa-token", wsPod)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, resp.Status, resp.Body)
+	var projView board.BoardConfigView
+	require.NoError(t, json.Unmarshal([]byte(resp.Body), &projView))
+	assert.Equal(t, "project", projView.Scope)
+	assert.Equal(t, board.ConfigSourceUserDefault, projView.Sources["autoAssignReviewer"],
+		"an unset project key inherits the user tier's stored value")
+	assert.Equal(t, board.PersonaSourceUserDefault, projView.Personas["in_review"].Source)
+
+	// The project-tier write: the explicit {} stagePersonas opt-out —
+	// the map OWNS every stage it does not list (the built-in
+	// auto-reviewer included), rendered none_explicit.
+	resp, err = dispatchBoardManagerTool(ctx, client, e2eMCPPassword, "board_set_config", map[string]any{
+		"lsp_injected_session": mgrSession,
+		"tier":                 "project",
+		"projectId":            proj.ShortID,
+		"configFile":           e2ePayloadFile(t, `{"stagePersonas":{}}`),
+	}, "sa-token", wsPod)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, resp.Status, resp.Body)
+	require.NoError(t, json.Unmarshal([]byte(resp.Body), &projView))
+	assert.Equal(t, "project", projView.Scope)
+	assert.Equal(t, board.PersonaSourceNoneExplicit, projView.Personas["in_review"].Source,
+		"the explicit empty map owns every stage — the opt-out renders, never silently")
+	require.NoError(t, pool.QueryRow(ctx,
+		`SELECT count(*) FROM board_project_config_overrides WHERE project_id=$1 AND key='stagePersonas'`,
+		proj.ID).Scan(&n))
+	assert.Equal(t, 1, n, "the project override write reached the store")
+
+	// The tier routing refusals ride the same wire: a bogus tier, and
+	// projectId on the user tier.
+	_, err = dispatchBoardManagerTool(ctx, client, e2eMCPPassword, "board_set_config", map[string]any{
+		"lsp_injected_session": mgrSession,
+		"tier":                 "board",
+		"configFile":           e2ePayloadFile(t, `{}`),
+	}, "sa-token", wsPod)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "400")
+
+	_, err = dispatchBoardManagerTool(ctx, client, e2eMCPPassword, "board_set_config", map[string]any{
+		"lsp_injected_session": mgrSession,
+		"tier":                 "user",
+		"projectId":            proj.ShortID,
+		"configFile":           e2ePayloadFile(t, `{}`),
+	}, "sa-token", wsPod)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "400")
+	assert.Contains(t, err.Error(), "user-tier set")
+
+	// The unknown-key key-gate refuses LOCALLY before any wire call
+	// (design 0070's CRUD-time gate — the same findings
+	// board_validate_file returns), and nothing lands.
+	before := boardE2EEventCount(t, ctx, pool)
+	_, err = dispatchBoardManagerTool(ctx, client, e2eMCPPassword, "board_set_config", map[string]any{
+		"lsp_injected_session": mgrSession,
+		"tier":                 "project",
+		"projectId":            proj.ShortID,
+		"configFile":           e2ePayloadFile(t, `{"reviewQueue":"off"}`),
+	}, "sa-token", wsPod)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "failed local validation")
+	assert.Contains(t, err.Error(), "reviewQueue")
+	require.NoError(t, pool.QueryRow(ctx,
+		`SELECT count(*) FROM board_project_config_overrides WHERE project_id=$1 AND key='reviewQueue'`,
+		proj.ID).Scan(&n))
+	assert.Zero(t, n, "the refused set writes nothing")
+	assert.Equal(t, before, boardE2EEventCount(t, ctx, pool), "no event for a refused config set")
+
+	// The #1747 foreign-workspace binding on the project set: a
+	// project in ANOTHER workspace refuses at the binding guard —
+	// never a write, never a disclosure.
+	foreign, err := svc.CreateProject(ctx,
+		board.Actor{Kind: board.ActorUser, UserID: "user-7", Surface: board.SurfaceREST},
+		board.ProjectInput{Name: "ForeignCfg", TargetWorkspaceID: "22222222-2222-2222-2222-222222222202"}, "")
+	require.NoError(t, err)
+	_, err = dispatchBoardManagerTool(ctx, client, e2eMCPPassword, "board_set_config", map[string]any{
+		"lsp_injected_session": mgrSession,
+		"tier":                 "project",
+		"projectId":            foreign.ShortID,
+		"configFile":           e2ePayloadFile(t, `{"reviewColumn":"manual"}`),
+	}, "sa-token", wsPod)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "403")
+	assert.Contains(t, err.Error(), board.GuardWorkspaceBinding)
+	require.NoError(t, pool.QueryRow(ctx,
+		`SELECT count(*) FROM board_project_config_overrides WHERE project_id=$1`, foreign.ID).Scan(&n))
+	assert.Zero(t, n, "the binding refusal precedes the write")
 }

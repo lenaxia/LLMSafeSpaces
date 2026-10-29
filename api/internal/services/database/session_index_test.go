@@ -27,9 +27,9 @@ func TestListSessionIndex_IncludesParentID(t *testing.T) {
 	// InternalID; the parent's PARENTID is the parent's phrase
 	// (self-join), degrading to the harness parent id when the parent
 	// row has no phrase yet.
-	rows := sqlmock.NewRows([]string{"session_id", "title", "parent_session_id", "last_message_at", "message_count", "last_seen_at", "has_unread", "context_used", "archived", "short_id", "created_at", "parent_short_id"}).
-		AddRow("ses_root", "Root chat", nil, time.Now(), 5, nil, false, nil, false, "amber-falcon-glides", nil, nil).
-		AddRow("ses_child", "Subagent task", "ses_root", time.Now(), 3, nil, false, int64(8000), false, "linen-orchard-chirps", nil, "amber-falcon-glides")
+	rows := sqlmock.NewRows([]string{"session_id", "title", "parent_session_id", "last_message_at", "message_count", "last_seen_at", "has_unread", "context_used", "archived", "short_id", "created_at", "parent_short_id", "origin"}).
+		AddRow("ses_root", "Root chat", nil, time.Now(), 5, nil, false, nil, false, "amber-falcon-glides", nil, nil, nil).
+		AddRow("ses_child", "Subagent task", "ses_root", time.Now(), 3, nil, false, int64(8000), false, "linen-orchard-chirps", nil, "amber-falcon-glides", nil)
 
 	mock.ExpectQuery(regexp.QuoteMeta(
 		`SELECT si.session_id, si.title, si.parent_session_id, si.last_message_at, si.message_count`,
@@ -59,8 +59,8 @@ func TestListSessionIndex_NullParentBecomesEmpty(t *testing.T) {
 	svc, mock, cleanup := setupMockDB(t)
 	defer cleanup()
 
-	rows := sqlmock.NewRows([]string{"session_id", "title", "parent_session_id", "last_message_at", "message_count", "last_seen_at", "has_unread", "context_used", "archived", "short_id", "created_at", "parent_short_id"}).
-		AddRow("ses_solo", "Standalone", nil, time.Now(), 1, nil, false, nil, false, nil, nil, nil)
+	rows := sqlmock.NewRows([]string{"session_id", "title", "parent_session_id", "last_message_at", "message_count", "last_seen_at", "has_unread", "context_used", "archived", "short_id", "created_at", "parent_short_id", "origin"}).
+		AddRow("ses_solo", "Standalone", nil, time.Now(), 1, nil, false, nil, false, nil, nil, nil, nil)
 	mock.ExpectQuery(regexp.QuoteMeta(`SELECT si.session_id, si.title, si.parent_session_id`)).
 		WithArgs("ws-1").
 		WillReturnRows(rows)

@@ -135,21 +135,23 @@ describe("Sidebar — Force Stop kebab menu item", () => {
     alertSpy.mockRestore();
   });
 
-  it("foldered child session Force Stop uses the parent workspace ID (#1966)", async () => {
+  it("board-worker child session Force Stop uses the parent workspace ID (ruling 6)", async () => {
     (workspacesApi.getSessions as ReturnType<typeof vi.fn>).mockResolvedValue([
-      { id: "parent", title: "Parent task", messageCount: 1, status: "idle" },
-      { id: "child", title: "Subtask child", parentId: "parent", messageCount: 1, status: "idle" },
+      { id: "worker", title: "Board worker", origin: "worker", messageCount: 1, status: "idle" },
+      { id: "child", title: "Subtask child", parentId: "worker", messageCount: 1, status: "idle" },
     ]);
 
     renderSidebar();
 
-    await waitFor(() => expect(screen.getByText("Parent task")).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByTestId("workers-group")).toBeInTheDocument());
 
-    // #1966: the subtask lives in the Workers folder.
+    // Ruling 6: the subtask nests beneath its board worker inside the
+    // group — open the group, then the worker's subtree.
     fireEvent.click(screen.getByLabelText("Expand worker sessions"));
+    fireEvent.click(screen.getByLabelText("Expand subtasks"));
     expect(screen.getByText("Subtask child")).toBeInTheDocument();
 
-    // [0] = workspace kebab, [1] = parent session kebab, [2] = child session kebab.
+    // [0] = workspace kebab, [1] = worker session kebab, [2] = child session kebab.
     const actionsButtons = screen.getAllByLabelText("Actions");
     expect(actionsButtons.length).toBeGreaterThanOrEqual(3);
     fireEvent.click(actionsButtons[2]!);

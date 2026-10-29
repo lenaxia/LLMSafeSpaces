@@ -1528,8 +1528,8 @@ func TestListSessionIndex_IncludesContextUsed(t *testing.T) {
 		contextUsed := int64(42000)
 		rows := sqlmock.NewRows([]string{
 			"session_id", "title", "parent_session_id", "last_message_at",
-			"message_count", "last_seen_at", "has_unread", "context_used", "archived", "short_id", "created_at", "parent_short_id",
-		}).AddRow("ses_1", "My Session", nil, nil, 3, nil, false, contextUsed, false, "amber-falcon-glides", time.Unix(1770000000, 0).UTC(), nil)
+			"message_count", "last_seen_at", "has_unread", "context_used", "archived", "short_id", "created_at", "parent_short_id", "origin",
+		}).AddRow("ses_1", "My Session", nil, nil, 3, nil, false, contextUsed, false, "amber-falcon-glides", time.Unix(1770000000, 0).UTC(), nil, nil)
 
 		mock.ExpectQuery(regexp.QuoteMeta(`SELECT si.session_id, si.title`)).
 			WithArgs("ws-1").
@@ -1548,8 +1548,8 @@ func TestListSessionIndex_IncludesContextUsed(t *testing.T) {
 
 		rows := sqlmock.NewRows([]string{
 			"session_id", "title", "parent_session_id", "last_message_at",
-			"message_count", "last_seen_at", "has_unread", "context_used", "archived", "short_id", "created_at", "parent_short_id",
-		}).AddRow("ses_2", "New Session", nil, nil, 0, nil, false, nil, false, nil, nil, nil)
+			"message_count", "last_seen_at", "has_unread", "context_used", "archived", "short_id", "created_at", "parent_short_id", "origin",
+		}).AddRow("ses_2", "New Session", nil, nil, 0, nil, false, nil, false, nil, nil, nil, nil)
 
 		mock.ExpectQuery(regexp.QuoteMeta(`SELECT si.session_id, si.title`)).
 			WithArgs("ws-1").
@@ -1567,8 +1567,8 @@ func TestListSessionIndex_IncludesContextUsed(t *testing.T) {
 
 		rows := sqlmock.NewRows([]string{
 			"session_id", "title", "parent_session_id", "last_message_at",
-			"message_count", "last_seen_at", "has_unread", "context_used", "archived", "short_id", "created_at", "parent_short_id",
-		}).AddRow("ses_3", "Empty Session", nil, nil, 1, nil, false, int64(0), false, nil, nil, nil)
+			"message_count", "last_seen_at", "has_unread", "context_used", "archived", "short_id", "created_at", "parent_short_id", "origin",
+		}).AddRow("ses_3", "Empty Session", nil, nil, 1, nil, false, int64(0), false, nil, nil, nil, nil)
 
 		mock.ExpectQuery(regexp.QuoteMeta(`SELECT si.session_id, si.title`)).
 			WithArgs("ws-1").

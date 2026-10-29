@@ -30,8 +30,8 @@ func TestListSessionIndex_ExcludesDeletedRows(t *testing.T) {
 	svc, mock, cleanup := setupMockDB(t)
 	defer cleanup()
 
-	rows := sqlmock.NewRows([]string{"session_id", "title", "parent_session_id", "last_message_at", "message_count", "last_seen_at", "has_unread", "context_used", "archived", "short_id", "created_at", "parent_short_id"}).
-		AddRow("ses_live", "Live chat", nil, time.Now(), 2, nil, false, nil, false, "amber-falcon-glides", nil, nil)
+	rows := sqlmock.NewRows([]string{"session_id", "title", "parent_session_id", "last_message_at", "message_count", "last_seen_at", "has_unread", "context_used", "archived", "short_id", "created_at", "parent_short_id", "origin"}).
+		AddRow("ses_live", "Live chat", nil, time.Now(), 2, nil, false, nil, false, "amber-falcon-glides", nil, nil, nil)
 
 	// The residue pin: the expected query carries the death filter.
 	// The pre-#1882 query (no deleted_at predicate) fails to match

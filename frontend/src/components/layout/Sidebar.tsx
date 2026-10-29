@@ -45,7 +45,7 @@ import { useNow } from "../../hooks/useNow";
 import { cn } from "../../lib/utils";
 import { buildSessionTree, ancestorChain } from "../../lib/sessionTree";
 import type { SessionTreeNode } from "../../lib/sessionTree";
-import { isWorkerSession } from "../../lib/sessionWorker";
+import { isWorkerSession, sortByRecentActivity } from "../../lib/sessionWorker";
 import { useUserSetting } from "../../hooks/useUserSettings";
 
 interface Props {
@@ -645,29 +645,59 @@ function WorkspaceSessionList({
 
   // #1627: archived sessions never render in the live tree — they
   // live in the collapsed-by-default Archived group below it.
-  // #1966: within the live set, worker sessions (board/engine-spawned
-  // origin-class workers + parented Task-tool subagents) leave the
-  // main list for the collapsed Workers folder; archived filters
-  // FIRST, so an archived worker rows under Archived (retirement
-  // outranks the worker class).
+  // Archived filters FIRST everywhere below: an archived worker rows
+  // under Archived (retirement outranks the worker class).
   const archivedSessions = useMemo(
     () => (mergedSessions ?? []).filter((s) => s.archived),
     [mergedSessions],
   );
-  const workerSessions = useMemo(
-    () => (mergedSessions ?? []).filter((s) => !s.archived && isWorkerSession(s)),
-    [mergedSessions],
-  );
-  const userSessions = useMemo(
-    () => (mergedSessions ?? []).filter((s) => !s.archived && !isWorkerSession(s)),
-    [mergedSessions],
-  );
 
-  // Tree shape: roots + orphans, where roots/orphans contain children of
-  // arbitrary depth. Recomputed only when the session list changes.
-  // #1966: the tree is built from USER sessions only — every parented
-  // session is worker-classified and lives in the Workers folder.
-  const tree = useMemo(() => buildSessionTree(userSessions), [userSessions]);
+  // Rulings 6+7 (2026-10-28): the worker subtree is for board workers
+  // (the EXISTING Workers group — no new group), and parentage no
+  // longer banishes — subtasks nest under their top-level parent.
+  // ONE tree is built over the full live set; its forest is then
+  // partitioned by PROVENANCE — origin-class 'worker' roots leave the
+  // flat main list for the Workers group (their genuine
+  // subagent children ride their subtrees INTO the group), everything
+  // else stays main-list. Parentage alone no longer folders a session:
+  // a Task-tool subagent nests beneath its own parent wherever that
+  // parent renders.
+  const liveSessions = useMemo(
+    () => (mergedSessions ?? []).filter((s) => !s.archived),
+    [mergedSessions],
+  );
+  const tree = useMemo(() => buildSessionTree(liveSessions), [liveSessions]);
+
+  // Workers (current AND past — idle included), sorted by recent
+  // activity. Empty list hides the group entirely (ruling 6). Roots
+  // are the origin-class worker forest nodes PLUS orphaned workers
+  // (parentId pointing at a deleted session — provenance still roots
+  // the group; an orphaned worker is never a flat main-list row).
+  const workerRootNodes = useMemo(() => {
+    const workers = [
+      ...tree.roots.filter((n) => isWorkerSession(n.session)),
+      ...tree.orphans.filter((n) => isWorkerSession(n.session)),
+    ];
+    const byId = new Map(workers.map((n) => [n.session.id, n]));
+    return sortByRecentActivity(workers.map((n) => n.session))
+      .map((s) => byId.get(s.id))
+      .filter((n): n is SessionTreeNode => !!n);
+  }, [tree]);
+
+  // Main list: non-worker roots, plus NON-WORKER orphan-by-parentage
+  // rows promoted to top-level so they stay visible (their parent is
+  // gone; pre-ruling they foldered into the worker group by their
+  // parentId — the synthetic "Orphaned subtasks" group stays dead).
+  // Orphaned WORKERS follow the provenance split like every other
+  // worker: they root the Workers group (below), never a flat
+  // main-list row.
+  const mainRootNodes = useMemo(
+    () => [
+      ...tree.roots.filter((n) => !isWorkerSession(n.session)),
+      ...tree.orphans.filter((n) => !isWorkerSession(n.session)),
+    ],
+    [tree],
+  );
 
   const pendingActionIds = useSessionPendingActions();
 
@@ -767,26 +797,33 @@ function WorkspaceSessionList({
     prevSelectedRef.current = next;
   }, [mergedSessions, selectedSessionId, autoExpandChildren]);
 
-  // The synthetic "Orphaned subtasks" group was removed by #1966:
-  // every parented session (the only orphan candidates) is
-  // worker-classified into the Workers folder, so the main tree can no
-  // longer contain orphans.
+  // The synthetic "Orphaned subtasks" group stays dead (#1966):
+  // orphan-by-parentage rows are promoted to top-level rows of the
+  // main list (see mainRootNodes) — visible, but never a group.
 
   // #1627 ruling 3: the Archived group is ALWAYS collapsed by default —
   // deliberate friction. Expanding requires a human click; nothing
   // auto-expands it (not even selecting an archived session).
   const [archivedExpanded, setArchivedExpanded] = useState(false);
 
-  // #1966: the Workers folder is collapsed by default (the folder IS
-  // the decluttering), but — unlike Archived — a live worker CAN be
-  // the session the user is reading, so selecting a worker expands it
-  // (the tree's auto-expand-the-active-chain precedent, not the
-  // Archived group's deliberate friction).
+  // #1966/rulings 6+7: the Workers group is collapsed by default
+  // (the group IS the decluttering), but — unlike Archived — a live
+  // worker CAN be the session the user is reading, so selecting a
+  // worker (or one of its nested subagents) expands it (the tree's
+  // auto-expand-the-active-chain precedent, not the Archived group's
+  // deliberate friction).
   const [workersExpanded, setWorkersExpanded] = useState(false);
-  const selectedIsWorker = useMemo(
-    () => !!selectedSessionId && workerSessions.some((s) => s.id === selectedSessionId),
-    [workerSessions, selectedSessionId],
+  const workerIds = useMemo(
+    () => new Set(workerRootNodes.map((n) => n.session.id)),
+    [workerRootNodes],
   );
+  const selectedIsWorker = useMemo(() => {
+    if (!selectedSessionId || !mergedSessions) return false;
+    // The selected session renders inside the group when it IS a board
+    // worker or descends from one (its ancestor chain crosses the
+    // group boundary).
+    return ancestorChain(mergedSessions, selectedSessionId).some((id) => workerIds.has(id));
+  }, [mergedSessions, selectedSessionId, workerIds]);
   useEffect(() => {
     if (selectedIsWorker) setWorkersExpanded(true);
   }, [selectedIsWorker]);
@@ -823,7 +860,7 @@ function WorkspaceSessionList({
 
       {mergedSessions && mergedSessions.length > 0 && (
         <div className="flex flex-col gap-0.5">
-          {tree.roots.map((node) => (
+          {mainRootNodes.map((node) => (
             <SessionTreeRow
               key={node.session.id}
               node={node}
@@ -845,11 +882,13 @@ function WorkspaceSessionList({
             />
           ))}
 
-          {workerSessions.length > 0 && (
+          {workerRootNodes.length > 0 && (
             <WorkersGroup
-              sessions={workerSessions}
+              nodes={workerRootNodes}
               expanded={workersExpanded}
               onToggleExpand={() => setWorkersExpanded((v) => !v)}
+              nodeExpanded={expanded}
+              onToggleNodeExpand={toggleExpanded}
               workspaceId={workspaceId}
               selectedSessionId={selectedSessionId}
               onSelectSession={onSelectSession}
@@ -861,6 +900,7 @@ function WorkspaceSessionList({
               onRenameSessionCancel={onRenameSessionCancel}
               onRenameSessionConfirm={onRenameSessionConfirm}
               contextBySessionId={contextBySessionId}
+              pendingIndicatorIds={pendingIndicatorIds}
             />
           )}
 
@@ -891,6 +931,15 @@ function WorkspaceSessionList({
 interface SessionTreeRowProps {
   node: SessionTreeNode;
   depth: number;
+  /**
+   * True for rows rendered as ROOTS inside a collapsed group (the
+   * Workers group renders its roots at depth 1 for indentation). The
+   * depth===0 gates below express "is this a top-level row" — a
+   * group root is top-level in that sense (pending-input indicators
+   * and the unread pulse must fire for workers awaiting input inside
+   * the group, exactly as they would on a main-list root).
+   */
+  rootLevel?: boolean;
   workspaceId: string;
   selectedSessionId?: string;
   expanded: Set<string>;
@@ -914,6 +963,7 @@ interface SessionTreeRowProps {
 function SessionTreeRow({
   node,
   depth,
+  rootLevel = false,
   workspaceId,
   selectedSessionId,
   expanded,
@@ -941,11 +991,14 @@ function SessionTreeRow({
   // running).
   const aborted = useIsSessionAborted(s.id);
   const isSelected = s.id === selectedSessionId;
+  // A group root (rootLevel) is top-level in the indicator sense even
+  // though it renders indented at depth 1 — see SessionTreeRowProps.
+  const isTopLevel = depth === 0 || rootLevel;
   const rowStatus: SessionDisplayStatus =
-    depth === 0 && pendingIndicatorIds.has(s.id) ? "pending_input"
+    isTopLevel && pendingIndicatorIds.has(s.id) ? "pending_input"
     : status === "pending_input" ? "busy"
     : status;
-  const showPulse = rowStatus === "unread" && !isSelected && depth === 0;
+  const showPulse = rowStatus === "unread" && !isSelected && isTopLevel;
   const contextUsed = contextBySessionId.get(s.id);
 
   if (isRenaming) {
@@ -1190,9 +1243,13 @@ function ArchivedGroup({
 }
 
 interface WorkersGroupProps {
-  sessions: SessionListItem[];
+  /** Worker-provenance root nodes, activity-sorted (their subagent subtrees attached). */
+  nodes: SessionTreeNode[];
   expanded: boolean;
   onToggleExpand: () => void;
+  /** Per-node subtree expansion — shared with the main tree so chevrons work inside the group. */
+  nodeExpanded: Set<string>;
+  onToggleNodeExpand: (sessionId: string) => void;
   workspaceId: string;
   selectedSessionId?: string;
   onSelectSession: (sessionId: string) => void;
@@ -1205,23 +1262,32 @@ interface WorkersGroupProps {
   onRenameSessionConfirm: (sessionId: string, title: string) => void;
   /** Per-session context token count from workspace status (S36.5). */
   contextBySessionId: Map<string, number>;
+  /** Sessions (or ancestors of sessions) with a pending question/permission. */
+  pendingIndicatorIds: Set<string>;
 }
 
 /**
- * #1966: the Workers folder — every live worker-classified session of
- * this workspace (board/engine-spawned origin-class workers + parented
- * Task-tool subagents), rendered as a top-level entry INSIDE the
- * workspace's session list. Rendered only when at least one session is
- * worker-classified, and collapsed by default with a count badge
- * ('Workers (87)') so activity stays visible without clutter. Rows are
- * fully usable when expanded: open, rename, archive, delete, force
- * stop — grouping is presentation-only (no behavior change to the
- * sessions; the list query and the server-side search are untouched).
+ * #1966/rulings 6+7 (2026-10-28): the EXISTING Workers folder — no
+ * new group — now populated by worker PROVENANCE with real nesting.
+ * Roots are origin-class 'worker' sessions (board/engine fresh-worker
+ * spawns, current AND past — idle included): parentage no longer
+ * auto-banishes (ruling 7 — subtasks nest under their top-level
+ * parent wherever it renders), so a user session's Task-tool subagents
+ * nest beneath it in the main tree, and a worker's genuine subagent
+ * children nest BENEATH it here (the folder is a real tree: shared
+ * SessionTreeRow renderer, working expand state). Rows are sorted by
+ * recent activity and fully usable when expanded: open, rename,
+ * archive, delete, force stop — grouping is presentation-only.
+ * Rendered only when at least one board worker exists (hidden
+ * entirely otherwise); collapsed by default with a count badge so
+ * activity stays visible without clutter.
  */
 function WorkersGroup({
-  sessions,
+  nodes,
   expanded,
   onToggleExpand,
+  nodeExpanded,
+  onToggleNodeExpand,
   workspaceId,
   selectedSessionId,
   onSelectSession,
@@ -1233,6 +1299,7 @@ function WorkersGroup({
   onRenameSessionCancel,
   onRenameSessionConfirm,
   contextBySessionId,
+  pendingIndicatorIds,
 }: WorkersGroupProps) {
   return (
     <>
@@ -1250,19 +1317,20 @@ function WorkersGroup({
           )}
           <Bot className="h-3 w-3 flex-shrink-0" aria-hidden="true" />
           <span className="flex-1 truncate text-muted-foreground/80">Workers</span>
-          <span className="flex-shrink-0 text-xs text-muted-foreground/60">{sessions.length}</span>
+          <span className="flex-shrink-0 text-xs text-muted-foreground/60">{nodes.length}</span>
         </button>
       </div>
       {expanded &&
-        sessions.map((session) => (
+        nodes.map((node) => (
           <SessionTreeRow
-            key={session.id}
-            node={{ session, children: [] }}
+            key={node.session.id}
+            node={node}
             depth={1}
+            rootLevel
             workspaceId={workspaceId}
             selectedSessionId={selectedSessionId}
-            expanded={new Set()}
-            onToggleExpand={() => {}}
+            expanded={nodeExpanded}
+            onToggleExpand={onToggleNodeExpand}
             onSelectSession={onSelectSession}
             onRenameSession={onRenameSession}
             onArchiveSession={onArchiveSession}
@@ -1272,7 +1340,7 @@ function WorkersGroup({
             onRenameSessionCancel={onRenameSessionCancel}
             onRenameSessionConfirm={onRenameSessionConfirm}
             contextBySessionId={contextBySessionId}
-            pendingIndicatorIds={new Set()}
+            pendingIndicatorIds={pendingIndicatorIds}
           />
         ))}
     </>
