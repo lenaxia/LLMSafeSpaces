@@ -531,7 +531,7 @@ func (s *Service) doneCascade(ctx context.Context, tx pgx.Tx, t *Task, evidenceU
 // route through here — a stage move off a flagged row resolves the
 // flag with the move).
 func (s *Service) updateStageTx(ctx context.Context, tx pgx.Tx, taskID, from, toStage, extra, evidenceURL string, actor Actor) (string, error) {
-	extra += `, pending_origin=NULL, pending_input=false, nudge_id=NULL, nudged_at=NULL, last_heartbeat_at=NULL`
+	extra += `, pending_origin=NULL, pending_input=false, nudge_id=NULL, nudged_at=NULL, last_heartbeat_at=NULL, busy_renews=0`
 	tag, err := tx.Exec(ctx, `
 		UPDATE tasks SET stage=$2, stage_entered_at=now(), `+extra+`
 		WHERE id=$1 AND stage=$3`, taskID, toStage, from)
@@ -660,7 +660,7 @@ func (s *Service) exitPendingReclaim(ctx context.Context, tx pgx.Tx, actor Actor
 	// with the re-claim, and the transition row below records that move.
 	tag, err := tx.Exec(ctx, `
 		UPDATE tasks SET stage='in_progress', stage_entered_at=now(), pending_input=false, pending_origin=NULL,
-			nudge_id=NULL, nudged_at=NULL, last_heartbeat_at=NULL,
+			nudge_id=NULL, nudged_at=NULL, last_heartbeat_at=NULL, busy_renews=0,
 			claim_token=$2, lease_expires_at=now()+make_interval(secs=>$3::float8), last_progress_at=now(),
 			assignee_session=NULL, implementer_session=NULL, claim_incremented_attempts=false, claim_persona=NULL, attempts=0,
 			failure_count=0, last_attempt_failed=false, last_failure_at=NULL
@@ -762,7 +762,7 @@ func (s *Service) Heartbeat(ctx context.Context, actor Actor, taskID, shortIDOrI
 	err = s.q().QueryRow(ctx, `
 		UPDATE tasks SET last_heartbeat_at=now(),
 			last_progress_at=$2, lease_expires_at=now()+make_interval(secs=>$3::float8),
-			nudge_id=NULL, nudged_at=NULL, updated_at=now()
+			nudge_id=NULL, nudged_at=NULL, busy_renews=0, updated_at=now()
 		WHERE id=$1 AND stage IN ('in_progress','in_review') AND claim_token=$4
 		  AND NOT pending_input AND nudge_id IS NOT NULL
 		RETURNING lease_expires_at`,

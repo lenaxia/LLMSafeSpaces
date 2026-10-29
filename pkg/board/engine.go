@@ -253,7 +253,7 @@ func (s *Service) TaskStart(ctx context.Context, actor Actor, taskID, shortIDOrI
 			-- the claim mint RESETS the lease-episode slots: a prior
 			-- episode's nudge/heartbeat evidence must never inherit into
 			-- the fresh claim (the review's stale-slot finding).
-			nudge_id=NULL, nudged_at=NULL, last_heartbeat_at=NULL
+			nudge_id=NULL, nudged_at=NULL, last_heartbeat_at=NULL, busy_renews=0
 		WHERE t.id=$1
 		RETURNING t.id, t.short_id, t.project_id, t.epic_id, t.claim_token::text,
 		          (SELECT p.target_workspace_id::text FROM projects p WHERE p.id = t.project_id),
@@ -413,7 +413,7 @@ func (s *Service) claimOnce(ctx context.Context, workerID, workspaceID string) (
 			-- the claim mint RESETS the lease-episode slots: a prior
 			-- episode's nudge/heartbeat evidence must never inherit into
 			-- the fresh claim (the review's stale-slot finding).
-			nudge_id=NULL, nudged_at=NULL, last_heartbeat_at=NULL
+			nudge_id=NULL, nudged_at=NULL, last_heartbeat_at=NULL, busy_renews=0
 		WHERE t.id=$1
 		RETURNING t.id, t.short_id, t.project_id, t.epic_id, t.claim_token::text,
 		          (SELECT p.target_workspace_id::text FROM projects p WHERE p.id = t.project_id),

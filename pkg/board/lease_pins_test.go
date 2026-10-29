@@ -873,6 +873,93 @@ func (s *BoardSuite) TestPin_Lease12_BusyMidTurnNeverWedges() {
 		s.True(rowIsMarkedFailed(s, task.ID))
 		s.Equal(1, s.countEvents("wedge"))
 	})
+
+	s.Run("the busy-deferral is bounded: cap consecutive busy-only renewals, then the quiet arms proceed", func() {
+		ws := s.seedWorkspace()
+		p := s.seedProject(ws, 4)
+		e := s.seedEpic(p, board.EpicActive)
+		task := s.seedTask(e, "busy-forever", nil, false)
+
+		s.claimOrFail(ws)
+		assignee := s.reloadTask(task.ID).AssigneeSession
+		lives := &fakeLiveness{}
+		nudger := &fakeNudger{}
+		recon := s.pinRecon(lives, nudger.Send)
+
+		// The pathological source: busy-true FOREVER, never any
+		// movement (the dead-pod stale-gate shape the review traced).
+		stuckBusy := board.AssigneeObservation{Observed: true, Exists: true, Busy: true}
+		lives.set(assignee, stuckBusy)
+
+		// Cap many busy-only renewals: every one renews — the fix's
+		// promise holds through the cap.
+		for round := 0; round < 3; round++ {
+			s.expireLease(task.ID)
+			s.rc1Sweep(recon)
+			s.Equal(board.StageInProgress, s.rawTask(task.ID).Stage,
+				"round %d: busy-only renewal within the cap", round)
+			s.leaseFuture(task.ID)
+		}
+
+		// The renewal past the cap: Busy evidence is EXHAUSTED — the
+		// ladder proceeds as if busy were false (the episode was closed
+		// by the renews, so the next arm is the NUDGE, not the wedge).
+		s.expireLease(task.ID)
+		s.rc1Sweep(recon)
+		s.Equal(1, nudger.count(), "past the cap the quiet arms proceed: the nudge rung")
+		s.Equal(board.StageInProgress, s.rawTask(task.ID).Stage)
+		nid, _ := s.nudgeState(task.ID)
+		s.Require().NotEmpty(nid, "the exhaustion opened a measurable episode")
+
+		// A full window of the SAME stuck-busy silence on the
+		// POSITIONED sentinel: the verdict. Busy no longer saves it.
+		lives.set(assignee, board.AssigneeObservation{
+			Observed: true, Exists: true, Busy: true,
+			NudgeMarkKnown: true, EventsAfterNudge: false,
+		})
+		s.expireLease(task.ID)
+		s.rc1Sweep(recon)
+		row := s.rawTask(task.ID)
+		s.Equal(board.StageFailed, row.Stage, "a busy-true-forever source cannot hold the lease forever")
+		s.True(rowIsMarkedFailed(s, task.ID))
+		s.Equal(1, s.countEventsFor("wedge", task.ID))
+	})
+
+	s.Run("movement resets the consecutive count", func() {
+		ws := s.seedWorkspace()
+		p := s.seedProject(ws, 4)
+		e := s.seedEpic(p, board.EpicActive)
+		task := s.seedTask(e, "busy-move-busy", nil, false)
+
+		s.claimOrFail(ws)
+		assignee := s.reloadTask(task.ID).AssigneeSession
+		lives := &fakeLiveness{}
+		nudger := &fakeNudger{}
+		recon := s.pinRecon(lives, nudger.Send)
+
+		// Two busy-only renewals …
+		lives.set(assignee, board.AssigneeObservation{Observed: true, Exists: true, Busy: true})
+		for round := 0; round < 2; round++ {
+			s.expireLease(task.ID)
+			s.rc1Sweep(recon)
+			s.Equal(board.StageInProgress, s.rawTask(task.ID).Stage)
+		}
+		// … a MOVING window (real evidence: the count restarts) …
+		lives.set(assignee, liveMoving())
+		s.expireLease(task.ID)
+		s.rc1Sweep(recon)
+		s.Equal(board.StageInProgress, s.rawTask(task.ID).Stage)
+		// … two MORE busy-only renewals: 2-since-reset, under the cap.
+		lives.set(assignee, board.AssigneeObservation{Observed: true, Exists: true, Busy: true})
+		for round := 0; round < 2; round++ {
+			s.expireLease(task.ID)
+			s.rc1Sweep(recon)
+			s.Equal(board.StageInProgress, s.rawTask(task.ID).Stage,
+				"round %d past a moving window: the count is CONSECUTIVE, not cumulative", round)
+		}
+		s.Equal(0, s.countEventsFor("wedge", task.ID))
+		s.Equal(0, nudger.count())
+	})
 }
 
 // TestPin_LeaseLadder_NudgeDeliveryFailureFallsBack pins the sender

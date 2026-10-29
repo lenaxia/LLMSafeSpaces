@@ -99,6 +99,34 @@ is read-only.
 - Full suites: pkg/board (integration) 39.6s green; app; usagestream;
   `go build ./...`; golangci-lint 0.
 
+## §6 Review round 1 (CHANGES_REQUESTED on `227bb647`)
+
+The reviewer mutation-verified the core (reverting `o.Busy` from the
+renewal arm reddens both PIN 12 subtests AND the production-wiring pin
+at exactly round 2) and raised one blocking robustness finding with two
+non-blocking minors:
+
+- **BLOCKING — the busy-deferral was unbounded**: pod dies mid-turn +
+  stalled recreation + Active workspace ⇒ `g.derived` holds stale-true
+  forever (no reseed — the gate never reconnects; no teardown — the
+  idle watchdog can never fire while `busyNow` is true) ⇒ renewal every
+  sweep with no cap ⇒ the row holds its lease and slot indefinitely and
+  the ladder loses failure detection for it. The tool-timebox bound my
+  comments leaned on is a harness convention, not an engine guarantee.
+  **Fix**: the engine-side cap — `tasks.busy_renews` (migration 000053)
+  counts consecutive busy-ONLY renewals per claim epoch; at
+  `boardBusyRenewCap`=3 the ladder stops honoring Busy for the epoch
+  and falls through to the ordinary quiet arms. Reset by movement
+  renewal, heartbeat response, every claim mint, and every stage
+  transition; deliberately NOT reset by the nudge write (a stuck source
+  must not cycle cap→nudge→reset forever). Two new PIN 12 subtests:
+  bounded (cap → nudge → verdict on the same stuck-busy silence) and
+  consecutive-not-cumulative (movement restarts the count).
+- **Minor — doc width**: "Busy ⇒ ALIVE at every rung" was wider than
+  the implementation (the no-evidence rung never consults Busy; Busy
+  shadows `!Exists` for self-contradictory observations). Softened to
+  "every OBSERVED rung" with both boundaries stated in the field doc.
+
 ## §5 What this does NOT do (the roadmap)
 
 - The event-driven end-state (option 3): review verdicts publish on the
