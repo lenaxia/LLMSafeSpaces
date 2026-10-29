@@ -79,7 +79,7 @@ func mustPublish(t *testing.T, bus *RedisBus, topic string) string {
 
 // consumeUntil runs one consumer until cond passes (or the deadline
 // fails the test), then waits for the group's pending list to drain
-// (acks settle) before cancelling — cancelling from inside a handler
+// (acks settle) before the cancel — a cancel from inside a handler
 // would race its own ack. Returns the consumer's collected messages.
 func consumeUntil(t *testing.T, bus *RedisBus, opts ConsumeOptions, cond func([]Message) bool) []Message {
 	t.Helper()

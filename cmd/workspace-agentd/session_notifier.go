@@ -856,7 +856,7 @@ func (n *sessionNotifier) debounceFired(sid, kind string) {
 	}
 	notices := n.collectSettlesLocked(sid, kind)
 	n.mu.Unlock()
-	n.deliverNotices(n.deliveryContext(), notices)
+	_ = n.deliverNotices(n.deliveryContext(), notices)
 }
 
 // publishSettle is the bus leg's publish: session.{sid}.{kind} to the
@@ -889,7 +889,7 @@ func (n *sessionNotifier) publishSettle(sid, kind, title string) {
 	n.mu.Lock()
 	notices := n.collectSettlesLocked(sid, kind)
 	n.mu.Unlock()
-	n.deliverNotices(n.deliveryContext(), notices)
+	_ = n.deliverNotices(n.deliveryContext(), notices)
 }
 
 // ConsumeSettleEvent is the notifier consumer group's handler
@@ -1000,13 +1000,9 @@ func subscriptionEventMatches(events []string, kind string) bool {
 //
 // The returned error aggregates HARD failures only (the bus consumer
 // propagates it to leave the message pending — the consumer group's
-// redelivery is the retry). Rate refusals are final outcomes, never
-// errors; a nil ctx parent falls back to the Run loop's delivery
-// context (the v1 call sites).
+// redelivery is the retry; the v1 direct leg ignores it, its retry
+// being the outbox). Rate refusals are final outcomes, never errors.
 func (n *sessionNotifier) deliverNotices(ctx context.Context, notices []settleNotice) error {
-	if ctx == nil {
-		ctx = n.deliveryContext()
-	}
 	var hard error
 	for _, notice := range notices {
 		err := n.cfg.Deliver.DeliverSettle(ctx, notice)
