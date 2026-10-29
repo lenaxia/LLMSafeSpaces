@@ -1,0 +1,201 @@
+# NNNN — Workspace event bus on Redis Streams (design 0072)
+
+Task `tsk-handsome-refectory-picnics` (epic: Session Subscription Feature).
+Owner direction 2026-10-29: "For sessions sub would it make sense to basically
+have a per tenant mqtt almost?" — YES conceptually, but build a bus, not a
+protocol: the frame stream already generates the events; formalize them into a
+topic vocabulary with Redis Streams as the transport, and let consumers
+subscribe independently. Design: `design/0072_2026-10-29_workspace-event-bus.md`.
+
+## Dependencies & branch construction (the honest part)
+
+The two dependency tasks (`tsk-spherical-chalk-seizes` — notifier
+suppression/delivery/metrics, `tsk-viridian-vehicle-folds` — MCP surface; board
+stages done/in_review) had NOT landed on origin/main — their work lives
+uncommitted in the charter workspace's shared tree, mixed with three other
+lanes' edits to the same files. This PR carries the v1 lane forward VERBATIM
+as its first commit (feat: session idle-subscriptions v1), extracted surgically:
+
+- Wholesale (subscription-only diffs vs origin/main): the 9 new
+  `session_notifier*`/`mcp_session_subscriptions_test.go` files, design/0071,
+  worklog 1233, `main.go`, `mcp_tools.go`, `mcp_tools_test.go`.
+- Hunk-by-hunk (files shared with other lanes): `mcp_server.go` (4 subscription
+  hunks; 10 stale-base reversals dropped), `llmsafespaces-origin.js` (the
+  injection-set hunk; the board_validate_file/get_config hunks were stale-base
+  artifacts — origin/main already carries them), `session_ref_test.go` +
+  `session_phrase_stability_1850_test.go` (call-site updates for
+  mcpCreateSession's new subscribe/injected params only).
+- The board-activity loop call site in main.go belonged to a foreign lane —
+  removed; `boardWorkerSelfCertificationPin` routing hunks likewise.
+
+v1's own tests pass unmodified on this base — the evolution claim starts from a
+green baseline.
+
+## Delivered
+
+### `pkg/eventbus` (new package)
+
+- **Vocabulary as convention** (`eventbus.go`): topic builders
+  (`SessionSettleTopic`, `TaskStageTopic`, `LeaseNudgeTopic`, `LeaseWedgeTopic`),
+  parsers, segment-glob matching (`*` one segment, trailing `**`, empty list =
+  subscribe-all), `StreamKey(workspace)` = `workspace:{id}:events`.
+- **Transport** (`redis.go`): `RedisBus` over go-redis v8 (already in go.mod —
+  pkg/secrets + the API's Redis services). Publish = XADD with `MAXLEN ~
+  10_000` on every append (retained window + memory bound, no trim loop).
+  Consume = consumer groups: XGROUP CREATE MKSTREAM at `$` (live) or `0-0`
+  (replay), same-name restart drains its OWN pending first (XREADGROUP `0`),
+  steady loop = XPENDING(idle)+XCLAIM reclaim sweep + blocking XREADGROUP `>`;
+  XACK retires. Handler error → stays pending → reclaim redelivers with the
+  PEL's durable delivery count → poison cap (5) with loud drop. Handler errors
+  and poison drops surface through OnError/OnPoison hooks (the debug session
+  that found the lease-compose bug paid for this hook). Trimmed-shell pending
+  entries ack blind (undeliverable is not retryable).
+- **Tests** (miniredis, 15): round-trip, two-group fan-out, pattern-filter
+  acks-unread, at-least-once redelivery, dead-consumer reclaim by an heir,
+  same-name restart resume, replay-from-0-0 + live tail, `$` skips history,
+  MAXLEN cap, poison drop, OnError, options validation, dead-Redis
+  construction refusal, vocabulary/matching units.
+
+### agentd (design 0072 §3)
+
+- **Producer leg rides the notifier's settle fold** (`session_notifier.go`):
+  `Bus` seam on the config; `debounceFired` publishes ONE settle topic event
+  per settle (payload session/settle/title) instead of the direct fan-out;
+  publish failure falls back to the direct v1 leg (§4.5: the lost wake-up is
+  the failure that matters). New outcome `bus_published`.
+- **`notifier` consumer group**: `ConsumeSettleEvent` — the bus message becomes
+  the same per-subscriber deliveries via `selectSettleNoticesLocked`
+  (collectSettles split; identical gates: event-set match, subscriber-side
+  subtask, §4.4 suppression) + `deliverNotices` (now returns the aggregated
+  hard error; rate refusals final). No outbox enqueue on this path — the
+  stream entry is the durable intent; the consumer group's pending machinery
+  IS the retry. v1 call sites unchanged (Bus nil is default + fallback) — the
+  v1 wiring battery passes untouched.
+- **`lease` consumer group** (`workspace_eventbus.go`): the NudgeSender
+  generalization — `lease.{task}.nudged` → the sentinel nudge (marker line
+  `lsp:agent-message-v1 {mode:lease-nudge, taskId, nudgeId,
+  expects:respond|advance|fail}` + the directive prose) via detached
+  SessionSend; byte-parity with the API's `leaseNudgeText` PINNED (one source
+  of truth is impossible across the pkg/board pgx split — the test is the
+  lockstep). `wedge_verdict` → log-only. No `agentmessage.Compose` wrapper
+  (it requires fromSession provenance; the system-originated sentinel carries
+  its own grammar — found via e2e, pinned by unit).
+- **Env gate**: `AGENTD_EVENTBUS_ADDR` (redis:// URL or host:port) +
+  `WORKSPACE_ID` → `eventbusFromEnv`; every failure mode → nil bus → v1
+  point-to-point. Consumer name = pod hostname (`AGENTD_EVENTBUS_CONSUMER`
+  override). `runEventbusConsumers` starts both groups on bgCtx/bgWg with
+  OnError logging.
+- **MCP topics alias**: `subscribe_session` accepts `topics`
+  (`session.<id>.idle|error|*`, any id spelling, same broadcaster; foreign
+  families refuse loudly), unioned into `events`. Schema + dispatch wired.
+
+### e2e (`session_notifier_bus_e2e_test.go`)
+
+The full wiringEnv battery over a real bus: settle publishes ONCE → consumer
+delivers (v1 wording + sentinel; outbox untouched; ack drains); suppression
+through the consumer (§4.4 same semantics); POST failure → pending →
+redelivery after harness heal (at-least-once e2e); lease nudge delivery with
+every sentinel field pinned; wedge verdict acks without messaging.
+
+## Bugs found & fixed during the work (born-red, all pinned)
+
+- XPENDING's range form answers `redis.Nil` on an empty PEL — the consumer
+  loop treated it as fatal (Consume exited instantly on a fresh group).
+- New-group start id `0` is accepted by Redis but not safely by miniredis's
+  comparator — `StartReplay = "0-0"`.
+- The lease sentinel's body went through `agentmessage.Compose`, which refuses
+  a missing fromSession — the handler silently no-acked (OnError exists now
+  because this was invisible).
+- Test-harness races (cancel-inside-handler racing its own ack;
+  publish-before-group-creation against `$` semantics) — consumeUntil now
+  waits for the group PEL to drain before cancelling, and live tests prime
+  the group first.
+
+## Verification (2026-10-29, this worktree + CI on the PR heads)
+
+- `go build ./...` → exit 0.
+- `go test -count=1 ./pkg/eventbus/` → ok (21 tests incl. the r1 pins).
+- `go test -count=1 ./pkg/...` → all ok.
+- `go test -count=1 ./cmd/workspace-agentd/` → ok 372.336s (canonical);
+  `-short` ok 286.847s.
+- `go test -count=1 -short ./cmd/workspace-agentd/ ./pkg/eventbus/` → ok.
+- Full-tree `golangci-lint run` → 0 issues; `make fmt-check` → clean.
+- CI on the PR head: vet, lint, `-race -count=1 ./...`, `-short` coverage,
+  security scans, secrets integration — all green; coverage delta +0.2%.
+
+## Review rounds (AI reviewer, pr-review.yml)
+
+### Round 1 — CHANGES_REQUESTED (head 206b12311)
+
+- **Finding 1 (blocking, consumer death on transient Redis errors ⇒ lost
+  wake-ups)** — FIXED: `Consume` now treats transport errors as
+  backpressure (per-round retry at `Backoff`, default 500ms — the
+  `notifyResubscribeBackoff` posture; group creation and own-pending drain
+  retry too; precondition failures still return). Pinned:
+  `TestConsumerSurvivesTransientOutage` (flakyProxy circuit — consumer
+  mid-outage, entry published behind it, delivery resumes on heal + live
+  tail continues).
+- **Finding 4 (blocking, credentialed `AGENTD_EVENTBUS_ADDR` logged raw)**
+  — FIXED: `redactRedisAddr` strips userinfo before any log line; the
+  wired/unreachable logs carry `opts.Addr` (post-ParseURL, userinfo-free).
+  Pinned: `TestRedactRedisAddr`.
+- **Criterion 4's replay claim overstated** — FIXED with pins:
+  `TestTrimmedCursorResumesAtHead` (MAXLEN-trimmed cursor resumes at the
+  head — design §5 was prose-only), `TestExistingGroupCursorResumesAcrossConsumers`
+  (a later consumer in an existing group sees only post-cursor entries).
+- **Finding 2 (minor, PEL pagination)** — FIXED: `pendingCounts` pages from
+  the last seen id (seq+1) so >one-page own-pending keeps true poison
+  counts; `claimIdle`'s per-sweep Batch stays (poison self-limits — noted
+  in the review as bounded).
+- **Finding 3 (minor, misleading incident log + swallowed ack errors)** —
+  FIXED: delivery-failure log is layer-neutral ("the delivery layer's
+  retry owns the redelivery"); every `dispatch` ack failure surfaces
+  through OnError.
+- Nits: worklog 1233 renamed to the NNNN sentinel (repolint owns numbers);
+  this worklog's verification tallies finalized (above).
+
+### Round 2 — CHANGES_REQUESTED (head 305779e18)
+
+The reviewer mutation-tested the outage pin and caught the harness:
+the pre-fix code PASSED my test — go-redis's pool held one warm
+connection through the "outage" (flakyProxy closed only fresh dials),
+so the error path never executed.
+
+- **Finding 1 (blocking, the outage pin passed pre-fix)** — FIXED:
+  the proxy now tears down ESTABLISHED connections on circuit-open
+  (the pooled socket dies mid-flight, the next command fails), the
+  consumer settles deterministically BEFORE the outage (a pre-outage
+  delivery proves it holds a live connection), and the post-heal
+  assertion tolerates the un-acked pre-outage entry's legal
+  redelivery (at-least-once WORKING, not a failure). Mutation-verified
+  this round: pre-fix Consume restored → test FAILS ("consumer
+  died"); fixed → PASSES.
+- **Finding 2 (blocking, url.Error leaks the password on the
+  malformed branch)** — FIXED: `urlFreeReason` logs the wrapped inner
+  reason only (`(*url.Error).Err`), never the URL-carrying wrapper.
+  Pinned by `TestURLFreeReason` (asserts the password and the URL
+  appear nowhere in the logged reason).
+- **Finding 3 (blocking, silent permanent-error spin)** — FIXED:
+  `retrySignal` surfaces retry-loop failures through OnError at a
+  bounded cadence (streak's first failure, then every 60th; a
+  successful round resets the streak — a fresh incident signals
+  immediately); runtime NOGROUP self-heals by re-creating the group at
+  the configured start position. Pinned by
+  `TestRetrySignalBoundedCadence`.
+- **Finding 4 (pagination unpinned)** — FIXED:
+  `TestPendingCountsPagesAcrossLargePEL` — 300 delivered-never-acked
+  entries on one consumer's PEL (built the real way, live XREADGROUP
+  reads with no ack), page size 128; pendingCounts must cover all 300
+  (the pre-pagination clamp reset entries 257+'s poison ledger).
+- Minors folded in: `redactRedisAddr` splits userinfo at the LAST '@'
+  (net/url's boundary — a password containing '@' would leak its
+  tail; test line added); trimmed-shell acks in drainOwnPending and
+  claimIdle surface through OnError like dispatch's; drainOwnPending
+  is bounded (already-delivered failed entries return to the reclaim
+  sweep instead of hot-spinning the drain).
+- Also found while fixing: go-redis renders XReadGroupArgs.Block==0
+  as `BLOCK 0` (block forever) — the test loop now sets an explicit
+  block; noted in a comment for the next reader.
+- Harness regression during the round (self-caught): a span-edit
+  dropped the r1 cursor pins; restored and re-run (21 transport tests
+  green, -race clean, lint 0).

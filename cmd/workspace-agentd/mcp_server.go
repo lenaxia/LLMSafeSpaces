@@ -506,14 +506,15 @@ func mcpToolCatalog() []mcpTool {
 		},
 		{
 			Name:        "create_session",
-			Description: "Create a NEW top-level agent session in this workspace — a peer of yours — and hand it a starting prompt, fire-and-forget: returns the session_id immediately while the first turn runs in the background. The result does NOT come back to you — create_session never returns the session's output to this thread. Use it ONLY when: (1) the task is independent and you will NOT depend on its result (true fire-and-forget — launch it and move on), or (2) the task will require HUMAN input or is intended for human consumption — the session appears in the workspace's session list, where a person can open it, answer its questions, and steer it. NOT for fully autonomous work whose outcome you need (implementing a user story, an investigation, any question you need answered): use the task tool instead — it blocks and returns the result to this thread. The new session is a full agent sharing this workspace's files and tools — coordinate via files, not assumptions, and make the prompt self-contained (it does not inherit this conversation's context). Include the returned session_id in the child's prompt when you can: a session that knows its own ID can attribute its send_message traffic without looking it up. Track it later with session_list / session_read / session_metadata. Delivery is not retried: if the agent restarts mid-turn the prompt is lost — re-send by reading the session and continuing it.",
-			// Ordered schema (#1849 emission findings): title (discrete,
-			// optional) first, prompt (the long freeform string) LAST —
-			// map marshaling would emit prompt first with title still
-			// owed after it, the exact resume-after-string seam where
-			// glm-class emission dies (send_message corrupted 5/5 in
-			// that shape; write/bash-style long-string-last never does).
-			InputSchema: json.RawMessage(`{"type":"object","properties":{"title":{"type":"string","description":"Optional title (max 200 chars); omitted = auto-generated"},"prompt":{"type":"string","description":"The first prompt for the new session — self-contained: same workspace files, none of this conversation's context. Its output will NOT return to you."}},"required":["prompt"]}`),
+			Description: "Create a NEW top-level agent session in this workspace — a peer of yours — and hand it a starting prompt, fire-and-forget: returns the session_id immediately while the first turn runs in the background. The result does NOT come back to you — create_session never returns the session's output to this thread. Use it ONLY when: (1) the task is independent and you will NOT depend on its result (true fire-and-forget — launch it and move on), or (2) the task will require HUMAN input or is intended for human consumption — the session appears in the workspace's session list, where a person can open it, answer its questions, and steer it. NOT for fully autonomous work whose outcome you need (implementing a user story, an investigation, any question you need answered): use the task tool instead — it blocks and returns the result to this thread. The new session is a full agent sharing this workspace's files and tools — coordinate via files, not assumptions, and make the prompt self-contained (it does not inherit this conversation's context). Include the returned session_id in the child's prompt when you can: a session that knows its own ID can attribute its send_message traffic without looking it up. subscribe (optional, default false): after creation, watch the new session (subscribe_session semantics) — when its turn completes (or ends in error) a notification lands in YOUR thread as your next turn, and the return carries \"subscribed\": true; the flag is ignored with a loud warning when the caller is itself a subagent session (subagents return to their parent, never take wake-up turns) or when no caller identity could be injected (degraded pod — the session is still created). Notification semantics are subscribe_session's: advisory, at-least-once, suppressed when the child already sent you its final message. Track it later with session_list / session_read / session_metadata. Delivery is not retried: if the agent restarts mid-turn the prompt is lost — re-send by reading the session and continuing it.",
+			// Ordered schema (#1849 emission findings): discrete keys
+			// first (title, subscribe), prompt (the long freeform
+			// string) LAST — map marshaling would emit prompt first
+			// with title still owed after it, the exact
+			// resume-after-string seam where glm-class emission dies
+			// (send_message corrupted 5/5 in that shape;
+			// write/bash-style long-string-last never does).
+			InputSchema: json.RawMessage(`{"type":"object","properties":{"title":{"type":"string","description":"Optional title (max 200 chars); omitted = auto-generated"},"subscribe":{"type":"boolean","description":"Optional (default false): also subscribe the CALLER to the new session (subscribe_session semantics) — a notification lands in your thread when its turn completes; the result carries \"subscribed\": true. Ignored with a loud warning for subagent callers (parent set) or when no caller identity is injected"},"prompt":{"type":"string","description":"The first prompt for the new session — self-contained: same workspace files, none of this conversation's context. Its output will NOT return to you."}},"required":["prompt"]}`),
 		},
 		{
 			Name:        "send_message",
@@ -555,6 +556,58 @@ func mcpToolCatalog() []mcpTool {
 				},
 				"required": ["status", "session_id", "origin", "origin_mode"]
 			}`),
+		},
+		{
+			// Session idle-subscriptions v1 (design
+			// /workspace/reports/session-subscription-design.md §5): the
+			// push primitive — register interest in ANOTHER session's
+			// turn boundary; the notifier delivers the wake-up.
+			Name:        "subscribe_session",
+			Annotations: annot(false, false, true),
+			Description: "Watch another session in this workspace and be woken when its turn completes — the push primitive polling cannot replace: when the watched session goes idle (or ends its turn in error), a short notification message lands in YOUR thread as your next turn, so you learn a delegated worker finished without polling session_list / board_list / session_metadata. Use when you handed work to a session (create_session, send_message) and need to act on its completion. The watched session is addressed by sessionId (its 3-word phrase from session_list / session_metadata; case-insensitive); events optionally narrows what wakes you — accepted values \"idle\" and \"error\", default both (a worker that died mid-turn must still wake you). YOU are the subscriber — the platform injects your session identity; you never supply it. Re-subscribing is idempotent and updates the event set. Refused loudly, never guessed: watching yourself (an infinite wake loop), watch cycles (A watching B while B watches A — each settle would trigger the next, forever), subtask sessions on EITHER side (the task tool's subtasks return their result synchronously to their parent — use THAT for work whose result you need in this thread, not this; and subtasks never take wake-up turns), an unknown session (with a did-you-mean), more than 32 watchers on one session, or an unsupported event value. NOT a message channel: the notification carries no content — to talk to the watched session use send_message. Semantics stated plainly: a notification is SUPPRESSED when the watched session already sent you its final message after its last mutating work (you are already informed); a settle that flips back to busy within the ~5s debounce window notifies nothing (the next turn started — you wake when it ends); the notification is advisory and at-least-once — duplicates are possible after a restart, and a lost wake-up is the failure that matters, so verify critical outcomes via board_list / board_read or session_metadata. Manage watches with unsubscribe_session and list_subscriptions.",
+			InputSchema: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"sessionId": map[string]any{"type": "string", "description": "The session to WATCH — its 3-word phrase (from session_list / session_metadata; case-insensitive), an unambiguous title/slug alias, or (deprecated, one release) the full/hashed id"},
+					"events":    map[string]any{"type": "array", "items": map[string]any{"type": "string", "enum": []string{"idle", "error"}}, "description": "Optional: which turn-completions wake you — \"idle\" (turn completed), \"error\" (turn ended in error). Default: both. Anything else is a loud refusal"},
+					"topics":    map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Optional (design 0072): the event-bus topic alias of `events` — session.<id>.idle, session.<id>.error, or session.<id>.* for both. The <id> must be this same session (any address form); other topics (lease.*, task.*) are a loud refusal — arbitrary pattern subscription is a future tool. Unions with `events`"},
+				},
+				"required": []string{"sessionId"},
+			},
+			OutputSchema: json.RawMessage(`{
+				"type": "object",
+				"properties": {
+					"status": {"type": "string"},
+					"session_id": {"type": "string"},
+					"events": {"type": "array", "items": {"type": "string"}},
+					"session_id_deprecated": {"type": "string"},
+					"deprecation": {"type": "string"}
+				},
+				"required": ["status", "session_id", "events"]
+			}`),
+		},
+		{
+			Name:        "unsubscribe_session",
+			Annotations: annot(false, false, true),
+			Description: "Stop watching a session (the reverse of subscribe_session): removes YOUR watch edge on it — no further turn-completion notifications for it land in your thread. Takes the same sessionId address form subscribe_session takes. Idempotent by design: an edge that does not exist returns {\"status\":\"not_subscribed\"}, never an error — unsubscribing twice, or unsubscribing from a session you never watched, is a clean no-op. You are identified by the platform-injected session identity; you can only remove your own edge.",
+			InputSchema: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"sessionId": map[string]any{"type": "string", "description": "The session to stop watching — same address forms subscribe_session accepts"},
+				},
+				"required": []string{"sessionId"},
+			},
+		},
+		{
+			Name:        "list_subscriptions",
+			Annotations: annot(true, false, false),
+			Description: "List subscription (watch) edges — the only introspection path for the subscription registry. With no arguments: YOUR outbound watches (the sessions whose turn-completions will wake you, with their event sets). With sessionId: that session's outbound watches instead. Each row names the watched session by its 3-word phrase. Pair with subscribe_session / unsubscribe_session to manage the set.",
+			InputSchema: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"sessionId": map[string]any{"type": "string", "description": "Optional: list THIS session's outbound watches instead of your own (its 3-word phrase or another accepted address form); omitted = your own"},
+				},
+			},
 		},
 		{
 			Name:        "trigger_list",
@@ -1134,7 +1187,13 @@ func callMCPTool(ctx context.Context, password, name string, args map[string]any
 	case "create_session":
 		prompt, _ := args["prompt"].(string)
 		title, _ := args["title"].(string)
-		return mcpCreateSession(ctx, password, prompt, title)
+		// Idle-subscriptions v1 (§5): the optional caller→child watch.
+		// lsp_injected_session identifies the caller (subscribe needs
+		// an origin; creation itself never did — a degraded pod still
+		// creates, the flag degrades to a loud warning).
+		subscribe, _ := argBool(args, "subscribe")
+		injected, _ := args["lsp_injected_session"].(string)
+		return mcpCreateSession(ctx, password, prompt, title, subscribe, injected)
 	case "send_message":
 		// destination is canonical; session_id is its one-release
 		// legacy alias, gated STRICTLY on destination's ABSENCE (the
@@ -1161,6 +1220,53 @@ func callMCPTool(ctx context.Context, password, name string, args map[string]any
 		// unattested origin.
 		injected, _ := args["lsp_injected_session"].(string)
 		return mcpSendMessage(ctx, password, sessionID, message, injected)
+	case "subscribe_session":
+		// Idle-subscriptions v1 (§5) + the design 0072 topics alias.
+		// Caller identity is the plugin's lsp_injected_session stamp
+		// ONLY — the #1849 send_message posture (refuse unattested
+		// origin); the resolveCallerSession degraded-pod fallback
+		// belongs to the delete tools, not here.
+		target := argStr(args, "sessionId")
+		var events []string
+		if raw, present := args["events"]; present && raw != nil {
+			items, ok := raw.([]any)
+			if !ok {
+				return "", fmt.Errorf("events must be an array of strings (accepted values: %q, %q)",
+					subscriptionEventIdle, subscriptionEventError)
+			}
+			for _, v := range items {
+				s, ok := v.(string)
+				if !ok {
+					return "", fmt.Errorf("events entries must be strings (accepted values: %q, %q)",
+						subscriptionEventIdle, subscriptionEventError)
+				}
+				events = append(events, s)
+			}
+		}
+		var topics []string
+		if raw, present := args["topics"]; present && raw != nil {
+			items, ok := raw.([]any)
+			if !ok {
+				return "", fmt.Errorf("topics must be an array of topic strings (session.<id>.idle|error|*)")
+			}
+			for _, v := range items {
+				s, ok := v.(string)
+				if !ok {
+					return "", fmt.Errorf("topics entries must be strings (session.<id>.idle|error|*)")
+				}
+				topics = append(topics, s)
+			}
+		}
+		injected, _ := args["lsp_injected_session"].(string)
+		return mcpSubscribeSession(ctx, password, target, events, topics, injected)
+	case "unsubscribe_session":
+		target := argStr(args, "sessionId")
+		injected, _ := args["lsp_injected_session"].(string)
+		return mcpUnsubscribeSession(ctx, password, target, injected)
+	case "list_subscriptions":
+		target := argStr(args, "sessionId")
+		injected, _ := args["lsp_injected_session"].(string)
+		return mcpListSubscriptions(ctx, password, target, injected)
 	case "abort_session":
 		sessionID := argStr(args, "sessionId")
 		return mcpAbortSession(ctx, password, sessionID)

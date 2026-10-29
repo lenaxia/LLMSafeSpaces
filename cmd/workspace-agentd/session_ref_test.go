@@ -733,7 +733,7 @@ func TestCreateSession_ReturnsShortID(t *testing.T) {
 	})
 	setupPodSessionEnv(t, platform)
 
-	out, err := mcpCreateSession(context.Background(), mcpTestPassword, "do the thing", "t")
+	out, err := mcpCreateSession(context.Background(), mcpTestPassword, "do the thing", "t", false, "")
 	if err != nil {
 		t.Fatalf("mcpCreateSession: %v", err)
 	}
@@ -766,7 +766,7 @@ func TestCreateSession_PlatformTimeoutDegradesToHarnessID(t *testing.T) {
 	})
 	setupPodSessionEnv(t, platform)
 
-	out, err := mcpCreateSession(context.Background(), mcpTestPassword, "hello", "")
+	out, err := mcpCreateSession(context.Background(), mcpTestPassword, "hello", "", false, "")
 	if err != nil {
 		t.Fatalf("mcpCreateSession (degraded): %v", err)
 	}
