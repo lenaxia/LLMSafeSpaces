@@ -115,13 +115,13 @@ type BoardTask struct {
 	AssigneeSessionDeprecated    bool   `json:"assignee_session_deprecated,omitempty"`
 	ImplementerSession           string `json:"implementer_session,omitempty"`
 	ImplementerSessionDeprecated bool   `json:"implementer_session_deprecated,omitempty"`
-	Attempts           int                        `json:"attempts"`
-	LastAttemptFailed  bool                       `json:"last_attempt_failed"`
-	FailureCount       int                        `json:"failure_count"`
-	LastFailureAt      string                     `json:"last_failure_at,omitempty"`
-	StageEnteredAt     string                     `json:"stage_entered_at"`
-	CreatedAt          string                     `json:"created_at"`
-	UpdatedAt          string                     `json:"updated_at"`
+	Attempts                     int    `json:"attempts"`
+	LastAttemptFailed            bool   `json:"last_attempt_failed"`
+	FailureCount                 int    `json:"failure_count"`
+	LastFailureAt                string `json:"last_failure_at,omitempty"`
+	StageEnteredAt               string `json:"stage_entered_at"`
+	CreatedAt                    string `json:"created_at"`
+	UpdatedAt                    string `json:"updated_at"`
 }
 
 // BoardClaim is the task_start dispatch outcome (the fresh worker's
