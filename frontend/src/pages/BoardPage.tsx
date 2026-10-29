@@ -18,7 +18,7 @@ import { TaskDialog } from "../components/board/TaskDialog";
 import { TaskDrawer } from "../components/board/TaskDrawer";
 import { BoardDefaultsDialog, ProjectConfigTrigger } from "../components/board/BoardConfigPanels";
 import { EpicDrawer } from "../components/board/EpicDrawer";
-import { Archive, KanbanSquare, ChevronRight, Settings2 } from "lucide-react";
+import { Archive, KanbanSquare, ChevronRight, ListFilter, Settings2 } from "lucide-react";
 import { useSearchParams } from "react-router-dom";
 import { cn } from "../lib/utils";
 import { boardApi, type BoardEpic, type BoardProject, type BoardTask, type BoardEventPayload } from "../api/board";
@@ -92,6 +92,12 @@ export function BoardPage() {
   // #1813: the failed-state overlay filter (client-side, the tagFilter
   // pattern — the server ?failed= param serves programmatic callers).
   const [failedOnly, setFailedOnly] = useState(false);
+  // Owner ruling 2026-10-29 ("those pills need to be in a collapsed
+  // drawer"): the filter pills live INSIDE a collapsible drawer opened
+  // by the toolbar's filter button — no pills render inline in the
+  // toolbar. Closed = not rendered = zero height (mobile: the swim
+  // lanes start immediately below the toolbar, nothing overlaps).
+  const [filterDrawerOpen, setFilterDrawerOpen] = useState(false);
   const [sideCollapsed, setSideCollapsed] = useState(true);
   // #1964: archived projects' two-level drawer — the #1627
   // Archived-group deliberate-friction posture: BOTH levels are
@@ -328,6 +334,17 @@ export function BoardPage() {
     }
   }, [tagFilter, allTags]);
 
+  // The filter drawer's keyboard exit: Escape collapses it (the funnel
+  // button's toggle is the pointer path; both leave the filters applied).
+  useEffect(() => {
+    if (!filterDrawerOpen) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setFilterDrawerOpen(false);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [filterDrawerOpen]);
+
   // --- Filtering ------------------------------------------------------------------
   // #1964: search arbitrates over the ACTIVE surface (surfaceTasks) —
   // archived rows render only inside the collapsed drawer, so a term
@@ -370,6 +387,12 @@ export function BoardPage() {
       return true;
     });
   }, [tasks, tagFilter, failedOnly, search]);
+
+  // Owner ruling 2026-10-29: active filters stay VISIBLE with the pills
+  // folded away — the filter button's count badge carries the number of
+  // live filters (the FAILED overlay + the tag facet; search and the
+  // project focus are not drawer filters and never count). 0 = no badge.
+  const activeFilterCount = (failedOnly ? 1 : 0) + (tagFilter !== null ? 1 : 0);
 
   // --- Optimistic drag (§4.6: optimistic, server-arbitrated snap-back) -----------
   const [optimistic, setOptimistic] = useState<OptimisticMap>({});
@@ -975,8 +998,8 @@ export function BoardPage() {
 
   return (
     <div className="flex h-full flex-col overflow-hidden" data-page="board">
-      {/* --- Scope switcher (project focus + epic chips + search) --------------- */}
-      <div className="flex flex-col gap-2 border-b border-border px-4 py-2">
+      {/* --- Scope switcher (project focus + filter drawer + search) ------------ */}
+      <div className="flex flex-col gap-2 border-b border-border px-4 py-2" data-testid="board-toolbar">
         <div className="flex flex-wrap items-center gap-2">
           <KanbanSquare className="h-4 w-4 text-muted-foreground" aria-hidden />
           <h1 className="text-sm font-semibold">Board</h1>
@@ -1009,6 +1032,31 @@ export function BoardPage() {
             data-testid="board-search"
           />
           <div className="ml-auto flex items-center gap-2">
+            {/* Owner ruling 2026-10-29 ("I think those pills need to be in
+             * a collapsed drawer. They eat up a lot of screen real estate
+             * esp on mobile."): the funnel button replaces the inline pill
+             * row — it opens the filter drawer below, and the count badge
+             * keeps active filters VISIBLE while the drawer is closed. */}
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setFilterDrawerOpen((v) => !v)}
+              aria-expanded={filterDrawerOpen}
+              aria-controls="board-filter-drawer"
+              data-testid="board-filter-button"
+              title="Filters (stage overlay, tags)"
+            >
+              <ListFilter className="h-4 w-4" aria-hidden />
+              Filters
+              {activeFilterCount > 0 && (
+                <span
+                  className="ml-1 inline-flex h-4 min-w-4 items-center justify-center rounded-full bg-primary px-1 text-[10px] font-semibold leading-none text-primary-foreground"
+                  data-testid="board-filter-count"
+                >
+                  {activeFilterCount}
+                </span>
+              )}
+            </Button>
             {/* Board config lives ON the board (owner ruling
              * 2026-10-28: "There are no configuration options for the
              * board" — relocated out of Settings): the defaults dialog
@@ -1040,37 +1088,66 @@ export function BoardPage() {
             </Button>
           </div>
         </div>
-        {/* 2026-10-28 ruling 1: the epic pills are GONE — only REAL
-         * filters render here (the FAILED overlay, tag facets); epic
+        {/* Owner ruling 2026-10-29: the filter pills live in this
+         * COLLAPSIBLE drawer (opened by the toolbar's funnel button) —
+         * no pills inline in the toolbar. 2026-10-28 ruling 1 stays
+         * true a fortiori: no epic pills anywhere; the real filters
+         * (the #1813 FAILED overlay, tag facets) render HERE, and epic
          * association is discovered via the epic rows'
-         * click-highlight (ruling 2). */}
-        <div className="flex flex-wrap items-center gap-1.5">
-          <button
-            onClick={() => setFailedOnly(!failedOnly)}
-            className={cn(
-              "rounded px-1.5 py-0.5 text-[10px] transition-colors",
-              failedOnly ? "bg-destructive/15 text-destructive" : "bg-muted text-muted-foreground hover:bg-accent",
-            )}
-            data-testid="failed-filter-toggle"
-            title="#1813: show only tasks whose last worker attempt failed (the overlay — never a stage)"
+         * click-highlight. Closed = not rendered = ZERO height — on
+         * mobile the board content starts immediately below the
+         * toolbar (nothing overlaps the swim lanes). */}
+        {filterDrawerOpen && (
+          <div
+            id="board-filter-drawer"
+            role="group"
+            aria-label="Board filters"
+            className="flex flex-wrap items-center gap-1.5 rounded-md border border-border bg-muted/30 px-2 py-1.5"
+            data-testid="board-filter-drawer"
           >
-            FAILED
-          </button>
-          {allTags.length > 0 && <span className="mx-1 text-border">|</span>}
-          {allTags.map((tag) => (
             <button
-              key={tag}
-              onClick={() => setTagFilter(tagFilter === tag ? null : tag)}
+              onClick={() => setFailedOnly(!failedOnly)}
               className={cn(
-                "rounded px-1.5 py-0.5 font-mono text-[10px] transition-colors",
-                tagFilter === tag ? "bg-primary/15 text-primary" : "bg-muted text-muted-foreground hover:bg-accent",
+                "rounded px-1.5 py-0.5 text-[10px] transition-colors",
+                failedOnly ? "bg-destructive/15 text-destructive" : "bg-muted text-muted-foreground hover:bg-accent",
               )}
-              data-testid={`tag-filter-${tag}`}
+              data-testid="failed-filter-toggle"
+              title="#1813: show only tasks whose last worker attempt failed (the overlay — never a stage)"
             >
-              {tag}
+              FAILED
             </button>
-          ))}
-        </div>
+            {allTags.length > 0 && <span className="mx-1 text-border">|</span>}
+            {allTags.map((tag) => (
+              <button
+                key={tag}
+                onClick={() => setTagFilter(tagFilter === tag ? null : tag)}
+                className={cn(
+                  "rounded px-1.5 py-0.5 font-mono text-[10px] transition-colors",
+                  tagFilter === tag ? "bg-primary/15 text-primary" : "bg-muted text-muted-foreground hover:bg-accent",
+                )}
+                data-testid={`tag-filter-${tag}`}
+              >
+                {tag}
+              </button>
+            ))}
+            {/* The drawer's own reset affordance — with the pills folded
+             * away this is where a stale filter gets cleared (disabled
+             * at zero active filters; the count badge mirrors it). */}
+            <Button
+              variant="ghost"
+              size="sm"
+              className="ml-auto h-6 px-2 text-[11px]"
+              onClick={() => {
+                setFailedOnly(false);
+                setTagFilter(null);
+              }}
+              disabled={activeFilterCount === 0}
+              data-testid="board-filter-clear"
+            >
+              Clear all
+            </Button>
+          </div>
+        )}
         {(searchMiss || dragError || pageError || pageNotice) && (
           <div className="flex flex-col gap-1">
             {dragError && <BoardErrorNotice error={dragError} title="Move refused — card snapped back" onDismiss={() => setDragError(null)} />}

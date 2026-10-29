@@ -11,8 +11,9 @@ import {
 
 // §4.8 scope switcher: swimlane focus (project), tag/failed filters,
 // search with did-you-mean (0066 shape over loaded rows).
-// 2026-10-28 ruling 1: the epic pills are GONE from the toolbar —
-// only real filters (stage overlay, tag facets) remain there.
+// 2026-10-28 ruling 1: the epic pills are GONE from the toolbar — the
+// real filters (stage overlay, tag facets) live in the collapsible
+// filter drawer (owner ruling 2026-10-29).
 
 describe("BoardPage — scope switcher (project/epic focus)", () => {
   beforeEach(() => {
@@ -37,16 +38,30 @@ describe("BoardPage — scope switcher (project/epic focus)", () => {
   });
 
   // 2026-10-28 ruling 1: the epic pills are removed from the toolbar —
-  // the REAL filters (FAILED overlay, tag facets) stay, and no epic
-  // renders as a pill anywhere in the header.
-  it("renders NO epic pills; the tag and FAILED filters remain", async () => {
+  // and the owner ruling 2026-10-29 folds the REAL filters (FAILED
+  // overlay, tag facets) into the collapsible filter drawer: with the
+  // drawer closed NOTHING renders inline, and no epic renders as a
+  // pill anywhere in the header.
+  it("renders NO pills inline; the real filters live in the filter drawer", async () => {
     renderBoard();
     await screen.findByTestId("task-card-tsk-aaaa0001");
 
     expect(screen.queryByTestId("epic-chip-all")).toBeNull();
     expect(screen.queryByText("E1", { selector: "button" })).toBeNull();
     expect(screen.queryByText("E2", { selector: "button" })).toBeNull();
-    // The actual filters stay.
+    // Drawer closed by default: no filter pills inline, no drawer in
+    // the DOM (zero height — the board starts right below the toolbar).
+    expect(screen.queryByTestId("board-filter-drawer")).toBeNull();
+    expect(screen.queryByTestId("failed-filter-toggle")).toBeNull();
+    expect(screen.queryByTestId("tag-filter-pr:1702")).toBeNull();
+    // The funnel button is the toolbar's only filter affordance, and
+    // with nothing applied it carries NO count badge.
+    expect(screen.getByTestId("board-filter-button")).toBeInTheDocument();
+    expect(screen.queryByTestId("board-filter-count")).toBeNull();
+
+    // Opening the drawer reveals the real filters.
+    fireEvent.click(screen.getByTestId("board-filter-button"));
+    expect(screen.getByTestId("board-filter-drawer")).toBeInTheDocument();
     expect(screen.getByTestId("failed-filter-toggle")).toBeInTheDocument();
     expect(screen.getByTestId("tag-filter-pr:1702")).toBeInTheDocument();
   });
@@ -54,6 +69,7 @@ describe("BoardPage — scope switcher (project/epic focus)", () => {
   it("tag chips filter by tag", async () => {
     renderBoard();
     await screen.findByTestId("task-card-tsk-eeee0005");
+    fireEvent.click(screen.getByTestId("board-filter-button"));
     fireEvent.click(screen.getByTestId("tag-filter-pr:1702"));
     await waitFor(() => expect(screen.queryByTestId("task-card-tsk-aaaa0001")).toBeNull());
     expect(screen.getByTestId("task-card-tsk-eeee0005")).toBeInTheDocument();
