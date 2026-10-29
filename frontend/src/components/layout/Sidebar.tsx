@@ -940,6 +940,16 @@ interface SessionTreeRowProps {
    * the group, exactly as they would on a main-list root).
    */
   rootLevel?: boolean;
+  /**
+   * True for rows rendered inside the Workers group (roots AND their
+   * nested subtrees): the group header already classifies every row
+   * within it, so the per-row origin pill is suppressed (2026-10-29
+   * owner ruling — the pill ate the title's width, truncating titles
+   * to a character or two on narrow viewports). The origin text rides
+   * a native title tooltip on the row instead (zero horizontal cost).
+   * Rows outside the group keep their pill.
+   */
+  suppressOriginBadge?: boolean;
   workspaceId: string;
   selectedSessionId?: string;
   expanded: Set<string>;
@@ -964,6 +974,7 @@ function SessionTreeRow({
   node,
   depth,
   rootLevel = false,
+  suppressOriginBadge = false,
   workspaceId,
   selectedSessionId,
   expanded,
@@ -1097,11 +1108,16 @@ function SessionTreeRow({
               s.archived && "italic text-muted-foreground/70",
             )}
             data-testid={s.archived ? "archived-session-title" : undefined}
+            // Inside the Workers group the origin pill is suppressed
+            // (the group IS the classification) — the origin survives
+            // as this native tooltip, costing no horizontal space.
+            title={suppressOriginBadge && s.origin ? `Origin: ${s.origin}` : undefined}
           >
             {title}
           </span>
-          {s.origin && s.origin !== "manual" && (
+          {s.origin && s.origin !== "manual" && !suppressOriginBadge && (
             <span
+              data-testid="origin-badge"
               className="flex-shrink-0 rounded px-1 text-[9px] font-medium uppercase"
               style={{
                 color: s.origin === "routine" ? "#8b5cf6" : s.origin === "workflow" ? "#3b82f6" : s.origin === "worker" ? "#d97706" : "#6b7280",
@@ -1134,6 +1150,7 @@ function SessionTreeRow({
             key={child.session.id}
             node={child}
             depth={depth + 1}
+            suppressOriginBadge={suppressOriginBadge}
             workspaceId={workspaceId}
             selectedSessionId={selectedSessionId}
             expanded={expanded}
@@ -1280,7 +1297,10 @@ interface WorkersGroupProps {
  * archive, delete, force stop — grouping is presentation-only.
  * Rendered only when at least one board worker exists (hidden
  * entirely otherwise); collapsed by default with a count badge so
- * activity stays visible without clutter.
+ * activity stays visible without clutter. Rows inside the group
+ * carry NO origin pill (2026-10-29 owner ruling: the group header
+ * already says "Workers" — the pill only ate the title's width);
+ * the origin rides a title tooltip on each row instead.
  */
 function WorkersGroup({
   nodes,
@@ -1327,6 +1347,11 @@ function WorkersGroup({
             node={node}
             depth={1}
             rootLevel
+            // 2026-10-29 owner ruling: no per-row worker pill inside
+            // the group — the group header IS the classification, and
+            // the pill ate the title's width. Covers the whole subtree
+            // (nested subagent rows inherit the suppression).
+            suppressOriginBadge
             workspaceId={workspaceId}
             selectedSessionId={selectedSessionId}
             expanded={nodeExpanded}

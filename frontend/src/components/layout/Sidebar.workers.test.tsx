@@ -10,7 +10,11 @@
  * parents. Grouping is presentation-only: the list query still fetches
  * every session (search composes server-side over the same listing),
  * and worker rows stay fully usable when expanded. The group hides
- * entirely when the workspace has no board workers.
+ * entirely when the workspace has no board workers. Rows inside the
+ * group render WITHOUT the per-row origin pill (2026-10-29 owner
+ * ruling: the group header is the classification; the pill ate the
+ * title's width) — the origin rides a title tooltip instead, and
+ * main-list rows outside the group keep their badges.
  */
 import { describe, expect, it, vi, beforeEach } from "vitest";
 import { screen, waitFor, render, fireEvent } from "@testing-library/react";
@@ -233,6 +237,76 @@ describe("Sidebar — Workers group (#1966/ruling 6)", () => {
     await waitFor(() => expect(screen.getByText("Nightly digest")).toBeTruthy());
     expect(screen.getByText("Plain chat")).toBeTruthy();
     expect(screen.queryByTestId("workers-group")).toBeNull();
+  });
+
+  it("renders group rows WITHOUT the origin pill — the group is the classification; the title keeps the full row width", async () => {
+    // 2026-10-29 owner ruling (verbatim): "The worker pill takes up a
+    // ton of space. I can only see 1-2 characters of each session
+    // title." Inside the group the per-row pill is gone; the origin
+    // survives as a native title tooltip (zero horizontal cost — busy
+    // state was never the pill's to carry, it rides the row's status
+    // icon).
+    (workspacesApi.getSessions as ReturnType<typeof vi.fn>).mockResolvedValue([
+      session("ses-user", "My chat"),
+      session("ses-worker-1", "lane-1964 archived drawer", { origin: "worker" }),
+    ]);
+    renderSidebar();
+    await waitFor(() => expect(screen.getByTestId("workers-group")).toBeTruthy());
+    fireEvent.click(screen.getByLabelText("Expand worker sessions"));
+
+    const title = await screen.findByText("lane-1964 archived drawer");
+    const rowButton = title.closest("button");
+    expect(rowButton).toBeTruthy();
+    // No pill chrome inside the group...
+    expect(rowButton?.querySelector('[data-testid="origin-badge"]')).toBeNull();
+    // ...and the origin rides a tooltip on the title span instead.
+    expect(title.getAttribute("title")).toBe("Origin: worker");
+    // Full available width: the title is the row's flexible element
+    // (flex-1 truncate) with no badge chrome between it and the
+    // row's trailing metadata — it grows into the space the pill ate.
+    expect(title.className).toContain("flex-1");
+    expect(title.className).toContain("truncate");
+  });
+
+  it("suppresses the pill on the group's NESTED subagent rows too (the whole subtree rides the group context)", async () => {
+    // A worker's Task-tool subagent can carry its own non-manual
+    // origin — inside the group it is pill-free as well; the origin
+    // still rides the tooltip.
+    (workspacesApi.getSessions as ReturnType<typeof vi.fn>).mockResolvedValue([
+      session("ses-user", "My chat"),
+      session("ses-worker-1", "Board worker", { origin: "worker" }),
+      session("ses-sub", "Worker's explorer subagent", { parentId: "ses-worker-1", origin: "api" }),
+    ]);
+    renderSidebar();
+    await waitFor(() => expect(screen.getByTestId("workers-group")).toBeTruthy());
+    fireEvent.click(screen.getByLabelText("Expand worker sessions"));
+    expect(await screen.findByText("Board worker")).toBeTruthy();
+    fireEvent.click(screen.getByLabelText("Expand subtasks"));
+
+    const subTitle = await screen.findByText("Worker's explorer subagent");
+    const subButton = subTitle.closest("button");
+    expect(subButton?.querySelector('[data-testid="origin-badge"]')).toBeNull();
+    expect(subTitle.getAttribute("title")).toBe("Origin: api");
+  });
+
+  it("keeps the origin pill on MAIN-LIST rows (no regression outside the group)", async () => {
+    (workspacesApi.getSessions as ReturnType<typeof vi.fn>).mockResolvedValue([
+      session("ses-routine", "Nightly digest", { origin: "routine" }),
+      session("ses-worker-1", "Grouped worker", { origin: "worker" }),
+    ]);
+    renderSidebar();
+    const mainTitle = await screen.findByText("Nightly digest");
+    const mainButton = mainTitle.closest("button");
+    // The main list keeps its badges verbatim — pill present, tooltip
+    // on the pill (not the title), title untouched by the ruling.
+    const badge = mainButton?.querySelector('[data-testid="origin-badge"]');
+    expect(badge?.textContent).toBe("routine");
+    expect(badge?.getAttribute("title")).toBe("Origin: routine");
+    expect(mainTitle.getAttribute("title")).toBeNull();
+    // And the group still hides its own pill (both states, one render).
+    fireEvent.click(screen.getByLabelText("Expand worker sessions"));
+    const workerTitle = await screen.findByText("Grouped worker");
+    expect(workerTitle.closest("button")?.querySelector('[data-testid="origin-badge"]')).toBeNull();
   });
 
   it("auto-expands the group when the selected session is a worker (the active session stays visible)", async () => {
