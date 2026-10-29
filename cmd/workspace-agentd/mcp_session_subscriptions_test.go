@@ -243,7 +243,7 @@ func TestSubscribeSession_PhraseParityAndDegradedEmission(t *testing.T) {
 
 	// Phrase form, mixed case — resolves, emits the phrase verbatim.
 	out := callMCPExpectOK(t, "subscribe_session", map[string]any{
-		"sessionId": "Amber-Falcon-Naps",
+		"sessionId":            "Amber-Falcon-Naps",
 		"lsp_injected_session": caller,
 	})
 	assert.Equal(t, "subscribed", out["status"])
@@ -254,7 +254,7 @@ func TestSubscribeSession_PhraseParityAndDegradedEmission(t *testing.T) {
 
 	// Canonical form, cold replica — flagged degraded emission.
 	out = callMCPExpectOK(t, "subscribe_session", map[string]any{
-		"sessionId":           f.newSession("worker-2"),
+		"sessionId":            f.newSession("worker-2"),
 		"lsp_injected_session": caller,
 	})
 	assert.Equal(t, "subscribed", out["status"])
@@ -280,7 +280,7 @@ func TestSubscribeSession_ExplicitEventsAndIdempotentUpdate(t *testing.T) {
 	_, store := withSubscriptionNotifier(t)
 
 	out := callMCPExpectOK(t, "subscribe_session", map[string]any{
-		"sessionId":           target,
+		"sessionId":            target,
 		"events":               []any{"idle"},
 		"lsp_injected_session": caller,
 	})
@@ -291,7 +291,7 @@ func TestSubscribeSession_ExplicitEventsAndIdempotentUpdate(t *testing.T) {
 
 	// Re-subscribe narrows to error-only: same edge, updated set.
 	out = callMCPExpectOK(t, "subscribe_session", map[string]any{
-		"sessionId":           target,
+		"sessionId":            target,
 		"events":               []any{"error", "error"},
 		"lsp_injected_session": caller,
 	})
@@ -310,7 +310,7 @@ func TestSubscribeSession_EventVocabularyIsClosed(t *testing.T) {
 	_, store := withSubscriptionNotifier(t)
 
 	errText := callMCPExpectError(t, "subscribe_session", map[string]any{
-		"sessionId":           target,
+		"sessionId":            target,
 		"events":               []any{"busy"},
 		"lsp_injected_session": caller,
 	})
@@ -319,14 +319,14 @@ func TestSubscribeSession_EventVocabularyIsClosed(t *testing.T) {
 	assert.Contains(t, errText, `"error"`)
 
 	errText = callMCPExpectError(t, "subscribe_session", map[string]any{
-		"sessionId":           target,
+		"sessionId":            target,
 		"events":               []any{1},
 		"lsp_injected_session": caller,
 	})
 	assert.Contains(t, errText, "events entries must be strings")
 
 	errText = callMCPExpectError(t, "subscribe_session", map[string]any{
-		"sessionId":           target,
+		"sessionId":            target,
 		"events":               "idle",
 		"lsp_injected_session": caller,
 	})
@@ -346,7 +346,7 @@ func TestSubscribeSession_TargetNotFoundDidYouMean(t *testing.T) {
 	withSubscriptionNotifier(t)
 
 	errText := callMCPExpectError(t, "subscribe_session", map[string]any{
-		"sessionId":           target + "9", // one dropped-char-class near miss
+		"sessionId":            target + "9", // one dropped-char-class near miss
 		"lsp_injected_session": caller,
 	})
 	assert.Contains(t, errText, "not found in this workspace")
@@ -362,7 +362,7 @@ func TestSubscribeSession_SelfRefused(t *testing.T) {
 	_, store := withSubscriptionNotifier(t)
 
 	errText := callMCPExpectError(t, "subscribe_session", map[string]any{
-		"sessionId":           caller,
+		"sessionId":            caller,
 		"lsp_injected_session": caller,
 	})
 	assert.Contains(t, errText, "self-subscription refused")
@@ -403,14 +403,14 @@ func TestSubscribeSession_SubtaskBothSidesRefused(t *testing.T) {
 	n, store := withSubscriptionNotifier(t)
 
 	errText := callMCPExpectError(t, "subscribe_session", map[string]any{
-		"sessionId":           child,
+		"sessionId":            child,
 		"lsp_injected_session": caller,
 	})
 	assert.Contains(t, errText, "subtask sessions are excluded")
 	assert.Contains(t, errText, "broadcaster")
 
 	errText = callMCPExpectError(t, "subscribe_session", map[string]any{
-		"sessionId":           plain,
+		"sessionId":            plain,
 		"lsp_injected_session": child,
 	})
 	assert.Contains(t, errText, "subtask sessions are excluded")

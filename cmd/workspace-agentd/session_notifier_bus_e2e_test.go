@@ -239,8 +239,8 @@ func TestBusE2E_ConsumerFailureRedelivers(t *testing.T) {
 	go func() {
 		_ = env.bus.Consume(ctx, eventbus.ConsumeOptions{
 			Group: eventbus.GroupNotifier, Consumer: "e2e-fast",
-			Topics: []string{"session.*.*"},
-			Block:  20 * time.Millisecond,
+			Topics:  []string{"session.*.*"},
+			Block:   20 * time.Millisecond,
 			MinIdle: 80 * time.Millisecond, ReclaimTick: 25 * time.Millisecond,
 			Batch: 8, MaxAttempts: 8,
 		}, env.notifier.ConsumeSettleEvent)
@@ -290,7 +290,7 @@ func TestBusE2E_LeaseConsumerDeliversNudge(t *testing.T) {
 
 	require.Eventually(t, func() bool { return len(env.postsTo("ses_assignee")) >= 1 },
 		5*time.Second, 10*time.Millisecond, "the lease consumer never delivered the nudge sentinel (xlen=%d pend=%d posts=%d)",
-			env.streamEntryCount(t), env.groupPending(t, eventbus.GroupLease), env.harness.postCount())
+		env.streamEntryCount(t), env.groupPending(t, eventbus.GroupLease), env.harness.postCount())
 	posts := env.postsTo("ses_assignee")
 	require.Len(t, posts, 1)
 	body := posts[0].body

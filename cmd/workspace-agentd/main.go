@@ -28,8 +28,8 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/lenaxia/llmsafespaces/cmd/workspace-agentd/sessionstate"
-	"github.com/lenaxia/llmsafespaces/pkg/agentd"
 	opencode "github.com/lenaxia/llmsafespaces/pkg/agent/opencode"
+	"github.com/lenaxia/llmsafespaces/pkg/agentd"
 	"github.com/lenaxia/llmsafespaces/pkg/redact"
 	"github.com/lenaxia/llmsafespaces/pkg/session"
 	"github.com/lenaxia/llmsafespaces/pkg/version"

@@ -630,7 +630,7 @@ func TestNotifyMetricsWired(t *testing.T) {
 		e.Input = &abiv1.InputRequest{Id: "ask_1"}
 	}))
 	f.n.handleFrame(seqStatusFrame("ses_w", 20, abiv1.SessionStatus_SESSION_STATUS_BUSY))
-	f.n.handleFrame(seqStatusFrame("ses_w", 21, abiv1.SessionStatus_SESSION_STATUS_IDLE))  // arm
+	f.n.handleFrame(seqStatusFrame("ses_w", 21, abiv1.SessionStatus_SESSION_STATUS_IDLE)) // arm
 	f.n.handleFrame(seqStatusFrame("ses_w", 22, abiv1.SessionStatus_SESSION_STATUS_BUSY)) // cancel inside the window
 	assert.Greater(t, notifyOutcome(t, notifyOutcomeDebounced), debouncedBefore)
 	f.n.handleFrame(seqStatusFrame("ses_w", 23, abiv1.SessionStatus_SESSION_STATUS_IDLE))

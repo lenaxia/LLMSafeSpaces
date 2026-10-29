@@ -568,9 +568,9 @@ func mcpToolCatalog() []mcpTool {
 			InputSchema: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
-				"sessionId": map[string]any{"type": "string", "description": "The session to WATCH — its 3-word phrase (from session_list / session_metadata; case-insensitive), an unambiguous title/slug alias, or (deprecated, one release) the full/hashed id"},
-				"events":    map[string]any{"type": "array", "items": map[string]any{"type": "string", "enum": []string{"idle", "error"}}, "description": "Optional: which turn-completions wake you — \"idle\" (turn completed), \"error\" (turn ended in error). Default: both. Anything else is a loud refusal"},
-				"topics":    map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Optional (design 0072): the event-bus topic alias of `events` — session.<id>.idle, session.<id>.error, or session.<id>.* for both. The <id> must be this same session (any address form); other topics (lease.*, task.*) are a loud refusal — arbitrary pattern subscription is a future tool. Unions with `events`"},
+					"sessionId": map[string]any{"type": "string", "description": "The session to WATCH — its 3-word phrase (from session_list / session_metadata; case-insensitive), an unambiguous title/slug alias, or (deprecated, one release) the full/hashed id"},
+					"events":    map[string]any{"type": "array", "items": map[string]any{"type": "string", "enum": []string{"idle", "error"}}, "description": "Optional: which turn-completions wake you — \"idle\" (turn completed), \"error\" (turn ended in error). Default: both. Anything else is a loud refusal"},
+					"topics":    map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Optional (design 0072): the event-bus topic alias of `events` — session.<id>.idle, session.<id>.error, or session.<id>.* for both. The <id> must be this same session (any address form); other topics (lease.*, task.*) are a loud refusal — arbitrary pattern subscription is a future tool. Unions with `events`"},
 				},
 				"required": []string{"sessionId"},
 			},
