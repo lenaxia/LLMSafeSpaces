@@ -24,8 +24,8 @@ import (
 // and oversize-reference shapes reject.
 func TestPersonaRoleRefValidation(t *testing.T) {
 	// Accepted role-first shapes.
-	mustNotErr(t, ConfigKeyStagePersonas, `{"in_review":"reviewer"}`)                                     // the compact wire form
-	mustNotErr(t, ConfigKeyStagePersonas, `{"in_progress":{"roleId":"build"}}`)                          // object, reference only
+	mustNotErr(t, ConfigKeyStagePersonas, `{"in_review":"reviewer"}`)                                          // the compact wire form
+	mustNotErr(t, ConfigKeyStagePersonas, `{"in_progress":{"roleId":"build"}}`)                                // object, reference only
 	mustNotErr(t, ConfigKeyStagePersonas, `{"in_review":{"roleId":"reviewer","instructions":"Adversarial."}}`) // override layer
 	mustNotErr(t, ConfigKeyStagePersonas, `{"in_review":{"roleId":"`+strings.Repeat("a", PersonaRoleIDMax)+`"}}`)
 	mustNotErr(t, ConfigKeyStagePersonas, `{"in_review":{"roleId":"11111111-1111-1111-1111-111111111111","name":"Reviewer"}}`) // id + display name
@@ -112,7 +112,7 @@ func TestMigratePersonaRoles(t *testing.T) {
 		{ID: "11111111-1111-1111-1111-111111111111", Slug: "reviewer", Name: "Code Reviewer"},
 	}
 	in := map[string]PersonaConfig{
-		"in_review":   {Name: "reviewer", Instructions: "Verify."},    // resolves by slug
+		"in_review":   {Name: "reviewer", Instructions: "Verify."},     // resolves by slug
 		"in_progress": {Name: "implementer", Instructions: "Ship it."}, // unresolvable — kept verbatim
 	}
 	out := MigratePersonaRoles(in, roles)
