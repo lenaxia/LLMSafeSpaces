@@ -13,6 +13,7 @@ import {
   type BoardProject,
   type ProjectBoardConfigOverrideInput,
 } from "../../api/board";
+import { agentRolesApi, type AgentRole } from "../../api/agentRoles";
 import { Select } from "../ui/Select";
 import { NumberInput } from "../ui/NumberInput";
 import { Button } from "../ui/Button";
@@ -60,6 +61,54 @@ function personaDraftDirty(draft: PersonaDraft, stored: PersonaDraft): boolean {
   return draft.explicit !== stored.explicit || JSON.stringify(draft.map) !== JSON.stringify(stored.map);
 }
 
+// --- Role-first persona editing (owner ruling 2026-10-29) ----------------------
+//
+// Personas REFERENCE the platform's agent roles instead of redefining
+// model/tools/system-prompt per persona: the per-stage base behavior
+// is a role DROPDOWN (the member-readable GET /me/agent-roles
+// vocabulary), and the only free-form text left is the OPTIONAL
+// instructions override layered on the role's system prompt. The
+// legacy name-only shape still renders (a role-less lane with the
+// name input kept for backward compat — existing stored personas
+// must stay editable), but NEW composition is role-first.
+
+const PERSONA_NO_ROLE = "No role (legacy name + instructions)";
+
+/** One role's dropdown label — the display the editor and the status
+ * lines render (name, disambiguated by scope). */
+function roleLabel(r: AgentRole): string {
+  return `${r.name} (${r.scope})`;
+}
+
+/** The role a persona's roleId addresses (id or slug — the platform
+ * accepts both), or null for a role-less/legacy persona. */
+function personaRole(p: BoardPersonaConfig | undefined, roles: AgentRole[]): AgentRole | null {
+  if (!p?.roleId) return null;
+  return roles.find((r) => r.id === p.roleId || r.slug === p.roleId) ?? null;
+}
+
+/** A persona's display label for status lines: the role's name when
+ * referenced, else the legacy name, else the raw reference. */
+function personaLabel(p: BoardPersonaConfig | undefined, roles: AgentRole[]): string {
+  if (!p) return "";
+  const r = personaRole(p, roles);
+  if (r) return r.name;
+  return p.name || p.roleId || "";
+}
+
+/** The one-click reviewer import (the suppression warning's button):
+ * the reviewer AGENT ROLE when the vocabulary carries one (the
+ * default-reviewer composition points at it — ruling 2026-10-29),
+ * with the mirrored charter prose as the override layer; the legacy
+ * name+instructions shape when no reviewer role exists. */
+function reviewerImport(roles: AgentRole[]): BoardPersonaConfig {
+  const role = roles.find((r) => r.slug === "reviewer" || r.name === "reviewer");
+  if (role) {
+    return { roleId: role.id, name: DEFAULT_REVIEWER_PERSONA.name, instructions: DEFAULT_REVIEWER_PERSONA.instructions };
+  }
+  return { name: DEFAULT_REVIEWER_PERSONA.name, instructions: DEFAULT_REVIEWER_PERSONA.instructions };
+}
+
 // The legacy-composition hazard, shared by both tiers: an explicit map
 // without an in_review entry suppresses whatever in_review runs on
 // today — the built-in auto-reviewer persona when the composition is
@@ -69,6 +118,7 @@ function PersonaSuppressWarning(props: {
   testPrefix: string;
   kind: "composition" | "inherited";
   inheritedPersona?: BoardPersonaConfig;
+  roles: AgentRole[];
   onImport: () => void;
 }) {
   return (
@@ -86,9 +136,8 @@ function PersonaSuppressWarning(props: {
         ) : (
           <>
             Saving this override without an <strong>in_review</strong> entry suppresses the inherited in_review
-            persona{" "}
-            <strong>{props.inheritedPersona?.name}</strong> — an explicit override map owns every stage, listed or
-            not.
+            persona <strong>{personaLabel(props.inheritedPersona, props.roles)}</strong> — an explicit override map
+            owns every stage, listed or not.
           </>
         )}
       </p>
@@ -100,18 +149,24 @@ function PersonaSuppressWarning(props: {
         onClick={props.onImport}
       >
         Add the{" "}
-        {props.kind === "composition" ? "default reviewer persona" : `inherited “${props.inheritedPersona?.name}” persona`}
+        {props.kind === "composition"
+          ? "default reviewer persona"
+          : `inherited “${personaLabel(props.inheritedPersona, props.roles)}” persona`}
       </Button>
     </div>
   );
 }
 
 /** The stage → persona editor, both tiers. Per persona-eligible stage:
- * name + instructions when the explicit map lists it; an explicit
- * "no persona" row when it does not (the explicit-key-owns-all-stages
- * semantics made visible); what the stage runs on TODAY (inherited
- * persona, default reviewer via the legacy composition, or nothing)
- * renders as context while editing. */
+ * a ROLE dropdown (the base behavior — the referenced agent role's
+ * model/tools/system-prompt) + an optional instructions override when
+ * the stage is listed; the legacy name+instructions lane renders only
+ * for personas stored without a role (backward compat — no free-form
+ * composition for the base behavior); an explicit "no persona" row
+ * when the map does not list the stage (the
+ * explicit-key-owns-all-stages semantics made visible); what the stage
+ * runs on TODAY (inherited persona, default reviewer via the legacy
+ * composition, or nothing) renders as context while editing. */
 export function PersonaEditor(props: {
   tier: "user" | "project";
   testPrefix: string;
@@ -124,8 +179,13 @@ export function PersonaEditor(props: {
    * stagePersonas when their map is explicit; null = no explicit map
    * above → the composition is what in_review runs on). */
   inherited: Record<string, BoardPersonaConfig> | null;
+  /** The selectable agent-role vocabulary (GET /me/agent-roles). May
+   * be empty (load failure / none defined) — editing degrades to the
+   * legacy lane. */
+  roles: AgentRole[];
 }) {
   const { draft, onDraft } = props;
+  const roles = props.roles;
   const setMap = (map: Record<string, BoardPersonaConfig>) => onDraft({ ...draft, map });
 
   const effectiveInherited = (stage: string): BoardPersonaConfig | undefined =>
@@ -135,6 +195,28 @@ export function PersonaEditor(props: {
   // in_review entry, while in_review currently runs on SOMETHING.
   const suppressWarning =
     draft.explicit && !draft.map["in_review"] && (props.compositionActive || inheritedReviewer !== undefined);
+
+  // The dropdown's option list: the no-role lane + every available
+  // role, labeled for display. An unresolvable stored reference rides
+  // as its own option so the value stays visible and preserved.
+  const roleOptions = (current?: string): string[] => {
+    const opts = [PERSONA_NO_ROLE, ...roles.map(roleLabel)];
+    if (current && !opts.includes(current)) opts.push(current);
+    return opts;
+  };
+  const roleSelectValue = (p: BoardPersonaConfig): string => {
+    const r = personaRole(p, roles);
+    if (r) return roleLabel(r);
+    return p.roleId || PERSONA_NO_ROLE;
+  };
+  const onRoleSelect = (stage: string, p: BoardPersonaConfig, label: string) => {
+    if (label === PERSONA_NO_ROLE) {
+      setMap({ ...draft.map, [stage]: { ...p, roleId: undefined } });
+      return;
+    }
+    const r = roles.find((role) => roleLabel(role) === label);
+    if (r) setMap({ ...draft.map, [stage]: { ...p, roleId: r.id, name: r.name } });
+  };
 
   return (
     <div className="rounded-md border border-border p-3 space-y-3" data-testid={props.testPrefix}>
@@ -191,6 +273,12 @@ export function PersonaEditor(props: {
         </p>
       )}
 
+      {roles.length === 0 && (
+        <p className="text-xs text-muted-foreground" data-testid={`${props.testPrefix}-no-roles`}>
+          No agent roles are available to select — personas fall back to the legacy name + instructions shape.
+        </p>
+      )}
+
       <div className="space-y-2">
         {PERSONA_ELIGIBLE_STAGES.map((stage) => {
           const persona = draft.map[stage];
@@ -199,7 +287,7 @@ export function PersonaEditor(props: {
             const inh = effectiveInherited(stage);
             let status: string;
             if (inh) {
-              status = `inherited: “${inh.name}”`;
+              status = `inherited: “${personaLabel(inh, roles)}”`;
             } else if (stage === "in_review" && props.compositionActive) {
               status = "default reviewer persona (auto-review composition)";
             } else {
@@ -233,24 +321,25 @@ export function PersonaEditor(props: {
                   variant="outline"
                   size="sm"
                   data-testid={`${props.testPrefix}-${stage}-add`}
-                  onClick={() => setMap({ ...draft.map, [stage]: { name: "", instructions: "" } })}
+                  onClick={() => setMap({ ...draft.map, [stage]: { instructions: "" } })}
                 >
                   Add persona
                 </Button>
               </div>
             );
           }
+          const role = personaRole(persona, roles);
           return (
             <div key={stage} className="rounded-md border border-border p-2.5 space-y-2" data-testid={`${props.testPrefix}-${stage}-row`}>
               <div className="flex flex-wrap items-center gap-2">
                 <span className="text-sm font-medium">{STAGE_LABELS[stage]}</span>
-                <Input
-                  className="h-8 flex-1 min-w-40"
-                  placeholder="Persona name (e.g. reviewer)"
-                  value={persona.name}
-                  data-testid={`${props.testPrefix}-${stage}-name`}
-                  onChange={(e) => setMap({ ...draft.map, [stage]: { ...persona, name: e.target.value } })}
-                />
+                <span data-testid={`${props.testPrefix}-${stage}-role`}>
+                  <Select
+                    value={roleSelectValue(persona)}
+                    onValueChange={(v) => onRoleSelect(stage, persona, v)}
+                    options={roleOptions(roleSelectValue(persona))}
+                  />
+                </span>
                 <Button
                   variant="outline"
                   size="sm"
@@ -264,9 +353,24 @@ export function PersonaEditor(props: {
                   Remove
                 </Button>
               </div>
+              {!persona.roleId && (
+                <Input
+                  className="h-8 w-full"
+                  placeholder="Persona name (legacy shape — pick a role instead)"
+                  value={persona.name ?? ""}
+                  data-testid={`${props.testPrefix}-${stage}-name`}
+                  onChange={(e) => setMap({ ...draft.map, [stage]: { ...persona, name: e.target.value } })}
+                />
+              )}
+              {role && (
+                <p className="text-xs text-muted-foreground" data-testid={`${props.testPrefix}-${stage}-role-note`}>
+                  {role.name}'s model, tools, and system prompt come from the referenced agent role — the role is the
+                  single source of truth.
+                </p>
+              )}
               <textarea
                 className="min-h-20 w-full rounded-md border border-input bg-background px-3 py-2 text-sm shadow-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                placeholder="Persona instructions (the spawned worker's charter preamble)"
+                placeholder="Optional instructions override (layered on the role's system prompt)"
                 value={persona.instructions ?? ""}
                 data-testid={`${props.testPrefix}-${stage}-instructions`}
                 onChange={(e) => setMap({ ...draft.map, [stage]: { ...persona, instructions: e.target.value } })}
@@ -281,15 +385,13 @@ export function PersonaEditor(props: {
           testPrefix={props.testPrefix}
           kind={inheritedReviewer !== undefined ? "inherited" : "composition"}
           inheritedPersona={inheritedReviewer}
+          roles={roles}
           onImport={() =>
             onDraft({
               ...draft,
               map: {
                 ...draft.map,
-                in_review:
-                  inheritedReviewer !== undefined
-                    ? { ...inheritedReviewer }
-                    : { name: DEFAULT_REVIEWER_PERSONA.name, instructions: DEFAULT_REVIEWER_PERSONA.instructions },
+                in_review: inheritedReviewer !== undefined ? { ...inheritedReviewer } : reviewerImport(roles),
               },
             })
           }
@@ -298,6 +400,7 @@ export function PersonaEditor(props: {
     </div>
   );
 }
+
 
 const dialogContentClass =
   "fixed left-1/2 top-1/2 z-50 flex max-h-[85vh] w-[36rem] max-w-[calc(100vw-2rem)] -translate-x-1/2 -translate-y-1/2 flex-col gap-3 overflow-y-auto rounded-md border border-border bg-background p-4 shadow-xl";
@@ -312,6 +415,14 @@ export function BoardDefaultsDialog(props: { open: boolean; onOpenChange: (open:
   const userCfg = useQuery({
     queryKey: ["board", "config"],
     queryFn: () => boardApi.getUserBoardConfig(),
+    enabled: props.open,
+  });
+  // The persona editor's role vocabulary (member-readable — platform +
+  // the acting user's org roles). Load failures degrade to the legacy
+  // editor lane (roles=[]).
+  const rolesCfg = useQuery({
+    queryKey: ["agent-roles", "me"],
+    queryFn: () => agentRolesApi.listForMe(),
     enabled: props.open,
   });
   const [global, setGlobal] = useState<BoardConfig | null>(null);
@@ -428,6 +539,7 @@ export function BoardDefaultsDialog(props: { open: boolean; onOpenChange: (open:
                 // exists anywhere: the legacy auto-review composition.
                 compositionActive={(g?.reviewColumn ?? "auto") === "auto" && (g?.autoAssignReviewer ?? true)}
                 inherited={null}
+                roles={rolesCfg.data ?? []}
               />
               <div className="flex justify-end">
                 <Button
@@ -489,6 +601,13 @@ export function ProjectConfigDialog(props: {
   const userCfg = useQuery({
     queryKey: ["board", "config"],
     queryFn: () => boardApi.getUserBoardConfig(),
+    enabled: props.open,
+  });
+  // The persona editor's role vocabulary (shared query key with the
+  // defaults dialog — one fetch serves both).
+  const rolesCfg = useQuery({
+    queryKey: ["agent-roles", "me"],
+    queryFn: () => agentRolesApi.listForMe(),
     enabled: props.open,
   });
   const [slots, setSlots] = useState<number | null>(null);
@@ -635,6 +754,7 @@ export function ProjectConfigDialog(props: {
                   (pc?.effective.autoAssignReviewer ?? false)
                 }
                 inherited={userInherited}
+                roles={rolesCfg.data ?? []}
               />
               {error && (
                 <p className="text-sm text-destructive" data-testid={`cfg-error-${props.project.short_id}`}>

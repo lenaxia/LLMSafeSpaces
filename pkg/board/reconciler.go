@@ -692,7 +692,7 @@ func (s *Service) rc1PersonaClaims(ctx context.Context) (personaReclaim, error) 
 		}
 		evt, err := recordEventTx(ctx, tx, v.project, "reconciler:reclaim:"+v.id+":"+v.episode,
 			"reclaim", "task", v.id, sys,
-			map[string]any{"task_id": v.id, "stage": StageInReview, "persona": persona.Name,
+			map[string]any{"task_id": v.id, "stage": StageInReview, "persona": persona.Label(),
 				"failure_count": v.failures + 1, "last_attempt_failed": true, "last_failure_at": time.Now().UTC()})
 		if err != nil {
 			_ = tx.Rollback(ctx)
@@ -773,7 +773,7 @@ func (s *Service) rc1PersonaClaims(ctx context.Context) (personaReclaim, error) 
 			// audit event (ON CONFLICT DO NOTHING).
 			evt, err := recordEventTx(ctx, tx, v.project, "reconciler:escalate:"+v.id+":"+strconv.FormatInt(time.Now().UnixNano(), 10),
 				"escalate", "task", v.id, sys,
-				map[string]any{"task_id": v.id, "stage": StageInReview, "persona": persona.Name,
+				map[string]any{"task_id": v.id, "stage": StageInReview, "persona": persona.Label(),
 					"failure_count": v.failures, "exhausted": true})
 			if err != nil {
 				_ = tx.Rollback(ctx)
@@ -790,7 +790,7 @@ func (s *Service) rc1PersonaClaims(ctx context.Context) (personaReclaim, error) 
 			UPDATE tasks SET `+personaClaimSQL+`
 			WHERE id=$1 AND stage='in_review' AND claim_token IS NULL AND NOT paused
 			  AND (cooldown_until IS NULL OR cooldown_until < now())`,
-			v.id, token, s.cfg.LeaseDuration.Seconds(), persona.Name)
+			v.id, token, s.cfg.LeaseDuration.Seconds(), persona.Label())
 		if err != nil {
 			_ = tx.Rollback(ctx)
 			return out, err

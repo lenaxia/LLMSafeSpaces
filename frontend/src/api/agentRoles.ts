@@ -55,6 +55,11 @@ export interface UpdateAgentRoleRequest {
 }
 
 export const agentRolesApi = {
+  // Member-readable vocabulary (platform + the acting user's org
+  // roles): the board persona editor's dropdown and the stagePersonas
+  // roleId validation set. Mounted on the auth group (/auth/me/*).
+  listForMe: () => api.get<AgentRole[]>("/auth/me/agent-roles"),
+
   listPlatform: () => api.get<AgentRole[]>("/admin/agent-roles"),
   createPlatform: (req: CreateAgentRoleRequest) => api.post<AgentRole>("/admin/agent-roles", req),
   getPlatform: (id: string) => api.get<AgentRole>(`/admin/agent-roles/${id}`),
