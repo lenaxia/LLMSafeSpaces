@@ -926,6 +926,7 @@ export function BoardPage() {
               stage={stage}
               projectTasks={projectTasks}
               allProjectTasks={laneAllTasks}
+              workspaceId={project.target_workspace_id}
               stageOf={stageOf}
               optimistic={optimistic}
               refusedShortId={refusedShortId}
@@ -968,6 +969,7 @@ export function BoardPage() {
                   stage={stage}
                   projectTasks={projectTasks}
                   allProjectTasks={laneAllTasks}
+                  workspaceId={project.target_workspace_id}
                   stageOf={stageOf}
                   optimistic={optimistic}
                   refusedShortId={refusedShortId}
@@ -1561,6 +1563,7 @@ export function BoardPage() {
           if (!open) setTaskDrawer(null);
         }}
         task={taskDrawer}
+        workspaceId={taskDrawer ? projects.find((p) => p.id === taskDrawer.project_id)?.target_workspace_id : undefined}
         projectTasks={taskDrawer ? tasks.filter((t) => t.project_id === taskDrawer.project_id) : []}
         onEdit={
           taskDrawer
@@ -1679,6 +1682,9 @@ interface StageCellProps {
   stage: BoardStage;
   projectTasks: BoardTask[];
   allProjectTasks: BoardTask[];
+  /** The swimlane project's target workspace — the cards' assignee
+   * session links' chat-route segment (2026-10-29 owner ruling). */
+  workspaceId?: string;
   stageOf: (t: BoardTask) => BoardStage;
   optimistic: OptimisticMap;
   refusedShortId: string | null;
@@ -1704,6 +1710,7 @@ function StageCell({
   stage,
   projectTasks,
   allProjectTasks,
+  workspaceId,
   stageOf,
   optimistic,
   refusedShortId,
@@ -1758,6 +1765,7 @@ function StageCell({
           key={t.short_id}
           task={t}
           projectTasks={allProjectTasks}
+          workspaceId={workspaceId}
           pending={optimistic[t.short_id] !== undefined}
           refused={refusedShortId === t.short_id}
           dimmed={highlightEpicId !== null && t.epic_id !== highlightEpicId}

@@ -1201,6 +1201,8 @@ func TestTriggerTools_InputMappingArgsPassThrough(t *testing.T) {
 	assert.Contains(t, triggerCreateTool.Description, "proceed=false exits the fire with NO LLM call")
 	assert.Contains(t, triggerCreateTool.Description, "{{key}}")
 	assert.Contains(t, triggerCreateTool.Description, "fail")
+	assert.Contains(t, triggerCreateTool.Description, "must catch its own exceptions")
+	assert.Contains(t, triggerCreateTool.Description, "fail-open")
 	b, err = json.Marshal(triggerUpdateTool.InputSchema)
 	require.NoError(t, err)
 	assert.Contains(t, string(b), "input_from")

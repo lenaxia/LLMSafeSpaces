@@ -118,6 +118,37 @@ describe("BoardPage — kanban/swimlanes render (§4.8)", () => {
     expect(idleCard.querySelector("[data-busy]")).toBeNull();
   });
 
+  // 2026-10-29 owner ruling: the card's assignee area clicks straight
+  // through to the session's chat view (/chat/:workspaceId/:sessionId
+  // — the same target as the sidebar). The read edge already serves
+  // the #1922 phrase, so the display text IS the route segment.
+  it("links the card's assignee ref to the session's chat view (phrase display, /chat target)", async () => {
+    renderBoard();
+    const card = await screen.findByTestId("task-card-tsk-bbbb0002");
+    const link = card.querySelector('[data-testid="assignee-link-tsk-bbbb0002"]') as HTMLAnchorElement | null;
+    expect(link).not.toBeNull();
+    expect(link!.getAttribute("href")).toBe("/chat/ws-1/amber-falcon-glides");
+    expect(link!.textContent).toBe("amber-falcon-glides");
+    // Unclaimed rows carry no link at all.
+    expect(screen.getByTestId("task-card-tsk-aaaa0001").querySelector('[data-testid^="assignee-link-"]')).toBeNull();
+  });
+
+  it("keeps the assignee link valid through the #1922 cold window (raw id + deprecation flag — never a broken link)", async () => {
+    const tasks = defaultTasks().map((t) =>
+      t.short_id === "tsk-bbbb0002"
+        ? { ...t, assignee_session: "ses_ed9183a46ffeRiNw2PddpL5dAA", assignee_session_deprecated: true }
+        : t,
+    );
+    seedBoard(tasks);
+    renderBoard();
+    const card = await screen.findByTestId("task-card-tsk-bbbb0002");
+    const link = card.querySelector('[data-testid="assignee-link-tsk-bbbb0002"]') as HTMLAnchorElement | null;
+    expect(link).not.toBeNull();
+    expect(link!.getAttribute("href")).toBe("/chat/ws-1/ses_ed9183a46ffeRiNw2PddpL5dAA");
+    expect(link!.textContent).toContain("ses_ed9183a46ffeRiNw2PddpL5dAA");
+    expect(link!.getAttribute("data-deprecated")).toBe("true");
+  });
+
   it("carries the structural blocked badge with the dependency count (ruling R3)", async () => {
     renderBoard();
     const badge = await screen.findByTestId("blocked-badge-tsk-eeee0005");

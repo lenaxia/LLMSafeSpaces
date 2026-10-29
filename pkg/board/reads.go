@@ -192,8 +192,11 @@ func (s *Service) TaskEvents(ctx context.Context, taskID, shortIDOrID string, li
 	// #1922: board_events.actor is append-only — the session id is
 	// translated at READ time only (phrase when known; raw + the #1821
 	// session_id_deprecated flag when cold). The stored rows stay
-	// byte-identical.
-	s.translateEventActors(ctx, t.ProjectID, out)
+	// byte-identical. The delete/cascade payloads embed the task row
+	// snapshot verbatim (2026-10-29 ruling: implementer_session rides
+	// it now) — the SAME read-time pass translates both snapshot
+	// session fields, never-worse, off the one consult.
+	s.translateEventReads(ctx, t.ProjectID, out)
 	return out, nil
 }
 

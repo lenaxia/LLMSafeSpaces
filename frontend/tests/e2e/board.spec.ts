@@ -48,6 +48,12 @@ type E2ETask = {
   is_blocked: boolean;
   blocked_by?: string[];
   assignee_session?: string;
+  /** #1922 cold-window flag (raw harness id on the wire). */
+  assignee_session_deprecated?: boolean;
+  /** 2026-10-29 ruling: the #1959 implementer identity on the wire
+   * (phrase-translated at the read edge, same as the assignee). */
+  implementer_session?: string;
+  implementer_session_deprecated?: boolean;
   attempts: number;
   claim_incremented_attempts: boolean;
   /** #1813: the failed-state overlay's row flag (drives the FAILED
@@ -1415,5 +1421,49 @@ test.describe("2026-10-29 filter drawer — pills collapsed, count badge, clear-
     expect(await toolbarToGrid()).toBeGreaterThanOrEqual(-1);
     await expect(page.getByTestId("task-card-tsk-aaaa0001")).toHaveCount(0);
     await expect(page.getByTestId("board-filter-count")).toHaveText("1");
+  });
+
+  // 2026-10-29 owner ruling: the board's session refs CLICK THROUGH to
+  // the session's chat view (/chat/:workspaceId/:sessionId — the
+  // sidebar's target; the #1922 phrase the read edge serves is the
+  // display text AND the route segment). The vitest tier pins the
+  // rendered hrefs + router navigation; THIS is the real-browser pin —
+  // an overlay swallowing the click, a lost stopPropagation (the card's
+  // edit dialog opening instead of navigation), or a router mismatch
+  // all surface here and only here.
+  test("session refs on the card and in the drawer click through to the session's chat view", async ({ page }) => {
+    const state = freshState();
+    // Set BEFORE goto — the browser's query cache holds parsed copies.
+    state.tasks.find((t) => t.short_id === "tsk-bbbb0002")!.assignee_session = "amber-falcon-glides";
+    state.tasks.find((t) => t.short_id === "tsk-cccc0003")!.implementer_session = "brave-osprey-lands";
+    await installSSEEmitters(page);
+    await setupBoardMocks(page, state);
+    // The landed chat view's sessions list (keeps the destination
+    // quiet; the URL pin is the target, the list is not under test).
+    await page.route(`${API}/workspaces/${WORKSPACE_ID}/sessions*`, (r: Route) => {
+      if (new URL(r.request().url()).pathname.endsWith("/sessions")) {
+        void r.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify([]) });
+        return;
+      }
+      void r.continue();
+    });
+
+    await page.goto("/board");
+    await expect(page.getByTestId("task-card-tsk-bbbb0002")).toBeVisible();
+
+    // CARD leg: clicking the assignee ref navigates — and the card's
+    // own click (the edit dialog) must NOT fire (stopPropagation).
+    await page.getByTestId("assignee-link-tsk-bbbb0002").click();
+    await expect(page).toHaveURL(new RegExp(`/chat/${WORKSPACE_ID}/amber-falcon-glides$`));
+    await expect(page.getByTestId("task-title")).toHaveCount(0);
+
+    // DRAWER leg: back to the board, open the review row's details,
+    // click the implementer ref (the #1959 original worker).
+    await page.goto("/board");
+    await expect(page.getByTestId("task-card-tsk-cccc0003")).toBeVisible();
+    await page.getByTestId("details-tsk-cccc0003").click();
+    await expect(page.getByTestId("drawer-implementer")).toBeVisible();
+    await page.getByTestId("drawer-implementer").click();
+    await expect(page).toHaveURL(new RegExp(`/chat/${WORKSPACE_ID}/brave-osprey-lands$`));
   });
 });
