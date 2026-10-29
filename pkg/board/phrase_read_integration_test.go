@@ -18,6 +18,7 @@ package board_test
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"strings"
 
 	"github.com/google/uuid"
@@ -254,6 +255,116 @@ func (s *BoardSuite) TestReads_ImplementerSessionPhrase() {
 		Scan(&storedAssignee, &storedImplementer))
 	assert.Equal(s.T(), raw, storedAssignee, "the stored assignee_session stays the canonical harness id")
 	assert.Equal(s.T(), raw, storedImplementer, "the stored implementer_session stays the canonical harness id")
+}
+
+// TestReads_TaskEventsPayloadSnapshots pins the events-read payload leg
+// (review round 1, Finding 1): delete/cascade events embed the task's
+// full snapshot (snapshotOf) in the payload, and since the 2026-10-29
+// ruling put implementer_session on the wire the snapshot carries BOTH
+// raw session fields — the REST task-events read must translate them
+// exactly like the SSE emission edge does (phrase when minted; raw +
+// the per-field deprecation flag in the cold window), never serving an
+// unflagged raw id. The stored audit rows stay canonical.
+//
+// Routing note: a deleted task's own timeline is hidden behind
+// TaskEvents' resolveTask gate (the row is gone — honest 404), so the
+// pin copies the REAL delete-event payload bytes (delete.go's own
+// writer) onto a LIVE sibling task's timeline and reads them through
+// the genuine TaskEvents path — same project, same consult, same
+// translation seam.
+func (s *BoardSuite) TestReads_TaskEventsPayloadSnapshots() {
+	ctx := context.Background()
+	ws := s.seedWorkspace()
+	p := s.seedProject(ws, 2)
+	e := s.seedEpic(p, board.EpicActive)
+	s.seedPhraseRowCleanup(ws)
+
+	// The warm leg: claimed → in_review (the forward exit captures the
+	// implementer), phrase minted, then deleted — the real delete event
+	// carries the snapshot with both raw fields.
+	t1 := s.seedTask(e, "warm snapshot pin", nil, true)
+	c1, warmRaw := s.claimWithAssignee(ws)
+	worker1 := board.Actor{Kind: board.ActorUser, UserID: testUser, Surface: board.SurfaceAgent,
+		ClaimToken: c1.ClaimToken, WorkspaceID: ws}
+	_, err := s.svc.MoveStage(ctx, worker1, t1.ID, "", board.StageInReview, "https://example.test/evidence", "")
+	require.NoError(s.T(), err)
+	s.seedPhraseRow(ws, warmRaw, "amber-falcon-glides")
+	_, err = s.svc.DeleteTask(ctx, s.owner(), t1.ID, "", false, "")
+	require.NoError(s.T(), err)
+
+	// The cold leg: same lifecycle, but no session_index row — the
+	// snapshot must degrade raw+flagged on BOTH fields.
+	t2 := s.seedTask(e, "cold snapshot pin", nil, true)
+	c2, coldRaw := s.claimWithAssignee(ws)
+	worker2 := board.Actor{Kind: board.ActorUser, UserID: testUser, Surface: board.SurfaceAgent,
+		ClaimToken: c2.ClaimToken, WorkspaceID: ws}
+	_, err = s.svc.MoveStage(ctx, worker2, t2.ID, "", board.StageInReview, "https://example.test/evidence", "")
+	require.NoError(s.T(), err)
+	_, err = s.svc.DeleteTask(ctx, s.owner(), t2.ID, "", false, "")
+	require.NoError(s.T(), err)
+
+	// The reader: a LIVE task whose timeline carries copies of the two
+	// real delete-event payloads (the resolver-gate routing above).
+	reader := s.seedTask(e, "snapshot reader pin", nil, true)
+	for i, deletedID := range []string{t1.ID, t2.ID} {
+		var actor, payload []byte
+		require.NoError(s.T(), s.pool.QueryRow(ctx,
+			`SELECT actor, payload FROM board_events WHERE item_id=$1 AND action='delete_task' LIMIT 1`, deletedID).
+			Scan(&actor, &payload))
+		require.NotEmpty(s.T(), payload, "the delete event carries a payload snapshot")
+		require.Contains(s.T(), string(payload), "implementer_session", "the snapshot embeds the implementer field")
+		_, err := s.pool.Exec(ctx, `
+			INSERT INTO board_events (id, project_id, item_kind, item_id, action, actor, payload)
+			VALUES ($1, $2, 'task', $3, 'delete_task', $4, $5)`,
+			fmt.Sprintf("pin-events-payload-%d", i), p.ID, reader.ID, actor, payload)
+		require.NoError(s.T(), err)
+	}
+
+	evs, err := s.svc.TaskEvents(ctx, reader.ID, "", 50)
+	require.NoError(s.T(), err)
+	snapshots := map[string]map[string]any{}
+	for _, ev := range evs {
+		if ev.Action != "delete_task" {
+			continue
+		}
+		var pl struct {
+			Snapshot map[string]any `json:"snapshot"`
+		}
+		require.NoError(s.T(), json.Unmarshal(ev.Payload, &pl), "the delete payload stays a JSON object")
+		require.NotNil(s.T(), pl.Snapshot, "the payload embeds the task snapshot")
+		switch {
+		case pl.Snapshot["assignee_session"] == "amber-falcon-glides" || pl.Snapshot["implementer_session"] == "amber-falcon-glides":
+			snapshots["warm"] = pl.Snapshot
+		default:
+			snapshots["cold"] = pl.Snapshot
+		}
+	}
+	require.Contains(s.T(), snapshots, "warm", "the warm delete snapshot rides the events read")
+	require.Contains(s.T(), snapshots, "cold", "the cold delete snapshot rides the events read")
+
+	warm := snapshots["warm"]
+	assert.Equal(s.T(), "amber-falcon-glides", warm["assignee_session"],
+		"the warm snapshot's assignee serves the phrase on the events read")
+	assert.Equal(s.T(), "amber-falcon-glides", warm["implementer_session"],
+		"the warm snapshot's implementer serves the phrase on the events read (Finding 1)")
+	assert.Nil(s.T(), warm["assignee_session_deprecated"], "warm snapshot carries no assignee flag")
+	assert.Nil(s.T(), warm["implementer_session_deprecated"], "warm snapshot carries no implementer flag")
+
+	cold := snapshots["cold"]
+	assert.Equal(s.T(), coldRaw, cold["assignee_session"], "the cold snapshot degrades to the raw assignee (never worse)")
+	assert.Equal(s.T(), coldRaw, cold["implementer_session"], "the cold snapshot degrades to the raw implementer (never worse)")
+	assert.Equal(s.T(), true, cold["assignee_session_deprecated"], "the cold snapshot flags the assignee (the SSE precedent's shape)")
+	assert.Equal(s.T(), true, cold["implementer_session_deprecated"], "the cold snapshot flags the implementer (Finding 1)")
+
+	// Storage immutability: the two REAL delete rows (and the pinned
+	// copies) still hold the canonical raw ids — append-only evidence is
+	// never rewritten.
+	var rawCount int
+	require.NoError(s.T(), s.pool.QueryRow(ctx,
+		`SELECT count(*) FROM board_events WHERE project_id=$1 AND action='delete_task'
+		 AND payload->'snapshot'->>'implementer_session' = ANY($2)`, p.ID, []string{warmRaw, coldRaw}).
+		Scan(&rawCount))
+	assert.EqualValues(s.T(), 4, rawCount, "every stored delete payload (2 real + 2 pinned copies) keeps the canonical raw implementer")
 }
 
 // TestReads_ActorSessionPhrase pins surface 2: board_events.actor's

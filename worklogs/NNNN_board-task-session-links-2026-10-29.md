@@ -135,3 +135,52 @@ pkg/board + pkg/mcp FULL integration suites (PG on :5433) green,
   pattern already on every task read.
 - The card/drawer never mint their own session lookups (no client-side
   fetch per card) — the read edge carries the phrase, full stop.
+
+## 6 — Review round 1 (GitHub AI reviewer, CHANGES_REQUESTED on 2d9764ff1)
+
+Two findings; both addressed on the branch.
+
+**Finding 1 — the REST task-events edge served raw unflagged
+`implementer_session` in delete/cascade payload snapshots.** The actor
+leg of the events read translated (`translateEventActors`) but
+`Event.Payload` rode byte-identical — and delete/cascade events embed
+`snapshotOf(board.Task)`, which since this PR serializes
+`implementer_session` (raw, stored canonical) with no cold-window flag:
+a never-worse violation on a read edge. Fix: the seam generalizes to
+`translateEventReads` (`pkg/board/phrase_read.go`) — the consult set
+unions the actor session ids with `PayloadAssigneeIDs(ev.Payload)` (both
+session keys), and the apply loop runs `TranslateActorSessionPhrase` on
+Actor AND `TranslatePayloadAssignees` on Payload. One consult, both
+legs, same degrade posture (ws-resolve failure or cold window →
+raw+flagged, logged). Routing note for the pin: a deleted task's OWN
+timeline is hidden behind TaskEvents' resolveTask gate (honest 404), so
+`TestReads_TaskEventsPayloadSnapshots` copies the REAL delete-event
+payload bytes (delete.go's own writer, raw ids and all) onto a LIVE
+sibling task's timeline and reads them through the genuine TaskEvents
+path — warm leg (phrase on both fields, no flags) + cold leg (raw on
+both fields, both flags) + storage immutability (every stored delete
+payload keeps the canonical raw implementer).
+
+**Missing click-through coverage (the PR's headline behavior was never
+clicked).** Three tiers added:
+
+- vitest CLICK pins — new `TaskCard.test.tsx` (3 rows: card link
+  navigates to `/chat/ws-1/amber-falcon-glides` via a routed probe;
+  the click does NOT fire `onOpen` — the stopPropagation contract,
+  previously an untested code-comment claim; the cold-window raw id
+  navigates too) and `TaskDrawer.test.tsx` +2 click rows (assignee +
+  implementer legs navigate; `renderDrawerLinked` grew real `Routes`
+  with a `ChatRouteProbe`).
+- Playwright `board.spec.ts` +1 real-browser row — the card leg
+  (assignee link lands on `/chat/{ws}/{phrase}`, edit dialog NOT
+  open) and the drawer leg (review row's implementer link lands on
+  the chat route); sessions-list mocked quiet for the destination.
+- The REST events-read integration pin above (red before the
+  Finding-1 fix by construction — the seam never touched payloads).
+
+Gates re-run locally: `go build ./...`, `go vet` (+ `-tags integration`
+vet), `go test -race ./pkg/board/`, handlers suite, frontend `tsc
+--noEmit` (0 errors), FULL vitest (224 files / 2567 tests), Playwright
+`board.spec.ts` (34 rows) — all green. (The PG integration tier skips
+in this sandbox — no server binary; vet-with-tag covers compile, and
+the suite's structure follows the file's existing born-red pattern.)

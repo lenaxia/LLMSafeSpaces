@@ -396,22 +396,29 @@ func (s *Service) translateHealthLeases(ctx context.Context, leases []HealthLeas
 	}
 }
 
-// translateEventActors translates the actor blobs of an event batch at
-// read time (TaskEvents): the task's project resolves the workspace
-// (bounded — one project read + one consult), each actor's session_id
-// becomes the phrase or the flagged raw form. The STORED rows are never
-// rewritten.
-func (s *Service) translateEventActors(ctx context.Context, projectID string, events []Event) {
+// translateEventReads translates the actor blobs AND the payload
+// snapshots of an event batch at read time (TaskEvents): the task's
+// project resolves the workspace (bounded — one project read + one
+// consult), each actor's session_id becomes the phrase or the flagged
+// raw form, and every task-snapshot session field
+// (assignee_session/implementer_session — delete/cascade payloads embed
+// the full row, 2026-10-29 owner ruling: implementer_session is on the
+// wire now, so the never-worse posture covers it here too) translates
+// through the SAME consult. The STORED rows are never rewritten.
+func (s *Service) translateEventReads(ctx context.Context, projectID string, events []Event) {
 	sessions := map[string]bool{}
 	for _, ev := range events {
-		if len(ev.Actor) == 0 {
-			continue
+		if len(ev.Actor) > 0 {
+			var m map[string]any
+			if err := json.Unmarshal(ev.Actor, &m); err == nil && m != nil {
+				if sid, _ := m["session_id"].(string); sid != "" && !shortid.IsShortIDForm(sid) {
+					sessions[sid] = true
+				}
+			}
 		}
-		var m map[string]any
-		if err := json.Unmarshal(ev.Actor, &m); err != nil || m == nil {
-			continue
-		}
-		if sid, _ := m["session_id"].(string); sid != "" && !shortid.IsShortIDForm(sid) {
+		// Payload snapshots: the delete/cascade legs embed the task row
+		// verbatim — both session fields ride one collector.
+		for _, sid := range PayloadAssigneeIDs(ev.Payload) {
 			sessions[sid] = true
 		}
 	}
@@ -422,12 +429,12 @@ func (s *Service) translateEventActors(ctx context.Context, projectID string, ev
 	if err := s.q().QueryRow(ctx,
 		`SELECT coalesce(target_workspace_id::text,'') FROM projects WHERE id=$1::uuid`, projectID).
 		Scan(&ws); err != nil {
-		slog.WarnContext(ctx, "board: events workspace resolve failed — actors degrade raw+flagged",
+		slog.WarnContext(ctx, "board: events workspace resolve failed — actors and snapshots degrade raw+flagged",
 			"projectID", projectID, "err", err.Error())
 	}
 	// ws == "" (workspace-less project): no consult possible — the
-	// actors degrade raw+flagged through the empty phrase map; not an
-	// error condition, nothing to log.
+	// actors and snapshots degrade raw+flagged through the empty phrase
+	// map; not an error condition, nothing to log.
 	keys := make([]string, 0, len(sessions))
 	for sid := range sessions {
 		keys = append(keys, sid)
@@ -435,5 +442,6 @@ func (s *Service) translateEventActors(ctx context.Context, projectID string, ev
 	phrases := LookupSessionPhrases(ctx, s.q(), ws, keys)
 	for i := range events {
 		events[i].Actor = TranslateActorSessionPhrase(events[i].Actor, phrases)
+		events[i].Payload = TranslatePayloadAssignees(events[i].Payload, phrases)
 	}
 }
