@@ -85,7 +85,8 @@ export function TaskCard({ task, projectTasks, pending, refused, dimmed, highlig
   });
   const escalateNext =
     task.attempts >= ATTEMPTS_CAP_DEFAULT &&
-    (task.stage === "backlog" || task.stage === "in_progress");
+    (task.stage === "backlog" || task.stage === "in_progress") &&
+    !task.pending_input; // 000050: a flagged row's claim lifecycle is suspended
 
   return (
     <div
@@ -192,8 +193,11 @@ export function TaskCard({ task, projectTasks, pending, refused, dimmed, highlig
           </button>
         )}
         {task.stage === "in_progress" && task.assignee_session && <BusyIndicator size="sm" />}
-        {task.stage === "pending_input" && task.pending_origin && (
-          <Badge variant="warning" className="px-1.5 py-0 text-[10px]">
+        {/* 000050: the input-wait flag rides the REAL stage — a badge
+         * where the blocked thing lives; the escalated origin also marks
+         * failed rows (the re-arm queue). */}
+        {((task.pending_input && task.pending_origin) || task.stage === "failed") && task.pending_origin && (
+          <Badge variant="warning" className="px-1.5 py-0 text-[10px]" data-testid={`pending-badge-${task.short_id}`}>
             {PENDING_ORIGIN_LABELS[task.pending_origin] ?? task.pending_origin}
           </Badge>
         )}
@@ -208,7 +212,7 @@ export function TaskCard({ task, projectTasks, pending, refused, dimmed, highlig
           <span
             className="text-[10px] text-muted-foreground"
             data-testid={`attempts-${task.short_id}`}
-            title={`Claims granted (attempts). Escalates to Pending Input at the platform attempts cap (R6 default ${ATTEMPTS_CAP_DEFAULT}; the configured N is a deploy knob the API does not surface).`}
+            title={`Claims granted (attempts). Escalates to Failed at the platform attempts cap (R6 default ${ATTEMPTS_CAP_DEFAULT}; the configured N is a deploy knob the API does not surface).`}
           >
             ⏱ {task.attempts}
           </span>
@@ -217,7 +221,7 @@ export function TaskCard({ task, projectTasks, pending, refused, dimmed, highlig
           <span
             className="inline-flex items-center gap-0.5 text-[10px] text-yellow-600 dark:text-yellow-400"
             data-testid={`escalation-preview-${task.short_id}`}
-            title="The next claim escalates to Pending Input (attempts cap, R6)"
+            title="The next claim escalates to Failed (attempts cap, R6)"
           >
             <AlertTriangle className="h-3 w-3" /> escalates next claim
           </span>

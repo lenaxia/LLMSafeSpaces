@@ -37,11 +37,13 @@ const eligibleProjectsSQL = `
 	              WHERE t3.project_id = p.id AND e3.status = 'active'
 	                AND e3.deficit < e3.quantum
 	                AND t3.stage = 'backlog' AND NOT t3.is_blocked AND NOT t3.paused
+																	                AND NOT t3.pending_input
 	                AND (t3.cooldown_until IS NULL OR t3.cooldown_until < now()))
 	ORDER BY (SELECT min(e.vft) FROM epics e WHERE e.project_id = p.id AND e.status = 'active'
 	          AND e.deficit < e.quantum
 	          AND EXISTS (SELECT 1 FROM tasks t4 WHERE t4.epic_id = e.id
 	                      AND t4.stage = 'backlog' AND NOT t4.is_blocked AND NOT t4.paused
+																							                      AND NOT t4.pending_input
 	                      AND (t4.cooldown_until IS NULL OR t4.cooldown_until < now()))), p.id
 	FOR UPDATE OF p SKIP LOCKED LIMIT 1`
 
@@ -60,6 +62,7 @@ const candidateSQL = `
 	JOIN epics e ON e.id = t.epic_id AND e.status = 'active'
 	WHERE t.project_id = $1::uuid
 	  AND t.stage = 'backlog' AND NOT t.is_blocked AND NOT t.paused
+	  AND NOT t.pending_input
 	  AND (t.cooldown_until IS NULL OR t.cooldown_until < now())
 	  AND e.deficit < e.quantum
 	ORDER BY t.created_at ASC, t.id ASC
@@ -159,6 +162,9 @@ func (s *Service) TaskStart(ctx context.Context, actor Actor, taskID, shortIDOrI
 	if t.Stage != StageBacklog || t.IsBlocked {
 		return nil, &GuardError{Code: GuardStage, Detail: "task_start targets a ready backlog task"}
 	}
+	if t.PendingInput {
+		return nil, &GuardError{Code: GuardStage, Detail: "task_start refuses a pending_input-flagged row — the input wait suspends the claim lifecycle (000050)"}
+	}
 	// #1747 backpressure at the choke point's manual lever: a manual
 	// dispatch over the concurrency caps is a 409 (the claim path's quiet
 	// no-grant has no manual counterpart); workspace pressure likewise.
@@ -199,17 +205,23 @@ func (s *Service) TaskStart(ctx context.Context, actor Actor, taskID, shortIDOrI
 	if cur.Stage != StageBacklog || cur.IsBlocked {
 		return nil, &GuardError{Code: GuardStage, Detail: "the task left backlog or became blocked — server-arbitrated refusal"}
 	}
+	if cur.PendingInput {
+		return nil, &GuardError{Code: GuardStage, Detail: "the row is pending_input-flagged — server-arbitrated refusal (000050)"}
+	}
 
 	// The escalation check mirrors the claim (pre-increment attempts >= N).
 	if cur.Attempts >= s.cfg.AttemptsCap {
 		// #1813 (r10): no overlay write here either — see claimOnce
 		// (the invariant is rc1's; exhaustion is its own signal).
+		// 000050: exhaustion lands FAILED (owner ruling: "exhausted
+		// retries should be failed status") — pending_origin='escalated'
+		// stays as provenance, but the STAGE is the failure terminus.
 		if _, err := tx.Exec(ctx, `
-			UPDATE tasks SET stage='pending_input', stage_entered_at=now(), pending_origin='escalated'
+			UPDATE tasks SET stage='failed', stage_entered_at=now(), pending_origin='escalated', pending_input=false
 			WHERE id=$1 AND stage='backlog'`, t.ID); err != nil {
 			return nil, err
 		}
-		if err := writeTransition(ctx, txQ{tx}, t.ID, StageBacklog, StagePendingInput, "",
+		if err := writeTransition(ctx, txQ{tx}, t.ID, StageBacklog, StageFailed, "",
 			Actor{Kind: ActorSystem, Surface: SurfaceReconciler}); err != nil {
 			return nil, err
 		}
@@ -237,7 +249,11 @@ func (s *Service) TaskStart(ctx context.Context, actor Actor, taskID, shortIDOrI
 			claim_token=gen_random_uuid(), assignee_session=NULL, implementer_session=NULL, claim_persona=NULL,
 			lease_expires_at=now()+make_interval(secs=>$2::float8),
 			last_progress_at=now(), attempts=attempts+1,
-			claim_incremented_attempts=true
+			claim_incremented_attempts=true,
+			-- the claim mint RESETS the lease-episode slots: a prior
+			-- episode's nudge/heartbeat evidence must never inherit into
+			-- the fresh claim (the review's stale-slot finding).
+			nudge_id=NULL, nudged_at=NULL, last_heartbeat_at=NULL
 		WHERE t.id=$1
 		RETURNING t.id, t.short_id, t.project_id, t.epic_id, t.claim_token::text,
 		          (SELECT p.target_workspace_id::text FROM projects p WHERE p.id = t.project_id),
@@ -350,10 +366,12 @@ func (s *Service) claimOnce(ctx context.Context, workerID, workspaceID string) (
 		// stamping last_failure_at would REPLACE the reclaim's real
 		// failure moment with the escalation one. The exhaustion signal
 		// is pending_origin='escalated' + attempts at cap (+ the
-		// exhausted=true audit event below).
+		// exhausted=true audit event below). 000050: the STAGE is
+		// 'failed' — the failure terminus, never a pending_input
+		// costume.
 		tag, err := tx.Exec(ctx, `
-			UPDATE tasks SET stage='pending_input', stage_entered_at=now(),
-				pending_origin='escalated'
+			UPDATE tasks SET stage='failed', stage_entered_at=now(),
+				pending_origin='escalated', pending_input=false
 			WHERE id=$1 AND stage='backlog'`, taskID)
 		if err != nil {
 			return nil, "", "", err
@@ -361,7 +379,7 @@ func (s *Service) claimOnce(ctx context.Context, workerID, workspaceID string) (
 		if tag.RowsAffected() == 0 {
 			return nil, "project_empty", projectID, nil // raced away: retry
 		}
-		if err := writeTransition(ctx, txQ{tx}, taskID, StageBacklog, StagePendingInput, "", sysActor); err != nil {
+		if err := writeTransition(ctx, txQ{tx}, taskID, StageBacklog, StageFailed, "", sysActor); err != nil {
 			return nil, "", "", err
 		}
 		evt, err := recordEventTx(ctx, tx, projectID, engineEventID("escalate", taskID, attempts), "escalate",
@@ -391,7 +409,11 @@ func (s *Service) claimOnce(ctx context.Context, workerID, workspaceID string) (
 			claim_token=gen_random_uuid(), assignee_session=NULL, implementer_session=NULL, claim_persona=NULL,
 			lease_expires_at=now()+make_interval(secs=>$2::float8),
 			last_progress_at=now(), attempts=attempts+1,
-			claim_incremented_attempts=true
+			claim_incremented_attempts=true,
+			-- the claim mint RESETS the lease-episode slots: a prior
+			-- episode's nudge/heartbeat evidence must never inherit into
+			-- the fresh claim (the review's stale-slot finding).
+			nudge_id=NULL, nudged_at=NULL, last_heartbeat_at=NULL
 		WHERE t.id=$1
 		RETURNING t.id, t.short_id, t.project_id, t.epic_id, t.claim_token::text,
 		          (SELECT p.target_workspace_id::text FROM projects p WHERE p.id = t.project_id),
@@ -571,8 +593,8 @@ func (s *Service) spawnFor(ctx context.Context, taskID, token string) {
 		return
 	}
 	t := s.mustTask(ctx, taskID)
-	if t == nil || t.ClaimToken != token || t.Stage == StageDone || t.Stage == StageBacklog || t.Stage == StagePendingInput {
-		return
+	if t == nil || t.ClaimToken != token || t.Stage == StageDone || t.Stage == StageBacklog || t.Stage == StageFailed || t.PendingInput {
+		return // 000050: failed has no worker to spawn; a flagged row's worker is suspended, never replaced
 	}
 	p := s.projectFor(ctx, t.ProjectID)
 	if p == nil {

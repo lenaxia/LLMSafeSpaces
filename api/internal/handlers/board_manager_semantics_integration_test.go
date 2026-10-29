@@ -223,11 +223,13 @@ func TestIntegrationBoardManagerSemantics(t *testing.T) {
 	// The creating session parked an attempts-exhausted row; the old
 	// gate refused ITS re-arm ("spawned workers and unidentified
 	// callers hold no manager grant") and stranded the row at
-	// pending_input. The creating session re-arms its own task through
-	// the manager seam: backlog, attempts reset, audit attributed.
+	// pending_input. 000050 re-pin: the exhaustion terminus is FAILED
+	// + origin=escalated (the flag form no longer carries it). The
+	// creating session re-arms its own task through the manager seam:
+	// backlog, attempts reset, audit attributed.
 	_, err = pool.Exec(ctx, `
-		UPDATE tasks SET stage='pending_input', stage_entered_at=now(),
-			pending_origin='escalated', attempts=$2, claim_token=NULL, lease_expires_at=NULL
+		UPDATE tasks SET stage='failed', stage_entered_at=now(),
+			pending_input=false, pending_origin='escalated', attempts=$2, claim_token=NULL, lease_expires_at=NULL
 		WHERE id=$1`, task.ID, cfg.AttemptsCap)
 	require.NoError(t, err)
 

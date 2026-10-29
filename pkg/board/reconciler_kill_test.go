@@ -158,10 +158,7 @@ func (s *BoardSuite) TestKill_MergePRConvergesToDone() {
 	s.drift.set(43, board.PRState{Merged: true, URL: "https://git.example/pr/43"})
 	res = s.sweep()
 	s.Equal(1, res.DriftReview)
-	row = s.rawTask(unmet.ID)
-	s.Equal(board.StagePendingInput, row.Stage)
-	s.Require().NotNil(row.PendingOrigin)
-	s.Equal(board.PendingOriginDriftReview, *row.PendingOrigin)
+	s.parkedPin(unmet.ID, board.StageInReview, board.PendingOriginDriftReview)
 	s.Equal(board.StageDone, s.rawTask(prTask.ID).Stage, "unrelated rows untouched")
 }
 
@@ -207,6 +204,95 @@ func (s *BoardSuite) TestKill_ClosedUnmergedReentryReclaims() {
 	res = s.sweep()
 	s.Equal(1, res.Reclaims)
 	s.Equal(board.StageBacklog, s.rawTask(task.ID).Stage)
+}
+
+// KILL-TEST 22b (review round 2, finding 4 — the RC2 poison pill): a
+// drift_review-parked row reaching closed-unmerged re-entries WITHOUT
+// violating tasks_pending_input_set — BOTH branches land flag-free with
+// reset episode slots, and the sweep itself must not error (before the
+// paired-form fix the constraint violation failed every later sweep).
+func (s *BoardSuite) TestKill_ClosedUnmergedReentryAfterParkResolvesFlag() {
+	ws := s.seedWorkspace()
+	p := s.seedProject(ws, 4)
+	e := s.seedEpic(p, board.EpicActive)
+
+	// The parked shape parkReviewTask writes (in_review, flag set,
+	// origin=drift_review), identity still recorded → the re-claim
+	// branch. A stale nudge slot rides along: the new episode must not
+	// inherit it.
+	claimed := s.seedTask(e, "parked-reenter", []string{"pr:8"}, false)
+	c := s.claimOrFail(ws)
+	s.Require().Equal(claimed.ID, c.TaskID)
+	_, err := s.svc.MoveStage(context.Background(), s.agent("sess", c.ClaimToken), claimed.ID, "", board.StageInReview, "", "")
+	s.Require().NoError(err)
+	_, err = s.pool.Exec(context.Background(),
+		`UPDATE tasks SET pending_input=true, pending_origin='drift_review',
+			nudge_id='stale-nudge', nudged_at=now() WHERE id=$1`, claimed.ID)
+	s.Require().NoError(err)
+	s.parkedPin(claimed.ID, board.StageInReview, board.PendingOriginDriftReview)
+
+	// No-identity companion: the backlog branch of the same re-entry.
+	anon := s.seedTask(e, "parked-anon", []string{"pr:9"}, false)
+	c2 := s.claimOrFail(ws)
+	s.Require().Equal(anon.ID, c2.TaskID)
+	_, err = s.svc.MoveStage(context.Background(), s.agent("sess", c2.ClaimToken), anon.ID, "", board.StageInReview, "", "")
+	s.Require().NoError(err)
+	_, err = s.pool.Exec(context.Background(),
+		`UPDATE tasks SET pending_input=true, pending_origin='drift_review',
+			assignee_session=NULL, claim_token=NULL, lease_expires_at=NULL WHERE id=$1`, anon.ID)
+	s.Require().NoError(err)
+
+	// Merged-done hygiene companion: a parked row whose criteria were
+	// met while parked (the reviewer-prep flag flips) converging to
+	// done must land done FLAG-FREE — the engine's stage-move rule
+	// (updateStageTx) resolves the flag with every move; RC2 drift's
+	// direct SQL must not be the one exception.
+	met := s.seedTask(e, "parked-done", []string{"pr:10"}, true)
+	c3 := s.claimOrFail(ws)
+	s.Require().Equal(met.ID, c3.TaskID)
+	_, err = s.svc.MoveStage(context.Background(), s.agent("sess", c3.ClaimToken), met.ID, "", board.StageInReview, "", "")
+	s.Require().NoError(err)
+	_, err = s.pool.Exec(context.Background(),
+		`UPDATE tasks SET pending_input=true, pending_origin='drift_review' WHERE id=$1`, met.ID)
+	s.Require().NoError(err)
+
+	s.drift.set(8, board.PRState{Closed: true, URL: "https://git.example/pr/8"})
+	s.drift.set(9, board.PRState{Closed: true, URL: "https://git.example/pr/9"})
+	s.drift.set(10, board.PRState{Merged: true, URL: "https://git.example/pr/10"})
+
+	respawning := board.NewReconciler(s.pool, s.cfg,
+		board.WithWorkerSpawner(s.spawner.Spawn),
+		board.WithPRDriftSource(s.drift),
+		board.WithFailpoint(s.fps.fp))
+	res, err := respawning.Sweep(context.Background())
+	s.Require().NoError(err, "the flagged re-entry must not violate tasks_pending_input_set (the RC2 poison pill)")
+	s.Equal(2, res.DriftReentry)
+	s.Equal(1, res.DriftDone)
+
+	// Re-claim branch: in_progress with a fresh token, the flag resolved
+	// with the move, the stale nudge slot NOT inherited.
+	row := s.rawTask(claimed.ID)
+	s.Equal(board.StageInProgress, row.Stage)
+	s.Require().NotNil(row.ClaimToken)
+	s.False(row.PendingInput, "the flag resolves with the move (paired form)")
+	s.Nil(row.PendingOrigin)
+	var staleNudge string
+	s.Require().NoError(s.pool.QueryRow(context.Background(),
+		`SELECT coalesce(nudge_id,'') FROM tasks WHERE id=$1`, claimed.ID).Scan(&staleNudge))
+	s.Equal("", staleNudge, "the re-entry mints a clean episode — no inherited nudge slot")
+
+	// Backlog branch: the backlog twin of the same resolution.
+	row = s.rawTask(anon.ID)
+	s.Equal(board.StageBacklog, row.Stage)
+	s.False(row.PendingInput, "the no-identity landing resolves the flag too")
+	s.Nil(row.PendingOrigin)
+	s.Nil(row.ClaimToken)
+
+	// Merged-done branch: done, and the flag resolved with the move.
+	row = s.rawTask(met.ID)
+	s.Equal(board.StageDone, row.Stage)
+	s.False(row.PendingInput, "a drift-completed done row never carries the flag")
+	s.Nil(row.PendingOrigin)
 }
 
 // KILL-TEST 23 (RC3): dependency consistency — the sweep recomputes
@@ -441,25 +527,23 @@ func (s *BoardSuite) TestKill_PendingInputResumeRearmsLease() {
 	assignee := s.reloadTask(task.ID).AssigneeSession
 	s.True(s.reloadTask(task.ID).ClaimIncremented)
 
-	// The worker asks a question: pending-input projection flips.
+	// The worker asks a question: pending-input projection flips (000050:
+	// the FLAG — the row keeps in_progress, the token/provenance ride it).
 	s.pending.set(assignee, true)
 	res := s.sweep()
 	s.Equal(1, res.PendingStaged)
-	row := s.rawTask(task.ID)
-	s.Equal(board.StagePendingInput, row.Stage)
-	s.Require().NotNil(row.PendingOrigin)
-	s.Equal(board.PendingOriginWorker, *row.PendingOrigin)
+	row := s.parkedPin(task.ID, board.StageInProgress, board.PendingOriginWorker)
 	s.Equal(c.ClaimToken, *row.ClaimToken, "auto-stage keeps the token (no mint)")
 	s.True(row.ClaimIncr, "and keeps the provenance flag (claim-token provenance)")
 
-	// The lease ages out under pending_input by more than a lease window:
-	// still never reclaimed (stage predicate excludes pending_input).
+	// The lease ages out under the flag by more than a lease window:
+	// still never reclaimed (the RC1 scan excludes flagged rows).
 	_, err := s.pool.Exec(context.Background(),
 		`UPDATE tasks SET lease_expires_at = now() - interval '1 hour' WHERE id=$1`, task.ID)
 	s.Require().NoError(err)
 	res = s.sweep()
-	s.Equal(0, res.Reclaims, "pending_input suspends the lease clock by construction")
-	s.Equal(board.StagePendingInput, s.rawTask(task.ID).Stage)
+	s.Equal(0, res.Reclaims, "the input wait suspends the lease clock by construction")
+	s.True(s.rawTask(task.ID).PendingInput, "still flagged")
 
 	// Human answers: resume re-arms the lease, token + flag untouched.
 	s.pending.set(assignee, false)
@@ -467,6 +551,7 @@ func (s *BoardSuite) TestKill_PendingInputResumeRearmsLease() {
 	s.Equal(1, res.Resumes)
 	row = s.rawTask(task.ID)
 	s.Equal(board.StageInProgress, row.Stage)
+	s.False(row.PendingInput, "the resume clears the flag in place (the stage never moved)")
 	s.Require().NotNil(row.LeaseExp, "resume re-arms the lease (now()+lease)")
 	s.Require().NotNil(row.ClaimToken)
 	s.Equal(c.ClaimToken, *row.ClaimToken, "resume is a NO-MINT preserve-case (r11 fix)")

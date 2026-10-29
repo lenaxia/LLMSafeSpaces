@@ -376,6 +376,26 @@ func boardE2EFieldsJSON(fields map[string]json.RawMessage) []byte {
 	return b
 }
 
+// managerRearm mirrors the production pod seam's rearm route (#1832
+// WS3 → 000050: the failed/escalated terminus's re-pool exit).
+func (s *boardE2ESeam) managerRearm(c *gin.Context) {
+	fields, ws, owner, session, ok := s.resolve(c)
+	if !ok {
+		return
+	}
+	var req struct {
+		RequestID string `json:"requestId"`
+	}
+	_ = json.Unmarshal(boardE2EFieldsJSON(fields), &req)
+	t, err := s.svc.RearmTask(c.Request.Context(), s.managerActor(owner, ws, session),
+		"", c.Param("id"), req.RequestID)
+	if err != nil {
+		s.engineError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, t)
+}
+
 func boardE2EEventCount(t *testing.T, ctx context.Context, pool *pgxpool.Pool) int {
 	t.Helper()
 	var n int
@@ -454,6 +474,7 @@ func TestIntegrationBoardManagerE2E(t *testing.T) {
 	b.POST("/epics/:id/tasks", seam.createTask)
 	b.POST("/epics/:id/activate", seam.epicActivate)
 	b.POST("/tasks/:id/move-stage", seam.managerMoveStage)
+	b.POST("/tasks/:id/rearm", seam.managerRearm)
 	b.GET("/config", seam.getConfig)
 	b.PUT("/config", seam.setConfig)
 
@@ -590,27 +611,27 @@ func TestIntegrationBoardManagerE2E(t *testing.T) {
 	assert.Contains(t, err.Error(), "403")
 	assert.Contains(t, err.Error(), board.GuardWorkspaceBinding)
 
-	// --- E: the manager-grade move exits pending_input end to end (#1832 WS2) ----
-	// The tsk-3do6n458 freeze class: an escalated row (attempts at cap,
-	// no assignee) that neither the worker surface NOR the manager
-	// surface could exit (pre-#1832). The manager move lands it
-	// backlog, attempts
-	// reset, audit carrying the session identity. The escalation's own
-	// engine path (attempts>=cap -> pending_input/escalated) is pinned
-	// by pkg/board's suite; here we pin the EXIT through the real seam,
-	// so the row is staged in the escalation's aftermath shape
-	// directly (section C's claim left it in_progress — a backlog-only
-	// candidate predicate is not this section's subject).
+	// --- E: the manager-grade exit of the escalated terminus end to end
+	// (#1832 WS2, re-pinned 000050: attempts exhaustion lands FAILED
+	// + origin=escalated — pending_input is a flag the escalation shape
+	// no longer carries; the freeze class the section was born for is
+	// now 'a failed/escalated row no surface could re-pool'). The
+	// manager RE-ARM lands it backlog, attempts reset, audit carrying
+	// the session identity. The escalation's own engine path
+	// (attempts>=cap -> failed/escalated) is pinned by pkg/board's
+	// suite; here we pin the EXIT through the real seam, so the row is
+	// staged in the escalation's aftermath shape directly (section C's
+	// claim left it in_progress — a backlog-only candidate predicate is
+	// not this section's subject).
 	_, err = pool.Exec(ctx, `
-		UPDATE tasks SET stage='pending_input', stage_entered_at=now(),
-			pending_origin='escalated', attempts=3, claim_token=NULL, lease_expires_at=NULL
+		UPDATE tasks SET stage='failed', stage_entered_at=now(),
+			pending_input=false, pending_origin='escalated', attempts=3, claim_token=NULL, lease_expires_at=NULL
 		WHERE id=$1`, task.ID)
 	require.NoError(t, err)
 
-	resp, err = dispatchBoardManagerTool(ctx, client, e2eMCPPassword, "board_move_stage", map[string]any{
+	resp, err = dispatchBoardManagerTool(ctx, client, e2eMCPPassword, "board_rearm_task", map[string]any{
 		"lsp_injected_session": mgrSession,
 		"taskId":               task.ShortID,
-		"toStage":              "backlog",
 	}, "sa-token", wsPod)
 	require.NoError(t, err)
 	require.Equal(t, http.StatusOK, resp.Status, resp.Body)

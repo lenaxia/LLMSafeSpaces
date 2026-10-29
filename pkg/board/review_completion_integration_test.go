@@ -88,11 +88,12 @@ func (s *BoardSuite) TestReviewAuto_SubjectDoneByDriftCompletesReviewTask() {
 	s.Require().NoError(err)
 
 	s.parkInReview(ws, subject)
-	// The incident's exact parked shape: the review task sits in
-	// pending_input/drift_review (RC2 staged it when criteria were
-	// unmet); its criteria are met NOW.
+	// The incident's exact parked shape (000050: the drift_review park is
+	// a FLAG on the kept in_review row; its criteria are met NOW). The
+	// review task is parked in_review directly — the stage RC2's park
+	// rides (never a backlog row wearing a flag).
 	_, err = s.pool.Exec(ctx,
-		`UPDATE tasks SET stage='pending_input', stage_entered_at=now(), pending_origin='drift_review'
+		`UPDATE tasks SET stage='in_review', stage_entered_at=now(), pending_input=true, pending_origin='drift_review'
 		 WHERE id=$1`, review.ID)
 	s.Require().NoError(err)
 
@@ -127,13 +128,15 @@ func (s *BoardSuite) TestReviewAuto_CriteriaUnmetParksForDecision() {
 	s.Require().NoError(err)
 
 	parked := s.reloadTask(review.ID)
-	require.Equal(s.T(), board.StagePendingInput, parked.Stage,
-		"the owner-guard ruling: criteria-unmet review tasks NEVER auto-complete — they park owner-visibly")
+	require.Equal(s.T(), board.StageInReview, parked.Stage,
+		"the owner-guard ruling: criteria-unmet review tasks NEVER auto-complete — they park owner-visibly (000050: the flag on the kept stage)")
+	require.True(s.T(), parked.PendingInput, "the park flag is set")
 	require.NotNil(s.T(), parked.PendingOrigin)
 	require.Equal(s.T(), "drift_review", *parked.PendingOrigin)
 	require.Equal(s.T(), 0, s.countEvents("review_complete"), "no completion ever fired")
 	require.GreaterOrEqual(s.T(), s.countEvents("review_park"), 1, "the park is audited")
-	require.Equal(s.T(), 1, s.countTransitions(review.ID, board.StagePendingInput))
+	require.Equal(s.T(), 0, s.countTransitions(review.ID, board.StagePendingInput),
+		"000050: the park is a flag event, never a transition row")
 }
 
 func (s *BoardSuite) TestReviewAuto_MalformedAnchorsInert() {
@@ -212,8 +215,9 @@ func (s *BoardSuite) TestReviewAuto_ParkBranchViaDriftPath() {
 	require.Equal(s.T(), 1, res.DriftDone)
 
 	parked := s.reloadTask(review.ID)
-	require.Equal(s.T(), board.StagePendingInput, parked.Stage,
-		"the drift path parks unmet review tasks too (not just the manual move)")
+	require.Equal(s.T(), board.StageInReview, parked.Stage,
+		"the drift path parks unmet review tasks too (not just the manual move) — 000050: the flag on the kept stage")
+	require.True(s.T(), parked.PendingInput, "the park flag is set")
 	require.NotNil(s.T(), parked.PendingOrigin)
 	require.Equal(s.T(), "drift_review", *parked.PendingOrigin)
 	require.GreaterOrEqual(s.T(), s.countEvents("review_park"), 1)

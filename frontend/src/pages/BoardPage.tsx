@@ -30,6 +30,7 @@ import {
   SIDE_STAGES,
   STAGE_LABELS,
   isManagerDragAllowed,
+  stageDragKey,
   doneReadiness,
   describeBoardError,
   suggestBoardItems,
@@ -612,7 +613,7 @@ export function BoardPage() {
       // 2026-10-28 ruling 4: notices lead with the human title, not the id.
       setPageNotice(
         claim.escalated
-          ? `${task.title}: attempts cap reached — escalated to Pending Input (no grant).`
+          ? `${task.title}: attempts cap reached — escalated to Failed (no grant).`
           : `${task.title}: fresh worker dispatched into the project's target workspace.`,
       );
     },
@@ -910,7 +911,7 @@ export function BoardPage() {
               onDrop={handleDrop(stage)}
               onOpenCard={(t) => setTaskDialog({ mode: "edit", task: t })}
               onCardDetails={(t) => setTaskDrawer(t)}
-              onCardDragStart={(t) => setDraggingStage(t.stage)}
+              onCardDragStart={(t) => setDraggingStage(stageDragKey(t))}
               onCardDragEnd={() => setDraggingStage(null)}
               onCardStart={(t) => {
                 setStartingShortId(t.short_id);
@@ -924,7 +925,8 @@ export function BoardPage() {
             />
           ))}
         </div>
-        {/* Side columns: Pending Input + Cancelled (collapsible, §4.8) */}
+        {/* Side column: Failed (collapsible, §4.8; pending_input rows
+         * stay in their real stage wearing the badge) */}
         <div className="border-t border-border px-2 py-1.5">
           <button
             onClick={() => setSideCollapsed((v) => !v)}
@@ -951,7 +953,7 @@ export function BoardPage() {
                   onDrop={handleDrop(stage)}
                   onOpenCard={(t) => setTaskDialog({ mode: "edit", task: t })}
                   onCardDetails={(t) => setTaskDrawer(t)}
-                  onCardDragStart={(t) => setDraggingStage(t.stage)}
+                  onCardDragStart={(t) => setDraggingStage(stageDragKey(t))}
                   onCardDragEnd={() => setDraggingStage(null)}
                   onCardStart={(t) => {
                     setStartingShortId(t.short_id);

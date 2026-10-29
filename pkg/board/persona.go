@@ -33,19 +33,19 @@ import (
 // reviewColumn=auto + autoAssignReviewer=true composition now renders
 // the default reviewer PERSONA for in_review and rides the same
 // claim-then-spawn as every other persona (one lease, one token,
-// heartbeat-gated liveness, reconciler re-arm on lapse — the
+// movement-observed liveness, reconciler re-arm on lapse — the
 // sub-orchestrator board test's design recommendation, generalized).
 //
 // Semantics preserved exactly: claim-before-spawn (never a spawn
 // without a lease); token-gated forward writes (the stage machine's
-// existing guard rule is untouched); liveness = new progress evidence
-// (the #1832 WS4 stillborn guard treats a zero-turn persona worker as
-// stillborn — its refused renewals lapse the lease, and the lapse
-// path below re-pools a FRESH persona worker with the #1813 failure
+// existing guard rule is untouched); liveness = movement observation
+// + the nudge ladder (a zero-turn persona worker never answers its
+// sentinel — the wedge verdict fails it, and the re-arm pass below
+// re-pools a FRESH persona worker with the #1813 failure
 // accounting and backoff); attempts/cooldown accounting (persona
 // mints never increment attempts; a lapse counts consecutively and
 // parks behind doubling backoff; failure_count at the attempts cap
-// escalates to pending_input — the human-only exit).
+// escalates to failed/escalated — the human-only exit (rearm).
 //
 // Stages with NO persona configured behave byte-identically to today:
 // →in_review clears token+lease and spawns nothing (the dormant path
@@ -174,7 +174,8 @@ func (s *Service) stagePersona(ctx context.Context, p *Project, stage string) *P
 // token-clearing write sets it NULL (migration 000050).
 const personaClaimSQL = `
 	claim_token=$2, lease_expires_at=now()+make_interval(secs=>$3::float8),
-	last_progress_at=now(), claim_incremented_attempts=false, claim_persona=$4`
+	last_progress_at=now(), claim_incremented_attempts=false, claim_persona=$4,
+	nudge_id=NULL, nudged_at=NULL, last_heartbeat_at=NULL`
 
 // personaClaimMintTx applies the persona mint to a row already moved
 // into its persona stage (inside the caller's transition transaction)
@@ -226,13 +227,17 @@ func personaClaimEventTx(ctx context.Context, tx pgx.Tx, projectID, taskID, stag
 // It lives HERE (not engine.go/reconciler.go) to keep the persona
 // seam's query vocabulary beside its resolution logic — the
 // ownership-agnostic pin (§4.7) holds either way: the SQL touches
-// rows and pause flags only.
+// rows and pause flags only. 000050: pending_input is a FLAG on
+// in_review rows — the NOT t.pending_input predicate keeps an
+// owner-blocked park (drift_review) out of the persona re-arm feed
+// (the claim-predicate pin: stage ∈ claimable AND !flag).
 const personaRearmCandidatesSQL = `
 	SELECT t.id, t.project_id, t.failure_count
 	FROM tasks t
 	JOIN epics e ON e.id = t.epic_id
 	JOIN projects p ON p.id = t.project_id
 	WHERE t.stage='in_review' AND t.claim_token IS NULL AND t.lease_expires_at IS NULL
+	  AND NOT t.pending_input
 	  AND NOT t.paused AND e.status <> 'paused' AND NOT p.paused
 	  AND (t.cooldown_until IS NULL OR t.cooldown_until < now())`
 

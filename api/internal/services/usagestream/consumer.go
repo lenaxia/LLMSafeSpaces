@@ -218,7 +218,23 @@ type Config struct {
 	// armed and open=false when it drops (Close, idle-drop, or
 	// teardown). May be nil.
 	OnGateChange func(workspaceID string, open bool)
+
+	// OnFrame is the optional per-frame activity hook (the seamless
+	// lease's 000069 leg): it fires for EVERY applied frame — including
+	// PART_START tool-part events the billing/bridge legs skip — because
+	// its consumer (the board's assignee-liveness index) answers "did
+	// this session do ANYTHING" with tool-call START as evidence (a
+	// worker mid-command longer than the lease window is alive). Called
+	// synchronously in the fold goroutine: implementations must be
+	// non-blocking (a map stamp) and never panic the stream. May be nil.
+	OnFrame FrameObserver
 }
+
+// FrameObserver receives every applied frame of a workspace's pod
+// stream. workspaceID scopes the stream; evt is the ABI frame (session
+// identity in evt.SessionId / evt.InternalSessionId — #1817: the wire
+// id is the phrase on emission, the harness id rides Internal).
+type FrameObserver func(workspaceID string, evt *abiv1.Event)
 
 // Consumer owns one busy-gated pod subscription per workspace.
 type Consumer struct {
@@ -691,6 +707,14 @@ func (c *Consumer) onEvent(workspaceID string, g *gate, evt *abiv1.Event, seq ui
 	g.mu.Lock()
 	g.frames = true
 	g.mu.Unlock()
+
+	// The activity hook fires for EVERY frame before the typed legs —
+	// its observers key on raw frame arrival (PART_START included),
+	// not on any derived state. Panic containment is the observer's
+	// own contract; a nil observer (the default) costs one branch.
+	if c.cfg.OnFrame != nil {
+		c.cfg.OnFrame(workspaceID, evt)
+	}
 
 	switch evt.GetType() {
 	case abiv1.EventType_EVENT_TYPE_MESSAGE_END:

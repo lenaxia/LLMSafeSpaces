@@ -159,9 +159,10 @@ func (s *BoardSuite) TestKill_1813_EscalationMarksOverlay() {
 	s.True(c.Escalated, "at-cap claim escalates")
 
 	after := s.reloadTask(t1.ID)
-	s.Equal(board.StagePendingInput, after.Stage)
+	s.Equal(board.StageFailed, after.Stage, "000050: exhaustion lands the failure terminus, never a pending_input costume")
 	s.Require().NotNil(after.PendingOrigin)
 	s.Equal(board.PendingOriginEscalated, *after.PendingOrigin)
+	s.False(after.PendingInput, "the terminus is unflagged — rearm's gate is the origin, not a question wait")
 	s.False(after.LastAttemptFailed, "all-success exhaustion carries NO failure marker (truthful overlay)")
 	s.Nil(after.LastFailureAt)
 	s.Equal(0, after.FailureCount)
@@ -202,15 +203,18 @@ func (s *BoardSuite) TestKill_1813_PendingResolutionClearsOverlay() {
 	s.Require().True(c.Escalated)
 	s.True(s.reloadTask(t1.ID).LastAttemptFailed, "precondition: escalated with overlay")
 
-	// The human exit: pending_input → in_progress (the re-claim arm).
-	_, err = s.svc.MoveStage(context.Background(), s.owner(), t1.ID, "", board.StageInProgress, "", "")
+	// The human exit (000050): the escalated terminus is exited by
+	// REARM — the manager re-pool judgment (pending_input→in_progress
+	// move_stage no longer exists for this shape).
+	out, err := s.svc.RearmTask(context.Background(), s.owner(), t1.ID, "", "")
 	s.Require().NoError(err)
 	after := s.reloadTask(t1.ID)
-	s.False(after.LastAttemptFailed, "the human exit clears the overlay with the attempts reset")
+	s.Equal(board.StageBacklog, out.Stage)
+	s.False(after.LastAttemptFailed, "the re-arm clears the overlay with the attempts reset")
 	s.Equal(0, after.FailureCount)
 	s.Nil(after.LastFailureAt, "the reset clears the failure timestamp too")
 	s.Equal(0, after.Attempts, "attempts reset (the existing semantic)")
-	require.True(s.T(), after.Stage == board.StageInProgress || after.Stage == board.StageBacklog)
+	require.Equal(s.T(), board.StageBacklog, after.Stage)
 }
 
 // KILL-TEST 1813-f (r6, the review's regression gate for the RC2
@@ -307,7 +311,7 @@ func (s *BoardSuite) TestKill_1813_TaskStartEscalationMarksOverlay() {
 	s.True(c.Escalated, "TaskStart at cap escalates")
 
 	after := s.reloadTask(t1.ID)
-	s.Equal(board.StagePendingInput, after.Stage)
+	s.Equal(board.StageFailed, after.Stage, "000050: TaskStart at-cap lands the failure terminus")
 	s.Require().NotNil(after.PendingOrigin)
 	s.Equal(board.PendingOriginEscalated, *after.PendingOrigin)
 	// r10: no escalation overlay write exists — zero failures → no marker.
@@ -374,7 +378,7 @@ func (s *BoardSuite) TestKill_1813_FailedExhaustionKeepsMarker() {
 	s.Require().True(c.Escalated)
 
 	after := s.reloadTask(t1.ID)
-	s.Equal(board.StagePendingInput, after.Stage)
+	s.Equal(board.StageFailed, after.Stage, "000050: the crash-loop terminus")
 	s.True(after.LastAttemptFailed, "a FAILED exhaustion keeps the marker (rc1's)")
 	s.Equal(s.cfg.AttemptsCap, after.FailureCount)
 	// r10 discriminator: the escalation does NOT restamp the overlay —
@@ -431,7 +435,7 @@ func (s *BoardSuite) TestKill_1813_TaskStartDoesNotRestampOverlay() {
 	s.Require().True(c2.Escalated)
 
 	after := s.reloadTask(t1.ID)
-	s.Equal(board.StagePendingInput, after.Stage)
+	s.Equal(board.StageFailed, after.Stage, "000050: TaskStart's crash-loop terminus")
 	s.True(after.LastAttemptFailed, "the marker survives the manual escalation")
 	s.Equal(1, after.FailureCount, "the count survives")
 	s.Equal(pre.LastFailureAt.Format(time.RFC3339Nano), after.LastFailureAt.Format(time.RFC3339Nano),

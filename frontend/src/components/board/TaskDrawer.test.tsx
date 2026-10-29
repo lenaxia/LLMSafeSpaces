@@ -28,6 +28,7 @@ const mockTaskEvents = vi.fn();
 const baseTask = {
   description: "",
   paused: false,
+  pending_input: false,
   project_name: "Apollo",
   epic_name: "E1",
   tags: [] as string[],

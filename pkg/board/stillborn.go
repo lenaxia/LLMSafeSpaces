@@ -5,16 +5,18 @@ package board
 
 import "context"
 
-// stillborn.go — #1832 WS4: stillborn-spawn claim hygiene (the NARROW
-// evidence fix; the platform-derived liveness REWORK is #1847's, another
-// lane). A spawn that mints a session but produces ZERO turns consumed a
-// claim, and a lease-keeper renewed the corpse because heartbeat
-// extension trusted the evidence TIMESTAMP alone. The guard: extension
-// requires ACTUAL TURN EVIDENCE — when the installed source positively
-// reports the assignee session at zero messages/outputs, the heartbeat
-// refuses to extend (the wall clock reclaims the stillborn's lease).
-// RED-FIRST SKELETON: the seam installs; Heartbeat consults it in the
-// implementation commit.
+// stillborn.go — the TurnEvidenceSource seam (#1832 WS4's narrow
+// evidence fix, later generalized): a spawn that mints a session but
+// produces ZERO turns must not be treated as a live worker. Born as a
+// heartbeat-extension guard (extension refused on positive zero-turn
+// evidence), the seam's surviving consumer after the item-6 amendment
+// is the #1959c bounce re-dispatch: a zero-turn original implementer
+// falls back to a fresh-worker spawn instead of re-dispatching into a
+// corpse (stage.go redispatchBounce). The stillborn CLASS itself is
+// owned by the wedge verdict — a corpse cannot call tools, so it can
+// never answer a lease-nudge; silence on both channels fails it.
+// Installed at app wiring over the session index; nil keeps today's
+// semantics.
 
 // TurnEvidenceSource reports a session's actual turn evidence (its
 // message/output count) — the stillborn guard's source. Installed at

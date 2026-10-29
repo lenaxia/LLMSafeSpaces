@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -38,6 +39,12 @@ import (
 // (§4.7): it keys on rows and tokens, never on owner identity.
 
 const sweepScope = "default"
+
+// boardNudgeDeliveryConcurrency bounds the concurrent sentinel-delivery
+// batch inside one RC1 pass (each delivery carries a ~10s fast-fail
+// window; the victims' row locks are held until commit — the batch
+// collapses an N-victim stall to ~one window).
+const boardNudgeDeliveryConcurrency = 8
 
 // Failpoint names (the kill-test fault seams).
 const (
@@ -257,9 +264,12 @@ func (s *Service) rc1Reclaims(ctx context.Context) (int, error) {
 	var pending []Event
 
 	rows, err := tx.Query(ctx, `
-		SELECT t.id, t.project_id, COALESCE(t.lease_expires_at::text, 'null'), t.failure_count
+		SELECT t.id, t.project_id, COALESCE(t.lease_expires_at::text, 'null'), t.failure_count,
+			COALESCE(t.assignee_session,''), COALESCE(t.nudge_id,''), COALESCE(t.short_id,''),
+			t.nudged_at, t.last_heartbeat_at
 		FROM tasks t
-		WHERE t.stage='in_progress' AND (t.lease_expires_at IS NULL OR t.lease_expires_at < now())
+		WHERE t.stage='in_progress' AND NOT t.pending_input
+		  AND (t.lease_expires_at IS NULL OR t.lease_expires_at < now())
 		FOR UPDATE OF t SKIP LOCKED`)
 	if err != nil {
 		return 0, err
@@ -267,11 +277,16 @@ func (s *Service) rc1Reclaims(ctx context.Context) (int, error) {
 	type victim struct {
 		id, project, episode string
 		failures             int32
+		assignee, nudgeID    string
+		shortID              string
+		nudgedAt             *time.Time
+		lastHeartbeat        *time.Time
 	}
 	var victims []victim
 	for rows.Next() {
 		var v victim
-		if err := rows.Scan(&v.id, &v.project, &v.episode, &v.failures); err != nil {
+		if err := rows.Scan(&v.id, &v.project, &v.episode, &v.failures, &v.assignee, &v.nudgeID, &v.shortID,
+			&v.nudgedAt, &v.lastHeartbeat); err != nil {
 			rows.Close()
 			return 0, err
 		}
@@ -279,9 +294,234 @@ func (s *Service) rc1Reclaims(ctx context.Context) (int, error) {
 	}
 	rows.Close()
 
+	// --- the seamless-lease ladder (000050) ------------------------------
+	// Observe FIRST; the wall-clock reclaim below is the fallback for
+	// evidence-LESS rows only. Renewals/nudges/wedges write no overlay
+	// and no transition-row churn; the ladder's decisions are idempotent
+	// under re-sweep (a raced victim simply re-decides next sweep).
+	lives := s.lives
+	if lives == nil {
+		lives = NilLiveness{}
+	}
+	refs := make([]AssigneeRef, 0, len(victims))
+	for _, v := range victims {
+		if v.assignee != "" {
+			refs = append(refs, AssigneeRef{SessionID: v.assignee, NudgeID: v.nudgeID})
+		}
+	}
+	observations := lives.ObserveAssignees(ctx, SessionObservations{Refs: refs})
+	type ladderDecision uint8
+	const (
+		ladderReclaim ladderDecision = iota // wall-clock fallback (today's path)
+		ladderRenew                         // observed movement / post-sentinel reaction / heartbeat response
+		ladderNudge                         // quiet: send the sentinel, measure next expiry
+		ladderWedge                         // sentinel positioned, nothing after it: failed
+	)
+	decisions := make(map[string]ladderDecision, len(victims))
+	wedgeEvidence := make(map[string]string, len(victims))
+	nudgeIDs := make(map[string]string, len(victims))
+	type outboundNudge struct {
+		v  victim
+		id string
+	}
+	var outbound []outboundNudge
+	send := func(v victim) string {
+		id := uuidNew()
+		outbound = append(outbound, outboundNudge{v: v, id: id})
+		decisions[v.id] = ladderNudge
+		return id
+	}
+	for _, v := range victims {
+		decisions[v.id] = ladderReclaim
+		if v.assignee == "" {
+			continue // no identity to observe or nudge: the honest wall-clock path
+		}
+		// The heartbeat RESPONSE — OR'd in at EVERY rung (item 6
+		// amendment): a board_heartbeat arriving after the sentinel is
+		// the strong ALIVE signal, whatever the observation seam says.
+		// Both timestamps are server-clock row writes — the comparison
+		// is ordinal in one clock domain, never cross-process.
+		hbAfterNudge := v.nudgeID != "" && v.nudgedAt != nil && v.lastHeartbeat != nil &&
+			v.lastHeartbeat.After(*v.nudgedAt)
+		o, ok := observations[v.assignee]
+		observed := ok && o.Observed
+		switch {
+		case hbAfterNudge:
+			decisions[v.id] = ladderRenew // the worker answered the nudge on the response channel
+			continue
+		case !observed:
+			// RUNG 3 — no-evidence (Nil source, degraded adapter,
+			// unindexed session): NEVER death, but not blindness
+			// either when a nudge seam exists (item 6's
+			// harness-agnostic wedge floor: deliver-a-message +
+			// call-a-tool is the MINIMAL harness capability — the
+			// heartbeat is the ONLY wedge detector at this rung).
+			if s.nudger == nil {
+				continue // no way to ask: the honest wall-clock path (pin 6)
+			}
+			if v.nudgeID == "" {
+				send(v)
+				continue
+			}
+			decisions[v.id] = ladderWedge
+			wedgeEvidence[v.id] = "no response to the sentinel (no post-nudge heartbeat; no observation available)"
+			continue
+		case o.MovedSinceLastSweep, o.EventsAfterNudge:
+			decisions[v.id] = ladderRenew // alive by delta or by reaction to the sentinel
+			continue
+		case !o.Exists:
+			decisions[v.id] = ladderReclaim // dead-evidence: the fast wall-clock path below
+			continue
+		case s.nudger == nil:
+			// observed-quiet but no nudge seam: fall back (the nudge
+			// ladder is inert without a sender)
+		case v.nudgeID == "":
+			send(v)
+		case !o.NudgeMarkKnown:
+			// The sentinel is positioned but THIS source never saw it
+			// (another replica sent it; a restart evicted the mark) —
+			// the ordinal question is unanswerable, and an unmeasured
+			// silence is NEVER a wedge verdict. Re-nudge: the fresh
+			// sentinel re-anchors the ordinal question at a mark THIS
+			// source holds (latest-only makes the duplicate benign).
+			send(v)
+		case !o.EventsAfterNudge:
+			decisions[v.id] = ladderWedge // sentinel positioned, zero events after it
+			wedgeEvidence[v.id] = "no session events after the sentinel"
+		default:
+			decisions[v.id] = ladderRenew // reaction arrived between the arms
+		}
+	}
+
+	// Deliver the batch CONCURRENTLY (bounded): each delivery carries
+	// the bounce seam's fast-fail window (~10s) and the victims' FOR
+	// UPDATE locks are held until this transaction commits — sequential
+	// delivery would hold the locks N windows during exactly the
+	// mass-quiet incident class this ladder answers. The batch runs
+	// while the locks are held but collapses the stall to one window;
+	// the post-commit-delivery alternative was considered and rejected
+	// (it writes nudge state for a sentinel whose delivery outcome is
+	// unknown — the phantom-nudge contract violation; worklog §6).
+	if len(outbound) > 0 {
+		results := make([]error, len(outbound))
+		var wg sync.WaitGroup
+		sem := make(chan struct{}, boardNudgeDeliveryConcurrency)
+		for i, pn := range outbound {
+			wg.Add(1)
+			go func(i int, assignee string, p NudgePayload) {
+				defer wg.Done()
+				sem <- struct{}{}
+				defer func() { <-sem }()
+				results[i] = s.nudger(ctx, assignee, p)
+			}(i, pn.v.assignee, NudgePayload{NudgeID: pn.id, TaskID: pn.v.id, TaskShortID: pn.v.shortID})
+		}
+		wg.Wait()
+		for i, pn := range outbound {
+			if results[i] == nil {
+				nudgeIDs[pn.v.id] = pn.id
+			} else {
+				// Delivery could not be attempted (bounce/transport):
+				// undecidable this sweep — the honest wall-clock path,
+				// never a phantom nudge state claiming a sentinel that
+				// never landed.
+				decisions[pn.v.id] = ladderReclaim
+			}
+		}
+	}
+
 	sys := Actor{Kind: ActorSystem, Surface: SurfaceReconciler}
 	applied := 0
 	for _, v := range victims {
+		switch decisions[v.id] {
+		case ladderRenew:
+			// Renewal: extend the lease, clear the nudge slot. NO
+			// transition, NO audit event (design: renewals never flood
+			// the trail), NO overlay.
+			if _, err := tx.Exec(ctx, `
+				UPDATE tasks SET lease_expires_at=now()+make_interval(secs=>$2::float8),
+					last_progress_at=now(), nudge_id=NULL, nudged_at=NULL, updated_at=now()
+				WHERE id=$1 AND stage='in_progress'`,
+				v.id, s.cfg.LeaseDuration.Seconds()); err != nil {
+				return 0, err
+			}
+			applied++
+			continue
+		case ladderNudge:
+			// The sentinel is OUT (delivered above); record it and
+			// extend one window so the NEXT expiry is a clean
+			// measurement point for the ordinal question.
+			//
+			// The send→stamp race is safe BY POSTGRES CLOCK SEMANTICS,
+			// not by luck (review round 2, finding 5): now() is
+			// TRANSACTION_timestamp — this UPDATE stamps nudged_at at
+			// THIS sweep transaction's START, which strictly precedes
+			// the delivery calls made inside it. A heartbeat whose
+			// call was CAUSED by the nudge therefore starts its own
+			// transaction after the delivery, so its last_heartbeat_at
+			// (its statement's txn clock) is strictly AFTER nudged_at
+			// even when the row write races: the blocked UPDATE waits
+			// on this transaction's FOR UPDATE lock, commits after it,
+			// and the next sweep's hbAfterNudge comparison reads
+			// response-wins. A heartbeat that PREDATES the sweep's
+			// start predates the delivery too (it cannot be a
+			// response) and stamps earlier. Both directions ordinal,
+			// one clock domain, no wall-clock comparison. Pinned:
+			// TestPin_LeaseLadder_HeartbeatInSendWindowIsNotLost.
+			if _, err := tx.Exec(ctx, `
+				UPDATE tasks SET nudge_id=$2, nudged_at=now(),
+					lease_expires_at=now()+make_interval(secs=>$3::float8), updated_at=now()
+				WHERE id=$1 AND stage='in_progress'`,
+				v.id, nudgeIDs[v.id], s.cfg.LeaseDuration.Seconds()); err != nil {
+				return 0, err
+			}
+			// Sentinel-keyed (episode-unique AND re-sweep-idempotent):
+			// an id keyed on failure_count collides across episodes —
+			// renewals never bump the count and the human re-arm RESETS
+			// it — and ON CONFLICT DO NOTHING would silently drop the
+			// audit row (the persona escalate path's hazard, fixed
+			// there with nanos; the nudge/wedge paths key on the
+			// sentinel instead — deterministic AND unique).
+			evt, err := recordEventTx(ctx, tx, v.project, "reconciler:nudge:"+v.id+":"+nudgeIDs[v.id], "nudge",
+				"task", v.id, sys, map[string]any{"task_id": v.id, "nudge_id": nudgeIDs[v.id]})
+			if err != nil {
+				return 0, err
+			}
+			pending = append(pending, evt)
+			applied++
+			continue
+		case ladderWedge:
+			// WEDGE VERDICT: the sentinel is positioned in the session's
+			// event order and NOTHING follows it — even a thinking model
+			// emits a turn-start; this is a machine verdict, not a
+			// guess (000050). Failed + evidence; rearm is the exit.
+			tag, err := tx.Exec(ctx, `
+				UPDATE tasks SET stage='failed', stage_entered_at=now(),
+					pending_origin='escalated', pending_input=false,
+					nudge_id=NULL, nudged_at=NULL, last_heartbeat_at=NULL,
+					claim_token=NULL, lease_expires_at=NULL, assignee_session=NULL, implementer_session=NULL,
+					claim_incremented_attempts=false, claim_persona=NULL,
+					last_attempt_failed=true, failure_count=failure_count+1, last_failure_at=now()
+				WHERE id=$1 AND stage='in_progress'`, v.id)
+			if err != nil {
+				return 0, err
+			}
+			if tag.RowsAffected() == 0 {
+				continue
+			}
+			if err := writeTransition(ctx, txQ{tx}, v.id, StageInProgress, StageFailed, "", sys); err != nil {
+				return 0, err
+			}
+			evt, err := recordEventTx(ctx, tx, v.project, "reconciler:wedge:"+v.id+":"+v.nudgeID, "wedge",
+				"task", v.id, sys,
+				map[string]any{"task_id": v.id, "nudge_id": v.nudgeID, "verdict": "wedge",
+					"evidence": wedgeEvidence[v.id]})
+			if err != nil {
+				return 0, err
+			}
+			pending = append(pending, evt)
+			applied++
+			continue
+		}
 		// #1813 failed-state overlay: the lease lapse IS the attempt
 		// failure — mark it, count it CONSECUTIVELY, and park the row
 		// behind doubling backoff (auto-return-to-ready via the
@@ -290,6 +530,7 @@ func (s *Service) rc1Reclaims(ctx context.Context) (int, error) {
 			UPDATE tasks SET stage='backlog', stage_entered_at=now(),
 				claim_token=NULL, lease_expires_at=NULL, assignee_session=NULL, implementer_session=NULL,
 				claim_incremented_attempts=false, claim_persona=NULL,
+				nudge_id=NULL, nudged_at=NULL, last_heartbeat_at=NULL,
 				last_attempt_failed=true, failure_count=failure_count+1, last_failure_at=now(),
 				cooldown_until=now()+make_interval(secs=>$2::float8)
 			WHERE id=$1 AND stage='in_progress' AND (lease_expires_at IS NULL OR lease_expires_at < now())`,
@@ -390,7 +631,8 @@ func (s *Service) rc1PersonaClaims(ctx context.Context) (personaReclaim, error) 
 			// Config removed mid-flight: converge to today's unclaimed
 			// in_review shape (no accounting, no transition).
 			tag, err := tx.Exec(ctx, `
-				UPDATE tasks SET claim_token=NULL, lease_expires_at=NULL, claim_persona=NULL
+				UPDATE tasks SET claim_token=NULL, lease_expires_at=NULL, claim_persona=NULL,
+					nudge_id=NULL, nudged_at=NULL, last_heartbeat_at=NULL
 				WHERE id=$1 AND stage='in_review' AND lease_expires_at < now()`, v.id)
 			if err != nil {
 				_ = tx.Rollback(ctx)
@@ -435,6 +677,7 @@ func (s *Service) rc1PersonaClaims(ctx context.Context) (personaReclaim, error) 
 		// in exactly that emptied window).
 		tag, err := tx.Exec(ctx, `
 			UPDATE tasks SET claim_token=NULL, lease_expires_at=NULL, assignee_session=NULL, claim_persona=NULL,
+				nudge_id=NULL, nudged_at=NULL, last_heartbeat_at=NULL,
 				last_attempt_failed=true, failure_count=failure_count+1, last_failure_at=now(),
 				cooldown_until=now()+make_interval(secs=>$2::float8)
 			WHERE id=$1 AND stage='in_review' AND lease_expires_at < now()`,
@@ -505,10 +748,11 @@ func (s *Service) rc1PersonaClaims(ctx context.Context) (personaReclaim, error) 
 		}
 		// Claim-time escalation (the AttemptsCap discipline): a persona
 		// row whose consecutive failures reached the cap escalates to
-		// pending_input — the human-only exit arbitrates the loop.
+		// FAILED (000050: exhaustion is a failure, never an input
+		// costume) — rearm arbitrates the loop.
 		if int(v.failures) >= s.cfg.AttemptsCap {
 			tag, err := tx.Exec(ctx, `
-				UPDATE tasks SET stage='pending_input', stage_entered_at=now(), pending_origin='escalated',
+				UPDATE tasks SET stage='failed', stage_entered_at=now(), pending_origin='escalated', pending_input=false,
 					cooldown_until=NULL
 				WHERE id=$1 AND stage='in_review' AND claim_token IS NULL`, v.id)
 			if err != nil {
@@ -519,7 +763,7 @@ func (s *Service) rc1PersonaClaims(ctx context.Context) (personaReclaim, error) 
 				_ = tx.Rollback(ctx)
 				continue
 			}
-			if err := writeTransition(ctx, txQ{tx}, v.id, StageInReview, StagePendingInput, "", sys); err != nil {
+			if err := writeTransition(ctx, txQ{tx}, v.id, StageInReview, StageFailed, "", sys); err != nil {
 				_ = tx.Rollback(ctx)
 				return out, err
 			}
@@ -664,17 +908,13 @@ func (s *Service) pendingCoupling(ctx context.Context) (staged, resumed int, err
 			return staged, resumed, err
 		}
 		tag, err := tx.Exec(ctx, `
-			UPDATE tasks SET stage='pending_input', stage_entered_at=now(), pending_origin='worker'
-			WHERE id=$1 AND stage='in_progress'`, r.id)
+			UPDATE tasks SET pending_input=true, pending_origin='worker', updated_at=now()
+			WHERE id=$1 AND stage='in_progress' AND NOT pending_input`, r.id)
 		if err != nil {
 			_ = tx.Rollback(ctx)
 			return staged, resumed, err
 		}
 		if tag.RowsAffected() > 0 {
-			if err := writeTransition(ctx, txQ{tx}, r.id, StageInProgress, StagePendingInput, "", sys); err != nil {
-				_ = tx.Rollback(ctx)
-				return staged, resumed, err
-			}
 			evt, err := recordEventTx(ctx, tx, r.project, "reconciler:pending:"+r.id, "pending_stage",
 				"task", r.id, sys, map[string]any{"task_id": r.id})
 			if err != nil {
@@ -692,12 +932,13 @@ func (s *Service) pendingCoupling(ctx context.Context) (staged, resumed int, err
 		}
 	}
 
-	// Resume: pending_input rows (worker origin) whose session's question
-	// resolved — back to in_progress with the lease re-armed; the held
-	// token is unchanged, so the provenance flag is untouched.
+	// Resume: flagged rows (worker origin) whose session's question
+	// resolved — flag cleared, the lease re-armed in place (000050: the
+	// stage never moved); the held token is unchanged, so the
+	// provenance flag is untouched.
 	rows, err = s.q().Query(ctx, `
 		SELECT id, project_id, assignee_session FROM tasks
-		WHERE stage='pending_input' AND pending_origin='worker' AND assignee_session IS NOT NULL`)
+		WHERE pending_input AND pending_origin='worker' AND assignee_session IS NOT NULL`)
 	if err != nil {
 		return staged, resumed, err
 	}
@@ -721,19 +962,15 @@ func (s *Service) pendingCoupling(ctx context.Context) (staged, resumed int, err
 			return staged, resumed, err
 		}
 		tag, err := tx.Exec(ctx, `
-			UPDATE tasks SET stage='in_progress', stage_entered_at=now(), pending_origin=NULL,
-				lease_expires_at=now()+make_interval(secs=>$2::float8)
-			WHERE id=$1 AND stage='pending_input' AND pending_origin='worker'`,
+			UPDATE tasks SET pending_input=false, pending_origin=NULL,
+				lease_expires_at=now()+make_interval(secs=>$2::float8), updated_at=now()
+			WHERE id=$1 AND pending_input AND pending_origin='worker'`,
 			r.id, s.cfg.LeaseDuration.Seconds())
 		if err != nil {
 			_ = tx.Rollback(ctx)
 			return staged, resumed, err
 		}
 		if tag.RowsAffected() > 0 {
-			if err := writeTransition(ctx, txQ{tx}, r.id, StagePendingInput, StageInProgress, "", sys); err != nil {
-				_ = tx.Rollback(ctx)
-				return staged, resumed, err
-			}
 			evt, err := recordEventTx(ctx, tx, r.project, "reconciler:resume:"+r.id, "resume",
 				"task", r.id, sys, map[string]any{"task_id": r.id})
 			if err != nil {
@@ -802,7 +1039,14 @@ func (s *Service) rc2Drift(ctx context.Context, cutoff time.Time) (done, review,
 				tag, err := tx.Exec(ctx, `
 					UPDATE tasks SET stage='done', stage_entered_at=now(),
 						claim_token=NULL, lease_expires_at=NULL, claim_incremented_attempts=false, claim_persona=NULL,
-						failure_count=0, last_attempt_failed=false, last_failure_at=NULL
+						failure_count=0, last_attempt_failed=false, last_failure_at=NULL,
+						-- a stage move resolves the flag with the move
+						-- (updateStageTx's rule): a drift_review-parked row
+						-- whose criteria were met while parked must not
+						-- land done still flagged (review round 2,
+						-- finding 4's sibling).
+						pending_input=false, pending_origin=NULL,
+						nudge_id=NULL, nudged_at=NULL, last_heartbeat_at=NULL
 					WHERE id=$1 AND stage='in_review'`, t.ID)
 				if err != nil {
 					_ = tx.Rollback(ctx)
@@ -853,17 +1097,13 @@ func (s *Service) rc2Drift(ctx context.Context, cutoff time.Time) (done, review,
 					return done, review, reentry, err
 				}
 				tag, err := tx.Exec(ctx, `
-					UPDATE tasks SET stage='pending_input', stage_entered_at=now(), pending_origin='drift_review'
-					WHERE id=$1 AND stage='in_review'`, t.ID)
+					UPDATE tasks SET pending_input=true, pending_origin='drift_review', updated_at=now()
+					WHERE id=$1 AND stage='in_review' AND NOT pending_input`, t.ID)
 				if err != nil {
 					_ = tx.Rollback(ctx)
 					return done, review, reentry, err
 				}
 				if tag.RowsAffected() > 0 {
-					if err := writeTransition(ctx, txQ{tx}, t.ID, StageInReview, StagePendingInput, pr.URL, sys); err != nil {
-						_ = tx.Rollback(ctx)
-						return done, review, reentry, err
-					}
 					evt, err := recordEventTx(ctx, tx, t.ProjectID, "reconciler:drift_review:"+t.ID, "drift_review",
 						"task", t.ID, sys, map[string]any{"task_id": t.ID, "pr": prNum})
 					if err != nil {
@@ -901,7 +1141,14 @@ func (s *Service) rc2Drift(ctx context.Context, cutoff time.Time) (done, review,
 					UPDATE tasks SET stage='in_progress', stage_entered_at=now(),
 						claim_token=$2, lease_expires_at=now()+make_interval(secs=>$3::float8),
 						last_progress_at=now(), assignee_session=NULL,
-						claim_incremented_attempts=false, claim_persona=NULL, pending_origin=NULL
+						claim_incremented_attempts=false, claim_persona=NULL,
+						-- The re-entry lands a NEW lease episode: resolve the
+						-- flag with the move (paired form — a drift_review
+						-- park reaching closed-unmerged must not violate
+						-- tasks_pending_input_set, review round 2 finding 4)
+						-- and reset the episode evidence slots.
+						pending_input=false, pending_origin=NULL,
+						nudge_id=NULL, nudged_at=NULL, last_heartbeat_at=NULL
 					WHERE id=$1 AND stage='in_review'`,
 					t.ID, newToken, s.cfg.LeaseDuration.Seconds())
 				if err != nil {
@@ -914,7 +1161,13 @@ func (s *Service) rc2Drift(ctx context.Context, cutoff time.Time) (done, review,
 				// (pre-existing) but drops the persona provenance —
 				// claim_persona rides ONLY a live persona claim.
 				tag, err := tx.Exec(ctx, `
-					UPDATE tasks SET stage='backlog', stage_entered_at=now(), claim_persona=NULL, pending_origin=NULL
+					UPDATE tasks SET stage='backlog', stage_entered_at=now(), claim_persona=NULL,
+						-- Paired-form flag resolution + episode reset (the
+						-- backlog twin of finding 4: a no-identity parked
+						-- row lands backlog flag-free, never a constraint
+						-- violation that poisons the sweep).
+						pending_input=false, pending_origin=NULL,
+						nudge_id=NULL, nudged_at=NULL, last_heartbeat_at=NULL
 					WHERE id=$1 AND stage='in_review'`, t.ID)
 				if err != nil {
 					_ = tx.Rollback(ctx)

@@ -1916,9 +1916,13 @@ board:
   # Attempts-cap N: the (N+1)th claim attempt escalates to pending_input
   # instead of granting (lease lapse → attempts++ → at-cap escalation).
   attemptsCap: 3
-  # Evidence-gated lease window in seconds (#1685: elapsed time is not
-  # liveness — heartbeats extend only on progress evidence).
-  leaseSeconds: 900
+  # Lease window in seconds (000050 seamless lease): wall-clock is the
+  # DEATH detector, not the liveness detector — the reconciler renews on
+  # observed assignee movement and runs the nudge ladder on quiet, so
+  # this only bounds how long a provably-gone assignee's row stays
+  # pinned (15m burned live workers mid-verification on long tool
+  # calls; heartbeats remain evidence-gated, #1685).
+  leaseSeconds: 2700
   # 429 cooldown in seconds, applied to BOTH the task and the project's
   # worker slots (new claims into a throttled project pause).
   throttleBackoffSeconds: 300

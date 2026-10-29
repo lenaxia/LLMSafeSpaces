@@ -112,8 +112,10 @@ func (s *Service) completeReviewTask(ctx context.Context, tx pgx.Tx, cand, subje
 	tag, err := tx.Exec(ctx, `
 		UPDATE tasks SET stage='done', stage_entered_at=now(),
 			claim_token=NULL, lease_expires_at=NULL, claim_incremented_attempts=false, claim_persona=NULL,
-			failure_count=0, last_attempt_failed=false, last_failure_at=NULL, pending_origin=NULL
-		WHERE id=$1 AND NOT paused AND (stage='in_review' OR (stage='pending_input' AND pending_origin='drift_review'))`,
+			failure_count=0, last_attempt_failed=false, last_failure_at=NULL,
+			pending_origin=NULL, pending_input=false,
+			nudge_id=NULL, nudged_at=NULL, last_heartbeat_at=NULL
+		WHERE id=$1 AND NOT paused AND stage='in_review'`,
 		cand.ID)
 	if err != nil {
 		return nil, err
@@ -148,22 +150,19 @@ func (s *Service) completeReviewTask(ctx context.Context, tx pgx.Tx, cand, subje
 }
 
 // parkReviewTask is the owner-guard branch: an in_review review task
-// whose criteria are UNMET when the subject completes parks to
-// pending_input/drift_review (RC2's stranded-decision shape — the
-// pending_input column is the owner-visible surface) with transition +
-// deterministic review_park event. Already-parked rows are no-ops.
+// whose criteria are UNMET when the subject completes parks to the
+// pending_input FLAG (000050: the row keeps in_review; the flag +
+// pending_origin='drift_review' are the owner-visible surface) with a
+// deterministic review_park event. Already-flagged rows are no-ops.
 func (s *Service) parkReviewTask(ctx context.Context, tx pgx.Tx, cand, subject *Task, evidence string, sys Actor) (*Event, error) {
 	tag, err := tx.Exec(ctx, `
-		UPDATE tasks SET stage='pending_input', stage_entered_at=now(), pending_origin='drift_review'
-		WHERE id=$1 AND NOT paused AND stage='in_review'`, cand.ID)
+		UPDATE tasks SET pending_input=true, pending_origin='drift_review', updated_at=now()
+		WHERE id=$1 AND NOT paused AND stage='in_review' AND NOT pending_input`, cand.ID)
 	if err != nil {
 		return nil, err
 	}
 	if tag.RowsAffected() == 0 {
 		return nil, nil
-	}
-	if err := writeTransition(ctx, txQ{tx}, cand.ID, StageInReview, StagePendingInput, evidence, sys); err != nil {
-		return nil, err
 	}
 	evt, err := recordEventTx(ctx, tx, cand.ProjectID,
 		"engine:review_park:"+cand.ID+":"+subject.ID, "review_park",
@@ -204,7 +203,7 @@ func (s *Service) reviewCandidates(ctx context.Context, tx pgx.Tx, subject *Task
 		JOIN projects p ON p.id = t.project_id
 		JOIN epics e ON e.id = t.epic_id
 		WHERE t.tags && $1::text[]
-		  AND (t.stage = 'in_review' OR (t.stage = 'pending_input' AND t.pending_origin = 'drift_review'))
+		  AND t.stage = 'in_review'
 		  AND NOT t.paused AND e.status <> 'paused' AND NOT p.paused
 		  AND p.target_workspace_id IS NOT DISTINCT FROM (SELECT p2.target_workspace_id FROM projects p2 WHERE p2.id = $2)
 		FOR UPDATE OF t`,

@@ -49,22 +49,28 @@ import (
 // FIVE stages and the eliminated stage's literal is just an invalid
 // filter value (the tool tier rejects it like any other misspelling).
 
-// boardStages is the FIVE-stage binding set — the READ filter's
-// vocabulary (board_read's stage parameter).
+// boardStages is the WIRE stage set — the READ filter's vocabulary
+// (board_read's stage parameter). 000050: pending_input is a FLAG, not
+// a stage — the filter literal survives as the flag filter (flagged
+// rows wherever they sit), and `failed` joins the storable set as the
+// failure terminus. board.StageInVocabulary is the engine's single
+// source for this same set.
 var boardStages = []string{
-	"backlog", "in_progress", "in_review", "done", "pending_input",
+	"backlog", "in_progress", "in_review", "done", "failed", "pending_input",
 }
 
 // boardMoveTargets is the stage machine's legal manager move_stage
 // TARGET set (pkg/board stage.go's enumerated map, manager-surface
-// column): in_progress→{in_review, done, pending_input},
-// in_review→{in_progress, done, pending_input}, and the pending_input
-// human exits →{in_progress, backlog}. Entering the pipeline FROM
-// backlog is claim-only (task_start/dispatch — no manager write
-// exists), so the schema must not advertise it. #1747: the terminal
-// cancel stage is ELIMINATED (delete replaces cancel).
+// column): in_progress→{in_review, done, pending_input, failed},
+// in_review→{in_progress, done, pending_input, failed}, the pending_input
+// human exits →{in_progress, backlog} (000050: those exits CLEAR the
+// flag — the row keeps its real stage throughout), and failed is the
+// failure terminus (attempts exhaustion + the wedge verdict land there).
+// Entering the pipeline FROM backlog is claim-only (task_start/dispatch
+// — no manager write exists), so the schema must not advertise it.
+// #1747: the terminal cancel stage is ELIMINATED (delete replaces cancel).
 var boardMoveTargets = []string{
-	"in_progress", "in_review", "done", "pending_input", "backlog",
+	"in_progress", "in_review", "done", "pending_input", "failed", "backlog",
 }
 
 var boardListProjectsTool = mcp.NewTool("board_list_projects",
@@ -86,12 +92,14 @@ var boardGetTool = mcp.NewTool("board_get",
 
 var boardReadTool = mcp.NewTool("board_read",
 	mcp.WithDescription("Read a board. Default (with project_id): the project's tasks, optionally "+
-		"filtered by one of the five stages (backlog, in_progress, in_review, done, pending_input — "+
-		"#1747). kind=epics lists the project's epics with derived progress. q= searches your board "+
-		"(short id exact or title match, board-wide when project_id is omitted) with did-you-mean "+
-		"suggestions on zero-hit near-misses. health=true renders the board health snapshot instead."),
+		"filtered by one of the wire stages (backlog, in_progress, in_review, done, failed + the "+
+		"pending_input flag filter — 000050: flagged rows wherever they sit; a task carries "+
+		"pending_input=true as a badge on its REAL stage). kind=epics lists the project's epics with "+
+		"derived progress. q= searches your board (short id exact or title match, board-wide when "+
+		"project_id is omitted) with did-you-mean suggestions on zero-hit near-misses. health=true "+
+		"renders the board health snapshot instead."),
 	mcp.WithString("project_id", mcp.Description("Project short id, phrase form (prj-amber-lantern-ambles; legacy prj-XXXXXXXX still resolves, deprecated)")),
-	mcp.WithString("stage", mcp.Description("Optional stage filter (one of the five stages)")),
+	mcp.WithString("stage", mcp.Description("Optional stage filter (wire set: backlog, in_progress, in_review, done, failed, or pending_input = the flag filter — rows awaiting input on any real stage)")),
 	mcp.WithBoolean("failed", mcp.Description("#1813 failed-state filter: true lists only tasks whose last attempt failed (crash loop, exhaustion — last_attempt_failed overlay), false only clean rows")),
 	mcp.WithString("kind", mcp.Description("Projection selector: epics lists the project's epics (requires project_id)")),
 	mcp.WithString("q", mcp.Description("Search query (short id exact or title substring)")),
@@ -189,7 +197,8 @@ var boardCreateTaskTool = mcp.NewTool("board_create_task",
 		"the explicit pr:N anchor (owner ruling OR4 — pattern ^pr:[1-9][0-9]*$, the only PR-drift form "+
 		"the reconciler consumes; malformed anchors are inert tags, never guessed) and the delegated-review "+
 		"anchor review-of:<subject-short-id> (#1832 — a review task whose subject's done transition settles it: "+
-		"done when its criteria are ALL met, pending_input/drift_review when unmet). depends_on adds "+
+		"done when its criteria are ALL met, drift_review flag (pending_input) when unmet — the park "+
+		"is a FLAG on the row's real stage (000050), never a costume column). depends_on adds "+
 		"prerequisite edges in the same write (#1747)."),
 	mcp.WithString("epic_id", mcp.Required(), mcp.Description("Epic short id, phrase form (epc-meek-gondola-waits; legacy epc-XXXXXXXX still resolves, deprecated)")),
 	mcp.WithString("title", mcp.Required(), mcp.Description("Task title")),
@@ -255,9 +264,12 @@ var boardUpdateItemTool = mcp.NewTool("board_update_item",
 
 var boardMoveStageTool = mcp.NewTool("board_move_stage",
 	mcp.WithDescription("Move a task to another stage (server-arbitrated; a drag that loses a race "+
-		"returns the authoritative guard error). Legal manager moves: in_progress→{in_review, done, pending_input}, "+
-		"in_review→{in_progress (the review bounce), done, pending_input}, and the pending_input human exits "+
-		"→{in_progress, backlog}. Entering the pipeline from backlog is claim-only (board_start_task — no manager "+
+		"returns the authoritative guard error). Legal manager moves: in_progress→{in_review, done, "+
+		"pending_input, failed}, in_review→{in_progress (the review bounce), done, pending_input, failed}, "+
+		"and the pending_input human exits →{in_progress, backlog} — 000050: pending_input is a FLAG "+
+		"not a stage; the move literal SETS the flag (the row keeps its real stage) and the exits "+
+		"CLEAR it. failed is the failure terminus (attempts exhaustion + the lease wedge verdict). "+
+		"Entering the pipeline from backlog is claim-only (board_start_task — no manager "+
 		"write exists); removal is board_delete, never a stage move (#1747). done requires ALL acceptance "+
 		"criteria met + evidence_url (ruling R2). Forward moves refuse on a paused task (409 task_paused)."),
 	mcp.WithString("task_id", mcp.Required(), mcp.Description("Task short id, phrase form (tsk-crimson-finch-blooms; legacy tsk-XXXXXXXX still resolves, deprecated)")),
@@ -324,9 +336,10 @@ var boardDeleteTasksTool = mcp.NewTool("board_delete_tasks",
 )
 
 var boardRearmTaskTool = mcp.NewTool("board_rearm_task",
-	mcp.WithDescription("Re-pool an attempts-exhausted task (#1832 WS3): an escalated pending_input row (attempts at the cap) "+
+	mcp.WithDescription("Re-pool an attempts-exhausted task (#1832 WS3, 000050-shaped): a escalated "+
+		"row (stage=failed, pending_origin=escalated — attempts at the cap) "+
 		"returns to backlog with attempts reset to 0 — a fresh-judgment ledger (the pre-reset count rides the rearm audit event). "+
-		"The re-pooled row is claimable immediately. Only pending_input/escalated rows; other stages and origins keep their "+
+		"The re-pooled row is claimable immediately. Only failed/escalated rows; other stages and origins keep their "+
 		"enumerated transitions."),
 	mcp.WithString("task_id", mcp.Required(), mcp.Description("Task short id (tsk-…, phrase or legacy form)")),
 	mcp.WithString("request_id", mcp.Description("Idempotency key (one per logical operation)")),
@@ -1145,9 +1158,8 @@ func boardItemKind(id string) (string, error) {
 	}
 }
 
-// boardStageSet is the FIVE-stage binding set as a set (the
-// board_read filter's vocabulary — built from boardStages, the single
-// source).
+// boardStageSet is the WIRE stage set as a set (the board_read filter's
+// vocabulary — built from boardStages, the single source).
 func boardStageSet() map[string]bool {
 	out := make(map[string]bool, len(boardStages))
 	for _, s := range boardStages {

@@ -15,16 +15,20 @@ import (
 	"github.com/lenaxia/llmsafespaces/pkg/board"
 )
 
-// #1832 WS4 — stillborn-spawn claim hygiene (the NARROW evidence fix;
-// the platform-derived liveness REWORK is #1847's, another lane). A
-// spawn that mints a session but produces ZERO turns consumed a claim,
-// and a lease-keeper renewed the corpse because heartbeat extension
-// trusted the evidence TIMESTAMP alone. The fix: extension requires
-// ACTUAL TURN EVIDENCE — when the installed source positively reports
-// the assignee session at zero messages/outputs, the heartbeat does
-// NOT extend (the wall clock reclaims the stillborn's lease). A seam
-// ERROR keeps today's behavior (fail-open — transient infra must not
-// kill live workers' renewals; the rework owns the stronger posture).
+// #1832 WS4, re-pinned to the item-6 amendment: the stillborn CLASS
+// (a spawn that mints a session but produces ZERO turns) is no longer
+// policed at the heartbeat extension — board_heartbeat is the
+// nudge-RESPONSE channel, and a zero-turn session cannot call tools,
+// so it can never answer a sentinel: the WEDGE VERDICT owns corpses
+// (a nudge, a full window of silence on both channels, failed). The
+// turn-evidence seam survives with a different consumer — the #1959c
+// bounce re-dispatch refuses to re-dispatch into a corpse
+// (redispatchBounce, pinned in bounce_1959_*_test.go).
+//
+// What THIS file pins: the response channel is TURN-BLIND — the seam's
+// answers (zero turns, live turns, erroring) never gate a nudge
+// response. The discriminator between a corpse and a live reviewer is
+// the ladder, not the extension.
 
 // fakeTurnSource is the turn-evidence seam fixture.
 type fakeTurnSource struct {
@@ -50,104 +54,87 @@ func (s *BoardSuite) stillbornSvc(ts *fakeTurnSource) *board.Service {
 }
 
 func TestStillbornEvidence_SeamSemantics(t *testing.T) {
-	// The seam is a first-class option: installed services consult it
-	// on every extension; nil (the default) keeps today's behavior.
+	// The seam is a first-class option (the bounce re-dispatch's
+	// consumer); nil (the default) keeps today's behavior.
 	require.NotNil(t, board.WithTurnEvidenceSource(&fakeTurnSource{}), "the option installs")
 }
 
-func (s *BoardSuite) TestStillborn_ZeroTurnEvidenceRefusesExtension() {
+func (s *BoardSuite) TestStillborn_ResponseChannelIsTurnBlind() {
+	for _, tc := range []struct {
+		name  string
+		ts    *fakeTurnSource
+		brief string
+	}{
+		{"zero-turn assignee", &fakeTurnSource{counts: map[string]int{}},
+			"a corpse cannot call tools — but the response, when it arrives, is honored"},
+		{"live assignee", &fakeTurnSource{counts: map[string]int{"sess": 5}},
+			"a working session's response extends"},
+		{"seam erroring", &fakeTurnSource{err: errTurnSourceBlip},
+			"a transient seam blip never gates the response channel"},
+	} {
+		s.Run(tc.name, func() {
+			ws := s.seedWorkspace()
+			p := s.seedProject(ws, 2)
+			e := s.seedEpic(p, board.EpicActive)
+			task := s.seedTask(e, "turn-blind", nil, false)
+
+			svc := s.stillbornSvc(tc.ts)
+			c, err := svc.ClaimNext(context.Background(), "worker-"+ws, ws)
+			s.Require().NoError(err)
+			s.Require().NotNil(c.Task)
+
+			// No nudge: advisory only, whatever the turn evidence says.
+			res, err := svc.Heartbeat(context.Background(), s.agent(c.Assignee, c.ClaimToken), "", c.ShortID,
+				time.Now().UTC())
+			s.Require().NoError(err)
+			require.False(s.T(), res.Extended, "no nudge → no extension (turn evidence is irrelevant)")
+
+			// The nudge response: honored on every seam answer.
+			s.setNudge(task.ID, "nudge-turn-blind")
+			res, err = svc.Heartbeat(context.Background(), s.agent(c.Assignee, c.ClaimToken), "", c.ShortID,
+				time.Now().UTC())
+			s.Require().NoError(err)
+			require.True(s.T(), res.Extended, tc.brief)
+			require.Empty(s.T(), res.Reason)
+		})
+	}
+}
+
+func (s *BoardSuite) TestStillborn_WedgeVerdictOwnsCorpses() {
 	ws := s.seedWorkspace()
 	p := s.seedProject(ws, 2)
 	e := s.seedEpic(p, board.EpicActive)
-	task := s.seedTask(e, "stillborn", nil, false)
+	task := s.seedTask(e, "corpse", nil, false)
 
-	ts := &fakeTurnSource{counts: map[string]int{}}
-	svc := s.stillbornSvc(ts)
+	// The stillborn shape: a session at ZERO turns holds the claim.
+	svc := s.stillbornSvc(&fakeTurnSource{counts: map[string]int{}})
 	c, err := svc.ClaimNext(context.Background(), "worker-"+ws, ws)
 	s.Require().NoError(err)
 	s.Require().NotNil(c.Task)
-	s.Require().NotEmpty(c.Assignee, "the spawn stamp recorded the session identity")
+	assignee := s.reloadTask(task.ID).AssigneeSession
+	s.Require().NotEmpty(assignee)
 
-	// The stillborn: the minted session produced ZERO messages.
-	ts.counts[c.Assignee] = 0
-	before := s.rawTask(task.ID)
-	require.NotNil(s.T(), before.ClaimToken)
+	// The ladder asks; the corpse cannot answer (no turn can start, no
+	// tool can be called); the silence on both channels wedges.
+	lives := &fakeLiveness{}
+	lives.set(assignee, liveQuiet())
+	nudger := &fakeNudger{}
+	recon := s.pinRecon(lives, nudger.Send)
 
-	// A heartbeat carrying FRESH evidence timestamps (exactly what a
-	// lease-keeper reading spawn-moment updated_at would send) must NOT
-	// extend a zero-turn assignee's lease.
-	res, err := svc.Heartbeat(context.Background(), s.agent(c.Assignee, c.ClaimToken), "", c.ShortID,
-		time.Now().UTC().Add(time.Minute))
-	s.Require().NoError(err)
-	require.False(s.T(), res.Extended, "stillborn: no turn evidence, no extension — updated_at alone is not liveness")
-	require.Contains(s.T(), res.Reason, "turn evidence",
-		"the refusal names the evidence class (operational debuggability)")
+	s.expireLease(task.ID)
+	s.rc1Sweep(recon)
+	s.Equal(1, nudger.count(), "the sentinel was delivered")
 
-	// The stored watermark is untouched — the corpse consumed nothing.
-	after := s.rawTask(task.ID)
-	require.Equal(s.T(), before.ClaimToken, after.ClaimToken)
-	require.False(s.T(), after.LeaseExp.After(*before.LeaseExp),
-		"the lease was NOT renewed")
-}
+	// The harness MEASURED the sentinel's position (mark known) and
+	// nothing follows it — the machine-verdict input.
+	lives.set(assignee, board.AssigneeObservation{Observed: true, Exists: true, NudgeMarkKnown: true, EventsAfterNudge: false})
+	s.expireLease(task.ID)
+	s.rc1Sweep(recon)
 
-func (s *BoardSuite) TestStillborn_LiveSessionExtends() {
-	ws := s.seedWorkspace()
-	p := s.seedProject(ws, 2)
-	e := s.seedEpic(p, board.EpicActive)
-	s.seedTask(e, "live", nil, false)
-
-	ts := &fakeTurnSource{counts: map[string]int{}}
-	svc := s.stillbornSvc(ts)
-	c, err := svc.ClaimNext(context.Background(), "worker-"+ws, ws)
-	s.Require().NoError(err)
-	s.Require().NotNil(c.Task)
-
-	ts.counts[c.Assignee] = 5 // a working session: five messages
-	res, err := svc.Heartbeat(context.Background(), s.agent(c.Assignee, c.ClaimToken), "", c.ShortID,
-		time.Now().UTC().Add(time.Minute))
-	s.Require().NoError(err)
-	require.True(s.T(), res.Extended, "real turn evidence + a moved watermark extends")
-	require.Empty(s.T(), res.Reason)
-}
-
-func (s *BoardSuite) TestStillborn_SeamErrorFailsOpen() {
-	ws := s.seedWorkspace()
-	p := s.seedProject(ws, 2)
-	e := s.seedEpic(p, board.EpicActive)
-	s.seedTask(e, "blip", nil, false)
-
-	ts := &fakeTurnSource{err: errTurnSourceBlip}
-	svc := s.stillbornSvc(ts)
-	c, err := svc.ClaimNext(context.Background(), "worker-"+ws, ws)
-	s.Require().NoError(err)
-	s.Require().NotNil(c.Task)
-
-	// A transient seam error must NOT turn into a lease kill for a
-	// live worker: the heartbeat falls back to the timestamp rule
-	// (fail-open here is deliberate — #1847's rework owns the stronger
-	// posture; this lane's guard acts only on POSITIVE zero evidence).
-	res, err := svc.Heartbeat(context.Background(), s.agent(c.Assignee, c.ClaimToken), "", c.ShortID,
-		time.Now().UTC().Add(time.Minute))
-	s.Require().NoError(err)
-	require.True(s.T(), res.Extended, "seam error: the evidence-timestamp rule still extends")
-}
-
-func (s *BoardSuite) TestStillborn_NilSeamKeepsTodaySemantics() {
-	ws := s.seedWorkspace()
-	p := s.seedProject(ws, 2)
-	e := s.seedEpic(p, board.EpicActive)
-	s.seedTask(e, "nilseam", nil, false)
-
-	// The shared suite service installs NO seam: a fresh watermark
-	// extends exactly as before (the guard is inert without a source).
-	c, err := s.svc.ClaimNext(context.Background(), "worker-"+ws, ws)
-	s.Require().NoError(err)
-	s.Require().NotNil(c.Task)
-	res, err := s.svc.Heartbeat(context.Background(), s.agent(c.Assignee, c.ClaimToken), "", c.ShortID,
-		time.Now().UTC().Add(time.Minute))
-	s.Require().NoError(err)
-	require.True(s.T(), res.Extended)
-	require.Empty(s.T(), res.Reason)
+	row := s.rawTask(task.ID)
+	s.Equal(board.StageFailed, row.Stage, "a stillborn's silence is the wedge verdict — the class's new owner")
+	s.Nil(row.ClaimToken, "the corpse's claim is cleared")
+	s.Equal(1, s.countEvents("wedge"))
 }
 
 // errTurnSourceBlip is the transient-failure fixture.

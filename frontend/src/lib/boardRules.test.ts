@@ -6,6 +6,7 @@ import {
   PR_ANCHOR_PATTERN,
   validateBoardTags,
   isManagerDragAllowed,
+  stageDragKey,
   doneReadiness,
   suggestBoardItems,
   describeBoardError,
@@ -75,12 +76,14 @@ describe("validateBoardTags", () => {
 // ─── Stage machine mirror ─────────────────────────────────────────────────────
 
 describe("stage vocabulary", () => {
-  it("carries the six enumerated stages (ruling R2)", () => {
-    expect(BOARD_STAGES).toEqual(["backlog", "in_progress", "in_review", "done", "pending_input"]);
+  it("carries the stored-stage vocabulary + failed (000050: pending_input is a flag)", () => {
+    expect(BOARD_STAGES).toEqual(["backlog", "in_progress", "in_review", "done", "failed"]);
+    expect(stageDragKey({ stage: "in_progress", pending_input: true })).toBe("pending_input");
+    expect(stageDragKey({ stage: "in_review" })).toBe("in_review");
   });
-  it("splits four through-flow columns from the two side columns", () => {
+  it("splits four through-flow columns from the failed side column", () => {
     expect(MAIN_STAGES).toEqual(["backlog", "in_progress", "in_review", "done"]);
-    expect(SIDE_STAGES).toEqual(["pending_input"]);
+    expect(SIDE_STAGES).toEqual(["failed"]);
   });
 });
 

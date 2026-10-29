@@ -44,27 +44,28 @@ func (s *Service) RearmTask(ctx context.Context, actor Actor, taskID, shortIDOrI
 		if err != nil {
 			return nil, err
 		}
-		if cur.Stage != StagePendingInput {
-			return nil, &GuardError{Code: GuardStage, Detail: "re-arm targets attempts-exhausted rows (pending_input/escalated); other stages keep their enumerated transitions"}
+		if cur.Stage != StageFailed {
+			return nil, &GuardError{Code: GuardStage, Detail: "re-arm targets attempts-exhausted rows (failed/escalated); other stages keep their enumerated transitions"}
 		}
 		if cur.PendingOrigin == nil || *cur.PendingOrigin != PendingOriginEscalated {
-			return nil, &GuardError{Code: GuardStage, Detail: "re-arm targets attempts-exhausted rows (pending_input/escalated); worker-origin and drift-review rows keep their enumerated exits"}
+			return nil, &GuardError{Code: GuardStage, Detail: "re-arm targets attempts-exhausted rows (failed/escalated); worker-origin and drift-review rows keep their enumerated exits"}
 		}
 		pre := cur.Attempts
 		tag, err := tx.Exec(ctx, `
 			UPDATE tasks SET stage='backlog', stage_entered_at=now(),
 				claim_token=NULL, lease_expires_at=NULL, assignee_session=NULL, implementer_session=NULL,
-				claim_incremented_attempts=false, claim_persona=NULL, pending_origin=NULL,
+				claim_incremented_attempts=false, claim_persona=NULL, pending_origin=NULL, pending_input=false,
+				nudge_id=NULL, nudged_at=NULL,
 				attempts=0, failure_count=0, last_attempt_failed=false, last_failure_at=NULL,
 				cooldown_until=NULL
-			WHERE id=$1 AND stage='pending_input' AND pending_origin='escalated'`, cur.ID)
+			WHERE id=$1 AND stage='failed' AND pending_origin='escalated'`, cur.ID)
 		if err != nil {
 			return nil, err
 		}
 		if tag.RowsAffected() == 0 {
 			return nil, &GuardError{Code: GuardStage, Detail: "row moved — server-arbitrated refusal"}
 		}
-		if err := writeTransition(ctx, txQ{tx}, cur.ID, StagePendingInput, StageBacklog, "", actor); err != nil {
+		if err := writeTransition(ctx, txQ{tx}, cur.ID, StageFailed, StageBacklog, "", actor); err != nil {
 			return nil, err
 		}
 		return map[string]any{"task_id": cur.ID, "attempts_before": pre, "attempts_after": 0, "stage": StageBacklog}, nil

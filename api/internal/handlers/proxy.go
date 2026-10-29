@@ -21,6 +21,7 @@ import (
 	"github.com/lenaxia/llmsafespaces/api/internal/services/metrics"
 	"github.com/lenaxia/llmsafespaces/api/internal/services/outbox"
 	"github.com/lenaxia/llmsafespaces/api/internal/services/sessionindex"
+	"github.com/lenaxia/llmsafespaces/api/internal/services/usagestream"
 	"github.com/lenaxia/llmsafespaces/api/internal/services/workspace"
 	"github.com/lenaxia/llmsafespaces/api/internal/services/wsstate"
 	"github.com/lenaxia/llmsafespaces/pkg/agent"
@@ -132,6 +133,16 @@ type ProxyHandler struct {
 	usageBillingMu sync.Mutex
 	usageInference func(modelID, providerID string, inputTokens, outputTokens int64, costDollars float64)
 	usageMetering  func(types.UsageEvent)
+
+	// frameObserver (SetFrameObserver; guarded by frameObserverMu) is
+	// the seamless lease's per-frame activity hook — the board's
+	// assignee-liveness index stamps EVERY applied pod frame (tool-part
+	// starts included) as session-movement evidence. Late-bound by
+	// design: the usagestream singleton may already be built when the
+	// board wiring runs, so buildUsageStream's OnFrame closure reads
+	// the holder at call time rather than capturing the value.
+	frameObserverMu sync.RWMutex
+	frameObserver   usagestream.FrameObserver
 
 	startOnce sync.Once
 	stopOnce  sync.Once

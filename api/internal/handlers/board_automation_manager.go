@@ -382,11 +382,13 @@ func (h *PodAutomationHandler) BoardManagerMoveStageBulk(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "toStage is required", "code": board.GuardInput})
 		return
 	}
-	// The five-stage vocabulary's shared helper (board.go's boardStages
+	// The wire stage vocabulary's shared helper (board.go's boardStages
 	// — the same single source the REST bulk adapter and the engine's
 	// StageInVocabulary render from; #1836 review r1 style finding).
+	// 000050: pending_input stays in the set as the flag-op alias
+	// (move = set the flag; failed is the new storable terminus).
 	if !boardStages()[req.ToStage] {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "toStage must be one of the five stages: " + board.StageVocabulary(), "code": board.GuardInput})
+		c.JSON(http.StatusBadRequest, gin.H{"error": "toStage must be one of the wire stages: " + board.WireStageVocabulary(), "code": board.GuardInput})
 		return
 	}
 	results, err := h.boardMgr.BulkMoveStage(c.Request.Context(), h.managerActor(owner, ws, session),
@@ -680,7 +682,7 @@ func (h *PodAutomationHandler) BoardManagerListTasks(c *gin.Context) {
 	}
 	stage := c.Query("stage")
 	if stage != "" && !boardStages()[stage] {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "stage filter must be one of the five stages", "code": board.GuardInput})
+		c.JSON(http.StatusBadRequest, gin.H{"error": "stage filter must be one of the wire stages: " + board.WireStageVocabulary(), "code": board.GuardInput})
 		return
 	}
 	failed := c.Query("failed")

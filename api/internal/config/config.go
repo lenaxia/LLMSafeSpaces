@@ -310,7 +310,7 @@ type Config struct {
 	// Wired via chart values → env:
 	//   LLMSAFESPACES_BOARD_ENABLED             ("true" | unset; default true — the engine dark-runs harmlessly with zero projects)
 	//   LLMSAFESPACES_BOARD_ATTEMPTSCAP         (default 3 — the (N+1)th claim attempt escalates to pending_input)
-	//   LLMSAFESPACES_BOARD_LEASESECONDS        (default 900 — evidence-gated lease window, #1685 semantics)
+	//   LLMSAFESPACES_BOARD_LEASESECONDS        (default 2700 — the death-detector window, 000050: movement renews, quiet gets the nudge ladder; wall-clock only bounds the provably-gone case)
 	//   LLMSAFESPACES_BOARD_THROTTLEBACKOFFSECONDS
 	//   LLMSAFESPACES_BOARD_FAILUREBACKOFFSECONDS  (default 60 — #1813 failed-attempt backoff base) (default 300 — 429 cooldown on the task AND the project's slots)
 	//   LLMSAFESPACES_BOARD_DRRQUANTUM          (default 1 — deficit-round-robin round allowance)
@@ -460,7 +460,7 @@ func Load(path string) (*Config, error) {
 	// Board (design 0067, ruling R6): platform-deploy knobs, chart → env.
 	v.SetDefault("board.enabled", true)
 	v.SetDefault("board.attemptsCap", 3)
-	v.SetDefault("board.leaseSeconds", 900)
+	v.SetDefault("board.leaseSeconds", 2700)
 	v.SetDefault("board.throttleBackoffSeconds", 300)
 	// #1813: failed-attempt auto-return-to-ready BASE backoff (doubling
 	// per consecutive failure, capped at 1h engine-side).

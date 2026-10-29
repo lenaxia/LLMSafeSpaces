@@ -3,7 +3,7 @@
 
 // Package board implements the Task Board backend (design 0067, issue
 // #1696/#1698): the BoardService action layer, the Postgres-arbitrated
-// dispatch engine (atomic claims, leases, evidence heartbeats, DRR
+// dispatch engine (atomic claims, leases, movement-observed renewals, DRR
 // fairness), and the self-healing convergence reconciler (RC1-RC5).
 //
 // Rulings conformed (2026-10-16, #1696): R1 epic+task only; R2 field model
@@ -47,7 +47,12 @@ type EngineConfig struct {
 	// granting. Default 3.
 	AttemptsCap int
 	// LeaseDuration is how long a claim holds without progress evidence
-	// (#1685 semantics: elapsed time is not liveness). Default 15m.
+	// (#1685 semantics: elapsed time is not liveness). Default 45m
+	// (000050: wall-clock is the DEATH detector, not the liveness
+	// detector — the RC1 ladder renews on observed movement and nudges
+	// the quiet case, so the window only bounds how long a PROVABLY
+	// gone assignee's row can stay pinned; 15m burned live workers
+	// mid-verification on long tool calls the watermark never stamped).
 	LeaseDuration time.Duration
 	// ThrottleBackoff is the cooldown applied by report_throttle to both
 	// the task (cooldown_until) and the project (slot_cooldown_until).
@@ -90,7 +95,7 @@ func DefaultEngineConfig() EngineConfig {
 	return EngineConfig{
 		AttemptsCap:       3,
 		FailureBackoff:    time.Minute,
-		LeaseDuration:     15 * time.Minute,
+		LeaseDuration:     45 * time.Minute,
 		ThrottleBackoff:   5 * time.Minute,
 		DRRQuantum:        1,
 		SweepInterval:     30 * time.Second,
@@ -172,29 +177,52 @@ func (c EngineConfig) failureBackoff(n int) time.Duration {
 // outright; the machine is forward-moving with the one enumerated
 // backward bounce and the human pending_input exits).
 const (
-	StageBacklog      = "backlog"
-	StageInProgress   = "in_progress"
-	StageInReview     = "in_review"
-	StageDone         = "done"
+	StageBacklog    = "backlog"
+	StageInProgress = "in_progress"
+	StageInReview   = "in_review"
+	StageDone       = "done"
+	// StageFailed is the failure terminus (000050: the attempts-exhaustion
+	// escalation and the wedge verdict land here; rearm is the exit —
+	// NEVER a pending_input costume, per the owner ruling "exhausted
+	// retries should be failed status").
+	StageFailed = "failed"
+	// StagePendingInput remains a WIRE literal only (000050: flag-not-
+	// stage). moveStage still ACCEPTS it as the flag-op alias — set the
+	// pending_input flag (enter) / clear it + take the enumerated exit
+	// (leave) — but no row STORES it; the storable vocabulary below
+	// excludes it and the DB CHECK enforces that.
 	StagePendingInput = "pending_input"
 )
 
-// stageVocabulary is the five-stage binding set's single source (the
-// read filter's vocabulary, the batch move's target vocabulary, and the
+// stageVocabulary is the STORABLE stage set's single source (the read
+// filter's vocabulary, the batch move's target vocabulary, and the
 // adapters' presence checks all render from here — #1836 review r1:
 // the inline literal maps had begun to drift).
-var stageVocabulary = []string{StageBacklog, StageInProgress, StageInReview, StageDone, StagePendingInput}
+var stageVocabulary = []string{StageBacklog, StageInProgress, StageInReview, StageDone, StageFailed}
 
-// StageVocabulary renders the five stages (joined) for caller-facing
-// validation errors.
+// wireStageVocabulary is the acceptance set: the storable stages plus
+// the pending_input flag-op alias (000050 — surfaces send the literal;
+// the engine maps it to flag semantics and never persists it).
+var wireStageVocabulary = append(append([]string{}, stageVocabulary...), StagePendingInput)
+
+// StageVocabulary renders the five storable stages (joined) for
+// caller-facing validation errors.
 func StageVocabulary() string {
 	return strings.Join(stageVocabulary, ", ")
 }
 
-// StageInVocabulary reports whether a literal is one of the five
-// stages (case-sensitive — the binding vocabulary is lowercase).
+// WireStageVocabulary renders the WIRE acceptance set (joined) — the
+// storable stages plus the pending_input flag-op alias (000050: surfaces
+// send the literal; the engine maps it to flag semantics).
+func WireStageVocabulary() string {
+	return strings.Join(wireStageVocabulary, ", ")
+}
+
+// StageInVocabulary reports whether a literal is one of the WIRE
+// stages — the storable set PLUS the pending_input flag-op alias
+// (000050: surfaces still send the literal; the engine maps it).
 func StageInVocabulary(stage string) bool {
-	for _, s := range stageVocabulary {
+	for _, s := range wireStageVocabulary {
 		if s == stage {
 			return true
 		}

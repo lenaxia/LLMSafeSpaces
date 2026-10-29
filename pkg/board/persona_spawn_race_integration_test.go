@@ -320,20 +320,19 @@ func (s *BoardSuite) TestPersonaSpawnRace_S5_HeartbeatNotStillbornOnRearmWindow(
 	freshToken := *fresh.ClaimToken
 
 	// The stale corpse is positively zero-turn at the evidence source —
-	// exactly the live rejection shape. The fresh claimant's heartbeat
-	// (new evidence, matching token) MUST extend: the stillborn guard
-	// has no business consulting a prior episode's assignee. (The
-	// watermark rewind is the harness clock-seam — the mint stamped
-	// last_progress_at at its own now(); the evidence gate compares
-	// against it.)
+	// exactly the live rejection shape. Item 6: the response channel is
+	// TURN-BLIND and prior-episode-blind — the fresh claimant's matching
+	// token is ACCEPTED (the arrival records; a dead prior assignee
+	// poisons nothing), but without a nudge nothing extends.
 	_, err = s.pool.Exec(ctx, `UPDATE tasks SET last_progress_at = now() - interval '1 second' WHERE id=$1`, task.ID)
 	s.Require().NoError(err)
 	hb, err := svc.Heartbeat(ctx, s.agent("", freshToken), "", task.ShortID, time.Now().Add(2*time.Second))
 	s.Require().NoError(err)
-	s.Require().True(hb.Extended, "a fresh re-arm claim renews on its own evidence — not stillborn against the dead prior assignee (rc1 parity)")
+	s.Require().False(hb.Extended, "advisory: no nudge on the row — the prior episode's zero-turn evidence is irrelevant (the wedge verdict owns corpses)")
 
-	// The guard's legitimate purpose survives: once the fresh reviewer
-	// STAMPS, its own zero-turn evidence refuses the extension (WS4).
+	// The WS4 guard's heartbeat arm is gone entirely: once the fresh
+	// reviewer STAMPS, its own zero-turn evidence refuses NOTHING — the
+	// discriminator between corpse and live reviewer is the ladder.
 	spawner.release(1)
 	spawner.release(2)
 	s.waitUntil(func() bool {
@@ -343,9 +342,10 @@ func (s *BoardSuite) TestPersonaSpawnRace_S5_HeartbeatNotStillbornOnRearmWindow(
 	evidence.mu.Lock()
 	evidence.turns["sess-2"] = 0
 	evidence.mu.Unlock()
+	s.setNudge(task.ID, "nudge-race")
 	hb, err = svc.Heartbeat(ctx, s.agent("", freshToken), "", task.ShortID, time.Now().Add(4*time.Second))
 	s.Require().NoError(err)
-	s.Require().False(hb.Extended, "WS4 intact: the stamped assignee's own zero-turn evidence still refuses")
+	s.Require().True(hb.Extended, "the response channel is turn-blind: a nudged row's response renews")
 }
 
 // TestPersonaSpawnRace_S6_VerdictChannelHoldsReviewersToken — symptom 3's

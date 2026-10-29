@@ -27,10 +27,15 @@ const (
 	BoardEpicCompleted = "completed"
 	BoardEpicArchived  = "archived"
 
-	BoardStageBacklog      = "backlog"
-	BoardStageInProgress   = "in_progress"
-	BoardStageInReview     = "in_review"
-	BoardStageDone         = "done"
+	BoardStageBacklog    = "backlog"
+	BoardStageInProgress = "in_progress"
+	BoardStageInReview   = "in_review"
+	BoardStageDone       = "done"
+	BoardStageFailed     = "failed"
+	// BoardStagePendingInput is a WIRE literal only (000050): as a
+	// filter it selects rows carrying the awaiting-input FLAG on any
+	// real stage; as a move target it SETS the flag. The engine maps
+	// it — it is never a stored stage.
 	BoardStagePendingInput = "pending_input"
 )
 
@@ -78,13 +83,20 @@ type BoardAcceptanceCriterion struct {
 // BoardTask is a task row, including the dispatch state the health
 // panel surfaces (attempts, lease, blocked-by).
 type BoardTask struct {
-	ID                 string                     `json:"id"`
-	ProjectID          string                     `json:"project_id"`
-	EpicID             string                     `json:"epic_id"`
-	ShortID            string                     `json:"short_id"`
-	Title              string                     `json:"title"`
-	Description        string                     `json:"description"`
-	Stage              string                     `json:"stage"`
+	ID          string `json:"id"`
+	ProjectID   string `json:"project_id"`
+	EpicID      string `json:"epic_id"`
+	ShortID     string `json:"short_id"`
+	Title       string `json:"title"`
+	Description string `json:"description"`
+	Stage       string `json:"stage"`
+	// PendingInput is the 000050 awaiting-input FLAG riding the real
+	// stage (never a stored stage; BoardStageFailed is the terminus);
+	// PendingOrigin carries the flag's provenance (also set on
+	// failed/escalated rows: the re-arm queue's marker).
+	PendingInput       bool                       `json:"pending_input"`
+	NudgeID            string                     `json:"nudge_id,omitempty"`
+	NudgedAt           string                     `json:"nudged_at,omitempty"`
 	PendingOrigin      string                     `json:"pending_origin,omitempty"`
 	Paused             bool                       `json:"paused"`
 	WaitingOn          string                     `json:"waiting_on,omitempty"`
@@ -104,7 +116,7 @@ type BoardTask struct {
 
 // BoardClaim is the task_start dispatch outcome (the fresh worker's
 // claim envelope; Escalated true means the grant was withheld —
-// attempts cap reached, staged to pending_input instead).
+// attempts cap reached, the row lands failed/escalated, 000050).
 type BoardClaim struct {
 	TaskID         string     `json:"task_id"`
 	ShortID        string     `json:"short_id"`

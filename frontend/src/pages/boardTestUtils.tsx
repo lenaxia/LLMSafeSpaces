@@ -113,6 +113,7 @@ export const PROJECT_ARCHIVED: BoardProject = {
 const base = {
   description: "",
   paused: false,
+  pending_input: false,
   project_name: "Apollo",
   epic_name: "E1",
   tags: [] as string[],
@@ -196,6 +197,8 @@ export const TASK_BLOCKED: BoardTask = {
   tags: ["pr:1702"],
 };
 
+/** 000050: a worker-question park is a FLAGGED in_progress row (the
+ * badge rides the real stage — never a costume column). */
 export const TASK_PENDING: BoardTask = {
   ...base,
   id: "task-uuid-6",
@@ -203,14 +206,33 @@ export const TASK_PENDING: BoardTask = {
   epic_id: "epic-uuid-1",
   short_id: "tsk-ffff0006",
   title: "Waiting on human",
-  stage: "pending_input",
-  pending_origin: "escalated",
+  stage: "in_progress",
+  pending_input: true,
+  pending_origin: "worker",
   attempts: 3,
   project_name: "Borealis",
 };
 
+/** The failure terminus (attempts exhausted / wedge verdict): the side
+ * column's resident, holding pending_origin='escalated' as the re-arm
+ * marker. */
+export const TASK_ESCALATED: BoardTask = {
+  ...base,
+  id: "task-uuid-8",
+  project_id: "proj-uuid-b",
+  epic_id: "epic-uuid-1",
+  short_id: "tsk-ffff0008",
+  title: "Exhausted retries",
+  stage: "failed",
+  pending_origin: "escalated",
+  attempts: 3,
+  last_attempt_failed: true,
+  failure_count: 3,
+  project_name: "Borealis",
+};
+
 export function defaultTasks(): BoardTask[] {
-  return [TASK_BACKLOG, TASK_IN_PROGRESS, TASK_IN_REVIEW, TASK_DONE, TASK_BLOCKED, TASK_PENDING, TASK_FAILED];
+  return [TASK_BACKLOG, TASK_IN_PROGRESS, TASK_IN_REVIEW, TASK_DONE, TASK_BLOCKED, TASK_PENDING, TASK_ESCALATED, TASK_FAILED];
 }
 
 /** Seeds the standard two-project board. Returns the seeded task list

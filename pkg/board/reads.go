@@ -40,8 +40,14 @@ func (s *Service) ListTasks(ctx context.Context, projectID string, stage, failed
 	q := `SELECT ` + taskColumns + ` FROM tasks t WHERE t.project_id=$1`
 	args := []any{projectID}
 	if stage != "" {
-		q += ` AND t.stage=$` + itoa(len(args)+1)
-		args = append(args, stage)
+		// 000050: pending_input is a flag — the stage filter literal
+		// translates to the flag predicate (rows keep their real stage).
+		if stage == StagePendingInput {
+			q += ` AND t.pending_input`
+		} else {
+			q += ` AND t.stage=$` + itoa(len(args)+1)
+			args = append(args, stage)
+		}
 	}
 	if failed == "true" || failed == "false" {
 		q += ` AND t.last_attempt_failed=$` + itoa(len(args)+1)
@@ -127,7 +133,7 @@ func (s *Service) GetProject(ctx context.Context, projectID, shortIDOrID string)
 }
 
 // TaskEvents-window knobs: the audit timeline is a display read over
-// board_events, so it is bounded (heartbeats write a row per call — a
+// board_events, so it is bounded (response-channel audits write a row per call — a
 // long-lived claim would otherwise render unbounded). The window keeps
 // the NEWEST rows; order is always chronological (oldest→newest).
 const (
@@ -292,8 +298,12 @@ func (s *Service) SearchTasks(ctx context.Context, userID, q string, filters Sea
 		WHERE p.user_id = $1
 		  AND (lower(t.short_id) = lower($2) OR t.title ILIKE $3 ESCAPE '\')`
 	if filters.Stage != "" {
-		args = append(args, filters.Stage)
-		q2 += fmt.Sprintf(" AND t.stage = $%d", len(args))
+		if filters.Stage == StagePendingInput {
+			q2 += ` AND t.pending_input` // 000050: flag filter alias
+		} else {
+			args = append(args, filters.Stage)
+			q2 += fmt.Sprintf(" AND t.stage = $%d", len(args))
+		}
 	}
 	if filters.Project != "" {
 		args = append(args, filters.Project)
@@ -468,10 +478,15 @@ func (s *Service) healthCooldowns(ctx context.Context, userID string, h *Health)
 }
 
 func (s *Service) healthPendingInput(ctx context.Context, userID string, h *Health) error {
+	// 000050: the panel's question is "what awaits the owner" — the
+	// flagged parks AND the failed/escalated terminus (rearm's queue)
+	// both answer it; the stage swap must not hide the escalation
+	// backlog the panel has always shown.
 	rows, err := s.q().Query(ctx, `
 		SELECT coalesce(t.pending_origin, 'unknown'), count(*)
 		FROM tasks t JOIN projects p ON p.id = t.project_id
-		WHERE p.user_id = $1 AND t.stage = 'pending_input'
+		WHERE p.user_id = $1
+		  AND (t.pending_input OR (t.stage='failed' AND t.pending_origin='escalated'))
 		GROUP BY 1`, userID)
 	if err != nil {
 		return err
@@ -661,7 +676,8 @@ func (s *Service) BoardHealthInWorkspace(ctx context.Context, workspaceID string
 	orows, err := s.q().Query(ctx, `
 		SELECT coalesce(t.pending_origin, 'unknown'), count(*)
 		FROM tasks t JOIN projects p ON p.id = t.project_id
-		WHERE p.target_workspace_id = $1::uuid AND t.stage = 'pending_input'
+		WHERE p.target_workspace_id = $1::uuid
+		  AND (t.pending_input OR (t.stage='failed' AND t.pending_origin='escalated'))
 		GROUP BY 1`, workspaceID)
 	if err != nil {
 		return nil, err

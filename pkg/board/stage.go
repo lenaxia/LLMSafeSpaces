@@ -5,6 +5,7 @@ package board
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -120,14 +121,15 @@ func (s *Service) moveStageTx(ctx context.Context, tx pgx.Tx, actor Actor, taskI
 	from := cur.Stage
 	res := moveStageResult{TaskID: taskID, FromStage: from, RequestedTo: toStage}
 
-	// The pending_input exits are manager-surface-only for WORKERS (a
-	// delegated worker is not the human the exit exists for; its token
+	// The pending_input (flag) exits are manager-surface-only for WORKERS
+	// (a delegated worker is not the human the exit exists for; its token
 	// does not unlock self-exit). #1832 WS2: the pod seam's
 	// manager-grade agent surface (SurfaceAgentManager — open to ANY
 	// in-workspace session since the #1747 §5 manager grant's repeal,
 	// ruling 2026-10-27 / tsk-copper-refectory-generates) is a manager
-	// surface; the ordinary-worker rule is unchanged.
-	if from == StagePendingInput && actor.Surface == SurfaceAgent {
+	// surface; the ordinary-worker rule is unchanged. 000050: the flag
+	// replaces the stage — the guard keys on the flag, not the stage.
+	if cur.PendingInput && actor.Surface == SurfaceAgent {
 		return res, nudge{}, &GuardError{Code: GuardManagerSurface, Detail: "pending_input exits are human or manager decisions (the worker surface is denied; the manager route — board_move_stage without a claim token — is the agent-manager surface)"}
 	}
 
@@ -146,21 +148,42 @@ func (s *Service) moveStageTx(ctx context.Context, tx pgx.Tx, actor Actor, taskI
 	// Enumerated-transition check FIRST (an illegal drag reports its own
 	// class regardless of the token), then the claim-token guard for the
 	// legal in-flight writes (§4.2): manager surfaces hold no token — an
-	// optimistic drag on a claimed row snaps back.
+	// optimistic drag on a claimed row snaps back. 000050: pending_input
+	// is a flag-op alias, not a stored stage — a FLAGGED row (real stage
+	// in_progress/in_review, flag set) addresses its exits through the
+	// alias: fromKey maps the flagged row onto the pending_input column
+	// of the table so the two exit pairs match (a stored 'pending_input'
+	// from-stage no longer exists to key on), and every OTHER target
+	// from a flagged row refuses here exactly as the stage form did (the
+	// owner question gates forward progress until resolved). 'failed' is
+	// the new failure terminus (nudge self-fail enters it; rearm exits
+	// it).
 	legal := map[[2]string]bool{
 		{StageInProgress, StageInReview}:     true,
 		{StageInProgress, StageDone}:         true,
-		{StageInProgress, StagePendingInput}: true,
+		{StageInProgress, StageFailed}:       true,
 		{StageInReview, StageInProgress}:     true,
 		{StageInReview, StageDone}:           true,
-		{StageInReview, StagePendingInput}:   true,
-		{StagePendingInput, StageBacklog}:    true,
-		{StagePendingInput, StageInProgress}: true,
+		{StageInReview, StageFailed}:         true,
+		{StageInProgress, StagePendingInput}: true, // flag set
+		{StageInReview, StagePendingInput}:   true, // flag set
+		{StagePendingInput, StageBacklog}:    true, // flag clear → re-queue
+		{StagePendingInput, StageInProgress}: true, // flag clear → re-claim
 	}
-	if !legal[[2]string{from, toStage}] {
+	fromKey := from
+	if cur.PendingInput {
+		fromKey = StagePendingInput // the flag rides the real stage; exits address the alias
+	}
+	if !legal[[2]string{fromKey, toStage}] {
 		return res, nudge{}, &GuardError{Code: GuardStage, Detail: "stage transition " + from + "→" + toStage + " is not enumerated in the machine"}
 	}
-	if from == StageInProgress && actor.ClaimToken != cur.ClaimToken {
+	// 000050 parity on the token guard: the old flag-exit writes moved
+	// FROM the pending_input stage, which the guard never covered — a
+	// flagged row keeps its real stage (in_progress) AND its token, so
+	// the guard would newly refuse the human exit it always allowed.
+	// Skip the guard on the EXIT side only (flagged rows); entry and
+	// every other in_progress write keep it.
+	if from == StageInProgress && !cur.PendingInput && actor.ClaimToken != cur.ClaimToken {
 		return res, nudge{}, &GuardError{Code: GuardClaimToken, Detail: "stage writes on a claimed task require its live claim token"}
 	}
 
@@ -227,12 +250,25 @@ func (s *Service) moveStageTx(ctx context.Context, tx pgx.Tx, actor Actor, taskI
 		}
 
 	case from == StageInProgress && toStage == StagePendingInput:
-		// Enter pending from live work: token + identity retained (the
-		// lease clock is suspended by the stage predicate).
-		resulting, err = s.updateStageTx(ctx, tx, taskID, from, toStage,
-			`pending_origin='worker'`, evidenceURL, actor)
+		// FLAG SET from live work (000050: pending_input is a flag, not a
+		// stage — the row keeps in_progress, the clock suspended by the
+		// RC1 scan's flag exclusion). Token + identity retained.
+		tag, err := tx.Exec(ctx, `
+			UPDATE tasks SET pending_input=true, pending_origin='worker', updated_at=now()
+			WHERE id=$1 AND stage=$2 AND NOT pending_input`, taskID, from)
+		if err != nil {
+			return res, nudge{}, err
+		}
+		if tag.RowsAffected() == 0 {
+			return res, nudge{}, &GuardError{Code: GuardStage, Detail: "the row moved or was already flagged — server-arbitrated refusal"}
+		}
+		if _, err := recordEventTx(ctx, tx, cur.ProjectID, engineEventID("flag", taskID, cur.Attempts), "pending_input_flag",
+			"task", taskID, actor, map[string]any{"task_id": taskID, "flag": true, "origin": "worker"}); err != nil {
+			return res, nudge{}, err
+		}
+		resulting = from // the stage is unchanged; the flag rides it
 
-	case from == StageInReview && toStage == StageInProgress:
+	case from == StageInReview && toStage == StageInProgress && !cur.PendingInput:
 		// The bounce (#1959): re-claim for the ORIGINAL IMPLEMENTER —
 		// fresh token + lease minted in the same statement, flag=false
 		// (its 429 never decrements), attempts unchanged, and
@@ -266,11 +302,26 @@ func (s *Service) moveStageTx(ctx context.Context, tx pgx.Tx, actor Actor, taskI
 		}
 
 	case from == StageInReview && toStage == StagePendingInput:
-		resulting, err = s.updateStageTx(ctx, tx, taskID, from, toStage,
-			`pending_origin='worker'`, evidenceURL, actor)
+		// FLAG SET from review (000050: flag-not-stage; row stays in_review).
+		tag, err := tx.Exec(ctx, `
+			UPDATE tasks SET pending_input=true, pending_origin='worker', updated_at=now()
+			WHERE id=$1 AND stage=$2 AND NOT pending_input`, taskID, from)
+		if err != nil {
+			return res, nudge{}, err
+		}
+		if tag.RowsAffected() == 0 {
+			return res, nudge{}, &GuardError{Code: GuardStage, Detail: "the row moved or was already flagged — server-arbitrated refusal"}
+		}
+		if _, err := recordEventTx(ctx, tx, cur.ProjectID, engineEventID("flag", taskID, cur.Attempts), "pending_input_flag",
+			"task", taskID, actor, map[string]any{"task_id": taskID, "flag": true, "origin": "worker"}); err != nil {
+			return res, nudge{}, err
+		}
+		resulting = from
 
-	case from == StagePendingInput && (toStage == StageBacklog || toStage == StageInProgress):
-		// The human exit — the ONE write that resets attempts (a human
+	case cur.PendingInput && (toStage == StageBacklog || toStage == StageInProgress):
+		// FLAG CLEAR — the human exit (000050: the row's REAL stage was
+		// never left; the exit clears the flag and takes the enumerated
+		// end state). The ONE write that resets attempts (a human
 		// re-queue is a fresh judgment). Identity present → re-claim
 		// branch (fresh token+lease, nudge); none → backlog branch (the
 		// dead worker is never re-nudged). The branch keys on identity
@@ -288,6 +339,28 @@ func (s *Service) moveStageTx(ctx context.Context, tx pgx.Tx, actor Actor, taskI
 				`claim_token=NULL, lease_expires_at=NULL, assignee_session=NULL, implementer_session=NULL, claim_persona=NULL,
 				 claim_incremented_attempts=false, attempts=0, failure_count=0, last_attempt_failed=false, last_failure_at=NULL`, evidenceURL, actor)
 		}
+
+	case (from == StageInProgress || from == StageInReview) && toStage == StageFailed:
+		// The nudge self-fail (000050): a worker that cannot complete
+		// declares failure per the lease-nudge prose. Counts as the
+		// attempt's failure; rearm is the exit. Token+identity cleared.
+		tag, err := tx.Exec(ctx, `
+			UPDATE tasks SET stage='failed', stage_entered_at=now(), pending_input=false, pending_origin=NULL,
+				nudge_id=NULL, nudged_at=NULL,
+				claim_token=NULL, lease_expires_at=NULL, assignee_session=NULL, implementer_session=NULL,
+				claim_incremented_attempts=false, claim_persona=NULL,
+				last_attempt_failed=true, failure_count=failure_count+1, last_failure_at=now()
+			WHERE id=$1 AND stage=$2`, taskID, from)
+		if err != nil {
+			return res, nudge{}, err
+		}
+		if tag.RowsAffected() == 0 {
+			return res, nudge{}, &GuardError{Code: GuardStage, Detail: "the row moved — server-arbitrated refusal"}
+		}
+		if err := writeTransition(ctx, txQ{tx}, taskID, from, StageFailed, evidenceURL, actor); err != nil {
+			return res, nudge{}, err
+		}
+		resulting = StageFailed
 
 	default:
 		return res, nudge{}, &GuardError{Code: GuardStage, Detail: "stage transition " + from + "→" + toStage + " is not enumerated in the machine"}
@@ -404,7 +477,7 @@ func bounceRedispatchText(t *Task, token string, verdicts []Verdict) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "BOARD BOUNCE RE-DISPATCH: your task %s failed review (verdict: fail) and was bounced back to in_progress.\n", t.ShortID)
 	fmt.Fprintf(&b, "You are the ORIGINAL implementer — you hold the work's context. Address every outstanding finding below,\n")
-	fmt.Fprintf(&b, "then move the task back to in_review with evidence. Report progress via board heartbeats.\n\n")
+	fmt.Fprintf(&b, "then move the task back to in_review with evidence.\n\n")
 	fmt.Fprintf(&b, "Your FRESH claim token: %s (your prior token is void; this token authorizes your in-flight writes for this task only).\n\n", token)
 	if len(t.AcceptanceCriteria) > 0 {
 		b.WriteString("Acceptance criteria (all must be met before done, with evidence):\n")
@@ -453,12 +526,12 @@ func (s *Service) doneCascade(ctx context.Context, tx pgx.Tx, t *Task, evidenceU
 }
 
 // updateStageTx applies one transition's column updates + the transition
-// row. extra is spliced verbatim into SET (pending_origin entries set it
-// there; every other transition clears it via the CASE).
+// row. extra is spliced verbatim into SET. 000050: every STAGE
+// transition clears the flag + nudge state (the flag ops above never
+// route through here — a stage move off a flagged row resolves the
+// flag with the move).
 func (s *Service) updateStageTx(ctx context.Context, tx pgx.Tx, taskID, from, toStage, extra, evidenceURL string, actor Actor) (string, error) {
-	if toStage != StagePendingInput {
-		extra += `, pending_origin=NULL`
-	}
+	extra += `, pending_origin=NULL, pending_input=false, nudge_id=NULL, nudged_at=NULL, last_heartbeat_at=NULL`
 	tag, err := tx.Exec(ctx, `
 		UPDATE tasks SET stage=$2, stage_entered_at=now(), `+extra+`
 		WHERE id=$1 AND stage=$3`, taskID, toStage, from)
@@ -556,7 +629,9 @@ func (s *Service) bounceTx(ctx context.Context, tx pgx.Tx, taskID, implementer s
 	tag, err := tx.Exec(ctx, `
 		UPDATE tasks SET stage='in_progress', stage_entered_at=now(),
 			claim_token=$2, lease_expires_at=now()+make_interval(secs=>$3::float8), last_progress_at=now(),
-			assignee_session=$4, claim_incremented_attempts=false, claim_persona=NULL, pending_origin=NULL
+			assignee_session=$4, claim_incremented_attempts=false, claim_persona=NULL,
+			pending_input=false, pending_origin=NULL,
+			nudge_id=NULL, nudged_at=NULL, last_heartbeat_at=NULL
 		WHERE id=$1 AND NOT paused`,
 		taskID, token, s.cfg.LeaseDuration.Seconds(), assignee)
 	if err != nil {
@@ -571,19 +646,25 @@ func (s *Service) bounceTx(ctx context.Context, tx pgx.Tx, taskID, implementer s
 	return StageInProgress, nudge{taskID: taskID, token: token, spawn: true}, nil
 }
 
-// exitPendingReclaim is the pending_input exit's re-claim branch: attempts
-// reset, fresh token+lease with the recorded identity cleared (the
-// interim-state shape), the superseded session aborted (its question is
-// void with the exit — the interrupt seam, merged-doc §4.1), and the
-// fresh worker spawned after commit.
+// exitPendingReclaim is the flag-clear's re-claim branch (000050: this
+// clears the flag, resets the ledger, LANDS the enumerated in_progress
+// end state, and mints the fresh claim): fresh token+lease with the
+// recorded identity cleared (the interim-state shape), the superseded
+// session aborted (its question is void with the exit — the interrupt
+// seam, merged-doc §4.1), and the fresh worker spawned after commit.
 func (s *Service) exitPendingReclaim(ctx context.Context, tx pgx.Tx, actor Actor, cur *Task) (string, bool, nudge, error) {
 	token := uuidNew()
+	// stage='in_progress' is explicit: a no-op for the common
+	// worker-origin park (the row kept in_progress), and the enumerated
+	// LANDING for a drift_review park on in_review — the real stage moves
+	// with the re-claim, and the transition row below records that move.
 	tag, err := tx.Exec(ctx, `
-		UPDATE tasks SET stage='in_progress', stage_entered_at=now(),
+		UPDATE tasks SET stage='in_progress', stage_entered_at=now(), pending_input=false, pending_origin=NULL,
+			nudge_id=NULL, nudged_at=NULL, last_heartbeat_at=NULL,
 			claim_token=$2, lease_expires_at=now()+make_interval(secs=>$3::float8), last_progress_at=now(),
-			assignee_session=NULL, implementer_session=NULL, claim_incremented_attempts=false, claim_persona=NULL, pending_origin=NULL, attempts=0,
+			assignee_session=NULL, implementer_session=NULL, claim_incremented_attempts=false, claim_persona=NULL, attempts=0,
 			failure_count=0, last_attempt_failed=false, last_failure_at=NULL
-		WHERE id=$1 AND stage='pending_input'`,
+		WHERE id=$1 AND pending_input`,
 		cur.ID, token, s.cfg.LeaseDuration.Seconds())
 	if err != nil {
 		return "", false, nudge{}, err
@@ -591,37 +672,56 @@ func (s *Service) exitPendingReclaim(ctx context.Context, tx pgx.Tx, actor Actor
 	if tag.RowsAffected() == 0 {
 		return "", false, nudge{}, &GuardError{Code: GuardStage, Detail: "row moved — the exit raced (server-arbitrated)"}
 	}
-	if err := writeTransition(ctx, txQ{tx}, cur.ID, StagePendingInput, StageInProgress, "", actor); err != nil {
+	if cur.Stage != StageInProgress {
+		// A real stage move accompanies the flag-clear (the drift_review
+		// shape): the transition row audits the MOVE; the flag event
+		// below audits the flag side for every exit.
+		if err := writeTransition(ctx, txQ{tx}, cur.ID, cur.Stage, StageInProgress, "", actor); err != nil {
+			return "", false, nudge{}, err
+		}
+	}
+	if _, err := recordEventTx(ctx, tx, cur.ProjectID, engineEventID("flagclear", cur.ID, cur.Attempts), "pending_input_flag",
+		"task", cur.ID, actor, map[string]any{"task_id": cur.ID, "flag": false, "reclaimed": true}); err != nil {
 		return "", false, nudge{}, err
 	}
 	return StageInProgress, true, nudge{taskID: cur.ID, token: token, spawn: true, abortAssignee: cur.AssigneeSession}, nil
 }
 
-// --- Heartbeat + throttle -----------------------------------------------------------
+// --- Heartbeat (nudge response) + throttle -------------------------------------------
 
 // heartbeatFutureTolerance bounds honest client-clock drift: an
 // observedProgressAt up to this far ahead of the SERVER clock is clamped
 // to the server clock (a FUTURE stamp is never stored — the C1 poison
 // direction); a stamp beyond it is a hallucinated estimate, not
-// evidence, and rejects outright (#1847 PR1: the C1 incident class — a
-// future watermark is unrenewable by construction, so one accepted
-// future stamp locked the worker out of its own lease). PAST-skewed
-// client stamps remain client-trusted (only the future direction can
-// poison the evidence gate); the #1847 rework retires worker-declared
-// stamps as the liveness input entirely.
+// evidence, and rejects outright (#1847 PR1: the C1 incident class).
+// PAST-skewed client stamps remain client-trusted. The tolerance
+// SURVIVES the repurposing (item 6 amendment): worker stamps are
+// RESPONSE events now, not the liveness input — but a response stamp
+// is still stored on the row, so the future direction stays clamped.
 const heartbeatFutureTolerance = 2 * time.Minute
 
-// Heartbeat refreshes the lease ONLY when it carries new progress evidence
-// (the worker's message-level watermark moved — #1685: elapsed time is not
-// liveness). Requires the matching claim token. #1847: the server clock is
-// the authority over the FUTURE direction — a client-observed timestamp
-// beyond heartbeatFutureTolerance ahead of the server clock rejects
-// (invalid evidence), one within it clamps to now (a future stamp is
-// never stored), and a stored watermark already reading future (pre-fix
-// C1 damage, or DB-ahead/app-behind clock skew) reads as stale so an
-// honest present-t observation heals it — ONE evidence-free extend,
-// bounded: the heal overwrites the watermark, so a re-sent identical
-// stamp does not extend again (pinned TestKill_HeartbeatHealIsOneShot).
+// Heartbeat is the NUDGE-RESPONSE channel (item 6 amendment,
+// 2026-10-28: "when we nudge, we also require the call to
+// board_heartbeat, rather than having to history dive").
+//
+// The PERIODIC self-report semantics are DEAD: a heartbeat on a row
+// carrying NO live nudge never extends the lease — there is no standing
+// renewal discipline anywhere (liveness is platform-observed through
+// the AssigneeLivenessSource; the reconciler renews on movement). The
+// call still validates the claim (409 claim_token arbitration,
+// unchanged) and records the arrival (last_heartbeat_at, server clock)
+// — the ordinal input the wedge predicate reads: a heartbeat arriving
+// AFTER nudged_at is the strong ALIVE signal OR'd in at every rung of
+// the ladder, and the ONLY wedge detector when no liveness source can
+// answer (deliver-a-message + call-a-tool is the harness-agnostic
+// floor).
+//
+// A heartbeat on a NUDGED row (nudge_id set) is the response the nudge
+// prose demands ("First RESPOND (call board_heartbeat once) to confirm
+// you are active"): the lease renews, the nudge slot clears, and the
+// wedge clock is dead — the worker may then run long commands safely.
+// Requires the matching claim token; #1847 future-clamping applies to
+// the carried stamp in every shape.
 func (s *Service) Heartbeat(ctx context.Context, actor Actor, taskID, shortIDOrID string, observedProgressAt time.Time) (HeartbeatResult, error) {
 	t, err := s.resolveTaskForActor(ctx, actor, pick(taskID, shortIDOrID))
 	if err != nil {
@@ -629,10 +729,13 @@ func (s *Service) Heartbeat(ctx context.Context, actor Actor, taskID, shortIDOrI
 	}
 	// A live claim exists in in_progress (the worker grant/re-claim)
 	// and in in_review (the stage-persona claim — a persona worker
-	// holds the same token+lease and renews under the same evidence
-	// rule). An UNCLAIMED in_review row has a NULL token and rejects
-	// (empty token never matches) — today's semantics, unchanged.
-	claimStage := t.Stage == StageInProgress || (t.Stage == StageInReview && t.ClaimToken != "")
+	// holds the same token+lease). An UNCLAIMED in_review row has a
+	// NULL token and rejects (empty token never matches) — today's
+	// semantics, unchanged. 000050: a flagged row (the old
+	// pending_input stage) rejects the same way — the input wait
+	// suspends the claim lifecycle, and the resume lane re-arms the
+	// lease itself.
+	claimStage := (t.Stage == StageInProgress || (t.Stage == StageInReview && t.ClaimToken != "")) && !t.PendingInput
 	if !claimStage || actor.ClaimToken == "" || actor.ClaimToken != t.ClaimToken {
 		return HeartbeatResult{}, &GuardError{Code: GuardClaimToken, Detail: "heartbeat requires a live claim (stage + token)"}
 	}
@@ -643,53 +746,57 @@ func (s *Service) Heartbeat(ctx context.Context, actor Actor, taskID, shortIDOrI
 			"observedProgressAt %s is stamped in the future (server clock %s) — future stamps are not progress evidence; send the timestamp of your LAST observed progress, never an estimate",
 			observedProgressAt.Format(time.RFC3339), serverNow.Format(time.RFC3339))}
 	case observedProgressAt.After(serverNow):
-		observedProgressAt = serverNow // clamp: THIS stamp stores server-clock — the future direction never stores a client stamp (past-skewed stamps store verbatim)
+		observedProgressAt = serverNow // clamp: a future stamp never stores — the server clock is the authority over the poison direction
 	}
-	// Evidence gate: extend only when the watermark moved past the stored
-	// progress watermark. A stored watermark ahead of the server clock is
-	// pre-fix poison (the C1 lockout) and reads as stale — never as
-	// unbeatable evidence.
-	extends := t.LastProgressAt == nil || t.LastProgressAt.After(serverNow) || observedProgressAt.After(*t.LastProgressAt)
-	// #1832 WS4 stillborn guard (the narrow evidence fix — the
-	// platform-derived liveness rework is #1847's, another lane): a
-	// POSITIVE zero-message report for the assignee session refuses the
-	// extension — a spawn that never turned is not alive, whatever
-	// timestamps say (the lease-keeper-renews-the-corpse class). A
-	// source ERROR fails OPEN (a transient blip must not kill a live
-	// worker's renewal; the rework owns the stronger posture). Nil seam
-	// or no recorded assignee: today's semantics, unchanged.
-	if extends && s.turnEvidence != nil && t.AssigneeSession != "" {
-		turns, terr := s.turnEvidence.SessionTurnEvidence(ctx, t.AssigneeSession)
-		if terr != nil {
-			slog.WarnContext(ctx, "board: turn-evidence source unavailable — heartbeat falls back to the timestamp rule (#1832 WS4 fail-open)",
-				"task", t.ShortID, "assignee", t.AssigneeSession, "err", terr.Error())
-		} else if turns <= 0 {
-			return HeartbeatResult{
-				Extended:       false,
-				LeaseExpiresAt: derefTime(t.LeaseExpiresAt),
-				LastProgressAt: derefTime(t.LastProgressAt),
-				Reason:         "stillborn: zero turn evidence for the assignee session — updated_at alone is not liveness (#1832 WS4)",
-			}, nil
-		}
-	}
-	var lease time.Time
-	if extends {
-		if err := s.q().QueryRow(ctx, `
-			UPDATE tasks SET last_progress_at=$2, lease_expires_at=now()+make_interval(secs=>$3::float8)
-			WHERE id=$1 AND stage IN ('in_progress','in_review') AND claim_token=$4
-			RETURNING lease_expires_at`,
-			t.ID, observedProgressAt, s.cfg.LeaseDuration.Seconds(), actor.ClaimToken).Scan(&lease); err != nil {
-			return HeartbeatResult{}, err
-		}
-		s.writeAudit(ctx, t.ProjectID, "heartbeat", "task", t.ID, actor)
-	} else {
-		lease = derefTime(t.LeaseExpiresAt)
-	}
-	progress := derefTime(t.LastProgressAt)
-	if extends {
+	// The response arm: ONE guarded write decides atomically whether a
+	// live nudge was answered. The nudge_id predicate makes the race
+	// safe — a heartbeat landing between the reconciler's nudge send
+	// and its row write either sees the slot (and clears it) or the
+	// next sweep's predicate sees last_heartbeat_at > nudged_at. The
+	// stillborn consultation is GONE from this path: a zero-turn
+	// session cannot call tools, so it can never answer a nudge — the
+	// wedge verdict owns corpses (the turnEvidence seam survives for
+	// the #1959c bounce re-dispatch).
+	var lease, progress time.Time
+	responded := false
+	err = s.q().QueryRow(ctx, `
+		UPDATE tasks SET last_heartbeat_at=now(),
+			last_progress_at=$2, lease_expires_at=now()+make_interval(secs=>$3::float8),
+			nudge_id=NULL, nudged_at=NULL, updated_at=now()
+		WHERE id=$1 AND stage IN ('in_progress','in_review') AND claim_token=$4
+		  AND NOT pending_input AND nudge_id IS NOT NULL
+		RETURNING lease_expires_at`,
+		t.ID, observedProgressAt, s.cfg.LeaseDuration.Seconds(), actor.ClaimToken).Scan(&lease)
+	switch {
+	case err == nil:
+		responded = true
 		progress = observedProgressAt
+		s.writeAudit(ctx, t.ProjectID, "heartbeat", "task", t.ID, actor)
+	case errors.Is(err, pgx.ErrNoRows):
+		// No live nudge (or the claim raced away): record the arrival
+		// — the advisory shape. The lease is NOT extended (the
+		// standing discipline stays dead); a raced claim falls through
+		// the token re-check below.
+		lease = derefTime(t.LeaseExpiresAt)
+		progress = derefTime(t.LastProgressAt)
+		tag, terr := s.q().Exec(ctx, `
+			UPDATE tasks SET last_heartbeat_at=now(), updated_at=now()
+			WHERE id=$1 AND stage IN ('in_progress','in_review') AND claim_token=$2 AND NOT pending_input`,
+			t.ID, actor.ClaimToken)
+		if terr != nil {
+			return HeartbeatResult{}, terr
+		}
+		if tag.RowsAffected() == 0 {
+			return HeartbeatResult{}, &GuardError{Code: GuardClaimToken, Detail: "the claim moved during the heartbeat — re-read the task (the token no longer arbitrates)"}
+		}
+	default:
+		return HeartbeatResult{}, err
 	}
-	return HeartbeatResult{Extended: extends, LeaseExpiresAt: lease, LastProgressAt: progress}, nil
+	res := HeartbeatResult{Extended: responded, LeaseExpiresAt: lease, LastProgressAt: progress}
+	if !responded {
+		res.Reason = "no active lease nudge — periodic heartbeats do not extend the lease (no standing renewal discipline); respond when nudged"
+	}
+	return res, nil
 }
 
 // ReportThrottle is the 429 path (§4.4): requeue to backlog WITHOUT
@@ -701,7 +808,7 @@ func (s *Service) ReportThrottle(ctx context.Context, actor Actor, taskID, short
 	if err != nil {
 		return nil, err
 	}
-	if t.Stage != StageInProgress || actor.ClaimToken == "" || actor.ClaimToken != t.ClaimToken {
+	if t.Stage != StageInProgress || t.PendingInput || actor.ClaimToken == "" || actor.ClaimToken != t.ClaimToken {
 		return nil, &GuardError{Code: GuardClaimToken, Detail: "a throttle concerns a live claim (stage + token guard)"}
 	}
 	if retryAfter <= 0 {
@@ -722,6 +829,7 @@ func (s *Service) ReportThrottle(ctx context.Context, actor Actor, taskID, short
 				cooldown_until=now()+make_interval(secs=>$2::float8),
 				claim_token=NULL, lease_expires_at=NULL, assignee_session=NULL, implementer_session=NULL,
 				claim_incremented_attempts=false, claim_persona=NULL,
+				nudge_id=NULL, nudged_at=NULL, last_heartbeat_at=NULL,
 				attempts = attempts - CASE WHEN claim_incremented_attempts THEN 1 ELSE 0 END
 			WHERE id=$1 AND stage='in_progress' AND claim_token=$3`,
 			t.ID, retryAfter.Seconds(), actor.ClaimToken)

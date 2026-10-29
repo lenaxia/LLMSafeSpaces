@@ -307,7 +307,7 @@ func (s *BoardSuite) TestReads_ReplayEchoPhraseTranslation() {
 	// --- RearmTask replay: tail reload of the re-claimed row ---------
 	t2 := s.seedTask(e, "rearm replay pin", nil, true)
 	_, err = s.pool.Exec(ctx,
-		`UPDATE tasks SET stage='pending_input', pending_origin='escalated' WHERE id=$1`, t2.ID)
+		`UPDATE tasks SET stage='failed', pending_origin='escalated' WHERE id=$1`, t2.ID)
 	require.NoError(s.T(), err)
 	const rearmReq = "fix-1922-replay-rearm"
 	_, err = s.svc.RearmTask(ctx, s.owner(), t2.ID, "", rearmReq)

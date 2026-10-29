@@ -316,7 +316,7 @@ func (s *BoardSuite) TestPersona_DeadWorkerLeaseLapseFreshReclaim() {
 	s.clearTaskBackoff(task.ID)
 	s.sweep()
 	row = s.rawTask(task.ID)
-	s.Equal(board.StagePendingInput, row.Stage, "failure_count at the cap escalates — the human-only exit arbitrates the loop")
+	s.Equal(board.StageFailed, row.Stage, "000050: failure_count at the cap escalates to the terminus — rearm arbitrates the loop")
 	require.NotNil(s.T(), row.PendingOrigin)
 	s.Equal("escalated", *row.PendingOrigin)
 	s.Require().Nil(row.ClaimToken)
@@ -439,15 +439,15 @@ func (s *BoardSuite) TestPersona_HeartbeatOnReviewClaim() {
 	row := s.rawTask(task.ID)
 	reviewerToken := *row.ClaimToken
 
-	// A heartbeat with new evidence extends the review claim.
+	// Item 6: the reviewer heartbeat is ADVISORY on in_review — the
+	// nudge ladder observes/nudges in_progress rows only, so no nudge
+	// slot ever arms here (the recorded consequence: reviewer claims
+	// keep the 45m window + the re-arm pass; reviewer-side nudge
+	// machinery is out of scope for this branch).
 	hb, err := svc.Heartbeat(ctx, s.agent("sess", reviewerToken), "", task.ShortID, time.Now().Add(2*time.Second))
 	s.Require().NoError(err)
-	s.True(hb.Extended, "the persona claim renews under the token + evidence rules")
-
-	// A stale stamp (no new evidence) does not extend.
-	hb, err = svc.Heartbeat(ctx, s.agent("sess", reviewerToken), "", task.ShortID, time.Now().Add(-time.Hour))
-	s.Require().NoError(err)
-	s.False(hb.Extended)
+	s.False(hb.Extended, "no nudge on an in_review claim — the periodic discipline is dead")
+	s.NotEmpty(hb.Reason, "the advisory shape names why")
 
 	// The WRONG token refuses.
 	_, err = svc.Heartbeat(ctx, s.agent("sess", "wrong-token"), "", task.ShortID, time.Now())

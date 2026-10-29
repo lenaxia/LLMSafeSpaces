@@ -192,9 +192,10 @@ describe("BoardPage r1 — delete / lifecycle / start / feed / concurrency", () 
     renderBoard();
     await screen.findByTestId("task-card-tsk-aaaa0001");
     expect(screen.queryByTestId("escalation-preview-tsk-aaaa0001")).toBeNull();
-    // tsk-ffff0006: attempts 3 but pending_input — origin badge, no preview
-    fireEvent.click(screen.getAllByTestId("side-columns-toggle")[0]!);
-    await screen.findByTestId("task-card-tsk-ffff0006");
+    // tsk-ffff0006: attempts 3 but FLAGGED — the badge rides the real
+    // stage (in_progress) and the suspended claim shows no preview.
+    const flagged = await screen.findByTestId("task-card-tsk-ffff0006");
+    expect(flagged.textContent).toContain("Worker question");
     expect(screen.queryByTestId("escalation-preview-tsk-ffff0006")).toBeNull();
   });
 

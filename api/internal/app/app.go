@@ -1600,7 +1600,24 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 			// PHRASE-addressed assignee/implementer resolves to its raw
 			// harness id before any opencode post; raw refs pass through).
 			boardSender := newBoardResolvingSender(agentAdapter, boardPhraseLookupFor(boardPool))
+			// The seamless lease's opencode adapter (design
+			// reports/specs/seamless-lease-design.md): the liveness hub
+			// composes the 0069 frame stream (EVERY applied pod frame —
+			// tool-part STARTs included — via the usagestream observer)
+			// with session_index deltas, answering the engine's three
+			// harness-agnostic questions (moved / exists / anything
+			// after the sentinel). The nudge sender rides the same V1
+			// delivery + scope-resolution seams as the directive
+			// messenger, composing the agentmessage-v1 lease-nudge
+			// sentinel + the advance-or-declare-failed prose. Read-only
+			// over sessionstate; Nil-inert by construction (a hub with
+			// no frames and an unreadable index answers no-evidence —
+			// today's wall-clock semantics).
+			boardLivenessHub := newBoardLivenessHub(boardPool)
+			proxyHandler.SetFrameObserver(boardLivenessHub.ObserveFrame)
 			spawnOpts := []board.Option{
+				board.WithLivenessSource(boardLivenessHub),
+				board.WithNudgeSender(newBoardNudger(boardScopeFor(boardPool), boardSender, boardLivenessHub)),
 				board.WithWorkerSpawner(newBoardSpawner(
 					&apiwf.K8sWorkspaceActivator{K8sClient: k8sClient, Namespace: cfg.Kubernetes.Namespace},
 					&apiwf.HTTPAgentExecutor{Port: 4097, PasswordProvider: proxyHandler},

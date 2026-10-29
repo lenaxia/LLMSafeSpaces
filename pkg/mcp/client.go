@@ -1578,7 +1578,7 @@ func (c *HTTPClient) BoardDeleteTasksBulk(ctx context.Context, taskIDs []string,
 }
 
 // BoardRearmTask is board_rearm_task (#1832 WS3): re-pool an
-// attempts-exhausted (escalated) pending_input row.
+// attempts-exhausted row (000050: stage=failed, origin=escalated).
 func (c *HTTPClient) BoardRearmTask(ctx context.Context, taskID, requestID string) (json.RawMessage, error) {
 	if err := validateID(taskID, "task_id"); err != nil {
 		return nil, err

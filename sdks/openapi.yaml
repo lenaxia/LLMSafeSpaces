@@ -4787,7 +4787,7 @@ paths:
           required: false
           schema:
             type: string
-            enum: [backlog, in_progress, in_review, done, pending_input]
+            enum: [backlog, in_progress, in_review, done, failed, pending_input]
         - name: failed
           in: query
           required: false
@@ -5156,12 +5156,15 @@ paths:
       description: |
         The optimistic-UI write: a drag that loses a race (task claimed,
         lease-held, or paused) returns the guard error (409) and the
-        UI snaps back. Stages: backlog → in_progress → in_review → done
-        plus pending_input; the enumerated transitions are the machine's
-        (backlog leaves by claim, not by drag). `done` requires ALL
-        acceptance criteria met AND `evidenceUrl` (ruling R2). The
-        pending_input exit (any origin) is manager-surface-only and is
-        the ONE write that resets `attempts`.
+        UI snaps back. Stages: backlog → in_progress → in_review → done,
+        plus `failed` (the failure terminus, 000050) and the
+        `pending_input` FLAG-op alias (sets awaiting-input on the row's
+        REAL stage; from a flagged row the exits clear it — the
+        enumerated transitions are the machine's; backlog leaves by
+        claim, not by drag). `done` requires ALL acceptance criteria met
+        AND `evidenceUrl` (ruling R2). The pending_input exit (any
+        origin) is manager-surface-only and is the ONE write that
+        resets `attempts`.
       operationId: moveBoardTaskStage
       parameters:
         - $ref: "#/components/parameters/BoardTaskId"
@@ -5260,14 +5263,15 @@ paths:
       tags: [board]
       summary: Re-pool an attempts-exhausted task (re-arm)
       description: |
-        The attempts-exhaustion re-pool (#1832 WS3): a task parked at
-        `pending_input` with origin `escalated` (attempts at the cap —
-        the engine withheld the grant) returns to `backlog` with
-        attempts reset to 0 — a fresh-judgment ledger (the pre-reset
-        count rides the `rearm` audit event). The failure overlay and
-        cooldown are cleared (a re-arm is not a failure) and the row is
-        claimable immediately. Only pending_input/escalated rows;
-        other stages and origins keep their enumerated transitions.
+        The attempts-exhaustion re-pool (#1832 WS3, 000050): a task at
+        `failed` with origin `escalated` (attempts at the cap — the
+        engine withheld the grant, or the lease wedge verdict landed
+        there) returns to `backlog` with attempts reset to 0 — a
+        fresh-judgment ledger (the pre-reset count rides the `rearm`
+        audit event). The failure overlay and cooldown are cleared (a
+        re-arm is not a failure) and the row is claimable immediately.
+        Only failed/escalated rows; other stages and origins keep their
+        enumerated transitions.
       operationId: rearmBoardTask
       parameters:
         - $ref: "#/components/parameters/BoardTaskId"
@@ -5305,8 +5309,8 @@ paths:
         Explicitly allowed in draft epics (that is the point of the
         manual path); paused/completed/archived epics and archived
         projects refuse it. `escalated: true` in the response means the
-        attempts cap withheld the grant and the task waits in
-        pending_input instead.
+        attempts cap withheld the grant and the task landed `failed`
+        (origin escalated) instead.
       operationId: startBoardTask
       parameters:
         - $ref: "#/components/parameters/BoardTaskId"
@@ -5525,8 +5529,9 @@ paths:
         carries post-subscribe commits (§4.6 persist-then-publish);
         this read is the HISTORY seam. Owner perimeter identical to
         GET /me/tasks/{id} (foreign rows are plain 404s). `?limit=N`
-        keeps the newest N rows (default 200, max 500; heartbeats write
-        a row per call, so the window bounds long-lived claims).
+        keeps the newest N rows (default 200, max 500; nudge-response
+        heartbeats write a row per call, so the window bounds long-lived
+        claims).
       operationId: getBoardTaskEvents
       parameters:
         - $ref: "#/components/parameters/BoardTaskId"
@@ -9762,10 +9767,10 @@ components:
       name: stage
       in: query
       required: false
-      description: Stage column filter (one of the five stages)
+      description: Stage filter (stored stages + failed, 000050); the pending_input literal filters the awaiting-input FLAG across real stages
       schema:
         type: string
-        enum: [backlog, in_progress, in_review, done, pending_input]
+        enum: [backlog, in_progress, in_review, done, failed, pending_input]
     BoardRequestIdQuery:
       name: requestId
       in: query
@@ -13064,12 +13069,25 @@ components:
           description: Markdown — seeds the fresh worker's charter (ruling R2)
         stage:
           type: string
-          enum: [backlog, in_progress, in_review, done, pending_input]
+          enum: [backlog, in_progress, in_review, done, failed]
+          description: "000050: the stored stages — pending_input is a FLAG riding the real stage (pending_input + pending_origin on the row), never a stored stage; failed is the failure terminus (attempts exhaustion + the lease wedge verdict)."
+        pending_input:
+          type: boolean
+          description: "000050: the awaiting-input flag — true while the row waits on its owner (origin below); the row keeps its real stage."
         pending_origin:
           type: string
           nullable: true
           enum: [worker, escalated, dependency_abandoned, drift_review]
-          description: Set entering pending_input, cleared on exit (dependency_abandoned is historical — cancel is eliminated, #1747)
+          description: "000050: with pending_input=true, the awaiting-input flag's origin; alone on failed rows, the escalated marker the re-arm gates on (dependency_abandoned is historical — cancel is eliminated, #1747)"
+        nudge_id:
+          type: string
+          nullable: true
+          description: "000052: the live lease-nudge sentinel's id — set while a nudge episode is open, cleared at every episode boundary (renewal, reclaim, wedge, re-claim)"
+        nudged_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: "000052: when the live sentinel was positioned (the sweep transaction's clock) — a post-nudge heartbeat or session activity answers it"
         paused:
           type: boolean
           description: "#1747: the scheduling lever — claim candidacy off, forward writes refused while paused"
@@ -13561,7 +13579,8 @@ components:
       properties:
         toStage:
           type: string
-          enum: [backlog, in_progress, in_review, done, pending_input]
+          enum: [backlog, in_progress, in_review, done, pending_input, failed]
+          description: "000050: pending_input is the flag-op alias (SET awaiting-input — the row keeps its real stage; from a flagged row the exits clear it); failed is the failure terminus (worker self-fail / manager verdict); re-arm exits it."
         evidenceUrl:
           type: string
           description: The artifact link for THIS transition — required on → done (ruling R2)
@@ -13877,8 +13896,8 @@ components:
           maxItems: 50
         toStage:
           type: string
-          enum: [backlog, in_progress, in_review, done, pending_input]
-          description: The ONE target stage every item moves to (per-item from-stage legality stays server-arbitrated)
+          enum: [backlog, in_progress, in_review, done, pending_input, failed]
+          description: "The ONE target every item moves to (per-item from-stage legality stays server-arbitrated; 000050: pending_input = set the flag, failed = the failure terminus)"
         evidenceUrl:
           type: string
           description: Artifact link applied to every item's transition (required when toStage is done)

@@ -143,7 +143,8 @@ func (s *BoardSuite) TestBulk_TaskStartEscalated() {
 	require.NoError(s.T(), err)
 	assert.Equal(s.T(), board.BulkDone, res[0].Status, "escalation is the claim's outcome, not a failure")
 	assert.True(s.T(), res[0].Escalated, "the escalation flag rides the per-item row")
-	assert.Equal(s.T(), board.StagePendingInput, s.reloadTask(exhausted.ID).Stage)
+	assert.Equal(s.T(), board.StageFailed, s.reloadTask(exhausted.ID).Stage,
+		"000050: the escalation terminus")
 	assert.Zero(s.T(), s.spawner.count(), "an escalated row spawns no worker")
 }
 

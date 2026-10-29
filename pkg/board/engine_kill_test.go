@@ -147,9 +147,10 @@ func (s *BoardSuite) TestKill_EscalationAtClaimNPlusOne() {
 	s.Empty(c.ClaimToken, "escalation mints nothing (grant withheld)")
 
 	row := s.rawTask(tired.ID)
-	s.Equal(board.StagePendingInput, row.Stage)
+	s.Equal(board.StageFailed, row.Stage, "000050: escalation lands the failure terminus")
 	s.Require().NotNil(row.PendingOrigin)
 	s.Equal(board.PendingOriginEscalated, *row.PendingOrigin)
+	s.False(row.PendingInput, "the terminus is unflagged (rearm's gate is the origin)")
 	s.Nil(row.ClaimToken)
 	s.Nil(row.LeaseExp)
 	s.Nil(row.Assignee)
@@ -278,29 +279,34 @@ func (s *BoardSuite) TestKill_ThrottlePendingInputTokenRejected() {
 	task := s.seedTask(e, "pending", nil, false)
 
 	c := s.claimOrFail(ws)
-	// Worker-origin pending_input: the token is retained (the worker still
-	// holds the work; the lease clock is suspended by the stage predicate).
+	// Worker-origin pending_input FLAG: the token is retained (the worker
+	// still holds the work; the lease clock is suspended by the RC1
+	// scan's flag exclusion — 000050: the row keeps in_progress).
 	_, err := s.svc.MoveStage(context.Background(), s.agent("sess", c.ClaimToken), task.ID, "", board.StagePendingInput, "", "")
 	s.Require().NoError(err)
 	row := s.rawTask(task.ID)
-	s.NotNil(row.ClaimToken, "pending_input keeps its token")
+	s.parkedPin(task.ID, board.StageInProgress, board.PendingOriginWorker)
+	s.NotNil(row.ClaimToken, "the flag keeps its token")
 	s.Equal(c.ClaimToken, *row.ClaimToken)
 
 	_, err = s.svc.ReportThrottle(context.Background(), s.agent("sess", c.ClaimToken), task.ID, "", time.Minute, "")
 	s.Require().Error(err)
 	var ge *board.GuardError
 	s.Require().ErrorAs(err, &ge)
-	s.Equal(board.GuardClaimToken, ge.Code, "stage guard rejects: a throttle concerns a live claim")
+	s.Equal(board.GuardClaimToken, ge.Code, "flag guard rejects: a worker cannot self-exit the input wait through the 429 path")
 
 	row2 := s.rawTask(task.ID)
-	s.Equal(board.StagePendingInput, row2.Stage, "no self-exit")
+	s.Equal(board.StageInProgress, row2.Stage, "no self-exit")
+	s.True(row2.PendingInput, "the flag still holds")
 	s.Equal(1, row2.Attempts)
 	s.Equal(c.ClaimToken, *row2.ClaimToken, "token untouched")
 }
 
-// KILL-TEST 8 (engine pin "heartbeat evidence gate", #1685): a heartbeat
-// with a moved watermark extends the lease; a silent heartbeat does not.
-// Elapsed time is not liveness.
+// KILL-TEST 8 (engine pin "nudge-response gate", the item-6 amendment):
+// extension's only key is a live NUDGE. A heartbeat without one is
+// advisory (records the arrival, extends nothing); a heartbeat on a
+// nudged row responds — renews, clears the slot. The wrong token still
+// refuses before anything moves.
 func (s *BoardSuite) TestKill_HeartbeatEvidenceGate() {
 	ws := s.seedWorkspace()
 	p := s.seedProject(ws, 2)
@@ -310,24 +316,27 @@ func (s *BoardSuite) TestKill_HeartbeatEvidenceGate() {
 	c := s.claimOrFail(ws)
 	before := s.rawTask(task.ID).LeaseExp
 
-	// Silent heartbeat: watermark did not move → no extension.
+	// No nudge: fresh evidence, matching token — still no extension
+	// (the periodic self-report discipline is dead).
 	res, err := s.svc.Heartbeat(context.Background(), s.agent("sess", c.ClaimToken), task.ID, "",
 		time.Now().Add(-time.Hour))
 	s.Require().NoError(err)
-	s.False(res.Extended, "a heartbeat with no progress evidence does not extend")
+	s.False(res.Extended, "a heartbeat with no live nudge does not extend")
 	silent := s.rawTask(task.ID).LeaseExp
 	s.Require().NotNil(silent)
 	s.WithinDuration(*before, *silent, 50*time.Millisecond)
 
-	// Evidence-bearing heartbeat: watermark moved → lease re-armed.
-	observed := time.Now().Add(time.Second)
-	res, err = s.svc.Heartbeat(context.Background(), s.agent("sess", c.ClaimToken), task.ID, "", observed)
+	// The response: nudge armed → heartbeat renews and clears the slot.
+	s.setNudge(task.ID, "nudge-kgate")
+	res, err = s.svc.Heartbeat(context.Background(), s.agent("sess", c.ClaimToken), task.ID, "", time.Now())
 	s.Require().NoError(err)
 	s.True(res.Extended)
 	after := s.rawTask(task.ID).LeaseExp
 	s.Require().NotNil(after)
-	s.True(after.After(*before), "lease re-armed past the pre-heartbeat expiry")
+	s.True(after.After(*before), "the response re-arms the lease past the pre-heartbeat expiry")
 	s.Equal(1, s.countEvents("heartbeat"))
+	cleared, _ := s.nudgeState(task.ID)
+	s.Empty(cleared, "the response clears the nudge slot")
 
 	// Wrong token: the in-flight guard fails before anything moves.
 	_, err = s.svc.Heartbeat(context.Background(), s.agent("sess", "00000000-0000-0000-0000-000000000000"), task.ID, "", time.Now())

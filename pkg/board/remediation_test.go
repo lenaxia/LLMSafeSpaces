@@ -184,8 +184,8 @@ func (s *BoardSuite) TestKill_DispatchDriveResweepFeedsWork() {
 		s.Require().NoError(err)
 	}
 	s.Equal(2, s.countEvents("escalate"))
-	s.Equal(board.StagePendingInput, s.rawTask(t1.ID).Stage)
-	s.Equal(board.StagePendingInput, s.rawTask(t2.ID).Stage)
+	s.Equal(board.StageFailed, s.rawTask(t1.ID).Stage, "000050: the escalation terminus")
+	s.Equal(board.StageFailed, s.rawTask(t2.ID).Stage, "000050: the escalation terminus")
 	s.Equal(3, s.rawTask(t1.ID).Attempts, "escalation withholds the (N+1)th grant — attempts stay at N")
 }
 

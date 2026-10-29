@@ -36,6 +36,10 @@ type E2ETask = {
   title: string;
   description: string;
   stage: string;
+  /** 000050: the awaiting-input FLAG riding the real stage (the wire
+   * never carries pending_input as a stage anymore). */
+  pending_input?: boolean;
+  pending_origin?: string;
   paused: boolean;
   project_name: string;
   epic_name: string;
@@ -144,7 +148,7 @@ function freshState(): BoardState {
       task({ short_id: "tsk-cccc0003", title: "Review drag arm", stage: "in_review", project_id: PROJECT_A, epic_id: "epic-1" }),
       task({ short_id: "tsk-dddd0004", title: "Ship design doc", stage: "done", project_id: PROJECT_A, epic_id: "epic-1" }),
       task({ short_id: "tsk-eeee0005", title: "Blocked follow-up", stage: "backlog", project_id: PROJECT_A, epic_id: "epic-2", is_blocked: true, blocked_by: ["tsk-cccc0003"], tags: ["pr:1702"] }),
-      task({ short_id: "tsk-ffff0006", title: "Waiting on human", stage: "pending_input", project_id: PROJECT_B, epic_id: "epic-1", attempts: 3 }),
+      task({ short_id: "tsk-ffff0006", title: "Waiting on human", stage: "in_progress", pending_input: true, pending_origin: "worker", project_id: PROJECT_B, epic_id: "epic-1", attempts: 3 }),
     ],
   };
 }
@@ -776,9 +780,9 @@ test.describe("#1832 items 1-2 — swimlane creation buttons + collapsible epic 
   test("clicking an epic row highlights its tasks and dims the swimlane's others", async ({ page }) => {
     await openBoard(page);
 
-    // Borealis's only task sits in a side column (pending_input) — open
-    // the lane's side columns so its card is rendered for the assertion.
-    await page.getByTestId(`swimlane-${PROJECT_B}`).getByTestId("side-columns-toggle").click();
+    // Borealis's only task is FLAGGED (000050: pending_input is a badge
+    // on the real stage, never a side column) — its card sits in the
+    // main in_progress lane wearing the awaiting-input badge.
     await expect(page.getByTestId("task-card-tsk-ffff0006")).toBeVisible();
 
     await page.getByTestId("epic-band-epic-2").click();

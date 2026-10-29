@@ -69,6 +69,20 @@ func (s *BoardSuite) TestKill_StageMachineGuards() {
 			_, err := s.svc.MoveStage(context.Background(), actor, task.ID, "", tc.to, "https://evidence.example/x", "")
 			if tc.wantErr == "" {
 				s.Require().NoError(err)
+				if tc.to == board.StagePendingInput {
+					// 000050 flag-op: the real stage is KEPT, the flag rides
+					// it, and the audit is the flag event — never a
+					// board_transitions row (no stage move happened). The
+					// event count is item-scoped: subtests share the table.
+					s.parkedPin(task.ID, tc.from, board.PendingOriginWorker)
+					s.Equal(0, s.countTransitions(task.ID, board.StagePendingInput),
+						"the flag-op writes NO transition row")
+					var flagEvents int
+					s.Require().NoError(s.pool.QueryRow(context.Background(),
+						`SELECT count(*) FROM board_events WHERE action='pending_input_flag' AND item_id=$1`, task.ID).Scan(&flagEvents))
+					s.Equal(1, flagEvents, "the flag event is the audit (item-scoped)")
+					return
+				}
 				s.Equal(tc.to, s.rawTask(task.ID).Stage)
 				s.Equal(1, s.countTransitions(task.ID, tc.to), "every transition writes exactly one board_transitions row")
 				return
@@ -166,7 +180,7 @@ func (s *BoardSuite) TestKill_DoneGuard() {
 // never token presence.
 func (s *BoardSuite) TestKill_PendingExitsSixProvenances() {
 	type want struct {
-		branch   string // "reclaim" | "backlog"
+		branch   string // "reclaim" | "backlog" | "rearm" (000050: the failed terminus exit)
 		origin   string
 		preToken bool // row holds a live token before the exit
 		preIdent bool // row holds a recorded assignee before the exit
@@ -182,7 +196,7 @@ func (s *BoardSuite) TestKill_PendingExitsSixProvenances() {
 			_, err := s.svc.MoveStage(context.Background(), s.agent("sess", c.ClaimToken), t.ID, "", board.StagePendingInput, "", "")
 			s.Require().NoError(err)
 		}},
-		{"escalated", want{"backlog", board.PendingOriginEscalated, false, false}, func(t *board.Task, ws string) {
+		{"escalated", want{"rearm", board.PendingOriginEscalated, false, false}, func(t *board.Task, ws string) {
 			// Drive attempts to cap, then let the claim escalate (#1813:
 			// clear the failure backoff each cycle — this arm pins the
 			// escalated origin, not the park).
@@ -230,13 +244,39 @@ func (s *BoardSuite) TestKill_PendingExitsSixProvenances() {
 			}
 
 			row := s.rawTask(task.ID)
-			s.Equal(board.StagePendingInput, row.Stage, "fixture parked")
+			// 000050: the parked shape is flag-on-real-stage (worker and
+			// drift origins) or the failed terminus (escalated).
+			if tc.want.branch == "rearm" {
+				s.Equal(board.StageFailed, row.Stage, "fixture parked (the escalation terminus)")
+				s.False(row.PendingInput, "the terminus is unflagged")
+			} else if tc.want.origin == board.PendingOriginWorker {
+				s.parkedPin(task.ID, board.StageInProgress, tc.want.origin)
+			} else {
+				s.parkedPin(task.ID, board.StageInReview, tc.want.origin)
+			}
 			s.Equal(tc.want.origin, *row.PendingOrigin)
 			s.Equal(tc.want.preToken, row.ClaimToken != nil, "fixture token state (branch keys on identity, never token)")
 			s.Equal(tc.want.preIdent, row.Assignee != nil, "fixture identity state")
 			spawnsBefore := s.spawner.count()
 
-			// The exit: manager-surface human move_stage.
+			if tc.want.branch == "rearm" {
+				// 000050: the escalated terminus exits through REARM (the
+				// manager re-pool judgment) — move_stage no longer
+				// enumerates failed→in_progress.
+				out, err := s.svc.RearmTask(context.Background(), s.owner(), task.ID, "", "")
+				s.Require().NoError(err)
+				after := s.rawTask(task.ID)
+				s.Equal(board.StageBacklog, out.Stage)
+				s.Equal(0, after.Attempts, "re-arm is the ONE write that resets attempts")
+				s.Nil(after.ClaimToken)
+				s.Nil(after.Assignee)
+				s.Nil(after.LeaseExp)
+				s.Equal(spawnsBefore, s.spawner.count(), "the dead worker is never re-spawned from the re-arm")
+				s.Nil(after.PendingOrigin, "origin cleared on exit")
+				return
+			}
+
+			// The exit: manager-surface human move_stage (the flag-clear).
 			out, err := s.svc.MoveStage(context.Background(), s.owner(), task.ID, "", board.StageInProgress, "", "")
 			s.Require().NoError(err)
 
@@ -285,7 +325,7 @@ func (s *BoardSuite) TestKill_PendingExitManagerSurfaceOnly() {
 	var ge *board.GuardError
 	s.Require().ErrorAs(err, &ge)
 	s.Equal(board.GuardManagerSurface, ge.Code)
-	s.Equal(board.StagePendingInput, s.rawTask(task.ID).Stage, "no self-exit")
+	s.parkedPin(task.ID, board.StageInProgress, board.PendingOriginWorker)
 }
 
 // KILL-TEST 32 (§6 invariant 4): crash between action and effect →
