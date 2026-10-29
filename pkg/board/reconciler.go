@@ -1186,7 +1186,7 @@ func (s *Service) rc2Drift(ctx context.Context, cutoff time.Time) (done, review,
 						-- tasks_pending_input_set, review round 2 finding 4)
 						-- and reset the episode evidence slots.
 						pending_input=false, pending_origin=NULL,
-						nudge_id=NULL, nudged_at=NULL, last_heartbeat_at=NULL
+						nudge_id=NULL, nudged_at=NULL, last_heartbeat_at=NULL, busy_renews=0
 					WHERE id=$1 AND stage='in_review'`,
 					t.ID, newToken, s.cfg.LeaseDuration.Seconds())
 				if err != nil {

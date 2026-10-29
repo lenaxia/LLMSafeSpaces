@@ -631,7 +631,7 @@ func (s *Service) bounceTx(ctx context.Context, tx pgx.Tx, taskID, implementer s
 			claim_token=$2, lease_expires_at=now()+make_interval(secs=>$3::float8), last_progress_at=now(),
 			assignee_session=$4, claim_incremented_attempts=false, claim_persona=NULL,
 			pending_input=false, pending_origin=NULL,
-			nudge_id=NULL, nudged_at=NULL, last_heartbeat_at=NULL
+			nudge_id=NULL, nudged_at=NULL, last_heartbeat_at=NULL, busy_renews=0
 		WHERE id=$1 AND NOT paused`,
 		taskID, token, s.cfg.LeaseDuration.Seconds(), assignee)
 	if err != nil {
