@@ -50,6 +50,10 @@ type E2ETask = {
   assignee_session?: string;
   attempts: number;
   claim_incremented_attempts: boolean;
+  /** #1813: the failed-state overlay's row flag (drives the FAILED
+   * drawer filter and the card's FAILED badge). */
+  last_attempt_failed?: boolean;
+  failure_count?: number;
   stage_entered_at: string;
   created_at: string;
   updated_at: string;
@@ -67,6 +71,8 @@ function task(partial: Partial<E2ETask> & { short_id: string; title: string; sta
     is_blocked: false,
     attempts: 0,
     claim_incremented_attempts: false,
+    last_attempt_failed: false,
+    failure_count: 0,
     stage_entered_at: "2026-10-10T00:00:00Z",
     created_at: "2026-10-10T00:00:00Z",
     updated_at: "2026-10-10T00:00:00Z",
@@ -583,12 +589,19 @@ test.describe("Task Board UI (#1702)", () => {
     await page.getByTestId("project-focus").selectOption({ value: "all" });
     await expect(page.getByTestId(`swimlane-${PROJECT_A}`)).toBeVisible();
 
-    // 2026-10-28 ruling 1: the epic pills are GONE from the toolbar —
-    // no All-epics chip, no per-epic chips; the REAL filters (the
-    // #1813 FAILED overlay, tag facets) stay.
+    // 2026-10-28 ruling 1 + owner ruling 2026-10-29: the epic pills are
+    // GONE and the REAL filters (the #1813 FAILED overlay, tag facets)
+    // live in the COLLAPSIBLE filter drawer — nothing inline.
     await expect(page.getByTestId("epic-chip-all")).toHaveCount(0);
     await expect(page.locator('button[data-testid^="epic-chip-"]')).toHaveCount(0);
+    // Closed drawer: no pills anywhere inline…
+    await expect(page.getByTestId("board-filter-drawer")).toHaveCount(0);
+    await expect(page.getByTestId("failed-filter-toggle")).toHaveCount(0);
+    // …the funnel button opens it and the real filters are inside.
+    await page.getByTestId("board-filter-button").click();
     await expect(page.getByTestId("failed-filter-toggle")).toBeVisible();
+    await page.getByTestId("board-filter-button").click();
+    await expect(page.getByTestId("board-filter-drawer")).toHaveCount(0);
     // Epic association stays reachable: the epic ROW selects → its
     // cards highlight (pinned in the swimlane block below).
     await page.getByTestId("epic-band-epic-2").click();
@@ -1303,5 +1316,104 @@ test.describe("2026-10-28 board declutter — capped epic list, mobile columns/w
     expect(boxes.cardLeft).toBeGreaterThanOrEqual(boxes.cellLeft - 0.5);
     expect(boxes.kebabRight).toBeLessThanOrEqual(boxes.cardRight + 0.5);
     expect(boxes.kebabLeft).toBeGreaterThanOrEqual(boxes.cardLeft - 0.5);
+  });
+});
+
+// --- 2026-10-29 owner ruling: the filter pills collapse into a drawer ------------
+
+test.describe("2026-10-29 filter drawer — pills collapsed, count badge, clear-all, mobile zero-height", () => {
+  test("funnel button opens/closes the drawer; count badge tracks active filters; Clear all resets", async ({ page }) => {
+    // A failed row so the FAILED overlay arm has a survivor to show.
+    const base = freshState();
+    base.tasks.push(task({
+      short_id: "tsk-fail0010", title: "Crash looping", stage: "backlog",
+      project_id: PROJECT_A, epic_id: "epic-2",
+      attempts: 2, last_attempt_failed: true, failure_count: 2,
+    }));
+    await openBoard(page, { tasks: base.tasks });
+
+    // Closed by default: drawer absent from the DOM, no count badge.
+    await expect(page.getByTestId("board-filter-drawer")).toHaveCount(0);
+    await expect(page.getByTestId("board-filter-count")).toHaveCount(0);
+
+    // Open: the real filters (FAILED overlay, tag facets) live INSIDE.
+    await page.getByTestId("board-filter-button").click();
+    await expect(page.getByTestId("board-filter-button")).toHaveAttribute("aria-expanded", "true");
+    const drawer = page.getByTestId("board-filter-drawer");
+    await expect(drawer).toBeVisible();
+    await expect(drawer.getByTestId("failed-filter-toggle")).toBeVisible();
+    await expect(drawer.getByTestId("tag-filter-pr:1702")).toBeVisible();
+
+    // Apply the tag facet: the board filters identically to the old
+    // inline pill, and the badge shows exactly one active filter.
+    await drawer.getByTestId("tag-filter-pr:1702").click();
+    await expect(page.getByTestId("task-card-tsk-aaaa0001")).toHaveCount(0);
+    await expect(page.getByTestId("task-card-tsk-eeee0005")).toBeVisible();
+    await expect(page.getByTestId("board-filter-count")).toHaveText("1");
+
+    // A second filter (the FAILED overlay) stacks: badge reads 2.
+    await drawer.getByTestId("failed-filter-toggle").click();
+    await expect(page.getByTestId("board-filter-count")).toHaveText("2");
+
+    // Clear all — INSIDE the drawer: every row returns, badge drops.
+    await drawer.getByTestId("board-filter-clear").click();
+    await expect(page.getByTestId("task-card-tsk-aaaa0001")).toBeVisible();
+    await expect(page.getByTestId("task-card-tsk-fail0010")).toBeVisible();
+    await expect(page.getByTestId("board-filter-count")).toHaveCount(0);
+
+    // Toggle close: the drawer leaves the DOM (zero height), and the
+    // button's aria-expanded flips back.
+    await page.getByTestId("board-filter-button").click();
+    await expect(page.getByTestId("board-filter-button")).toHaveAttribute("aria-expanded", "false");
+    await expect(page.getByTestId("board-filter-drawer")).toHaveCount(0);
+  });
+
+  test("mobile: closed drawer is zero-height — no inline pills, board content starts immediately below the toolbar", async ({ page }) => {
+    await page.setViewportSize({ width: 375, height: 667 });
+    await openBoard(page);
+
+    // No pills inline at the narrow viewport: while closed, neither the
+    // drawer nor any of its controls render.
+    await expect(page.getByTestId("board-filter-drawer")).toHaveCount(0);
+    await expect(page.getByTestId("failed-filter-toggle")).toHaveCount(0);
+    await expect(page.locator('button[data-testid^="tag-filter-"]')).toHaveCount(0);
+
+    // The board content starts IMMEDIATELY below the toolbar — no
+    // reserved strip where the pill row used to live (±1px tolerance
+    // for the toolbar's border rounding).
+    const toolbarToGrid = () => page.evaluate(() => {
+      const toolbar = document.querySelector('[data-testid="board-toolbar"]')!.getBoundingClientRect();
+      const grid = document.querySelector('[data-testid="board-grid"]')!.getBoundingClientRect();
+      return grid.top - toolbar.bottom;
+    });
+    expect(await toolbarToGrid()).toBeLessThanOrEqual(1);
+    expect(await toolbarToGrid()).toBeGreaterThanOrEqual(-1);
+
+    // The funnel button is reachable at 375px; the drawer opens as a
+    // slide-down panel IN FLOW — it never overlaps the swim lanes.
+    await page.getByTestId("board-filter-button").click();
+    const drawer = page.getByTestId("board-filter-drawer");
+    await expect(drawer).toBeVisible();
+    const overlap = await page.evaluate(() => {
+      const drawerBox = document.querySelector('[data-testid="board-filter-drawer"]')!.getBoundingClientRect();
+      const lane = document.querySelector('[data-testid="swimlane-prj-aaaa1111"]')!.getBoundingClientRect();
+      return Math.max(0, drawerBox.bottom - lane.top);
+    });
+    expect(overlap).toBeLessThanOrEqual(0.5);
+
+    // A filter applied inside the mobile drawer still filters.
+    await drawer.getByTestId("tag-filter-pr:1702").click();
+    await expect(page.getByTestId("task-card-tsk-aaaa0001")).toHaveCount(0);
+    await expect(page.getByTestId("board-filter-count")).toHaveText("1");
+
+    // Closing restores the zero-height posture byte-identically: the
+    // drawer leaves the DOM and the content re-adjoints the toolbar
+    // (the applied filter and its badge survive the collapse).
+    await page.getByTestId("board-filter-button").click();
+    await expect(page.getByTestId("board-filter-drawer")).toHaveCount(0);
+    expect(await toolbarToGrid()).toBeLessThanOrEqual(1);
+    expect(await toolbarToGrid()).toBeGreaterThanOrEqual(-1);
+    await expect(page.getByTestId("task-card-tsk-aaaa0001")).toHaveCount(0);
+    await expect(page.getByTestId("board-filter-count")).toHaveText("1");
   });
 });

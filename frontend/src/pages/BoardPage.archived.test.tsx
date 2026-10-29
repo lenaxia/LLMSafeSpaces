@@ -244,6 +244,10 @@ describe("BoardPage #1964 — archived projects drawer", () => {
     renderBoard();
     await screen.findByTestId("task-card-tsk-aaaa0001");
 
+    // The tag facets live in the filter drawer (owner ruling
+    // 2026-10-29) — open it; the drawer STAYS open so the chip's
+    // disappearance below is a real pin, not a closed drawer.
+    fireEvent.click(screen.getByTestId("board-filter-button"));
     fireEvent.click(screen.getByTestId("tag-filter-pr:1964b"));
     await waitFor(() => expect(screen.queryByTestId("task-card-tsk-aaaa0001")).toBeNull());
     expect(screen.getByTestId("task-card-tsk-ffff0006")).toBeInTheDocument();
@@ -357,6 +361,10 @@ describe("BoardPage #1964 — archived projects drawer", () => {
     renderBoard();
     await screen.findByTestId("swimlane-prj-aaaa1111");
 
+    // The drawer is OPEN — the archived lane's tag must not surface as
+    // a facet inside it (a closed drawer would make this trivially
+    // true; the pin must bite).
+    fireEvent.click(screen.getByTestId("board-filter-button"));
     expect(screen.queryByTestId("tag-filter-pr:1964")).toBeNull();
     // The archived lane's epic never graduates to a chip (E2 exists on
     // the active lane via TASK_BLOCKED; the drawer lane shares E1 only).
