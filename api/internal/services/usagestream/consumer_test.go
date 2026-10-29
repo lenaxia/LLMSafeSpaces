@@ -241,6 +241,43 @@ func TestOpenConnectsOnce(t *testing.T) {
 	}
 }
 
+// TestDerivedBusyReadsGateTruth pins the seamless lease's busy leg
+// (2026-10-29 busy-gate): DerivedBusy answers the consult-maintained
+// #1574 truth for a session the gate holds — unknown (no gate, no
+// recorded answer, empty id) is ok=false, NEVER busy.
+func TestDerivedBusyReadsGateTruth(t *testing.T) {
+	c, fc, _, _ := newTestConsumer(t)
+	requireOpen(t, c, fc)
+
+	// Seed the gate's consult truth directly (the consult-fed write
+	// path is pinned by the #1602 busy-truth suites; this pin is the
+	// READ the board's liveness hub rides).
+	c.mu.Lock()
+	g := c.gates["ws1"]
+	c.mu.Unlock()
+	require.NotNil(t, g)
+	g.mu.Lock()
+	g.derived["ses_mid_turn"] = true
+	g.derived["ses_idle"] = false
+	g.mu.Unlock()
+
+	if busy, ok := c.DerivedBusy("ws1", "ses_mid_turn"); !ok || !busy {
+		t.Fatalf("mid-turn truth: got (busy=%v, ok=%v), want (true, true)", busy, ok)
+	}
+	if busy, ok := c.DerivedBusy("ws1", "ses_idle"); !ok || busy {
+		t.Fatalf("idle truth: got (busy=%v, ok=%v), want (false, true)", busy, ok)
+	}
+	if busy, ok := c.DerivedBusy("ws1", "ses_never_consulted"); ok {
+		t.Fatalf("no recorded answer must be unknown, got (busy=%v, ok=true)", busy)
+	}
+	if busy, ok := c.DerivedBusy("ws-none", "ses_mid_turn"); ok {
+		t.Fatalf("no gate for the workspace must be unknown, got (busy=%v, ok=true)", busy)
+	}
+	if busy, ok := c.DerivedBusy("ws1", ""); ok {
+		t.Fatalf("empty session id must be unknown, got (busy=%v, ok=true)", busy)
+	}
+}
+
 func TestMessageEndBillsUsageWithContext(t *testing.T) {
 	c, fc, usage, br := newTestConsumer(t)
 	requireOpen(t, c, fc)

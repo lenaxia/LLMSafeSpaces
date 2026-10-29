@@ -8,10 +8,10 @@ package app
 // the production AssigneeLivenessSource + NudgeSender at the app
 // integration point, read-only over sessionstate.
 //
-// The engine (pkg/board) stays harness-agnostic: it asks three POOR
+// The engine (pkg/board) stays harness-agnostic: it asks four POOR
 // questions per assignee — moved? exists? anything after the sentinel?
-// — and this file is the only place that knows how opencode answers
-// them. Two evidence legs, deliberately composed:
+// busy? — and this file is the only place that knows how opencode
+// answers them. Three evidence legs, deliberately composed:
 //
 //   - The 0069 frame stream (FINE-grained): the usagestream singleton
 //     holds one subscription per active pod, and EVERY applied frame —
@@ -22,6 +22,9 @@ package app
 //     when the command completes.
 //   - session_index (DURABLE): message_count/updated_at deltas survive
 //     stream drops and serve cross-replica; message boundaries only.
+//   - the usagestream gate's derived-busy truth (2026-10-29 busy-gate):
+//     the consult-maintained #1574 answer for "is the turn still
+//     running" — mid-tool-call silence is ALIVE, never a wedge.
 //
 // Both legs are SAME-SOURCE deltas (this process's previous answer) or
 // SAME-ROW counters (the index's own message_count then vs now) — no
@@ -109,6 +112,27 @@ type boardLivenessHub struct {
 	nudges map[string]boardNudgeMark
 	// cursors holds the previous observation per assignee ref.
 	cursors map[string]boardLiveCursor
+
+	// busyFn is the derived-busy leg (the 2026-10-29 busy-gate): the
+	// usagestream consumer's consult-maintained #1574 truth, read per
+	// sweep for the wedge verdict's candidates. nil (unwired) is INERT
+	// — Busy stays false and the ladder runs today's semantics. Read
+	// under mu (set once at wiring, before the first sweep).
+	busyFn boardBusySource
+}
+
+// boardBusySource answers "is this session mid-turn (derived busy)?" —
+// the consumer's gate map; ok=false is unknown (no gate, no answer),
+// never busy.
+type boardBusySource func(workspaceID, harnessSessionID string) (busy, ok bool)
+
+// SetBusySource wires the derived-busy leg (app.go, once, before the
+// first sweep; late-bound like the frame observer so construction order
+// stays free).
+func (h *boardLivenessHub) SetBusySource(fn boardBusySource) {
+	h.mu.Lock()
+	h.busyFn = fn
+	h.mu.Unlock()
 }
 
 // boardNudgeMark anchors one sentinel's ordinal position.
@@ -236,6 +260,7 @@ type sessionIndexRow struct {
 	nudgeID      string // the engine's live nudge anchor ("" = skip)
 	rawID        string // session_index.session_id
 	phrase       string // session_index.short_id ("" when unset)
+	workspaceID  string // session_index.workspace_id (the busy leg's gate scope)
 	messageCount int64
 	deleted      bool
 	present      bool
@@ -267,7 +292,7 @@ func (h *boardLivenessHub) resolveRefs(ctx context.Context, refs []board.Assigne
 		for rows.Next() {
 			var r sessionIndexRow
 			var deleted *time.Time
-			if err := rows.Scan(&r.rawID, &r.phrase, &r.messageCount, &deleted); err != nil {
+			if err := rows.Scan(&r.rawID, &r.workspaceID, &r.phrase, &r.messageCount, &deleted); err != nil {
 				return err
 			}
 			r.present = true
@@ -278,7 +303,7 @@ func (h *boardLivenessHub) resolveRefs(ctx context.Context, refs []board.Assigne
 	}
 	if len(raw) > 0 {
 		rows, err := h.pool.Query(ctx,
-			`SELECT session_id, coalesce(short_id,''), message_count, deleted_at
+			`SELECT session_id, workspace_id, coalesce(short_id,''), message_count, deleted_at
 			 FROM session_index WHERE session_id = ANY($1)`, raw)
 		if err != nil {
 			return nil, err
@@ -289,7 +314,7 @@ func (h *boardLivenessHub) resolveRefs(ctx context.Context, refs []board.Assigne
 	}
 	if len(phrases) > 0 {
 		rows, err := h.pool.Query(ctx,
-			`SELECT session_id, coalesce(short_id,''), message_count, deleted_at
+			`SELECT session_id, workspace_id, coalesce(short_id,''), message_count, deleted_at
 			 FROM session_index WHERE lower(short_id) = ANY($1)`, phrases)
 		if err != nil {
 			return nil, err
@@ -395,6 +420,24 @@ func (h *boardLivenessHub) ObserveAssignees(sweepCtx context.Context, sess board
 					after = true // the DB leg: something landed after the send
 				}
 				obs.EventsAfterNudge = after
+			}
+		}
+		// The busy-gate leg (2026-10-29 live-fire): the consumer's
+		// derived-busy truth says the turn is still RUNNING — the
+		// worker is inside a tool call (however silent) and the engine
+		// must not wedge it. Honored only when this process has SEEN a
+		// frame for the session (stamp>0): the event that flips a
+		// session busy (a PART_START consult) also stamps this index,
+		// so busy-with-no-frame-ever is an answer about a session this
+		// replica never observed — distrust it (the safe direction is
+		// today's semantics, never a wrong verdict). Residual
+		// staleness (a stream dropped mid-turn, gate map holding a
+		// stale-true) is bounded by the gate's own lifecycle: reconnect
+		// re-seeds derived from the authority snapshot, and a dropped
+		// gate takes the map with it.
+		if !row.deleted && h.busyFn != nil && stamp > 0 {
+			if busy, known := h.busyFn(row.workspaceID, row.rawID); known && busy {
+				obs.Busy = true
 			}
 		}
 		h.cursors[ref] = boardLiveCursor{frameStamp: stamp, dbCount: row.messageCount}

@@ -366,8 +366,16 @@ func (s *Service) rc1Reclaims(ctx context.Context) (int, error) {
 			decisions[v.id] = ladderWedge
 			wedgeEvidence[v.id] = "no response to the sentinel (no post-nudge heartbeat; no observation available)"
 			continue
-		case o.MovedSinceLastSweep, o.EventsAfterNudge:
-			decisions[v.id] = ladderRenew // alive by delta or by reaction to the sentinel
+		case o.MovedSinceLastSweep, o.EventsAfterNudge, o.Busy:
+			// Alive by delta, by reaction to the sentinel — or MID-TURN
+			// (Busy, the 2026-10-29 busy-gate): a session running a tool
+			// call is alive however silent it looks from the frame
+			// stream (the live-fire: `sleep N && poll` workers, quiet
+			// for the whole command, killed as wedges three times). The
+			// tool timebox bounds the turn; when it ends, the queued
+			// nudge delivers and the ladder proceeds against a session
+			// that can actually answer. Busy never WEDGES; it renews.
+			decisions[v.id] = ladderRenew
 			continue
 		case !o.Exists:
 			decisions[v.id] = ladderReclaim // dead-evidence: the fast wall-clock path below

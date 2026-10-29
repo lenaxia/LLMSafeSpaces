@@ -284,6 +284,259 @@ func TestIntegrationLeaseLiveness_OrdinalAnswerBothLegs(t *testing.T) {
 	assert.True(t, res["ses_wedge"].EventsAfterNudge, "message_count above the at-send snapshot is post-sentinel activity")
 }
 
+// TestIntegrationLeaseLiveness_BusyGateLeg pins the hub's busy leg
+// (2026-10-29 live-fire): the consumer's derived-busy truth fills
+// AssigneeObservation.Busy — honored only for a live row this process
+// has SEEN a frame for (the PART_START that flipped busy also stamps
+// the frame index; busy-with-no-frame-ever is distrusted), never for a
+// deleted row, and never when the source is unwired or unknown.
+func TestIntegrationLeaseLiveness_BusyGateLeg(t *testing.T) {
+	pool := livenessPool(t)
+	ctx := context.Background()
+	_, err := pool.Exec(ctx, `DELETE FROM session_index WHERE workspace_id = 'ws-lease-busy'`)
+	require.NoError(t, err)
+
+	var busyCalls []string
+	var sayBusy = true
+	hub := newBoardLivenessHub(pool)
+	hub.SetBusySource(func(workspaceID, harnessSessionID string) (bool, bool) {
+		busyCalls = append(busyCalls, workspaceID+"/"+harnessSessionID)
+		if harnessSessionID == "ses_unknown_to_gate" {
+			return false, false
+		}
+		return sayBusy, true
+	})
+
+	seedLivenessSession(t, pool, "ws-lease-busy", "ses_mid_turn", "mid-turn-teapot-verifies", 2, false)
+	seedLivenessSession(t, pool, "ws-lease-busy", "ses_no_frame", "no-frame-teapot-verifies", 2, false)
+	seedLivenessSession(t, pool, "ws-lease-busy", "ses_unknown_to_gate", "unknown-gate-teapot-verifies", 2, false)
+	seedLivenessSession(t, pool, "ws-lease-busy", "ses_dead_busy", "dead-busy-teapot-verifies", 2, true)
+
+	// Frames for ses_mid_turn and ses_unknown_to_gate only — the
+	// tool-call STARTs that would flip the gate's derived truth also
+	// stamp this index. ses_no_frame gets NOTHING (the distrust arm).
+	hub.ObserveFrame("ws-lease-busy", &abiv1.Event{
+		Type:              abiv1.EventType_EVENT_TYPE_PART_START,
+		InternalSessionId: "ses_mid_turn",
+	})
+	hub.ObserveFrame("ws-lease-busy", &abiv1.Event{
+		Type:              abiv1.EventType_EVENT_TYPE_PART_START,
+		InternalSessionId: "ses_unknown_to_gate",
+	})
+
+	res := hub.ObserveAssignees(ctx, board.SessionObservations{Refs: []board.AssigneeRef{
+		{SessionID: "ses_mid_turn"},
+		{SessionID: "ses_no_frame"},
+		{SessionID: "ses_unknown_to_gate"},
+		{SessionID: "ses_dead_busy"},
+	}})
+
+	assert.True(t, res["ses_mid_turn"].Busy, "mid-turn truth honored for a frame-seen live session")
+	assert.False(t, res["ses_no_frame"].Busy, "busy-with-no-frame-ever is distrusted (the safe direction)")
+	assert.False(t, res["ses_unknown_to_gate"].Busy, "an unknown answer (ok=false) is never busy")
+	assert.False(t, res["ses_dead_busy"].Busy, "a deleted row never reports busy")
+
+	// The consult is scoped (the gate lookup needs the workspace) and
+	// only ever asked for live, frame-seen sessions.
+	require.Contains(t, busyCalls, "ws-lease-busy/ses_mid_turn")
+	require.Contains(t, busyCalls, "ws-lease-busy/ses_unknown_to_gate",
+		"the frame-seen unknown session IS consulted — its answer is unknown, not busy")
+	require.NotContains(t, busyCalls, "ws-lease-busy/ses_no_frame",
+		"the frame-distrusted session never spends a consult")
+	require.NotContains(t, busyCalls, "ws-lease-busy/ses_dead_busy",
+		"the dead row never spends a consult")
+
+	// Truth flips idle: Busy clears with it.
+	sayBusy = false
+	res = hub.ObserveAssignees(ctx, board.SessionObservations{Refs: []board.AssigneeRef{{SessionID: "ses_mid_turn"}}})
+	assert.False(t, res["ses_mid_turn"].Busy)
+
+	// Unwired (nil) is inert — today's semantics verbatim.
+	hub2 := newBoardLivenessHub(pool)
+	hub2.ObserveFrame("ws-lease-busy", &abiv1.Event{
+		Type:              abiv1.EventType_EVENT_TYPE_PART_START,
+		InternalSessionId: "ses_mid_turn",
+	})
+	res = hub2.ObserveAssignees(ctx, board.SessionObservations{Refs: []board.AssigneeRef{{SessionID: "ses_mid_turn"}}})
+	assert.False(t, res["ses_mid_turn"].Busy, "no busy source wired: Busy stays false (the inert contract)")
+}
+
+// TestIntegrationLeaseLiveness_ProductionWiring_BusyWorkerNeverWedges —
+// the DECISIVE busy-gate pin (the live-fire's exact shape): a claimed
+// row whose lease has expired, quiet on the frame stream for a FULL
+// nudge episode (sentinel positioned, nothing after it), where the busy
+// source says MID-TURN — the row renews, not wedges. The turn ends and
+// a full window of true silence follows: only then the verdict.
+func TestIntegrationLeaseLiveness_ProductionWiring_BusyWorkerNeverWedges(t *testing.T) {
+	pool := livenessPool(t)
+	ctx := context.Background()
+	_, err := pool.Exec(ctx, `
+		TRUNCATE TABLE board_events, board_transitions, board_dependencies, board_sweeps, tasks, epics, projects
+		CASCADE
+	`)
+	require.NoError(t, err)
+	_, err = pool.Exec(ctx, `
+		INSERT INTO users (id, username, email, password_hash, active, role)
+		VALUES ('lease-busy-user', 'lease-busy-user', 'lb@example.com', 'hash', true, 'user')
+		ON CONFLICT (id) DO NOTHING
+	`)
+	require.NoError(t, err)
+	_, err = pool.Exec(ctx, `
+		INSERT INTO board_config_defaults (user_id, key, value)
+		VALUES ('lease-busy-user', 'stagePersonas', '{}'::jsonb)
+		ON CONFLICT (user_id, key) DO NOTHING
+	`)
+	require.NoError(t, err)
+
+	var midTurn atomicBool
+	hub := newBoardLivenessHub(pool)
+	hub.SetBusySource(func(_, _ string) (bool, bool) {
+		return midTurn.get(), true
+	})
+
+	cfg := board.EngineConfig{
+		AttemptsCap:     3,
+		LeaseDuration:   200 * time.Millisecond,
+		ThrottleBackoff: time.Hour,
+		FailureBackoff:  500 * time.Millisecond,
+		DRRQuantum:      1,
+		SweepInterval:   time.Second,
+	}
+	svc := board.NewService(pool, cfg, board.WithLivenessSource(hub))
+	owner := board.Actor{Kind: board.ActorUser, UserID: "lease-busy-user", Surface: board.SurfaceREST}
+
+	ws := uuid.New().String()
+	_, err = pool.Exec(ctx, `
+		INSERT INTO workspaces (id, user_id, name, namespace, created_at, updated_at)
+		VALUES ($1::uuid, 'lease-busy-user', $2, 'default', now(), now())`, ws, "ws-"+ws[:8])
+	require.NoError(t, err)
+	p, err := svc.CreateProject(ctx, owner, board.ProjectInput{
+		Name: "proj-lease-busy", TargetWorkspaceID: ws, WorkerSlots: 2, Tags: []string{},
+	}, "")
+	require.NoError(t, err)
+	e, err := svc.CreateEpic(ctx, owner, p.ID, "", board.EpicInput{Title: "ep", Outcome: "ship"}, "")
+	require.NoError(t, err)
+	_, err = pool.Exec(ctx, `UPDATE epics SET status='active' WHERE id=$1`, e.ID)
+	require.NoError(t, err)
+	task, err := svc.CreateTask(ctx, owner, e.ID, "", board.TaskInput{
+		Title: "sleep-poll", Description: "charter", Tags: []string{},
+		AcceptanceCriteria: []board.AcceptanceCriterion{{Text: "c1"}},
+	}, "")
+	require.NoError(t, err)
+
+	c, err := svc.ClaimNext(ctx, "worker-busy", ws)
+	require.NoError(t, err)
+	require.Equal(t, task.ID, c.TaskID)
+	assignee := "ses_sleeppoll_" + strings.ReplaceAll(task.ShortID, "-", "_")
+	_, err = pool.Exec(ctx, `
+		UPDATE tasks SET assignee_session=$2 WHERE id=$1`, task.ID, assignee)
+	require.NoError(t, err)
+	seedLivenessSession(t, pool, ws, assignee, "", 1, false)
+
+	// The PRODUCTION nudger composition (scope resolver + V1 sender +
+	// the hub's send-mark), wrapped only to count: the ordinal question
+	// the wedge verdict answers needs the mark the real sender records.
+	prodNudger := newBoardNudger(boardScopeFor(pool), &recordingV1Sender{}, hub)
+	var nudges atomicInt
+	recon := board.NewReconciler(pool, cfg,
+		board.WithLivenessSource(hub),
+		board.WithNudgeSender(func(ctx context.Context, sessionID string, p board.NudgePayload) error {
+			nudges.add(1)
+			return prodNudger(ctx, sessionID, p)
+		}),
+	)
+
+	// Baseline: the hub has seen the worker's tool-call START (the
+	// frame that flips derived busy also stamps the index), then the
+	// worker goes SILENT inside the command (the sleep). Mid-turn from
+	// the first window on.
+	hub.ObserveFrame(ws, &abiv1.Event{
+		Type:              abiv1.EventType_EVENT_TYPE_PART_START,
+		InternalSessionId: assignee,
+	})
+	midTurn.set(true)
+
+	// Three full lease windows of frame-silence while MID-TURN — the
+	// exact shape that killed three workers pre-fix. Every window
+	// renews, and the nudger is NEVER called: a mid-turn worker is
+	// alive, not quiet.
+	for round := 0; round < 3; round++ {
+		_, err = pool.Exec(ctx,
+			`UPDATE tasks SET lease_expires_at = now() - interval '1 millisecond' WHERE id=$1`, task.ID)
+		require.NoError(t, err)
+		_, err = recon.Sweep(ctx)
+		require.NoError(t, err)
+
+		var stage string
+		var token *string
+		require.NoError(t, pool.QueryRow(ctx,
+			`SELECT stage, claim_token::text FROM tasks WHERE id=$1`, task.ID).Scan(&stage, &token))
+		assert.Equal(t, board.StageInProgress, stage,
+			"round %d: the sleep-polling worker is mid-tool-call — alive, renewed, never wedged", round)
+		require.NotNil(t, token)
+	}
+	assert.Zero(t, nudges.get(), "a mid-turn worker is never even nudged")
+
+	// The turn ends (the sleep completes; the tool timebox holds) and
+	// the worker is quiet-not-busy: the nudge episode OPENS now.
+	midTurn.set(false)
+	_, err = pool.Exec(ctx,
+		`UPDATE tasks SET lease_expires_at = now() - interval '1 millisecond' WHERE id=$1`, task.ID)
+	require.NoError(t, err)
+	_, err = recon.Sweep(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, 1, nudges.get(), "post-turn quiet opens the nudge episode")
+
+	// A full window of true silence on the positioned sentinel: the
+	// verdict lands — the busy-gate DEFERRED it through the mid-turn
+	// windows; it never canceled it.
+	_, err = pool.Exec(ctx,
+		`UPDATE tasks SET lease_expires_at = now() - interval '1 millisecond' WHERE id=$1`, task.ID)
+	require.NoError(t, err)
+	_, err = recon.Sweep(ctx)
+	require.NoError(t, err)
+
+	var stage string
+	require.NoError(t, pool.QueryRow(ctx, `SELECT stage FROM tasks WHERE id=$1`, task.ID).Scan(&stage))
+	assert.Equal(t, board.StageFailed, stage, "post-turn silence: the wedge verdict the busy-gate deferred, not canceled")
+}
+
+// atomicBool / atomicInt are the sweep-loop's tiny synchronizers (the
+// busy closure is read from the reconciler's goroutine).
+type atomicBool struct {
+	mu sync.Mutex
+	v  bool
+}
+
+func (a *atomicBool) set(v bool) {
+	a.mu.Lock()
+	a.v = v
+	a.mu.Unlock()
+}
+
+func (a *atomicBool) get() bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.v
+}
+
+type atomicInt struct {
+	mu sync.Mutex
+	v  int
+}
+
+func (a *atomicInt) add(n int) {
+	a.mu.Lock()
+	a.v += n
+	a.mu.Unlock()
+}
+
+func (a *atomicInt) get() int {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.v
+}
+
 // TestIntegrationLeaseLiveness_ProductionWiring_ToolStartFrameRenews — the
 // DECISIVE wiring pin (the acceptance criterion): a real board engine +
 // the production hub over a real schema, where a claimed row whose lease
