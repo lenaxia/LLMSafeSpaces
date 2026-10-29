@@ -270,7 +270,7 @@ func staleRoleRefLabel(ref, name string) string {
 const personaClaimSQL = `
 	claim_token=$2, lease_expires_at=now()+make_interval(secs=>$3::float8),
 	last_progress_at=now(), claim_incremented_attempts=false, claim_persona=$4,
-	nudge_id=NULL, nudged_at=NULL, last_heartbeat_at=NULL`
+	nudge_id=NULL, nudged_at=NULL, last_heartbeat_at=NULL, busy_renews=0`
 
 // personaClaimMintTx applies the persona mint to a row already moved
 // into its persona stage (inside the caller's transition transaction)

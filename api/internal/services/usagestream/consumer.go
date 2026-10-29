@@ -381,6 +381,33 @@ func (c *Consumer) HasGate(workspaceID string) bool {
 	return ok
 }
 
+// DerivedBusy reads the consult-maintained derived busy truth for one
+// session (the #1574 BusyComponents as last recorded on the gate — the
+// same map the bridge's flip baseline reads; keyed by the INTERNAL
+// harness id per #1817 piece 3). The seamless lease's busy-gate
+// (2026-10-29 live-fire): a board worker mid-tool-call is ALIVE however
+// silent its frame stream, and the wedge verdict must not kill it.
+// ok=false (no gate open for the workspace, no recorded answer for the
+// session) means UNKNOWN — callers treat unknown as not-busy, never as
+// evidence of anything. The answer's staleness is bounded by the gate's
+// own lifecycle: a reconnect re-seeds derived from the authority
+// snapshot (onState), and a dropped gate takes its map with it.
+func (c *Consumer) DerivedBusy(workspaceID, sessionID string) (busy, ok bool) {
+	if sessionID == "" {
+		return false, false
+	}
+	c.mu.Lock()
+	g, isOpen := c.gates[workspaceID]
+	c.mu.Unlock()
+	if !isOpen {
+		return false, false
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	busy, ok = g.derived[sessionID]
+	return busy, ok
+}
+
 // CloseAll drops every gate (shutdown). Terminal: later Opens are
 // no-ops, and any gate goroutine that slips past the close (a caller
 // mid-Open) terminates on its next loop iteration.

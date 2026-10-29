@@ -99,6 +99,29 @@ type AssigneeObservation struct {
 	// on an unmeasured silence — it re-nudges instead (a duplicate
 	// sentinel is benign under latest-only; a wrongful wedge is not).
 	NudgeMarkKnown bool
+	// Busy: the harness reports the session MID-TURN (the #1574 derived
+	// busy — streaming or an in-flight tool call, never a raw status
+	// string). Busy ⇒ ALIVE at every OBSERVED rung of the ladder: a
+	// session whose turn is still running is executing a tool call
+	// (however long it sleeps inside it) and the wedge verdict must
+	// NEVER kill it — the harness's own tool timebox bounds the turn,
+	// and the queued nudge delivers the moment the turn ends (the
+	// 2026-10-29 live-fire: three healthy workers died mid-`sleep`-poll
+	// because a silent-but-busy turn is observationally identical to a
+	// wedged one). Two boundaries, stated honestly: (1) the no-evidence
+	// rung never consults Busy (unknown observation means unknown busy
+	// — the heartbeat floor governs there); (2) the renewal arm
+	// precedes dead-evidence, so a self-contradictory {Exists:false,
+	// Busy:true} defensively RENEWS (unreachable via the production
+	// adapter's deleted-row guard; the safe direction on a seam that
+	// must never kill). The deferral is BOUNDED engine-side: after
+	// boardBusyRenewCap consecutive busy-ONLY renewals (reconciler.go)
+	// Busy evidence is exhausted for the claim epoch and the ladder
+	// proceeds as if busy were false — a source latched busy-true
+	// forever cannot hold a lease forever. The zero value (false) is
+	// INERT: a source that cannot see busy state never blocks a
+	// verdict — today's semantics, unchanged (the inert contract).
+	Busy bool
 }
 
 // SessionObservations batches one sweep's questions: one call per sweep,

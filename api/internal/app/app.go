@@ -1615,6 +1615,15 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 			// today's wall-clock semantics).
 			boardLivenessHub := newBoardLivenessHub(boardPool)
 			proxyHandler.SetFrameObserver(boardLivenessHub.ObserveFrame)
+			// The busy-gate leg (2026-10-29 live-fire: three workers
+			// died mid-`sleep`-poll — silent-but-busy is alive): the
+			// usagestream singleton's consult-maintained derived truth
+			// feeds the wedge verdict's candidates. Late-bound closure
+			// (UsageStream lazily builds the singleton; the read
+			// happens per sweep, never at wiring).
+			boardLivenessHub.SetBusySource(func(workspaceID, harnessSessionID string) (bool, bool) {
+				return proxyHandler.UsageStream().DerivedBusy(workspaceID, harnessSessionID)
+			})
 			spawnOpts := []board.Option{
 				board.WithLivenessSource(boardLivenessHub),
 				board.WithNudgeSender(newBoardNudger(boardScopeFor(boardPool), boardSender, boardLivenessHub)),

@@ -266,7 +266,7 @@ func (s *Service) rc1Reclaims(ctx context.Context) (int, error) {
 	rows, err := tx.Query(ctx, `
 		SELECT t.id, t.project_id, COALESCE(t.lease_expires_at::text, 'null'), t.failure_count,
 			COALESCE(t.assignee_session,''), COALESCE(t.nudge_id,''), COALESCE(t.short_id,''),
-			t.nudged_at, t.last_heartbeat_at
+			t.nudged_at, t.last_heartbeat_at, t.busy_renews
 		FROM tasks t
 		WHERE t.stage='in_progress' AND NOT t.pending_input
 		  AND (t.lease_expires_at IS NULL OR t.lease_expires_at < now())
@@ -281,12 +281,13 @@ func (s *Service) rc1Reclaims(ctx context.Context) (int, error) {
 		shortID              string
 		nudgedAt             *time.Time
 		lastHeartbeat        *time.Time
+		busyRenews           int32
 	}
 	var victims []victim
 	for rows.Next() {
 		var v victim
 		if err := rows.Scan(&v.id, &v.project, &v.episode, &v.failures, &v.assignee, &v.nudgeID, &v.shortID,
-			&v.nudgedAt, &v.lastHeartbeat); err != nil {
+			&v.nudgedAt, &v.lastHeartbeat, &v.busyRenews); err != nil {
 			rows.Close()
 			return 0, err
 		}
@@ -317,9 +318,25 @@ func (s *Service) rc1Reclaims(ctx context.Context) (int, error) {
 		ladderNudge                         // quiet: send the sentinel, measure next expiry
 		ladderWedge                         // sentinel positioned, nothing after it: failed
 	)
+	// boardBusyRenewCap bounds the busy-gate's deferral (review round
+	// 1's blocking finding): a source latched busy-true forever (dead
+	// pod + stalled recreation keeps the gate's truth stale) must not
+	// renew a lease forever. busy_renews counts CONSECUTIVE busy-ONLY
+	// renewals in one claim epoch — at the cap the ladder stops
+	// honoring Busy and the row falls through to the ordinary quiet
+	// arms (nudge, then verdict) as if busy were false. Legitimate
+	// mid-turn shapes never approach it: the harness timebox bounds a
+	// turn and the next tool call's PART_START is movement evidence
+	// (which RESETS the count).
+	const boardBusyRenewCap = 3
 	decisions := make(map[string]ladderDecision, len(victims))
 	wedgeEvidence := make(map[string]string, len(victims))
 	nudgeIDs := make(map[string]string, len(victims))
+	// busyOnlyRenew marks victims whose renewal evidence was Busy ALONE
+	// (no movement, no post-sentinel events, no heartbeat response) —
+	// the renew write increments their counter; every other renewal
+	// zeroes it (consecutive semantics).
+	busyOnlyRenew := make(map[string]bool, len(victims))
 	type outboundNudge struct {
 		v  victim
 		id string
@@ -345,6 +362,13 @@ func (s *Service) rc1Reclaims(ctx context.Context) (int, error) {
 			v.lastHeartbeat.After(*v.nudgedAt)
 		o, ok := observations[v.assignee]
 		observed := ok && o.Observed
+		// The busy-gate's engine-side bound: past boardBusyRenewCap
+		// consecutive busy-only renewals, Busy evidence is EXHAUSTED
+		// for this claim epoch — honored as false so the quiet arms
+		// (nudge, verdict) proceed. A heartbeat or movement arrival
+		// resets the row's counter (the renew write's CASE); only a
+		// source stuck busy-true-forever reaches the cap.
+		busyHonored := o.Busy && v.busyRenews < boardBusyRenewCap
 		switch {
 		case hbAfterNudge:
 			decisions[v.id] = ladderRenew // the worker answered the nudge on the response channel
@@ -366,8 +390,18 @@ func (s *Service) rc1Reclaims(ctx context.Context) (int, error) {
 			decisions[v.id] = ladderWedge
 			wedgeEvidence[v.id] = "no response to the sentinel (no post-nudge heartbeat; no observation available)"
 			continue
-		case o.MovedSinceLastSweep, o.EventsAfterNudge:
-			decisions[v.id] = ladderRenew // alive by delta or by reaction to the sentinel
+		case o.MovedSinceLastSweep, o.EventsAfterNudge, busyHonored:
+			// Alive by delta, by reaction to the sentinel — or MID-TURN
+			// (Busy, the 2026-10-29 busy-gate): a session running a tool
+			// call is alive however silent it looks from the frame
+			// stream (the live-fire: `sleep N && poll` workers, quiet
+			// for the whole command, killed as wedges three times). The
+			// tool timebox bounds the turn; when it ends, the queued
+			// nudge delivers and the ladder proceeds against a session
+			// that can actually answer. Busy never WEDGES; it renews —
+			// until the consecutive-only cap exhausts it (above).
+			decisions[v.id] = ladderRenew
+			busyOnlyRenew[v.id] = busyHonored && !o.MovedSinceLastSweep && !o.EventsAfterNudge
 			continue
 		case !o.Exists:
 			decisions[v.id] = ladderReclaim // dead-evidence: the fast wall-clock path below
@@ -436,12 +470,15 @@ func (s *Service) rc1Reclaims(ctx context.Context) (int, error) {
 		case ladderRenew:
 			// Renewal: extend the lease, clear the nudge slot. NO
 			// transition, NO audit event (design: renewals never flood
-			// the trail), NO overlay.
+			// the trail), NO overlay. busy_renews carries the
+			// consecutive busy-ONLY count (the cap's input): +1 when
+			// Busy alone renewed, 0 when stronger evidence did.
 			if _, err := tx.Exec(ctx, `
 				UPDATE tasks SET lease_expires_at=now()+make_interval(secs=>$2::float8),
-					last_progress_at=now(), nudge_id=NULL, nudged_at=NULL, updated_at=now()
+					last_progress_at=now(), nudge_id=NULL, nudged_at=NULL, updated_at=now(),
+					busy_renews=CASE WHEN $3::bool THEN busy_renews+1 ELSE 0 END
 				WHERE id=$1 AND stage='in_progress'`,
-				v.id, s.cfg.LeaseDuration.Seconds()); err != nil {
+				v.id, s.cfg.LeaseDuration.Seconds(), busyOnlyRenew[v.id]); err != nil {
 				return 0, err
 			}
 			applied++
@@ -498,6 +535,7 @@ func (s *Service) rc1Reclaims(ctx context.Context) (int, error) {
 				UPDATE tasks SET stage='failed', stage_entered_at=now(),
 					pending_origin='escalated', pending_input=false,
 					nudge_id=NULL, nudged_at=NULL, last_heartbeat_at=NULL,
+					busy_renews=0,
 					claim_token=NULL, lease_expires_at=NULL, assignee_session=NULL, implementer_session=NULL,
 					claim_incremented_attempts=false, claim_persona=NULL,
 					last_attempt_failed=true, failure_count=failure_count+1, last_failure_at=now()
@@ -1148,7 +1186,7 @@ func (s *Service) rc2Drift(ctx context.Context, cutoff time.Time) (done, review,
 						-- tasks_pending_input_set, review round 2 finding 4)
 						-- and reset the episode evidence slots.
 						pending_input=false, pending_origin=NULL,
-						nudge_id=NULL, nudged_at=NULL, last_heartbeat_at=NULL
+						nudge_id=NULL, nudged_at=NULL, last_heartbeat_at=NULL, busy_renews=0
 					WHERE id=$1 AND stage='in_review'`,
 					t.ID, newToken, s.cfg.LeaseDuration.Seconds())
 				if err != nil {

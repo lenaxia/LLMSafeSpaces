@@ -1,0 +1,21 @@
+-- 000053_busy_renew_cap — the busy-gate's engine-side bound (2026-10-29
+-- live-fire review round 1, blocking finding: the busy-deferral is
+-- unbounded when the gate's busy truth goes permanently unreachable —
+-- a dead pod with stalled recreation keeps g.derived stale-true forever
+-- and the ladder renews the lease forever, silently disabling failure
+-- detection for the row).
+--
+-- busy_renews counts CONSECUTIVE busy-only renewals within one claim
+-- epoch: incremented when a renewal's ONLY evidence was Busy (no
+-- movement, no post-sentinel events, no heartbeat response), reset to
+-- zero by any stronger alive evidence (movement renewal, heartbeat
+-- response) and by every claim mint. At boardBusyRenewCap (3 ≈ 2¼ h of
+-- frame-silent busy claims on the 45 m lease) the ladder stops
+-- honoring Busy for the epoch — the row falls through to the ordinary
+-- quiet arms (nudge, then verdict) exactly as if busy were false. The
+-- legitimate mid-turn shape (tool calls bounded by the harness
+-- timebox, PART_STARTs between commands) never approaches the cap:
+-- movement evidence arrives within a window or two; only a source
+-- latched busy-true-forever does.
+
+ALTER TABLE tasks ADD COLUMN IF NOT EXISTS busy_renews integer NOT NULL DEFAULT 0;
