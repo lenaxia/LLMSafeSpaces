@@ -53,6 +53,7 @@ type fakeAgent struct {
 	busySet      map[string]bool
 	models       map[string]string // session -> "prov/model"
 	slugs        map[string]string // session -> adjective-noun slug (design 0066 alias material)
+	parents      map[string]string // session -> parent session id (subtask lineage, the wire list's parentID)
 
 	catalogImage map[string]bool // "prov/model" -> image input
 
@@ -81,6 +82,7 @@ func newFakeAgent() *fakeAgent {
 		abortDropped: map[string]bool{},
 		models:       map[string]string{},
 		slugs:        map[string]string{},
+		parents:      map[string]string{},
 		catalogImage: map[string]bool{"p/vision": true, "p/text": false},
 	}
 }
@@ -90,6 +92,15 @@ func (f *fakeAgent) newSession(title string) string {
 	id := fmt.Sprintf("ses_%d", f.nextID)
 	f.titles[id] = title
 	f.models[id] = "p/text"
+	return id
+}
+
+// newSubtaskSession births a session carrying parentID on the wire
+// list (opencode task-tool children) — the lineage signal the
+// subscription tools refuse on (§4.6 both sides).
+func (f *fakeAgent) newSubtaskSession(parent, title string) string {
+	id := f.newSession(title)
+	f.parents[id] = parent
 	return id
 }
 
@@ -227,6 +238,9 @@ func (f *fakeAgent) handler(t *testing.T) http.HandlerFunc {
 				}
 				if slug := f.slugs[id]; slug != "" {
 					row["slug"] = slug
+				}
+				if parent := f.parents[id]; parent != "" {
+					row["parentID"] = parent
 				}
 				list = append(list, row)
 			}
@@ -934,7 +948,7 @@ func TestMCPCreateSession_HappyPath(t *testing.T) {
 	})
 
 	start := time.Now()
-	out, err := mcpCreateSession(context.Background(), mcpTestPassword, "go build the feature", "Feature build")
+	out, err := mcpCreateSession(context.Background(), mcpTestPassword, "go build the feature", "Feature build", false, "")
 	elapsed := time.Since(start)
 	require.NoError(t, err)
 	assert.Less(t, elapsed, time.Second, "create_session must return before delivery blocks")
@@ -965,7 +979,7 @@ func TestMCPCreateSession_EmptyPrompt(t *testing.T) {
 	withAgentServer(t, func(w http.ResponseWriter, r *http.Request) {
 		t.Error("no opencode call may happen without a prompt")
 	})
-	_, err := mcpCreateSession(context.Background(), mcpTestPassword, "  ", "")
+	_, err := mcpCreateSession(context.Background(), mcpTestPassword, "  ", "", false, "")
 	require.Error(t, err)
 }
 
@@ -973,14 +987,14 @@ func TestMCPCreateSession_CreateFails(t *testing.T) {
 	f := newFakeAgent()
 	f.failCreate = true
 	withAgentServer(t, f.handler(t))
-	_, err := mcpCreateSession(context.Background(), mcpTestPassword, "p", "")
+	_, err := mcpCreateSession(context.Background(), mcpTestPassword, "p", "", false, "")
 	require.Error(t, err)
 }
 
 func TestMCPCreateSession_TitleOptional(t *testing.T) {
 	f := newFakeAgent()
 	withAgentServer(t, f.handler(t))
-	out, err := mcpCreateSession(context.Background(), mcpTestPassword, "p", "")
+	out, err := mcpCreateSession(context.Background(), mcpTestPassword, "p", "", false, "")
 	require.NoError(t, err)
 	require.Len(t, f.titles, 1)
 	var id string
