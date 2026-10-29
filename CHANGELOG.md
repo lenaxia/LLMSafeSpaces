@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.44.8] - 2026-10-29
+
 ### Added — the board's session refs click straight through to the session (owner ruling 2026-10-29, tsk-teal-vocalist-orders)
 
 - **Owner ruling (verbatim): "Please add a task for adding a link/ref to sessions so from the board task info cards we can click straight through to the session. And via api mcp sdk we can look up the session ref if we need to fetch it."** The task drawer's Claim/lease assignee and the task card's assignee area are now React Router links to `/chat/{workspaceId}/{sessionId}` — the same target as clicking the session in the sidebar; the drawer (the declutter ruling's ids popup) additionally renders the #1959 IMPLEMENTER identity as a second link (during review the assignee is the reviewer — the implementer names the session that did the work). The read edge already serves the #1922 phrase form, so the display text IS the short 3-word id and the route segment in one value; the cold-window degrade (raw harness id + `assignee_session_deprecated`/`implementer_session_deprecated`) still links — never a broken href (`data-deprecated` marked), and an archived/deleted session renders the link with the chat page owning its not-found state. Isolated renders without a workspace id degrade to plain text.
