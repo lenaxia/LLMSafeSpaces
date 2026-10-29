@@ -35,7 +35,9 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"strings"
 	"sync"
@@ -73,15 +75,31 @@ func redisOptionsFromAddr(raw string) (*redis.Options, error) {
 	return &redis.Options{Addr: raw}, nil
 }
 
+// urlFreeReason renders a malformed-URL error WITHOUT the URL: a
+// *url.Error's Error() embeds the raw address verbatim (parse
+// "redis://u:p@host:port": …) — on the malformed branch the redacted
+// addr field is pointless if the error field then leaks the password
+// (review r2, Finding 2). The wrapped inner reason is logged instead;
+// anything not a *url.Error degrades to a generic classification.
+func urlFreeReason(err error) string {
+	var ue *url.Error
+	if errors.As(err, &ue) {
+		return ue.Err.Error()
+	}
+	return "malformed redis address"
+}
+
 // redactRedisAddr strips userinfo from a raw addr before it touches
 // a log line: credentialed URLs (redis://u:p@host:port/db — a
 // supported spelling) must never leak their password, and the warns
 // fire precisely during incidents, when logs get read. Non-URL
-// spellings (host:port) pass through unchanged.
+// spellings (host:port) pass through unchanged. The split is at the
+// LAST '@' (net/url's own userinfo boundary — a password may itself
+// contain '@', and the first-'@' split would leak its tail).
 func redactRedisAddr(raw string) string {
 	if i := strings.Index(raw, "://"); i >= 0 {
 		rest := raw[i+3:]
-		if j := strings.IndexByte(rest, '@'); j >= 0 {
+		if j := strings.LastIndexByte(rest, '@'); j >= 0 {
 			return raw[:i+3] + "***@" + rest[j+1:]
 		}
 	}
@@ -110,7 +128,7 @@ func eventbusFromEnv(getenv func(string) string, logger *zap.Logger) *eventbus.R
 	opts, err := redisOptionsFromAddr(raw)
 	if err != nil {
 		logger.Warn("event bus: malformed AGENTD_EVENTBUS_ADDR — bus disabled",
-			zap.String("addr", redactRedisAddr(raw)), zap.Error(err))
+			zap.String("addr", redactRedisAddr(raw)), zap.String("reason", urlFreeReason(err)))
 		return nil
 	}
 	client := redis.NewClient(opts)

@@ -153,3 +153,49 @@ every sentinel field pinned; wedge verdict acks without messaging.
   through OnError.
 - Nits: worklog 1233 renamed to the NNNN sentinel (repolint owns numbers);
   this worklog's verification tallies finalized (above).
+
+### Round 2 — CHANGES_REQUESTED (head 305779e18)
+
+The reviewer mutation-tested the outage pin and caught the harness:
+the pre-fix code PASSED my test — go-redis's pool held one warm
+connection through the "outage" (flakyProxy closed only fresh dials),
+so the error path never executed.
+
+- **Finding 1 (blocking, the outage pin passed pre-fix)** — FIXED:
+  the proxy now tears down ESTABLISHED connections on circuit-open
+  (the pooled socket dies mid-flight, the next command fails), the
+  consumer settles deterministically BEFORE the outage (a pre-outage
+  delivery proves it holds a live connection), and the post-heal
+  assertion tolerates the un-acked pre-outage entry's legal
+  redelivery (at-least-once WORKING, not a failure). Mutation-verified
+  this round: pre-fix Consume restored → test FAILS ("consumer
+  died"); fixed → PASSES.
+- **Finding 2 (blocking, url.Error leaks the password on the
+  malformed branch)** — FIXED: `urlFreeReason` logs the wrapped inner
+  reason only (`(*url.Error).Err`), never the URL-carrying wrapper.
+  Pinned by `TestURLFreeReason` (asserts the password and the URL
+  appear nowhere in the logged reason).
+- **Finding 3 (blocking, silent permanent-error spin)** — FIXED:
+  `retrySignal` surfaces retry-loop failures through OnError at a
+  bounded cadence (streak's first failure, then every 60th; a
+  successful round resets the streak — a fresh incident signals
+  immediately); runtime NOGROUP self-heals by re-creating the group at
+  the configured start position. Pinned by
+  `TestRetrySignalBoundedCadence`.
+- **Finding 4 (pagination unpinned)** — FIXED:
+  `TestPendingCountsPagesAcrossLargePEL` — 300 delivered-never-acked
+  entries on one consumer's PEL (built the real way, live XREADGROUP
+  reads with no ack), page size 128; pendingCounts must cover all 300
+  (the pre-pagination clamp reset entries 257+'s poison ledger).
+- Minors folded in: `redactRedisAddr` splits userinfo at the LAST '@'
+  (net/url's boundary — a password containing '@' would leak its
+  tail; test line added); trimmed-shell acks in drainOwnPending and
+  claimIdle surface through OnError like dispatch's; drainOwnPending
+  is bounded (already-delivered failed entries return to the reclaim
+  sweep instead of hot-spinning the drain).
+- Also found while fixing: go-redis renders XReadGroupArgs.Block==0
+  as `BLOCK 0` (block forever) — the test loop now sets an explicit
+  block; noted in a comment for the next reader.
+- Harness regression during the round (self-caught): a span-edit
+  dropped the r1 cursor pins; restored and re-run (21 transport tests
+  green, -race clean, lint 0).

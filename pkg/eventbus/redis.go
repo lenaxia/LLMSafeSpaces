@@ -214,6 +214,7 @@ func (b *RedisBus) Consume(ctx context.Context, opts ConsumeOptions, h Handler) 
 	if h == nil {
 		return errors.New("eventbus: consume requires a handler")
 	}
+	watch := newRetrySignal(opts.OnError)
 	// Group creation retries too — a first-boot race with Redis
 	// availability must not kill the consumer before it starts.
 	for {
@@ -224,6 +225,7 @@ func (b *RedisBus) Consume(ctx context.Context, opts ConsumeOptions, h Handler) 
 		if ctx.Err() != nil {
 			return nil
 		}
+		watch.signal(&opts, fmt.Errorf("XGROUP CREATE %s/%s: %w", b.key, opts.Group, err))
 		if !b.sleepBackoff(ctx, &opts) {
 			return nil
 		}
@@ -235,8 +237,19 @@ func (b *RedisBus) Consume(ctx context.Context, opts ConsumeOptions, h Handler) 
 	for {
 		err := b.drainOwnPending(ctx, &opts, h)
 		if err == nil || ctx.Err() != nil {
+			watch.reset()
 			break
 		}
+		if isNoGroup(err) {
+			// The group vanished under us (operator XGROUP DESTROY,
+			// a flush): re-create it — StartLive groups resume live;
+			// a StartReplay group replays the retained window (the
+			// documented behavior of its creation position).
+			if b.recreateGroup(ctx, &opts) {
+				continue
+			}
+		}
+		watch.signal(&opts, err)
 		if !b.sleepBackoff(ctx, &opts) {
 			return nil
 		}
@@ -248,17 +261,26 @@ func (b *RedisBus) Consume(ctx context.Context, opts ConsumeOptions, h Handler) 
 			return nil
 		}
 		if err := b.claimIdle(ctx, &opts, h); err != nil {
+			if isNoGroup(err) && b.recreateGroup(ctx, &opts) {
+				continue
+			}
+			watch.signal(&opts, err)
 			if !b.sleepBackoff(ctx, &opts) {
 				return nil
 			}
 			continue
 		}
 		if err := b.readNew(ctx, &opts, h); err != nil {
+			if isNoGroup(err) && b.recreateGroup(ctx, &opts) {
+				continue
+			}
+			watch.signal(&opts, err)
 			if !b.sleepBackoff(ctx, &opts) {
 				return nil
 			}
 			continue
 		}
+		watch.reset()
 		select {
 		case <-ctx.Done():
 			return nil
@@ -267,10 +289,63 @@ func (b *RedisBus) Consume(ctx context.Context, opts ConsumeOptions, h Handler) 
 	}
 }
 
+// isNoGroup answers whether err is Redis's NOGROUP — the group (or
+// its stream) no longer exists. Treated as SELF-HEALING: the group
+// is re-created at the configured start position and consumption
+// resumes (a destroy is an operator action or a flush side effect;
+// losing the consumer over it would be the silent-death failure
+// mode).
+func isNoGroup(err error) bool {
+	return err != nil && strings.Contains(err.Error(), "NOGROUP")
+}
+
+// recreateGroup re-runs the creation sequence; true when the group
+// exists again (or already does).
+func (b *RedisBus) recreateGroup(ctx context.Context, opts *ConsumeOptions) bool {
+	err := b.client.XGroupCreateMkStream(ctx, b.key, opts.Group, opts.StartAt).Err()
+	return err == nil || strings.Contains(err.Error(), "BUSYGROUP")
+}
+
+// retrySignal surfaces the retry loop's failures through OnError at
+// a BOUNDED cadence: the first failure of a streak, then every
+// retrySignalEvery-th (a permanent error — WRONGTYPE on a type
+// collision, an ACL denial — otherwise spins at 500ms with no log
+// and no hook: an invisible infinite loop, the r2 finding; a signal
+// per retry would be its own flood).
+const retrySignalEvery = 60
+
+type retrySignal struct {
+	onError func(msg Message, err error)
+	streak  int
+}
+
+func newRetrySignal(onError func(Message, error)) *retrySignal {
+	return &retrySignal{onError: onError}
+}
+
+func (r *retrySignal) signal(opts *ConsumeOptions, err error) {
+	r.streak++
+	if r.onError == nil {
+		return
+	}
+	if r.streak == 1 || r.streak%retrySignalEvery == 0 {
+		r.onError(Message{Event: Event{Topic: "_consumer_retry"}}, fmt.Errorf(
+			"eventbus: consumer %s/%s round failed (streak %d, backoff %s, retrying): %w",
+			opts.Group, opts.Consumer, r.streak, opts.Backoff, err))
+	}
+}
+
+// reset clears the streak after a successful round — the NEXT failure
+// signals immediately (a fresh incident is never buried inside a
+// quiet cadence).
+func (r *retrySignal) reset() { r.streak = 0 }
+
 // sleepBackoff waits one backoff tick (the transient-error
 // backpressure); false reports ctx ended. The round that failed is
 // retried by the caller — every X* round is idempotent (reading and
 // claiming are read/claim semantics; acks ride delivery success).
+// A SUCCESSFUL round resets the retry streak (see consumeLoop's
+// watch.reset calls).
 func (b *RedisBus) sleepBackoff(ctx context.Context, opts *ConsumeOptions) bool {
 	select {
 	case <-ctx.Done():
@@ -312,12 +387,17 @@ func (b *RedisBus) readNew(ctx context.Context, opts *ConsumeOptions, h Handler)
 // entries (the restart-resume leg). Entries with no recoverable
 // payload (trimmed from the stream while pending — Redis keeps the
 // PEL row but XREADGROUP returns values-less shells for them) are
-// acked: undeliverable is not retryable.
+// acked: undeliverable is not retryable. BOUNDED: entries already
+// delivered THIS drain that failed again are not re-run in-place —
+// the reclaim sweep owns their retry (without the bound, a failing
+// handler's own pending would hot-spin the drain forever, the r2
+// note).
 func (b *RedisBus) drainOwnPending(ctx context.Context, opts *ConsumeOptions, h Handler) error {
 	counts, err := b.pendingCounts(ctx, opts, opts.Consumer)
 	if err != nil {
 		return err
 	}
+	seen := map[string]bool{}
 	for {
 		if ctx.Err() != nil {
 			return nil
@@ -334,20 +414,29 @@ func (b *RedisBus) drainOwnPending(ctx context.Context, opts *ConsumeOptions, h 
 			}
 			return fmt.Errorf("eventbus: XREADGROUP(0) %s/%s: %w", b.key, opts.Group, err)
 		}
-		n := 0
+		n, fresh := 0, 0
 		for _, xs := range res {
 			for _, m := range xs.Messages {
 				n++
+				if seen[m.ID] {
+					continue
+				}
+				seen[m.ID] = true
+				fresh++
 				if len(m.Values) == 0 {
 					// A trimmed shell: the entry the PEL row points at
 					// no longer exists. Ack and move on.
-					_ = b.client.XAck(ctx, b.key, opts.Group, m.ID).Err()
+					if err := b.client.XAck(ctx, b.key, opts.Group, m.ID).Err(); err != nil && opts.OnError != nil {
+						opts.OnError(messageOf(m.ID, nil, counts[m.ID]), fmt.Errorf("ack(trimmed shell): %w", err))
+					}
 					continue
 				}
 				b.dispatch(ctx, opts, h, messageOf(m.ID, m.Values, counts[m.ID]))
 			}
 		}
-		if n == 0 {
+		// A round with no entries (drained) or only already-delivered
+		// ones (all failed; the reclaim sweep retries) ends the drain.
+		if n == 0 || fresh == 0 {
 			return nil
 		}
 	}
@@ -395,7 +484,9 @@ func (b *RedisBus) claimIdle(ctx context.Context, opts *ConsumeOptions, h Handle
 	}
 	for _, m := range claimed {
 		if len(m.Values) == 0 {
-			_ = b.client.XAck(ctx, b.key, opts.Group, m.ID).Err()
+			if err := b.client.XAck(ctx, b.key, opts.Group, m.ID).Err(); err != nil && opts.OnError != nil {
+				opts.OnError(messageOf(m.ID, nil, counts[m.ID]+1), fmt.Errorf("ack(claimed shell): %w", err))
+			}
 			continue
 		}
 		b.dispatch(ctx, opts, h, messageOf(m.ID, m.Values, counts[m.ID]+1))

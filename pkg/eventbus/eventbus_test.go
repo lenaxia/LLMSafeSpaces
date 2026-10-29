@@ -290,17 +290,20 @@ func TestPatternSubscriptionFiltersAndAcks(t *testing.T) {
 	}
 }
 
-// flakyProxy fronts a backend addr with a switchable circuit: while
-// the circuit is OPEN every new connection is closed immediately; a
-// CLOSED circuit pipes bytes both ways. Consume's transient-error
-// tolerance is proven through it: the consumer must outlive the
-// outage and deliver what was published on the other side.
+// flakyProxy fronts a backend addr with a switchable circuit. Opening
+// the circuit does BOTH outage legs: freshly-accepted connections are
+// closed immediately, AND every established piped connection is torn
+// down — go-redis pools one warm connection (NewRedisBus pings before
+// Consume), so closing only new dials leaves the consumer's pooled
+// socket untouched and the "outage" never reaches it (review r2's
+// mutation finding: the pre-fix code passed this test).
 type flakyProxy struct {
 	addr    string
 	backend string
 	mu      sync.Mutex
 	open    bool
 	ln      net.Listener
+	conns   map[net.Conn]struct{}
 	done    chan struct{}
 }
 
@@ -310,7 +313,7 @@ func newFlakyProxy(t *testing.T, backend string) *flakyProxy {
 	if err != nil {
 		t.Fatalf("flakyProxy listen: %v", err)
 	}
-	p := &flakyProxy{addr: ln.Addr().String(), backend: backend, ln: ln, done: make(chan struct{})}
+	p := &flakyProxy{addr: ln.Addr().String(), backend: backend, ln: ln, conns: map[net.Conn]struct{}{}, done: make(chan struct{})}
 	go func() {
 		defer close(p.done)
 		for {
@@ -327,26 +330,43 @@ func newFlakyProxy(t *testing.T, backend string) *flakyProxy {
 
 func (p *flakyProxy) serve(conn net.Conn) {
 	p.mu.Lock()
-	open := p.open
-	p.mu.Unlock()
-	if open {
+	if p.open {
+		p.mu.Unlock()
 		_ = conn.Close()
 		return
 	}
+	p.conns[conn] = struct{}{}
+	p.mu.Unlock()
 	up, err := net.Dial("tcp", p.backend)
 	if err != nil {
+		p.mu.Lock()
+		delete(p.conns, conn)
+		p.mu.Unlock()
 		_ = conn.Close()
 		return
 	}
+	defer func() {
+		p.mu.Lock()
+		delete(p.conns, conn)
+		p.mu.Unlock()
+		_ = conn.Close()
+	}()
 	go func() { _, _ = io.Copy(up, conn); _ = up.Close() }()
 	_, _ = io.Copy(conn, up)
-	_ = conn.Close()
 }
 
+// setOpen flips the circuit; opening tears down every established
+// connection so the pooled socket dies mid-flight (the real outage
+// shape: the consumer's NEXT command fails, forcing the error path).
 func (p *flakyProxy) setOpen(open bool) {
 	p.mu.Lock()
+	defer p.mu.Unlock()
 	p.open = open
-	p.mu.Unlock()
+	if open {
+		for c := range p.conns {
+			_ = c.Close()
+		}
+	}
 }
 
 // TestConsumerSurvivesTransientOutage (review r1, Finding 1): a
@@ -369,7 +389,9 @@ func TestConsumerSurvivesTransientOutage(t *testing.T) {
 	bus, err := NewRedisBus(context.Background(), client, StreamKey("ws-outage"), 128)
 	require.NoError(t, err)
 
-	// Prime the group, then break the transport mid-consume.
+	// Deterministic settle BEFORE the outage: one delivery proves the
+	// consumer is up and holding a pooled connection — racing
+	// setOpen against Consume's first dial tested nothing (review r2).
 	require.NoError(t, client.XGroupCreateMkStream(context.Background(), bus.key, "g", "$").Err())
 	got := make(chan string, 8)
 	ctx, cancel := context.WithCancel(context.Background())
@@ -385,34 +407,140 @@ func TestConsumerSurvivesTransientOutage(t *testing.T) {
 			return nil
 		})
 	}()
-	proxy.setOpen(true)
-	time.Sleep(150 * time.Millisecond) // the consumer is mid-outage
-
-	// Publish THROUGH the backend — the entry sits in the stream
-	// while the consumer cannot reach it.
 	pubClient := redis.NewClient(&redis.Options{Addr: mr.Addr()})
 	defer pubClient.Close()
 	pub, err := NewRedisBus(context.Background(), pubClient, StreamKey("ws-outage"), 128)
 	require.NoError(t, err)
+	_, err = pub.Publish(context.Background(), Event{Topic: "session.ses_0.idle"})
+	require.NoError(t, err)
+	select {
+	case topic := <-got:
+		require.Equal(t, "session.ses_0.idle", topic, "pre-outage settle: the consumer never got its first delivery")
+	case <-time.After(5 * time.Second):
+		t.Fatal("pre-outage settle: consumer never delivered")
+	}
+
+	// Mid-consume outage: established conns die, new dials refused.
+	proxy.setOpen(true)
+	time.Sleep(150 * time.Millisecond)
+
+	// Publish THROUGH the backend — the entry sits in the stream
+	// while the consumer cannot reach it.
 	_, err = pub.Publish(context.Background(), Event{Topic: "session.ses_1.idle"})
 	require.NoError(t, err)
 
-	// Heal; the consumer must still be alive and deliver.
+	// Heal; the consumer must still be alive and deliver. The
+	// pre-outage entry may redeliver first — its ack raced the circuit
+	// opening, an un-acked entry stays pending, and redelivery is the
+	// at-least-once contract WORKING; the assertion is that ses_1
+	// (published behind the outage) arrives, duplicates tolerated.
 	proxy.setOpen(false)
-	select {
-	case topic := <-got:
-		require.Equal(t, "session.ses_1.idle", topic)
-	case <-time.After(5 * time.Second):
-		t.Fatal("the consumer did not survive the transient outage — delivery never resumed")
-	}
+	awaitTopic(t, got, "session.ses_1.idle")
 	// And keeps delivering the live tail afterwards.
 	_, err = pub.Publish(context.Background(), Event{Topic: "session.ses_2.error"})
 	require.NoError(t, err)
-	select {
-	case topic := <-got:
-		require.Equal(t, "session.ses_2.error", topic)
-	case <-time.After(5 * time.Second):
-		t.Fatal("post-outage live tail never delivered")
+	awaitTopic(t, got, "session.ses_2.error")
+}
+
+// awaitTopic receives from got until want arrives (duplicates of
+// other topics tolerated — at-least-once redeliveries are legal),
+// failing the test on timeout.
+func awaitTopic(t *testing.T, got <-chan string, want string) {
+	t.Helper()
+	deadline := time.After(5 * time.Second)
+	for {
+		select {
+		case topic := <-got:
+			if topic == want {
+				return
+			}
+		case <-deadline:
+			t.Fatalf("awaitTopic: %s never arrived (the consumer died or delivery never resumed)", want)
+		}
+	}
+}
+
+// TestPendingCountsPagesAcrossLargePEL (review r2, Finding 4): a
+// restart with more own-pending than ONE page (Batch*16) must still
+// see TRUE delivery counts for every entry — the pre-pagination clamp
+// reset entries 257+'s poison ledger to 1, forgiving poison across
+// restarts.
+func TestPendingCountsPagesAcrossLargePEL(t *testing.T) {
+	bus, _ := newTestBus(t) // maxLen 128 — too small; publish direct with no cap
+	ctx := context.Background()
+	// Bypass the capped publisher: raw XADD keeps every entry.
+	for i := 0; i < 300; i++ {
+		require.NoError(t, bus.client.XAdd(ctx, &redis.XAddArgs{
+			Stream: bus.key,
+			Values: map[string]interface{}{
+				FieldTopic: fmt.Sprintf("session.ses_%d.idle", i),
+				FieldAt:    time.Now().UTC().Format(time.RFC3339Nano),
+			},
+		}).Err())
+	}
+	opts := ConsumeOptions{Group: "g", Consumer: "c", Batch: 8} // page = 8*16 = 128
+	require.NoError(t, opts.normalize())
+	// Build the pending state the REAL way: the consumer reads
+	// everything live (XREADGROUP >) and never acks — 300 delivered
+	// entries on consumer c's PEL, the restart state.
+	require.NoError(t, bus.client.XGroupCreateMkStream(ctx, bus.key, "g", "0-0").Err())
+	delivered := 0
+	for delivered < 300 {
+		res, err := bus.client.XReadGroup(ctx, &redis.XReadGroupArgs{
+			// Block MUST be positive: go-redis sends `BLOCK 0`
+			// (forever) for the zero value, and the final empty round
+			// would hang.
+			Group: "g", Consumer: "c", Streams: []string{bus.key, ">"}, Count: 100, Block: 20 * time.Millisecond,
+		}).Result()
+		if err != nil {
+			require.ErrorIs(t, err, redis.Nil, "only the empty-round BLOCK timeout is expected")
+			break
+		}
+		require.NoError(t, err)
+		n := 0
+		for _, xs := range res {
+			n += len(xs.Messages)
+		}
+		delivered += n
+		if n == 0 {
+			break
+		}
+	}
+	require.Equal(t, 300, delivered, "the whole stream must be on the consumer's PEL")
+
+	counts, err := bus.pendingCounts(ctx, &opts, "c")
+	require.NoError(t, err)
+	require.Len(t, counts, 300, "pagination must cover the whole PEL, not one page")
+}
+
+// TestRetrySignalBoundedCadence (review r2, Finding 3): the retry
+// loop's permanent-error spin must be VISIBLE — first failure of a
+// streak signals, the cadence bound holds within a streak, and a
+// successful round resets the streak so the next failure signals
+// immediately.
+func TestRetrySignalBoundedCadence(t *testing.T) {
+	var mu sync.Mutex
+	var signals int
+	opts := ConsumeOptions{Group: "g", Consumer: "c"}
+	require.NoError(t, opts.normalize())
+	r := newRetrySignal(func(Message, error) { mu.Lock(); signals++; mu.Unlock() })
+	boom := errors.New("WRONGTYPE forever")
+	for i := 0; i < 130; i++ {
+		r.signal(&opts, boom)
+	}
+	mu.Lock()
+	got := signals
+	mu.Unlock()
+	if got != 3 { // streak 1, streak 60, streak 120
+		t.Fatalf("signals = %d, want 3 (streak 1/60/120 of the bounded cadence)", got)
+	}
+	r.reset()
+	r.signal(&opts, boom)
+	mu.Lock()
+	got = signals
+	mu.Unlock()
+	if got != 4 {
+		t.Fatalf("post-reset signal missing: %d, want 4 (a fresh streak signals immediately)", got)
 	}
 }
 

@@ -10,9 +10,11 @@ package main
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/alicebob/miniredis/v2"
+	"github.com/go-redis/redis/v8"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/zap"
@@ -172,15 +174,31 @@ func TestLeaseBusConsumerUnknownArmsAck(t *testing.T) {
 	}}))
 }
 
-// TestRedactRedisAddr (review r1, Finding 4): credentialed URLs must
-// never reach a log line with their userinfo intact — the warns fire
-// during incidents, when logs get read.
+// TestRedactRedisAddr (review r1 Finding 4 + r2 hardening): credentialed
+// URLs must never reach a log line with their userinfo intact — the
+// warns fire during incidents, when logs get read. The split is at
+// the LAST '@' (net/url's boundary — a password containing '@' would
+// leak its tail under a first-'@' split).
 func TestRedactRedisAddr(t *testing.T) {
 	assert.Equal(t, "redis://***@127.0.0.1:6379/2", redactRedisAddr("redis://user:secretpw@127.0.0.1:6379/2"))
 	assert.Equal(t, "rediss://***@redis.example.com:6380", redactRedisAddr("rediss://alice@redis.example.com:6380"))
+	assert.Equal(t, "redis://***@host:6379", redactRedisAddr("redis://u:p@a@host:6379"), "userinfo split at the LAST @ (net/url's boundary)")
 	assert.Equal(t, "127.0.0.1:6379", redactRedisAddr("127.0.0.1:6379"), "bare host:port passes through")
 	assert.Equal(t, "redis://127.0.0.1:6379", redactRedisAddr("redis://127.0.0.1:6379"), "URL without userinfo passes through")
 	assert.Equal(t, "", redactRedisAddr(""))
+}
+
+// TestURLFreeReason (review r2, Finding 2): a malformed credentialed
+// URL's error must render WITHOUT the URL — *url.Error embeds the raw
+// address (password included) in its Error(); the reason logged is
+// the wrapped inner error only.
+func TestURLFreeReason(t *testing.T) {
+	_, err := redis.ParseURL("redis://u:secretpw@host:notaport")
+	require.Error(t, err)
+	reason := urlFreeReason(err)
+	assert.NotContains(t, reason, "secretpw", "the inner reason must not carry the URL")
+	assert.NotContains(t, reason, "redis://", "the inner reason must not carry the URL")
+	assert.Equal(t, "malformed redis address", urlFreeReason(errors.New("plain")))
 }
 
 // TestRedisOptionsFromAddr: both spellings of the one knob.
