@@ -113,7 +113,8 @@ func (s *Service) completeReviewTask(ctx context.Context, tx pgx.Tx, cand, subje
 		UPDATE tasks SET stage='done', stage_entered_at=now(),
 			claim_token=NULL, lease_expires_at=NULL, claim_incremented_attempts=false, claim_persona=NULL,
 			failure_count=0, last_attempt_failed=false, last_failure_at=NULL,
-			pending_origin=NULL, pending_input=false, nudge_id=NULL, nudged_at=NULL
+			pending_origin=NULL, pending_input=false,
+			nudge_id=NULL, nudged_at=NULL, last_heartbeat_at=NULL
 		WHERE id=$1 AND NOT paused AND stage='in_review'`,
 		cand.ID)
 	if err != nil {

@@ -13070,6 +13070,15 @@ components:
           nullable: true
           enum: [worker, escalated, dependency_abandoned, drift_review]
           description: "000050: with pending_input=true, the awaiting-input flag's origin; alone on failed rows, the escalated marker the re-arm gates on (dependency_abandoned is historical — cancel is eliminated, #1747)"
+        nudge_id:
+          type: string
+          nullable: true
+          description: "000052: the live lease-nudge sentinel's id — set while a nudge episode is open, cleared at every episode boundary (renewal, reclaim, wedge, re-claim)"
+        nudged_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: "000052: when the live sentinel was positioned (the sweep transaction's clock) — a post-nudge heartbeat or session activity answers it"
         paused:
           type: boolean
           description: "#1747: the scheduling lever — claim candidacy off, forward writes refused while paused"

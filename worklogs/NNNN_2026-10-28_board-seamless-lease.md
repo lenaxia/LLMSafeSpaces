@@ -261,3 +261,20 @@ truth (Rule 7):
   constraint, absent from the old vocabulary) — rehomes to backlog on downgrade, and the
   populated pin seeds that row class plus the operator-retry re-up step the round-2
   message advertised but did not ship.
+
+Round-4 fold-ins (the 23:42Z verdict on 6391119a9 — its two standing
+blockers are this commit's down-migration + openapi work; three smaller
+items folded in before push):
+
+- completeReviewTask now clears last_heartbeat_at with the other two
+  slots (the "three slots travel together" pattern — review round 4,
+  finding 5).
+- bounceTx pairs pending_input=false with its origin clear (unreachable
+  unpaired today — the bounce case re-reads the row under the lock and
+  refuses flagged rows — but the paired-form discipline now has no
+  exceptions; finding 6).
+- nudge_id/nudged_at are spec-declared on BoardTask (000052 lease-
+  episode state) instead of allowlisted: the wire and both shipped SDKs
+  already carry them — the spec is the contract source, so declaring
+  them is the convergent move; the parity gate's allowlist shrinks to
+  the pre-existing drift only.

@@ -100,8 +100,6 @@ var parityAllowlist = map[string]map[string]string{
 		"claim_incremented_attempts":  "engine accounting detail (the #1832 provenance flag) — pre-existing wire-only",
 		"assignee_session_deprecated": "#1948 dual-accept mirror — pre-existing wire-only",
 		"claim_persona":               "stage-persona provenance — pre-existing wire-only",
-		"nudge_id":                    "000052 lease-episode state — follow-up: spec-declare or gate the serialization",
-		"nudged_at":                   "000052 lease-episode state — follow-up: spec-declare or gate the serialization",
 		// Spec-only fields, pre-existing drift (documented on BoardTask
 		// but not serialized by board.Task itself):
 		"mutated_criterion": "pre-existing spec-only (criteria-check payload shape), not this lane",
