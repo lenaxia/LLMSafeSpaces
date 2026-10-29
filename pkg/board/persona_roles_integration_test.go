@@ -4,6 +4,7 @@ package board_test
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/stretchr/testify/require"
 
@@ -64,13 +65,92 @@ func (s *BoardSuite) TestPersonaRoles_SetValidatesRoleRefs() {
 	s.Require().NoError(err)
 
 	// Role-blind deployment (no directory): a role-bearing set refuses
-	// rather than storing an unresolvable reference.
+	// rather than storing an unresolvable reference — with the
+	// role-blind remedy named (review round 1 finding 2: the classes
+	// stay DISTINCT — this is a deployment posture, not a payload
+	// typo).
 	blindSvc := board.NewService(s.pool, s.cfg)
 	_, err = blindSvc.SetProjectBoardConfig(ctx, s.owner(), p.ID, "", &board.BoardConfigOverride{
 		StagePersonas: &map[string]board.PersonaConfig{"in_review": {RoleID: "reviewer"}},
 	})
 	require.Error(s.T(), err)
-	require.Contains(s.T(), err.Error(), "does not match an available agent role")
+	require.Contains(s.T(), err.Error(), "no agent-role directory")
+	var ge *board.GuardError
+	require.ErrorAs(s.T(), err, &ge, "role-blind is still a 400-class guard (the caller can drop the reference)")
+}
+
+// TestPersonaRoles_SetDirectoryOutageIs500Class — review round 1
+// finding 2: a TRANSIENT directory read failure during a role-bearing
+// set is a plain error (500-class, retryable — the payload may be
+// perfectly valid), never GuardInput; a name-only set never touches
+// the directory at all.
+func (s *BoardSuite) TestPersonaRoles_SetDirectoryOutageIs500Class() {
+	ctx := context.Background()
+	ws := s.seedWorkspace()
+	p := s.seedProject(ws, 2)
+
+	outage := board.NewService(s.pool, s.cfg,
+		board.WithRoleDirectory(&fakeRoleDirectory{err: fmt.Errorf("role store unreachable")}))
+	_, err := outage.SetProjectBoardConfig(ctx, s.owner(), p.ID, "", &board.BoardConfigOverride{
+		StagePersonas: &map[string]board.PersonaConfig{"in_review": {RoleID: "reviewer"}},
+	})
+	require.Error(s.T(), err)
+	require.Contains(s.T(), err.Error(), "agent-role directory read failed")
+	require.Contains(s.T(), err.Error(), "retry", "the remedy is retry, not payload surgery")
+	var ge *board.GuardError
+	require.NotErrorAs(s.T(), err, &ge, "an outage is 500-class — never a 400 guard")
+
+	// Name-only set: no reference, no directory round-trip — writes
+	// clean straight through the outage.
+	legacy := map[string]board.PersonaConfig{"in_review": {Name: "auditor", Instructions: "Verify."}}
+	_, err = outage.SetProjectBoardConfig(ctx, s.owner(), p.ID, "", &board.BoardConfigOverride{StagePersonas: &legacy})
+	s.Require().NoError(err)
+}
+
+// TestPersonaRoles_StaleRefDegradesToRoleless — review round 1
+// finding 1: an EXPLICIT role reference the vocabulary no longer
+// resolves (the role was deleted after storage — the delete path has
+// no stagePersonas cleanup) DEGRADES at spawn time: the spawn
+// envelope carries NO RoleID (a dead agentID never rides the
+// dispatch), the reference survives as the display label, and the
+// instructions ride as the override. The STORED row keeps the
+// reference (the owner sees the drift in the config view and can fix
+// it); only the spawn degrades.
+func (s *BoardSuite) TestPersonaRoles_StaleRefDegradesToRoleless() {
+	ctx := context.Background()
+	ws := s.seedWorkspace()
+	p := s.seedProject(ws, 2)
+	e := s.seedEpic(p, board.EpicActive)
+	task := s.seedTask(e, "stale-ref", nil, false)
+
+	// Store a VALID reference through a directory that carries it.
+	seed := board.NewService(s.pool, s.cfg, board.WithRoleDirectory(&fakeRoleDirectory{roles: []board.AgentRoleRef{reviewerRole}}))
+	m := map[string]board.PersonaConfig{"in_progress": {RoleID: "reviewer", Instructions: "Ship carefully."}}
+	_, err := seed.SetProjectBoardConfig(ctx, s.owner(), p.ID, "", &board.BoardConfigOverride{StagePersonas: &m})
+	s.Require().NoError(err)
+
+	// The role is then deleted: the vocabulary no longer resolves it.
+	spawner := &claimCapture{}
+	svc := board.NewService(s.pool, s.cfg,
+		board.WithWorkerSpawner(spawner.Spawn),
+		board.WithRoleDirectory(&fakeRoleDirectory{roles: []board.AgentRoleRef{
+			{ID: "33333333-3333-3333-3333-333333333333", Slug: "build", Name: "Builder"},
+		}}))
+
+	c, err := svc.ClaimNext(ctx, "w-"+ws, ws)
+	s.Require().NoError(err)
+	s.Require().Equal(task.ID, c.TaskID)
+	s.Require().NotNil(c.Persona)
+	s.Equal("", c.Persona.RoleID, "the stale reference never rides the spawn envelope")
+	s.Equal("reviewer", c.Persona.Name, "the reference survives as the display label")
+	s.Equal("Ship carefully.", c.Persona.Instructions, "the override layer rides unchanged")
+	s.Equal("reviewer", c.Persona.Label())
+
+	// The STORED row keeps the reference verbatim — the config view
+	// renders the drift for the owner to fix, only the spawn degrades.
+	pc, err := svc.GetProjectBoardConfig(ctx, s.owner(), p.ID, "")
+	s.Require().NoError(err)
+	s.Equal("reviewer", (*pc.Overrides.StagePersonas)["in_progress"].RoleID, "storage keeps the stored truth")
 }
 
 // TestPersonaRoles_ReadMigration — the stored-config migration: a

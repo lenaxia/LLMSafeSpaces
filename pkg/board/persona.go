@@ -195,9 +195,22 @@ func (s *Service) stagePersona(ctx context.Context, p *Project, stage string) *P
 // REVIEWER composition's prose persona — resolves by slug/name to the
 // reviewer agent role (owner ruling 2026-10-29: the default reviewer
 // points at the built-in reviewer agent role, not its own hardcoded
-// definition; the prose survives as the override layer). No
-// resolution → the persona runs in its legacy shape (role-less
-// override) — never a failed spawn over vocabulary drift.
+// definition; the prose survives as the override layer). Resolution
+// outcomes, in order of severity:
+//
+//   - resolved → the canonical role id stamps the persona (the
+//     reference rides the dispatch; see boardSpawnRequest).
+//   - name-only unresolvable → the persona runs in its legacy shape
+//     verbatim (role-less override).
+//   - EXPLICIT reference unresolvable (the role was deleted after
+//     storage — the delete path has no stagePersonas cleanup) → the
+//     persona DEGRADES to the role-less shape: the stale reference is
+//     dropped so a dead agentID never rides the dispatch, with the
+//     reference preserved as the display name (Label) so the charter
+//     and audit stamps stay non-empty. The config VIEW still renders
+//     the stored reference (the owner sees and can fix the drift);
+//     only the spawn degrades. Never a failed spawn over vocabulary
+//     drift.
 func (s *Service) applyPersonaRole(ctx context.Context, p *Project, persona *PersonaConfig) *PersonaConfig {
 	if persona == nil || (persona.RoleID == "" && persona.Name == "") {
 		return persona
@@ -208,11 +221,36 @@ func (s *Service) applyPersonaRole(ctx context.Context, p *Project, persona *Per
 	}
 	r := ResolveAgentRoleRef(*persona, roles)
 	if r == nil {
-		return persona
+		if persona.RoleID == "" {
+			return persona // name-only, unresolvable: the legacy shape verbatim
+		}
+		// An explicit stale reference degrades to role-less — the
+		// degradation is observable here (the spawn's provenance stamp
+		// renders the preserved reference, not a live role).
+		slog.WarnContext(ctx, "board: persona role reference no longer resolves — degrading to the role-less shape",
+			"task_project", p.ShortID, "role_ref", persona.RoleID)
+		out := *persona
+		out.RoleID = ""
+		out.Name = staleRoleRefLabel(persona.RoleID, persona.Name)
+		return &out
 	}
 	out := *persona
 	out.RoleID = r.ID
 	return &out
+}
+
+// staleRoleRefLabel renders a degraded persona's display name: the
+// persona's own name when it carries one, else the stale reference
+// itself (rune-truncated to PersonaNameMax — the reference rides log
+// lines and event payloads, never storage).
+func staleRoleRefLabel(ref, name string) string {
+	if name != "" {
+		return name
+	}
+	if runes := []rune(ref); len(runes) > PersonaNameMax {
+		return string(runes[:PersonaNameMax])
+	}
+	return ref
 }
 
 // personaClaimSQL is the re-claim-class persona mint: fresh token +

@@ -417,7 +417,12 @@ func decodePersonaMap(raw json.RawMessage) (map[string]PersonaConfig, error) {
 				return nil, fmt.Errorf("stage %q persona must be a role reference string or an object {roleId?, name?, instructions?}: %v", stage, err)
 			}
 		}
-		if p.RoleID == "" && p.Name == "" {
+		// The role-or-name rule is TRIM-aware (parity with agentd's
+		// validate_file semantic check — one contract per shape): a
+		// whitespace-only roleId or name is the empty slot. An EMPTY
+		// name alongside a roleId is legal (the display label is
+		// optional when the role carries it).
+		if strings.TrimSpace(p.RoleID) == "" && strings.TrimSpace(p.Name) == "" {
 			return nil, fmt.Errorf("stage %q persona requires a role reference (roleId) or a non-empty name", stage)
 		}
 		if len(p.RoleID) > PersonaRoleIDMax {
@@ -666,19 +671,28 @@ func (st *Store) replaceBoardProjectConfigOverrides(ctx context.Context, project
 // rolesForUser resolves the available agent-role vocabulary through the
 // installed directory (nil directory or nil user → nil roles — the
 // role-blind posture; the read edge degrades to unmigrated personas).
+// Directory read failures degrade to nil WITH a warn line — reads
+// never fail over the vocabulary.
 func (s *Service) rolesForUser(ctx context.Context, userID string) []AgentRoleRef {
-	if s.roles == nil || userID == "" {
-		return nil
-	}
-	roles, err := s.roles.AgentRolesForUser(ctx, userID)
+	roles, err := s.rolesForUserErr(ctx, userID)
 	if err != nil {
-		// Degradation, never a failed read: the config surface stays
-		// available (legacy shape) with the failure observable.
 		slog.WarnContext(ctx, "board: agent-role directory read failed — personas stay in the legacy shape",
 			"user_id", userID, "err", err.Error())
 		return nil
 	}
 	return roles
+}
+
+// rolesForUserErr is rolesForUser's error-carrying core: the SET path
+// must distinguish a directory OUTAGE (a plain error — 500-class,
+// retryable once the role service is reachable) from an unresolvable
+// reference (GuardInput — 400, the caller's payload names a role the
+// vocabulary never carried).
+func (s *Service) rolesForUserErr(ctx context.Context, userID string) ([]AgentRoleRef, error) {
+	if s.roles == nil || userID == "" {
+		return nil, nil
+	}
+	return s.roles.AgentRolesForUser(ctx, userID)
 }
 
 // migratePersonaRoleRefs lazily migrates one decoded override's legacy
@@ -714,9 +728,14 @@ func (s *Service) migratePersonaRoleRefs(ctx context.Context, userID string, o *
 
 // validatePersonaRoleRefs is the SET-path belt (board_set_config's
 // role validation): every persona carrying an explicit role reference
-// must resolve against the available set (id or slug). The
-// role-blind posture (no directory) refuses a role-bearing payload
-// rather than storing a reference this deployment can never honor.
+// must resolve against the available set (id or slug). Error classes
+// are kept DISTINCT — the caller's remedy differs: a role-blind
+// deployment (no directory installed) refuses a role-bearing payload
+// (GuardInput: this deployment can never honor a reference); a
+// directory read failure is a plain error (500-class: retry once the
+// role service is reachable — the payload may be perfectly valid); an
+// unresolvable reference is GuardInput (400: name a role the
+// vocabulary carries).
 func (s *Service) validatePersonaRoleRefs(ctx context.Context, userID string, in *BoardConfigOverride) error {
 	if in == nil || in.StagePersonas == nil {
 		return nil
@@ -730,14 +749,22 @@ func (s *Service) validatePersonaRoleRefs(ctx context.Context, userID string, in
 	if len(refs) == 0 {
 		return nil
 	}
-	roles := s.rolesForUser(ctx, userID)
-	known := "the available agent-role set could not be read"
-	if roles != nil {
-		vocab := make([]string, 0, len(roles))
-		for i := range roles {
-			vocab = append(vocab, roles[i].Slug)
-		}
-		known = "available: " + strings.Join(vocab, ", ")
+	if s.roles == nil {
+		return &GuardError{Code: GuardInput, Detail: fmt.Sprintf(
+			"stagePersonas carries role references (%s) but this deployment has no agent-role directory — store a name+instructions persona instead, or install the role service",
+			strings.Join(refs, ", "))}
+	}
+	roles, err := s.rolesForUserErr(ctx, userID)
+	if err != nil {
+		return fmt.Errorf("agent-role directory read failed — the set was not written; retry once the role service is reachable: %w", err)
+	}
+	vocab := make([]string, 0, len(roles))
+	for i := range roles {
+		vocab = append(vocab, roles[i].Slug)
+	}
+	known := strings.Join(vocab, ", ")
+	if known == "" {
+		known = "none are available to this owner"
 	}
 	for _, ref := range refs {
 		found := false
@@ -749,7 +776,7 @@ func (s *Service) validatePersonaRoleRefs(ctx context.Context, userID string, in
 		}
 		if !found {
 			return &GuardError{Code: GuardInput, Detail: fmt.Sprintf(
-				"stagePersonas role reference %q does not match an available agent role (%s)", ref, known)}
+				"stagePersonas role reference %q does not match an available agent role (available: %s)", ref, known)}
 		}
 	}
 	return nil

@@ -33,10 +33,18 @@ func TestPersonaRoleRefValidation(t *testing.T) {
 	// The legacy shape still decodes (backward compat, storage + wire).
 	mustNotErr(t, ConfigKeyStagePersonas, `{"in_review":{"name":"auditor","instructions":"Verify."}}`)
 
+	// Trim-parity with agentd's validate_file semantic check (review
+	// round 1 finding 3 — ONE contract per shape): an EMPTY name
+	// alongside a roleId is legal; whitespace-only roleId or name is
+	// the empty slot and rejects.
+	mustNotErr(t, ConfigKeyStagePersonas, `{"in_review":{"roleId":"reviewer","name":""}}`)
+
 	// Rejected shapes.
 	mustReject(t, ConfigKeyStagePersonas, `{"in_review":""}`, "requires a role reference (roleId) or a non-empty name")
 	mustReject(t, ConfigKeyStagePersonas, `{"in_review":{}}`, "requires a role reference (roleId) or a non-empty name")
 	mustReject(t, ConfigKeyStagePersonas, `{"in_review":{"instructions":"neither role nor name"}}`, "requires a role reference (roleId) or a non-empty name")
+	mustReject(t, ConfigKeyStagePersonas, `{"in_review":{"name":"   "}}`, "requires a role reference (roleId) or a non-empty name")
+	mustReject(t, ConfigKeyStagePersonas, `{"in_review":{"roleId":"   "}}`, "requires a role reference (roleId) or a non-empty name")
 	mustReject(t, ConfigKeyStagePersonas, `{"in_review":{"roleId":"`+strings.Repeat("a", PersonaRoleIDMax+1)+`"}}`, "role reference exceeds")
 	mustReject(t, ConfigKeyStagePersonas, `{"in_review":{"roleId":"r","promt":"typo"}}`, "unknown field")
 }
@@ -135,4 +143,18 @@ func TestPersonaLabel(t *testing.T) {
 	assert.Equal(t, "auditor", PersonaConfig{Name: "auditor", RoleID: "r1"}.Label())
 	assert.Equal(t, "reviewer", PersonaConfig{RoleID: "reviewer"}.Label())
 	assert.Equal(t, "", PersonaConfig{}.Label())
+}
+
+// TestStaleRoleRefLabel — the degraded persona's display identity
+// (review round 1 finding 1: an explicit reference the vocabulary no
+// longer resolves DEGRADES to the role-less shape; the reference
+// survives as the label so the charter/audit stamps stay non-empty,
+// rune-truncated to the name cap).
+func TestStaleRoleRefLabel(t *testing.T) {
+	assert.Equal(t, "reviewer", staleRoleRefLabel("reviewer", ""), "no name — the reference is the label")
+	assert.Equal(t, "auditor", staleRoleRefLabel("ghost-role", "auditor"), "the persona's own name wins")
+	long := strings.Repeat("r", PersonaRoleIDMax)
+	got := staleRoleRefLabel(long, "")
+	assert.Len(t, got, PersonaNameMax, "the reference truncates to the name cap")
+	assert.Equal(t, strings.Repeat("r", PersonaNameMax), got)
 }

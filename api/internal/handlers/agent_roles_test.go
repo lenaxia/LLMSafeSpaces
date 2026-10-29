@@ -399,4 +399,39 @@ func TestListForMe(t *testing.T) {
 		rr := doRoleRequest(t, http.MethodGet, "/me/agent-roles", "/me/agent-roles", h.ListForMe, nil)
 		assert.Equal(t, http.StatusUnauthorized, rr.Code)
 	})
+
+	// The store-failure arms (review round 1: the two 500 paths — a
+	// platform listing failure and a user-org resolution failure —
+	// never render a partial vocabulary as success).
+	t.Run("platform listing failure — 500", func(t *testing.T) {
+		store := new(mockRoleStore)
+		h := newRoleHandlerTest(store, "user-3")
+		store.On("ListAgentRoles", mock.Anything, "platform", "").Return(
+			[]*types.AgentRole(nil), errors.New("store down"))
+
+		rr := doRoleRequest(t, http.MethodGet, "/me/agent-roles", "/me/agent-roles", h.ListForMe, nil)
+		assert.Equal(t, http.StatusInternalServerError, rr.Code)
+	})
+
+	t.Run("user-org resolution failure — 500", func(t *testing.T) {
+		store := new(mockRoleStore)
+		h := newRoleHandlerTest(store, "user-4")
+		store.On("ListAgentRoles", mock.Anything, "platform", "").Return([]*types.AgentRole{}, nil)
+		store.On("GetUserOrgID", mock.Anything, "user-4").Return("", errors.New("store down"))
+
+		rr := doRoleRequest(t, http.MethodGet, "/me/agent-roles", "/me/agent-roles", h.ListForMe, nil)
+		assert.Equal(t, http.StatusInternalServerError, rr.Code)
+	})
+
+	t.Run("org listing failure — 500", func(t *testing.T) {
+		store := new(mockRoleStore)
+		h := newRoleHandlerTest(store, "user-5")
+		store.On("ListAgentRoles", mock.Anything, "platform", "").Return([]*types.AgentRole{}, nil)
+		store.On("GetUserOrgID", mock.Anything, "user-5").Return("org-5", nil)
+		store.On("ListAgentRoles", mock.Anything, "org", "org-5").Return(
+			[]*types.AgentRole(nil), errors.New("store down"))
+
+		rr := doRoleRequest(t, http.MethodGet, "/me/agent-roles", "/me/agent-roles", h.ListForMe, nil)
+		assert.Equal(t, http.StatusInternalServerError, rr.Code)
+	})
 }

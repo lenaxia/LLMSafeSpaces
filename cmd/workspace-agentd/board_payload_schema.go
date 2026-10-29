@@ -250,8 +250,13 @@ func boardPayloadSchemasRaw() map[string]string {
 		stitched := `{"$defs": {"criterion": {"type": "object", "additionalProperties": false,` +
 			`"properties": {"text": {"type": "string", "minLength": 1, "maxLength": boardCritCap}, "met": {"type": "boolean"}},` +
 			`"required": ["text"]}, "persona": {"type": "object", "additionalProperties": false,` +
+			// name carries NO minLength (parity with the platform decoder,
+			// review round 1 finding 3): an empty name alongside a roleId
+			// is legal — the display label is optional when the role
+			// carries it; the trim-aware role-or-name rule is the SEMANTIC
+			// check's, identically on both surfaces.
 			`"properties": {"roleId": {"type": "string", "minLength": 1, "maxLength": boardPersonaRoleCap},` +
-			`"name": {"type": "string", "minLength": 1, "maxLength": boardPersonaNameCap},` +
+			`"name": {"type": "string", "maxLength": boardPersonaNameCap},` +
 			`"instructions": {"type": "string", "maxLength": boardPersonaInstrCap}}},` +
 			`"personaRoleRef": {"type": "string", "minLength": 1, "maxLength": boardPersonaRoleCap}}, ` +
 			strings.TrimSpace(strings.TrimPrefix(body, "{"))

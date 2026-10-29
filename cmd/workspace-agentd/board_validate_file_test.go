@@ -204,6 +204,10 @@ func TestBoardValidate_HappyPaths(t *testing.T) {
 			"roleId + override":     `{"stagePersonas":{"in_review":{"roleId":"reviewer","instructions":"Adversarial."}}}`,
 			"legacy name shape":     `{"stagePersonas":{"in_review":{"name":"auditor","instructions":"Verify."}}}`,
 			"roleId + display name": `{"stagePersonas":{"in_review":{"roleId":"11111111-1111-1111-1111-111111111111","name":"Reviewer"}}}`,
+			// Review round 1 finding 3 (parity with the platform
+			// decoder): an EMPTY name alongside a roleId is legal —
+			// the display label is optional when the role carries it.
+			"roleId + empty name": `{"stagePersonas":{"in_review":{"roleId":"reviewer","name":""}}}`,
 		} {
 			report := validateFixture(t, "set_config", payload)
 			assert.True(t, report.Valid, "%s: expected valid, findings %+v", name, report.Findings)
@@ -219,6 +223,12 @@ func TestBoardValidate_HappyPaths(t *testing.T) {
 		f := report.Findings[0]
 		assert.Equal(t, "stagePersonas.in_review", f.Path)
 		assert.Equal(t, "persona-role-or-name", f.Rule)
+		// A whitespace-only name is the empty slot — the same
+		// trim-aware rule the platform decoder enforces (one contract
+		// per shape).
+		report = validateFixture(t, "set_config", `{"stagePersonas":{"in_review":{"name":"   "}}}`)
+		assert.False(t, report.Valid)
+		assert.Equal(t, "persona-role-or-name", report.Findings[0].Rule)
 		// An empty bare reference rejects at the schema (minLength).
 		report = validateFixture(t, "set_config", `{"stagePersonas":{"in_review":""}}`)
 		assert.False(t, report.Valid)
