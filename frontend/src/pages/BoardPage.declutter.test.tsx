@@ -133,6 +133,29 @@ describe("BoardPage — 2026-10-28 board declutter rulings", () => {
     expect(screen.getByTestId("epic-drawer-title").textContent).toContain("E2");
   });
 
+  // 2026-10-29 owner ruling: inside the ids popup, the session refs
+  // (assignee + implementer) are CLICKABLE — straight through to the
+  // session's chat view, the same /chat/:workspaceId/:sessionId target
+  // as the sidebar.
+  it("the task popup's session ids are clickable links to the chat view (assignee + implementer)", async () => {
+    renderBoard();
+    await screen.findByTestId("task-card-tsk-bbbb0002");
+
+    // Assignee: the claimed row's worker session.
+    fireEvent.click(screen.getByTestId("details-tsk-bbbb0002"));
+    const assignee = (await screen.findByTestId("drawer-assignee")) as HTMLAnchorElement;
+    expect(assignee.getAttribute("href")).toBe("/chat/ws-1/amber-falcon-glides");
+    expect(assignee.textContent).toBe("amber-falcon-glides");
+    fireEvent.click(screen.getByTestId("drawer-close"));
+
+    // Implementer: the review-lifecycle row's ORIGINAL worker (#1959).
+    fireEvent.click(screen.getByTestId("details-tsk-cccc0003"));
+    const implementer = (await screen.findByTestId("drawer-implementer")) as HTMLAnchorElement;
+    expect(implementer.getAttribute("href")).toBe("/chat/ws-1/brave-osprey-lands");
+    expect(implementer.textContent).toBe("brave-osprey-lands");
+    fireEvent.click(screen.getByTestId("drawer-close"));
+  });
+
   it("names blocked-by dependencies by title (the id rides the tooltip/data attr)", async () => {
     renderBoard();
     await screen.findByTestId("task-card-tsk-eeee0005");

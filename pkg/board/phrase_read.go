@@ -13,6 +13,11 @@ package board
 // write echo, or the SSE projection) hands to a handler — covering the
 // REST surface and the manager MCP pass-through in one seam.
 //
+// The same translation covers implementer_session (owner ruling
+// 2026-10-29: the read edges expose the #1959 bounce identity so the
+// board card/drawer links to the implementer's session — the same
+// phrase machinery, the same degrade flags).
+//
 // Degraded posture follows the #1817/#1821 SSE precedent: the phrase
 // when the index knows it; the raw harness id + deprecation flag while
 // the design-0066 registration seam has not yet observed the session
@@ -135,9 +140,10 @@ func TranslateActorSessionPhrase(raw []byte, phrases map[string]string) []byte {
 }
 
 // PayloadAssigneeIDs extracts the raw harness session ids found under
-// assignee_session keys in a board event payload (delete/cascade task
-// snapshots embed the full row). Bounded by the payload's size; used to
-// key ONE phrase consult at the SSE emission edge.
+// assignee_session / implementer_session keys in a board event payload
+// (delete/cascade task snapshots embed the full row). Bounded by the
+// payload's size; used to key ONE phrase consult at the SSE emission
+// edge.
 func PayloadAssigneeIDs(payload []byte) []string {
 	var root any
 	if err := json.Unmarshal(payload, &root); err != nil {
@@ -148,8 +154,10 @@ func PayloadAssigneeIDs(payload []byte) []string {
 	walk = func(v any) {
 		switch n := v.(type) {
 		case map[string]any:
-			if sid, ok := n["assignee_session"].(string); ok && sid != "" && !shortid.IsShortIDForm(sid) {
-				out = append(out, sid)
+			for _, key := range payloadSessionKeys {
+				if sid, ok := n[key].(string); ok && sid != "" && !shortid.IsShortIDForm(sid) {
+					out = append(out, sid)
+				}
 			}
 			for _, child := range n {
 				walk(child)
@@ -164,10 +172,16 @@ func PayloadAssigneeIDs(payload []byte) []string {
 	return out
 }
 
-// TranslatePayloadAssignees rewrites every assignee_session value in a
-// board event payload (task snapshots) to its phrase form at EMISSION —
-// the in-memory frame copy only; the stored payload stays canonical.
-// Degraded shape: raw passes through with an assignee_session_deprecated
+// payloadSessionKeys are the task-snapshot session fields the SSE
+// emission edge translates (assignee + the #1959 implementer, exposed
+// on reads by the 2026-10-29 ruling).
+var payloadSessionKeys = []string{"assignee_session", "implementer_session"}
+
+// TranslatePayloadAssignees rewrites every assignee_session /
+// implementer_session value in a board event payload (task snapshots)
+// to its phrase form at EMISSION — the in-memory frame copy only; the
+// stored payload stays canonical. Degraded shape: raw passes through
+// with an assignee_session_deprecated / implementer_session_deprecated
 // sibling flag (the #1817/#1821 precedent's never-worse rule). Payloads
 // without translatable ids return byte-identical.
 func TranslatePayloadAssignees(payload []byte, phrases map[string]string) []byte {
@@ -182,12 +196,14 @@ func TranslatePayloadAssignees(payload []byte, phrases map[string]string) []byte
 	walk = func(v any) any {
 		switch n := v.(type) {
 		case map[string]any:
-			if sid, ok := n["assignee_session"].(string); ok && sid != "" && !shortid.IsShortIDForm(sid) {
-				if phrase, known := phrases[sid]; known && phrase != "" {
-					n["assignee_session"] = phrase
-					delete(n, "assignee_session_deprecated")
-				} else {
-					n["assignee_session_deprecated"] = true
+			for _, key := range payloadSessionKeys {
+				if sid, ok := n[key].(string); ok && sid != "" && !shortid.IsShortIDForm(sid) {
+					if phrase, known := phrases[sid]; known && phrase != "" {
+						n[key] = phrase
+						delete(n, key+"_deprecated")
+					} else {
+						n[key+"_deprecated"] = true
+					}
 				}
 			}
 			for k, child := range n {
@@ -209,15 +225,18 @@ func TranslatePayloadAssignees(payload []byte, phrases map[string]string) []byte
 	return out
 }
 
-// translateTaskReads rewrites the assignee_session fields of the given
-// in-memory task copies to the phrase form (warm) or flags them
-// deprecated (cold). One project→workspace query for the batch, then
-// one bounded session_index consult per DISTINCT target workspace.
+// translateTaskReads rewrites the assignee_session AND
+// implementer_session fields of the given in-memory task copies to the
+// phrase form (warm) or flags them deprecated (cold). One
+// project→workspace query for the batch, then one bounded
+// session_index consult per DISTINCT target workspace (both fields
+// share the consult — the implementer lives in the same workspace as
+// the assignee by construction: it IS a prior assignee of the row).
 // Canonical store rows are never touched — only these response copies.
 func (s *Service) translateTaskReads(ctx context.Context, tasks ...*Task) {
 	byProject := map[string][]*Task{}
 	for _, t := range tasks {
-		if t == nil || t.AssigneeSession == "" || shortid.IsShortIDForm(t.AssigneeSession) {
+		if t == nil || !taskNeedsPhraseTranslation(t) {
 			continue
 		}
 		byProject[t.ProjectID] = append(byProject[t.ProjectID], t)
@@ -252,7 +271,7 @@ func (s *Service) translateTaskReads(ctx context.Context, tasks ...*Task) {
 	rows.Close()
 
 	// Group the distinct raw ids per workspace, then one bounded consult
-	// per workspace.
+	// per workspace. Both session fields ride the SAME consult set.
 	pending := map[string]map[string]bool{}
 	for pid, ts := range byProject {
 		ws := wsByProject[pid]
@@ -263,7 +282,11 @@ func (s *Service) translateTaskReads(ctx context.Context, tasks ...*Task) {
 			pending[ws] = map[string]bool{}
 		}
 		for _, t := range ts {
-			pending[ws][t.AssigneeSession] = true
+			for _, sid := range []string{t.AssigneeSession, t.ImplementerSession} {
+				if sid != "" && !shortid.IsShortIDForm(sid) {
+					pending[ws][sid] = true
+				}
+			}
 		}
 	}
 	phrases := map[string]string{}
@@ -279,24 +302,53 @@ func (s *Service) translateTaskReads(ctx context.Context, tasks ...*Task) {
 
 	for _, ts := range byProject {
 		for _, t := range ts {
-			if phrase, ok := phrases[t.AssigneeSession]; ok && phrase != "" {
-				t.AssigneeSession = phrase
-				t.AssigneeSessionDeprecated = false
-			} else {
-				// Cold window (or consult failure): raw passes through,
-				// flagged — the SSE precedent's never-worse degrade.
-				t.AssigneeSessionDeprecated = true
-			}
+			// Each field translates independently — the implementer's
+			// registration window differs from the live assignee's.
+			t.AssigneeSession, t.AssigneeSessionDeprecated = translateSessionField(t.AssigneeSession, phrases)
+			t.ImplementerSession, t.ImplementerSessionDeprecated = translateSessionField(t.ImplementerSession, phrases)
 		}
 	}
 }
 
-// flagUntranslated marks every pending task's assignee raw+flagged (the
-// workspace-resolve failure path — the value IS the raw form).
+// taskNeedsPhraseTranslation reports whether ANY of the task's session
+// fields still carry a raw harness id needing the phrase consult.
+func taskNeedsPhraseTranslation(t *Task) bool {
+	return rawSessionField(t.AssigneeSession) || rawSessionField(t.ImplementerSession)
+}
+
+// rawSessionField reports whether the session value is a non-empty raw
+// harness id (phrase-form values are already translated).
+func rawSessionField(sid string) bool {
+	return sid != "" && !shortid.IsShortIDForm(sid)
+}
+
+// translateSessionField resolves one session field against the phrase
+// map: the phrase when known, else the raw value + the cold-window
+// degrade flag. Empty fields stay empty and unflagged.
+func translateSessionField(sid string, phrases map[string]string) (string, bool) {
+	if sid == "" || shortid.IsShortIDForm(sid) {
+		return sid, false
+	}
+	if phrase, ok := phrases[sid]; ok && phrase != "" {
+		return phrase, false
+	}
+	// Cold window (or consult failure): raw passes through, flagged —
+	// the SSE precedent's never-worse degrade.
+	return sid, true
+}
+
+// flagUntranslated marks every pending task's raw session fields
+// raw+flagged (the workspace-resolve failure path — the values ARE the
+// raw forms).
 func flagUntranslated(byProject map[string][]*Task) {
 	for _, ts := range byProject {
 		for _, t := range ts {
-			t.AssigneeSessionDeprecated = true
+			if rawSessionField(t.AssigneeSession) {
+				t.AssigneeSessionDeprecated = true
+			}
+			if rawSessionField(t.ImplementerSession) {
+				t.ImplementerSessionDeprecated = true
+			}
 		}
 	}
 }
@@ -344,22 +396,29 @@ func (s *Service) translateHealthLeases(ctx context.Context, leases []HealthLeas
 	}
 }
 
-// translateEventActors translates the actor blobs of an event batch at
-// read time (TaskEvents): the task's project resolves the workspace
-// (bounded — one project read + one consult), each actor's session_id
-// becomes the phrase or the flagged raw form. The STORED rows are never
-// rewritten.
-func (s *Service) translateEventActors(ctx context.Context, projectID string, events []Event) {
+// translateEventReads translates the actor blobs AND the payload
+// snapshots of an event batch at read time (TaskEvents): the task's
+// project resolves the workspace (bounded — one project read + one
+// consult), each actor's session_id becomes the phrase or the flagged
+// raw form, and every task-snapshot session field
+// (assignee_session/implementer_session — delete/cascade payloads embed
+// the full row, 2026-10-29 owner ruling: implementer_session is on the
+// wire now, so the never-worse posture covers it here too) translates
+// through the SAME consult. The STORED rows are never rewritten.
+func (s *Service) translateEventReads(ctx context.Context, projectID string, events []Event) {
 	sessions := map[string]bool{}
 	for _, ev := range events {
-		if len(ev.Actor) == 0 {
-			continue
+		if len(ev.Actor) > 0 {
+			var m map[string]any
+			if err := json.Unmarshal(ev.Actor, &m); err == nil && m != nil {
+				if sid, _ := m["session_id"].(string); sid != "" && !shortid.IsShortIDForm(sid) {
+					sessions[sid] = true
+				}
+			}
 		}
-		var m map[string]any
-		if err := json.Unmarshal(ev.Actor, &m); err != nil || m == nil {
-			continue
-		}
-		if sid, _ := m["session_id"].(string); sid != "" && !shortid.IsShortIDForm(sid) {
+		// Payload snapshots: the delete/cascade legs embed the task row
+		// verbatim — both session fields ride one collector.
+		for _, sid := range PayloadAssigneeIDs(ev.Payload) {
 			sessions[sid] = true
 		}
 	}
@@ -370,12 +429,12 @@ func (s *Service) translateEventActors(ctx context.Context, projectID string, ev
 	if err := s.q().QueryRow(ctx,
 		`SELECT coalesce(target_workspace_id::text,'') FROM projects WHERE id=$1::uuid`, projectID).
 		Scan(&ws); err != nil {
-		slog.WarnContext(ctx, "board: events workspace resolve failed — actors degrade raw+flagged",
+		slog.WarnContext(ctx, "board: events workspace resolve failed — actors and snapshots degrade raw+flagged",
 			"projectID", projectID, "err", err.Error())
 	}
 	// ws == "" (workspace-less project): no consult possible — the
-	// actors degrade raw+flagged through the empty phrase map; not an
-	// error condition, nothing to log.
+	// actors and snapshots degrade raw+flagged through the empty phrase
+	// map; not an error condition, nothing to log.
 	keys := make([]string, 0, len(sessions))
 	for sid := range sessions {
 		keys = append(keys, sid)
@@ -383,5 +442,6 @@ func (s *Service) translateEventActors(ctx context.Context, projectID string, ev
 	phrases := LookupSessionPhrases(ctx, s.q(), ws, keys)
 	for i := range events {
 		events[i].Actor = TranslateActorSessionPhrase(events[i].Actor, phrases)
+		events[i].Payload = TranslatePayloadAssignees(events[i].Payload, phrases)
 	}
 }

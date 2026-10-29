@@ -13167,7 +13167,28 @@ components:
           description: The non-done dependency short ids (the reverse-edge view's data)
         assignee_session:
           type: string
-          description: The fresh worker's identity (set by the guarded spawn-stamp; empty in the claim→spawn interim)
+          description: |
+            The live claim's holder — a RESOLVABLE session ref (owner
+            ruling 2026-10-29): the #1756 3-word phrase when the session
+            index knows the session, else the raw harness id. Both forms
+            address every session-bearing surface (chat route, REST
+            /workspaces/:id/sessions/:sessionId, session_read /
+            session_metadata) — pass it through to inspect the worker.
+        assignee_session_deprecated:
+          type: boolean
+          description: Set when assignee_session could not be resolved to the phrase (#1922 cold window — the value is the raw harness id, still resolvable)
+        implementer_session:
+          type: string
+          description: |
+            The #1959 implementer identity — the session that moved the
+            row to in_review (the ORIGINAL worker; the assignee during
+            review is the reviewer). Exposed on reads per the
+            2026-10-29 owner ruling; a resolvable session ref exactly
+            like assignee_session. Empty before the first forward exit
+            and on every new episode.
+        implementer_session_deprecated:
+          type: boolean
+          description: Set when implementer_session could not be resolved to the phrase (#1922 cold window — the value is the raw harness id, still resolvable)
         claim_token:
           type: string
           format: uuid

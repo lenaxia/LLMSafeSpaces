@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 import { useState } from "react";
+import { Link } from "react-router-dom";
 import { Badge } from "../ui/Badge";
 import { BusyIndicator } from "../ui/BusyIndicator";
 import { KebabMenu, type KebabMenuItem } from "../ui/KebabMenu";
@@ -58,6 +59,11 @@ interface TaskCardProps {
    * never opens the editor. */
   kebabItems?: KebabMenuItem[];
   onOpen?: (task: BoardTask) => void;
+  /** 2026-10-29 owner ruling: the project's target workspace id — the
+   * assignee ref's chat-route first segment. Present whenever the
+   * board knows the project (always, from the swimlane); absent only
+   * in isolated renders, where the ref degrades to plain text. */
+  workspaceId?: string;
   /** #1832 item 4: the details affordance — opens the task-detail
    * drawer (the card's primary click keeps its edit-dialog behavior). */
   onDetails?: (task: BoardTask) => void;
@@ -76,7 +82,7 @@ interface TaskCardProps {
  * with its escalation preview, and the backlog Start affordance
  * (task_start) are unchanged.
  */
-export function TaskCard({ task, projectTasks, pending, refused, dimmed, highlighted, onStart, starting, kebabItems, onOpen, onDetails, onDragStart, onDragEnd }: TaskCardProps) {
+export function TaskCard({ task, projectTasks, pending, refused, dimmed, highlighted, onStart, starting, kebabItems, onOpen, onDetails, workspaceId, onDragStart, onDragEnd }: TaskCardProps) {
   const [showBlockedBy, setShowBlockedBy] = useState(false);
   const anchor = prAnchorOf(task.tags);
   const depStages = (task.blocked_by ?? []).map((id) => {
@@ -193,6 +199,34 @@ export function TaskCard({ task, projectTasks, pending, refused, dimmed, highlig
           </button>
         )}
         {task.stage === "in_progress" && task.assignee_session && <BusyIndicator size="sm" />}
+        {/* 2026-10-29 owner ruling: the assignee ref is a CLICKABLE
+         * session link (the card's busy area names its worker). The
+         * value rides the read edge already phrase-translated (#1922)
+         * — the phrase is the display text AND the route segment; the
+         * cold window's raw harness id still links (never worse),
+         * flagged via data-deprecated. stopPropagation: the link is
+         * not a card click. */}
+        {task.assignee_session &&
+          (workspaceId ? (
+            <Link
+              to={`/chat/${encodeURIComponent(workspaceId)}/${encodeURIComponent(task.assignee_session)}`}
+              data-testid={`assignee-link-${task.short_id}`}
+              data-deprecated={task.assignee_session_deprecated ? "true" : undefined}
+              onClick={(e) => e.stopPropagation()}
+              title={
+                task.assignee_session_deprecated
+                  ? `${task.assignee_session} — raw session id (phrase not yet minted); opens the worker's chat view`
+                  : `${task.assignee_session} — opens the worker's chat view`
+              }
+              className="max-w-[9rem] truncate font-mono text-[10px] text-muted-foreground underline decoration-dotted underline-offset-2 hover:text-primary"
+            >
+              {task.assignee_session}
+            </Link>
+          ) : (
+            <span className="max-w-[9rem] truncate font-mono text-[10px] text-muted-foreground" title={task.assignee_session}>
+              {task.assignee_session}
+            </span>
+          ))}
         {/* 000050: the input-wait flag rides the REAL stage — a badge
          * where the blocked thing lives; the escalated origin also marks
          * failed rows (the re-arm queue). */}

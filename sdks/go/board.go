@@ -105,13 +105,23 @@ type BoardTask struct {
 	AcceptanceCriteria []BoardAcceptanceCriterion `json:"acceptance_criteria"`
 	IsBlocked          bool                       `json:"is_blocked"`
 	BlockedBy          []string                   `json:"blocked_by,omitempty"`
-	Attempts           int                        `json:"attempts"`
-	LastAttemptFailed  bool                       `json:"last_attempt_failed"`
-	FailureCount       int                        `json:"failure_count"`
-	LastFailureAt      string                     `json:"last_failure_at,omitempty"`
-	StageEnteredAt     string                     `json:"stage_entered_at"`
-	CreatedAt          string                     `json:"created_at"`
-	UpdatedAt          string                     `json:"updated_at"`
+	// AssigneeSession is the live claim's holder — a RESOLVABLE session
+	// ref (owner ruling 2026-10-29): the #1756 phrase when the session
+	// index knows it, else the raw harness id with
+	// AssigneeSessionDeprecated set. ImplementerSession is the #1959
+	// identity (the session that moved the row to in_review; during
+	// review the assignee is the reviewer) — same resolvable-ref shape.
+	AssigneeSession              string `json:"assignee_session,omitempty"`
+	AssigneeSessionDeprecated    bool   `json:"assignee_session_deprecated,omitempty"`
+	ImplementerSession           string `json:"implementer_session,omitempty"`
+	ImplementerSessionDeprecated bool   `json:"implementer_session_deprecated,omitempty"`
+	Attempts                     int    `json:"attempts"`
+	LastAttemptFailed            bool   `json:"last_attempt_failed"`
+	FailureCount                 int    `json:"failure_count"`
+	LastFailureAt                string `json:"last_failure_at,omitempty"`
+	StageEnteredAt               string `json:"stage_entered_at"`
+	CreatedAt                    string `json:"created_at"`
+	UpdatedAt                    string `json:"updated_at"`
 }
 
 // BoardClaim is the task_start dispatch outcome (the fresh worker's

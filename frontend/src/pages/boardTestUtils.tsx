@@ -159,7 +159,9 @@ export const TASK_IN_PROGRESS: BoardTask = {
   short_id: "tsk-bbbb0002",
   title: "Implement engine",
   stage: "in_progress",
-  assignee_session: "ws-1/sess-1",
+  // The #1922 warm wire shape: the read edge serves the session PHRASE
+  // (the 2026-10-29 ruling's link target + display text).
+  assignee_session: "amber-falcon-glides",
   attempts: 1,
 };
 
@@ -171,6 +173,10 @@ export const TASK_IN_REVIEW: BoardTask = {
   short_id: "tsk-cccc0003",
   title: "Review drag arm",
   stage: "in_review",
+  // #1959 + the 2026-10-29 ruling: a review-lifecycle row carries the
+  // IMPLEMENTER (the original worker; the assignee, when present, is
+  // the reviewer) as a resolvable session ref.
+  implementer_session: "brave-osprey-lands",
 };
 
 export const TASK_DONE: BoardTask = {
