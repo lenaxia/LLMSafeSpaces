@@ -172,6 +172,17 @@ func TestLeaseBusConsumerUnknownArmsAck(t *testing.T) {
 	}}))
 }
 
+// TestRedactRedisAddr (review r1, Finding 4): credentialed URLs must
+// never reach a log line with their userinfo intact — the warns fire
+// during incidents, when logs get read.
+func TestRedactRedisAddr(t *testing.T) {
+	assert.Equal(t, "redis://***@127.0.0.1:6379/2", redactRedisAddr("redis://user:secretpw@127.0.0.1:6379/2"))
+	assert.Equal(t, "rediss://***@redis.example.com:6380", redactRedisAddr("rediss://alice@redis.example.com:6380"))
+	assert.Equal(t, "127.0.0.1:6379", redactRedisAddr("127.0.0.1:6379"), "bare host:port passes through")
+	assert.Equal(t, "redis://127.0.0.1:6379", redactRedisAddr("redis://127.0.0.1:6379"), "URL without userinfo passes through")
+	assert.Equal(t, "", redactRedisAddr(""))
+}
+
 // TestRedisOptionsFromAddr: both spellings of the one knob.
 func TestRedisOptionsFromAddr(t *testing.T) {
 	o, err := redisOptionsFromAddr("127.0.0.1:6379")

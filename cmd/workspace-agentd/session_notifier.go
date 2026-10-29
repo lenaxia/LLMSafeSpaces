@@ -1024,7 +1024,12 @@ func (n *sessionNotifier) deliverNotices(ctx context.Context, notices []settleNo
 				continue
 			}
 			hard = errors.Join(hard, fmt.Errorf("subscriber %s: %w", notice.Subscriber, err))
-			n.logger.Warn("session notifier: settle delivery failed — intent stays in the outbox",
+			// Delivery-layer-neutral wording: the retry owns the
+			// redelivery on both layers (the outbox's boot retry on
+			// the v1 leg; the consumer group's pending on the bus
+			// leg) — naming one would misdirect incidents on the
+			// other.
+			n.logger.Warn("session notifier: settle delivery failed — the delivery layer's retry owns the redelivery",
 				zap.String("broadcaster", notice.Broadcaster),
 				zap.String("subscriber", notice.Subscriber),
 				zap.String("event", notice.Event),

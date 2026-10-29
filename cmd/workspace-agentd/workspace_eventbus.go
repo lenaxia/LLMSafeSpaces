@@ -73,6 +73,21 @@ func redisOptionsFromAddr(raw string) (*redis.Options, error) {
 	return &redis.Options{Addr: raw}, nil
 }
 
+// redactRedisAddr strips userinfo from a raw addr before it touches
+// a log line: credentialed URLs (redis://u:p@host:port/db — a
+// supported spelling) must never leak their password, and the warns
+// fire precisely during incidents, when logs get read. Non-URL
+// spellings (host:port) pass through unchanged.
+func redactRedisAddr(raw string) string {
+	if i := strings.Index(raw, "://"); i >= 0 {
+		rest := raw[i+3:]
+		if j := strings.IndexByte(rest, '@'); j >= 0 {
+			return raw[:i+3] + "***@" + rest[j+1:]
+		}
+	}
+	return raw
+}
+
 // eventbusFromEnv wires the transport when AGENTD_EVENTBUS_ADDR
 // configures one (a redis:// URL or host:port) and WORKSPACE_ID
 // scopes the stream key. Every failure mode returns nil — nil is the
@@ -94,7 +109,8 @@ func eventbusFromEnv(getenv func(string) string, logger *zap.Logger) *eventbus.R
 	}
 	opts, err := redisOptionsFromAddr(raw)
 	if err != nil {
-		logger.Warn("event bus: malformed AGENTD_EVENTBUS_ADDR — bus disabled", zap.String("addr", raw), zap.Error(err))
+		logger.Warn("event bus: malformed AGENTD_EVENTBUS_ADDR — bus disabled",
+			zap.String("addr", redactRedisAddr(raw)), zap.Error(err))
 		return nil
 	}
 	client := redis.NewClient(opts)
@@ -102,11 +118,12 @@ func eventbusFromEnv(getenv func(string) string, logger *zap.Logger) *eventbus.R
 	defer cancel()
 	bus, err := eventbus.NewRedisBus(ctx, client, eventbus.StreamKey(workspace), 0)
 	if err != nil {
-		logger.Warn("event bus: redis unreachable — bus disabled, subscriptions stay point-to-point", zap.String("addr", raw), zap.Error(err))
+		logger.Warn("event bus: redis unreachable — bus disabled, subscriptions stay point-to-point",
+			zap.String("addr", opts.Addr), zap.Error(err))
 		_ = client.Close()
 		return nil
 	}
-	logger.Info("event bus: transport wired", zap.String("stream", bus.Key()), zap.String("addr", raw))
+	logger.Info("event bus: transport wired", zap.String("stream", bus.Key()), zap.String("addr", opts.Addr))
 	return bus
 }
 

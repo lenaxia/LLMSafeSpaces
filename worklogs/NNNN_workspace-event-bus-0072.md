@@ -111,15 +111,45 @@ every sentinel field pinned; wedge verdict acks without messaging.
   waits for the group PEL to drain before cancelling, and live tests prime
   the group first.
 
-## Verification (2026-10-29, this worktree)
+## Verification (2026-10-29, this worktree + CI on the PR heads)
 
 - `go build ./...` → exit 0.
-- `go test -count=1 ./pkg/eventbus/` → ok (15 tests + race ×2).
-- `go test -count=1 -run 'TestBusE2E|TestEventbus|TestLeaseBusConsumer|TestComposeLeaseNudge|TestSubscriptionEventsFromTopics|TestRedisOptions|TestRunEventbus' ./cmd/workspace-agentd/` → ok.
-- Full suites + golangci-lint: see the PR checks (this worklog is updated with
-  the final tallies at review time).
+- `go test -count=1 ./pkg/eventbus/` → ok (21 tests incl. the r1 pins).
+- `go test -count=1 ./pkg/...` → all ok.
+- `go test -count=1 ./cmd/workspace-agentd/` → ok 372.336s (canonical);
+  `-short` ok 286.847s.
+- `go test -count=1 -short ./cmd/workspace-agentd/ ./pkg/eventbus/` → ok.
+- Full-tree `golangci-lint run` → 0 issues; `make fmt-check` → clean.
+- CI on the PR head: vet, lint, `-race -count=1 ./...`, `-short` coverage,
+  security scans, secrets integration — all green; coverage delta +0.2%.
 
-## Process (owner ruling, binding)
+## Review rounds (AI reviewer, pr-review.yml)
 
-Iterate with the GitHub AI reviewer (pr-review.yml) until APPROVED. Never
-merge without its APPROVE. Review rounds recorded in §Review rounds below.
+### Round 1 — CHANGES_REQUESTED (head 206b12311)
+
+- **Finding 1 (blocking, consumer death on transient Redis errors ⇒ lost
+  wake-ups)** — FIXED: `Consume` now treats transport errors as
+  backpressure (per-round retry at `Backoff`, default 500ms — the
+  `notifyResubscribeBackoff` posture; group creation and own-pending drain
+  retry too; precondition failures still return). Pinned:
+  `TestConsumerSurvivesTransientOutage` (flakyProxy circuit — consumer
+  mid-outage, entry published behind it, delivery resumes on heal + live
+  tail continues).
+- **Finding 4 (blocking, credentialed `AGENTD_EVENTBUS_ADDR` logged raw)**
+  — FIXED: `redactRedisAddr` strips userinfo before any log line; the
+  wired/unreachable logs carry `opts.Addr` (post-ParseURL, userinfo-free).
+  Pinned: `TestRedactRedisAddr`.
+- **Criterion 4's replay claim overstated** — FIXED with pins:
+  `TestTrimmedCursorResumesAtHead` (MAXLEN-trimmed cursor resumes at the
+  head — design §5 was prose-only), `TestExistingGroupCursorResumesAcrossConsumers`
+  (a later consumer in an existing group sees only post-cursor entries).
+- **Finding 2 (minor, PEL pagination)** — FIXED: `pendingCounts` pages from
+  the last seen id (seq+1) so >one-page own-pending keeps true poison
+  counts; `claimIdle`'s per-sweep Batch stays (poison self-limits — noted
+  in the review as bounded).
+- **Finding 3 (minor, misleading incident log + swallowed ack errors)** —
+  FIXED: delivery-failure log is layer-neutral ("the delivery layer's
+  retry owns the redelivery"); every `dispatch` ack failure surfaces
+  through OnError.
+- Nits: worklog 1233 renamed to the NNNN sentinel (repolint owns numbers);
+  this worklog's verification tallies finalized (above).

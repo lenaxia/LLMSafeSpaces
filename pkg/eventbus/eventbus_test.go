@@ -7,6 +7,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
+	"net"
 	"strings"
 	"sync"
 	"testing"
@@ -14,6 +16,7 @@ import (
 
 	"github.com/alicebob/miniredis/v2"
 	"github.com/go-redis/redis/v8"
+	"github.com/stretchr/testify/require"
 )
 
 // newTestBus wires a bus over miniredis with reclaim-friendly
@@ -287,8 +290,224 @@ func TestPatternSubscriptionFiltersAndAcks(t *testing.T) {
 	}
 }
 
+// flakyProxy fronts a backend addr with a switchable circuit: while
+// the circuit is OPEN every new connection is closed immediately; a
+// CLOSED circuit pipes bytes both ways. Consume's transient-error
+// tolerance is proven through it: the consumer must outlive the
+// outage and deliver what was published on the other side.
+type flakyProxy struct {
+	addr    string
+	backend string
+	mu      sync.Mutex
+	open    bool
+	ln      net.Listener
+	done    chan struct{}
+}
+
+func newFlakyProxy(t *testing.T, backend string) *flakyProxy {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("flakyProxy listen: %v", err)
+	}
+	p := &flakyProxy{addr: ln.Addr().String(), backend: backend, ln: ln, done: make(chan struct{})}
+	go func() {
+		defer close(p.done)
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			go p.serve(conn)
+		}
+	}()
+	t.Cleanup(func() { _ = ln.Close(); <-p.done })
+	return p
+}
+
+func (p *flakyProxy) serve(conn net.Conn) {
+	p.mu.Lock()
+	open := p.open
+	p.mu.Unlock()
+	if open {
+		_ = conn.Close()
+		return
+	}
+	up, err := net.Dial("tcp", p.backend)
+	if err != nil {
+		_ = conn.Close()
+		return
+	}
+	go func() { _, _ = io.Copy(up, conn); _ = up.Close() }()
+	_, _ = io.Copy(conn, up)
+	_ = conn.Close()
+}
+
+func (p *flakyProxy) setOpen(open bool) {
+	p.mu.Lock()
+	p.open = open
+	p.mu.Unlock()
+}
+
+// TestConsumerSurvivesTransientOutage (review r1, Finding 1): a
+// mid-consume transport outage (every connection refused for a
+// window) must NOT kill the consumer — the consumer retries with
+// backoff and delivers entries published on the other side of the
+// outage once the transport returns. The lost-wake-up failure class
+// is the one the design names as the failure that matters.
+func TestConsumerSurvivesTransientOutage(t *testing.T) {
+	mr, err := miniredis.Run()
+	require.NoError(t, err)
+	defer mr.Close()
+	proxy := newFlakyProxy(t, mr.Addr())
+
+	client := redis.NewClient(&redis.Options{
+		Addr: proxy.addr, DialTimeout: 50 * time.Millisecond,
+		ReadTimeout: 250 * time.Millisecond, WriteTimeout: 250 * time.Millisecond,
+	})
+	defer client.Close()
+	bus, err := NewRedisBus(context.Background(), client, StreamKey("ws-outage"), 128)
+	require.NoError(t, err)
+
+	// Prime the group, then break the transport mid-consume.
+	require.NoError(t, client.XGroupCreateMkStream(context.Background(), bus.key, "g", "$").Err())
+	got := make(chan string, 8)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	opts := ConsumeOptions{
+		Group: "g", Consumer: "c",
+		Block: 20 * time.Millisecond, MinIdle: 30 * time.Millisecond,
+		ReclaimTick: 20 * time.Millisecond, Batch: 8, Backoff: 15 * time.Millisecond,
+	}
+	go func() {
+		_ = bus.Consume(ctx, opts, func(_ context.Context, m Message) error {
+			got <- m.Event.Topic
+			return nil
+		})
+	}()
+	proxy.setOpen(true)
+	time.Sleep(150 * time.Millisecond) // the consumer is mid-outage
+
+	// Publish THROUGH the backend — the entry sits in the stream
+	// while the consumer cannot reach it.
+	pubClient := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	defer pubClient.Close()
+	pub, err := NewRedisBus(context.Background(), pubClient, StreamKey("ws-outage"), 128)
+	require.NoError(t, err)
+	_, err = pub.Publish(context.Background(), Event{Topic: "session.ses_1.idle"})
+	require.NoError(t, err)
+
+	// Heal; the consumer must still be alive and deliver.
+	proxy.setOpen(false)
+	select {
+	case topic := <-got:
+		require.Equal(t, "session.ses_1.idle", topic)
+	case <-time.After(5 * time.Second):
+		t.Fatal("the consumer did not survive the transient outage — delivery never resumed")
+	}
+	// And keeps delivering the live tail afterwards.
+	_, err = pub.Publish(context.Background(), Event{Topic: "session.ses_2.error"})
+	require.NoError(t, err)
+	select {
+	case topic := <-got:
+		require.Equal(t, "session.ses_2.error", topic)
+	case <-time.After(5 * time.Second):
+		t.Fatal("post-outage live tail never delivered")
+	}
+}
+
+// TestTrimmedCursorResumesAtHead (review r1, criterion-4 pin): a
+// group whose last-delivered entry has been TRIMMED off the front
+// (MAXLEN) resumes at the stream's head — no error, no phantom
+// re-delivery of the trimmed past; the at-least-once contract is
+// unaffected (the design §5 claim, now pinned instead of prose).
+func TestTrimmedCursorResumesAtHead(t *testing.T) {
+	bus, _ := newTestBus(t) // maxLen 128
+	ctx := context.Background()
+	require.NoError(t, bus.client.XGroupCreateMkStream(ctx, bus.key, "g", "$").Err())
+	// Publish MORE than the cap with nobody consuming: the group's
+	// cursor ($-anchored at creation) falls off the front.
+	for i := 0; i < 300; i++ {
+		_, err := bus.Publish(ctx, Event{Topic: fmt.Sprintf("session.ses_%d.idle", i)})
+		require.NoError(t, err)
+	}
+	retained, err := bus.Len(ctx)
+	require.NoError(t, err)
+	require.Less(t, retained, int64(300), "MAXLEN did not trim")
+
+	// The consumer joins the over-trimmed group and must simply
+	// consume from the head.
+	var mu sync.Mutex
+	var topics []string
+	consumeCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_ = bus.Consume(consumeCtx, ConsumeOptions{
+			Group: "g", Consumer: "c", Block: 20 * time.Millisecond,
+			MinIdle: 30 * time.Millisecond, ReclaimTick: 20 * time.Millisecond,
+			Batch: 8, MaxAttempts: 3,
+		}, func(_ context.Context, m Message) error {
+			mu.Lock()
+			topics = append(topics, m.Event.Topic)
+			mu.Unlock()
+			return nil
+		})
+	}()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		mu.Lock()
+		n := len(topics)
+		mu.Unlock()
+		if n >= int(retained) {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	cancel()
+	<-done
+	mu.Lock()
+	defer mu.Unlock()
+	require.NotEmpty(t, topics, "the trimmed-cursor group never consumed")
+	first, _, ok := ParseSessionSettle(topics[0])
+	require.True(t, ok)
+	idx, err := strconvParseInt(strings.TrimPrefix(first, "ses_"))
+	require.NoError(t, err)
+	// 300 entries, ~128 retained: the head is well past ses_150 — a
+	// first delivery below that would be a trimmed-entry resurrection.
+	require.Greater(t, idx, int64(150), "a trimmed (long-gone) entry was delivered — the cursor did not resume at the head")
+	require.LessOrEqual(t, int64(len(topics)), retained+1, "more delivered than the stream retains")
+}
+
+// TestExistingGroupCursorResumesAcrossConsumers (review r1,
+// criterion-4 pin): Redis persists a group's last-delivered id — a
+// LATER consumer in the same group sees only what arrived after the
+// earlier consumer acked, never a replay of the acked past (the
+// "replay from last-acknowledged" resume, cursor flavor).
+func TestExistingGroupCursorResumesAcrossConsumers(t *testing.T) {
+	bus, _ := newTestBus(t)
+	primeGroup(t, bus, "g")
+	mustPublish(t, bus, "session.ses_1.idle")
+	first := consumeUntil(t, bus, testOpts("g", "first"), oneMessage)
+	require.Len(t, first, 1)
+	// The acked past must not replay for the second consumer.
+	mustPublish(t, bus, "session.ses_2.error")
+	second := consumeUntil(t, bus, testOpts("g", "second"), oneMessage)
+	require.Len(t, second, 1)
+	require.Equal(t, "session.ses_2.error", second[0].Event.Topic,
+		"the second consumer replayed the first's acked entry instead of resuming at the group cursor")
+}
+
+func strconvParseInt(s string) (int64, error) {
+	var n int64
+	_, err := fmt.Sscanf(s, "%d", &n)
+	return n, err
+}
+
 // consumeUntil2 runs a consumer for a fixed window (negative-result
 // assertions need a floor, not a condition).
+
 func consumeUntil2(t *testing.T, bus *RedisBus, opts ConsumeOptions, window time.Duration) []Message {
 	t.Helper()
 	var mu sync.Mutex

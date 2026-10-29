@@ -13,6 +13,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -32,13 +33,17 @@ const DefaultMaxLen = 10_000
 // after 60s idle (a crashed/evicted consumer's pending becomes this
 // consumer's redelivery — the at-least-once engine); a message that
 // fails 5 deliveries is acked-and-dropped with a loud log (poison
-// protection: at-least-once must not mean at-least-once forever).
+// protection: at-least-once must not mean at-least-once forever); a
+// transient transport error backpressures one round at 500ms (the
+// notifyResubscribeBackoff posture — the consumer outlives a Redis
+// restart/failover instead of dying and losing wake-ups).
 const (
 	DefaultBlock       = 5 * time.Second
 	DefaultMinIdle     = 60 * time.Second
 	DefaultMaxAttempts = 5
 	DefaultReclaimTick = 15 * time.Second
 	DefaultBatch       = 16
+	DefaultBackoff     = 500 * time.Millisecond
 )
 
 // ConsumeOptions shapes one Consume run.
@@ -62,6 +67,9 @@ type ConsumeOptions struct {
 	MinIdle     time.Duration // reclaim threshold (0 ⇒ default)
 	ReclaimTick time.Duration // reclaim sweep cadence (0 ⇒ default)
 	Batch       int64         // max messages per read (0 ⇒ default)
+	// Backoff is the transient-transport-error backpressure (0 ⇒
+	// default) — one wait per failed round, then the round retries.
+	Backoff time.Duration
 	// MaxAttempts caps redeliveries before the loud poison drop
 	// (0 ⇒ default; negative disables the cap — never in production).
 	MaxAttempts int64
@@ -97,6 +105,9 @@ func (o *ConsumeOptions) normalize() error {
 	}
 	if o.Batch <= 0 {
 		o.Batch = DefaultBatch
+	}
+	if o.Backoff <= 0 {
+		o.Backoff = DefaultBackoff
 	}
 	if o.MaxAttempts == 0 {
 		o.MaxAttempts = DefaultMaxAttempts
@@ -180,6 +191,16 @@ func (b *RedisBus) Publish(ctx context.Context, ev Event) (string, error) {
 //     idle-list → XCLAIM → deliver with the durable delivery count),
 //     then one blocking XREADGROUP > (new entries only).
 //
+// Transport resilience: a TRANSIENT Redis error (restart, failover,
+// network blip) backpressures one round and retries — the consumer
+// outlives the outage (the sessionNotifier.Run resubscribe posture:
+// entries published while the consumer waits are delivered when the
+// transport returns; a dead consumer group member is the
+// lost-wake-up failure the design names as the one that matters).
+// Only precondition failures (unwired bus, bad options, nil handler)
+// return without retry. Consume therefore returns nil for every
+// ctx-ended path.
+//
 // Topic filtering happens BEFORE the handler and INDEPENDENT of
 // acking: a filtered-out message is acked unread (its group cursor
 // must still advance) — patterns subscribe, they do not leave gaps.
@@ -193,17 +214,32 @@ func (b *RedisBus) Consume(ctx context.Context, opts ConsumeOptions, h Handler) 
 	if h == nil {
 		return errors.New("eventbus: consume requires a handler")
 	}
-	if err := b.client.XGroupCreateMkStream(ctx, b.key, opts.Group, opts.StartAt).Err(); err != nil {
-		if !strings.Contains(err.Error(), "BUSYGROUP") {
-			return fmt.Errorf("eventbus: XGROUP CREATE %s/%s: %w", b.key, opts.Group, err)
+	// Group creation retries too — a first-boot race with Redis
+	// availability must not kill the consumer before it starts.
+	for {
+		err := b.client.XGroupCreateMkStream(ctx, b.key, opts.Group, opts.StartAt).Err()
+		if err == nil || strings.Contains(err.Error(), "BUSYGROUP") {
+			break
+		}
+		if ctx.Err() != nil {
+			return nil
+		}
+		if !b.sleepBackoff(ctx, &opts) {
+			return nil
 		}
 	}
 	// Own pending first: resume-under-own-name gets its un-acked
 	// entries without waiting out MinIdle. Delivery counts come from
 	// the PEL (XPendingExt per consumer) — XREADGROUP alone does not
 	// carry them.
-	if err := b.drainOwnPending(ctx, &opts, h); err != nil {
-		return err
+	for {
+		err := b.drainOwnPending(ctx, &opts, h)
+		if err == nil || ctx.Err() != nil {
+			break
+		}
+		if !b.sleepBackoff(ctx, &opts) {
+			return nil
+		}
 	}
 	reclaim := time.NewTicker(opts.ReclaimTick)
 	defer reclaim.Stop()
@@ -212,20 +248,35 @@ func (b *RedisBus) Consume(ctx context.Context, opts ConsumeOptions, h Handler) 
 			return nil
 		}
 		if err := b.claimIdle(ctx, &opts, h); err != nil {
-			return err
-		}
-		readErr := b.readNew(ctx, &opts, h)
-		if readErr != nil {
-			if errors.Is(readErr, context.Canceled) || errors.Is(readErr, context.DeadlineExceeded) || ctx.Err() != nil {
+			if !b.sleepBackoff(ctx, &opts) {
 				return nil
 			}
-			return readErr
+			continue
+		}
+		if err := b.readNew(ctx, &opts, h); err != nil {
+			if !b.sleepBackoff(ctx, &opts) {
+				return nil
+			}
+			continue
 		}
 		select {
 		case <-ctx.Done():
 			return nil
 		case <-reclaim.C:
 		}
+	}
+}
+
+// sleepBackoff waits one backoff tick (the transient-error
+// backpressure); false reports ctx ended. The round that failed is
+// retried by the caller — every X* round is idempotent (reading and
+// claiming are read/claim semantics; acks ride delivery success).
+func (b *RedisBus) sleepBackoff(ctx context.Context, opts *ConsumeOptions) bool {
+	select {
+	case <-ctx.Done():
+		return false
+	case <-time.After(opts.Backoff):
+		return true
 	}
 }
 
@@ -354,44 +405,80 @@ func (b *RedisBus) claimIdle(ctx context.Context, opts *ConsumeOptions, h Handle
 
 // pendingCounts reads the delivery count per pending id for one
 // consumer (the PEL's RetryCount — the durable attempts ledger X*
-// reads never return inline).
+// reads never return inline). PAGED from the last id forward so a
+// restart with more own-pending than one page still sees true counts
+// for every entry (a clamp-to-1 reset would forgive poison).
 func (b *RedisBus) pendingCounts(ctx context.Context, opts *ConsumeOptions, consumer string) (map[string]int64, error) {
 	out := map[string]int64{}
-	pend, err := b.client.XPendingExt(ctx, &redis.XPendingExtArgs{
-		Stream:   b.key,
-		Group:    opts.Group,
-		Idle:     0,
-		Start:    "0-0",
-		End:      "+",
-		Count:    opts.Batch * 16,
-		Consumer: consumer,
-	}).Result()
-	if err != nil {
-		if errors.Is(err, redis.Nil) {
-			return out, nil // no pending for this consumer
+	start := "0-0"
+	for {
+		pend, err := b.client.XPendingExt(ctx, &redis.XPendingExtArgs{
+			Stream:   b.key,
+			Group:    opts.Group,
+			Idle:     0,
+			Start:    start,
+			End:      "+",
+			Count:    opts.Batch * 16,
+			Consumer: consumer,
+		}).Result()
+		if err != nil {
+			if errors.Is(err, redis.Nil) {
+				return out, nil // no pending for this consumer
+			}
+			return nil, fmt.Errorf("eventbus: XPENDING(consumer) %s/%s: %w", b.key, opts.Group, err)
 		}
-		return nil, fmt.Errorf("eventbus: XPENDING(consumer) %s/%s: %w", b.key, opts.Group, err)
+		if len(pend) == 0 {
+			return out, nil
+		}
+		for _, p := range pend {
+			out[p.ID] = p.RetryCount
+		}
+		if int64(len(pend)) < opts.Batch*16 {
+			return out, nil
+		}
+		next, err := nextStreamID(pend[len(pend)-1].ID)
+		if err != nil {
+			return out, nil // unparseable tail id: the page seen is what we have
+		}
+		start = next
 	}
-	for _, p := range pend {
-		out[p.ID] = p.RetryCount
+}
+
+// nextStreamID returns id's successor (ms-seq → ms-seq+1) — XPENDING
+// ranges are inclusive, so paging strictly forward needs +1 on the
+// seq.
+func nextStreamID(id string) (string, error) {
+	i := strings.IndexByte(id, '-')
+	if i < 0 {
+		return "", fmt.Errorf("eventbus: malformed stream id %q", id)
 	}
-	return out, nil
+	seq, err := strconv.ParseUint(id[i+1:], 10, 64)
+	if err != nil {
+		return "", fmt.Errorf("eventbus: malformed stream id %q: %w", id, err)
+	}
+	return fmt.Sprintf("%s-%d", id[:i], seq+1), nil
 }
 
 // dispatch runs one message through pattern filter → poison cap →
 // handler → ack. Filtered-out entries ack unread (the cursor must
 // advance past them). A handler error leaves the entry pending — the
-// reclaim sweep is the retry.
+// reclaim sweep is the retry. An ACK failure is surfaced through
+// OnError (an unacked delivered entry redelivers — a duplicate, but
+// an invisible one is undebuggable).
 func (b *RedisBus) dispatch(ctx context.Context, opts *ConsumeOptions, h Handler, msg Message) {
 	if !MatchAny(opts.Topics, msg.Event.Topic) {
-		_ = b.client.XAck(ctx, b.key, opts.Group, msg.ID).Err()
+		if err := b.client.XAck(ctx, b.key, opts.Group, msg.ID).Err(); err != nil && opts.OnError != nil {
+			opts.OnError(msg, fmt.Errorf("ack(filtered): %w", err))
+		}
 		return
 	}
 	if opts.MaxAttempts > 0 && msg.Attempts > opts.MaxAttempts {
 		if opts.OnPoison != nil {
 			opts.OnPoison(msg)
 		}
-		_ = b.client.XAck(ctx, b.key, opts.Group, msg.ID).Err()
+		if err := b.client.XAck(ctx, b.key, opts.Group, msg.ID).Err(); err != nil && opts.OnError != nil {
+			opts.OnError(msg, fmt.Errorf("ack(poison): %w", err))
+		}
 		return
 	}
 	if err := h(ctx, msg); err != nil {
@@ -400,7 +487,9 @@ func (b *RedisBus) dispatch(ctx context.Context, opts *ConsumeOptions, h Handler
 		}
 		return // pending: at-least-once redelivery after MinIdle
 	}
-	_ = b.client.XAck(ctx, b.key, opts.Group, msg.ID).Err()
+	if err := b.client.XAck(ctx, b.key, opts.Group, msg.ID).Err(); err != nil && opts.OnError != nil {
+		opts.OnError(msg, fmt.Errorf("ack: %w", err))
+	}
 }
 
 // messageOf rebuilds an Event from a raw stream entry.

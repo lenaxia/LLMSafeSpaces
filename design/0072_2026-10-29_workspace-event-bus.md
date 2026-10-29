@@ -131,10 +131,19 @@ last-delivered id — Redis keeps it.
   XADD); across groups there is no ordering guarantee (independence is
   the point).
 - **Retention**: ~10k entries (MAXLEN approx). A group whose cursor
-  was trimmed resumes at the stream head — the at-least-once contract
-  is unaffected (an acked entry needs no redelivery; a pending one is
+  was trimmed resumes at the stream head (PINNED:
+  `TestTrimmedCursorResumesAtHead`) — the at-least-once contract is
+  unaffected (an acked entry needs no redelivery; a pending one is
   delivered from the PEL's pointer if the entry survives, acked-blind
-  if it does not — `dispatch`'s values-less shell arm).
+  if it does not — `dispatch`'s values-less shell arm). An existing
+  group's cursor resume across consumer lifetimes is pinned by
+  `TestExistingGroupCursorResumesAcrossConsumers`.
+- **Transport resilience**: a transient Redis error (restart, failover,
+  blip) backpressures one consumer round (500ms backoff) and retries —
+  the consumer outlives the outage (PINNED:
+  `TestConsumerSurvivesTransientOutage`); a dead consumer group member
+  is the lost-wake-up failure the design names as the one that
+  matters.
 - **Poison**: 5 delivery attempts, then a loud drop (an observability
   hook, not a dead-letter queue — documented as such).
 
