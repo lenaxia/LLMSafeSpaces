@@ -15,11 +15,11 @@
  *
  * Orphans: a session whose parentId points at an ID not present in the
  * input list (e.g. parent was deleted) lands in the `orphans` bucket.
- * NOTE (#1966): the sidebar no longer renders a synthetic "Orphaned
- * subtasks" group — every parented session (the only orphan
- * candidates) is worker-classified into the collapsed Workers folder
- * before tree building, so `orphans` is structurally empty at that
- * call site; the bucket remains for other consumers of this lib.
+ * NOTE (#1966/ruling 6): the sidebar builds ONE tree over the full
+ * live set and partitions it by worker PROVENANCE (never parentage),
+ * so the bucket can be non-empty at that call site again — the caller
+ * promotes orphans to top-level rows of the main list (visible; the
+ * synthetic "Orphaned subtasks" group stays dead).
  */
 import type { SessionListItem } from "../api/types";
 

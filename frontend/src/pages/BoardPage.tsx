@@ -49,6 +49,24 @@ function toBoardError(err: unknown): DescribedBoardError {
   return { message: err instanceof Error ? err.message : "Board request failed", suggestions: [] };
 }
 
+/** 2026-10-28 ruling 3: the visible-row cap for a project's epic list —
+ * overflow scrolls inside the list's own region (never page growth). */
+export const EPIC_LIST_MAX_VISIBLE = 4;
+
+/** 2026-10-28 ruling 3: an epic's ACTIVITY clock — the newest of the
+ * epic's own updated_at and its task rows' updated_at (both already in
+ * the view layer). 0 = no parseable timestamp (quiet/derived rows) →
+ * falls to the alpha tiebreak in the sort. */
+function epicActivity(epic: BoardEpic, laneTasks: BoardTask[]): number {
+  let latest = Date.parse(epic.updated_at ?? "") || 0;
+  for (const t of laneTasks) {
+    if (t.epic_id !== epic.id) continue;
+    const at = Date.parse(t.updated_at ?? "") || 0;
+    if (at > latest) latest = at;
+  }
+  return latest;
+}
+
 interface OptimisticDrag {
   shortId: string;
   fromStage: string;
@@ -63,9 +81,11 @@ type OptimisticMap = Record<string, OptimisticDrag>;
 export function BoardPage() {
   const queryClient = useQueryClient();
 
-  // --- Scope state (§4.8: swimlane focus + epic chips + search) ----------------
+  // --- Scope state (§4.8: swimlane focus + search) ----------------
+  // 2026-10-28 ruling 1: the epic pills are GONE from the toolbar —
+  // epic association is discovered via the epic rows' click-highlight
+  // (ruling 2), so there is no focusEpic state to keep.
   const [focusProject, setFocusProject] = useState<string>("all");
-  const [focusEpic, setFocusEpic] = useState<string>("all");
   const [search, setSearch] = useState("");
   const [tagFilter, setTagFilter] = useState<string | null>(null);
   // #1813: the failed-state overlay filter (client-side, the tagFilter
@@ -150,7 +170,6 @@ export function BoardPage() {
   useEffect(() => {
     if (focusProject !== "all" && !activeProjectIds.has(focusProject)) {
       setFocusProject("all");
-      setFocusEpic("all");
     }
   }, [focusProject, activeProjectIds]);
 
@@ -272,27 +291,10 @@ export function BoardPage() {
     return new Map([...byProject.entries()].map(([k, v]) => [k, [...v.values()]]));
   }, [tasks, serverEpicsByProject, knownEpics, epicsArrivedAtByProject]);
 
-  // The flat epic list (scope-switcher chips): ONE entry per epic id —
-  // a same-id epic spanning lanes is a single chip. Server/known rows
-  // (progress_derived=false, real epc- short ids) win the id over
-  // task-derived entries when both exist.
-  const derivedEpics = useMemo(() => {
-    const byId = new Map<string, BoardEpic>();
-    for (const list of epicsByProject.values()) for (const e of list) if (!byId.has(e.id)) byId.set(e.id, e);
-    for (const list of epicsByProject.values()) for (const e of list) if (!e.progress_derived) byId.set(e.id, e);
-    return [...byId.values()];
-  }, [epicsByProject]);
-
-  // #1964: epic chips are ACTIVE-surface scope — archived lanes'
-  // epics never graduate to the toolbar (they render only inside the
-  // collapsed drawer's lanes).
-  const scopedEpics = useMemo(
-    () =>
-      derivedEpics.filter(
-        (e) => activeProjectIds.has(e.project_id) && (focusProject === "all" || e.project_id === focusProject),
-      ),
-    [derivedEpics, activeProjectIds, focusProject],
-  );
+  // 2026-10-28 ruling 1: the flat epic list + active-scope filter that
+  // fed the toolbar's epic pills are REMOVED with the pills — epics
+  // render per-project as rows (ruling 2/3) and remain discoverable via
+  // the click-highlight.
 
   const visibleProjects = useMemo(
     () => (focusProject === "all" ? activeProjects : activeProjects.filter((p) => p.id === focusProject)),
@@ -338,13 +340,16 @@ export function BoardPage() {
     return hit ? null : q;
   }, [search, surfaceTasks]);
 
+  // 2026-10-28 ruling 4: did-you-mean chips carry the TITLE (ids stay
+  // out of the chrome); the suggestion fills the search with the title
+  // — the same row the id would have found, addressed humanly.
   const searchSuggestions = useMemo(
     () =>
       searchMiss
         ? suggestBoardItems(
             searchMiss,
             surfaceTasks.map((t) => ({ shortId: t.short_id, title: t.title })),
-          ).map((s) => s.shortId)
+          )
         : [],
     [searchMiss, surfaceTasks],
   );
@@ -352,7 +357,6 @@ export function BoardPage() {
   const filteredTasks = useMemo(() => {
     const q = search.trim().toLowerCase();
     return tasks.filter((t) => {
-      if (focusEpic !== "all" && t.epic_id !== focusEpic) return false;
       if (tagFilter && !t.tags.includes(tagFilter)) return false;
       if (failedOnly && !t.last_attempt_failed) return false;
       if (q) {
@@ -364,7 +368,7 @@ export function BoardPage() {
       }
       return true;
     });
-  }, [tasks, focusEpic, tagFilter, failedOnly, search]);
+  }, [tasks, tagFilter, failedOnly, search]);
 
   // --- Optimistic drag (§4.6: optimistic, server-arbitrated snap-back) -----------
   const [optimistic, setOptimistic] = useState<OptimisticMap>({});
@@ -482,11 +486,11 @@ export function BoardPage() {
   const [epicTags, setEpicTags] = useState<string[]>([]);
 
   // #1832 item 2: the swimlane's selected epic (projectId → epicId) —
-  // highlight/dim + task-creation scope; collapsed band ids (default
-  // expanded — "tasks grouped beneath" is the at-rest view); and the
-  // New-task epic picker (opened when no epic is selected).
+  // highlight/dim + task-creation scope. 2026-10-28 ruling 2: the epic
+  // rows carry no nested task lists anymore, so the click-highlight is
+  // the ONLY epic→task navigation (kept intact); and the New-task epic
+  // picker (opened when no epic is selected).
   const [selectedEpicByProject, setSelectedEpicByProject] = useState<Record<string, string>>({});
-  const [collapsedBands, setCollapsedBands] = useState<ReadonlySet<string>>(new Set());
   const [taskPickerProject, setTaskPickerProject] = useState<BoardProject | null>(null);
 
   const [taskDialog, setTaskDialog] = useState<{ mode: "create"; epic: BoardEpic } | { mode: "edit"; task: BoardTask } | null>(null);
@@ -551,15 +555,6 @@ export function BoardPage() {
     });
   }, []);
 
-  const toggleBand = useCallback((epicId: string) => {
-    setCollapsedBands((prev) => {
-      const next = new Set(prev);
-      if (next.has(epicId)) next.delete(epicId);
-      else next.add(epicId);
-      return next;
-    });
-  }, []);
-
   // #1832 item 1+2: the swimlane's New task — the SELECTED epic scopes
   // creation (New task lands inside it); with no selection the epic
   // picker opens (never a dead/greyed path).
@@ -614,10 +609,11 @@ export function BoardPage() {
     mutationFn: (task: BoardTask) => boardApi.startTask(task.short_id),
     onSuccess: async (claim, task) => {
       await queryClient.invalidateQueries({ queryKey: ["board"] });
+      // 2026-10-28 ruling 4: notices lead with the human title, not the id.
       setPageNotice(
         claim.escalated
-          ? `${task.short_id}: attempts cap reached — escalated to Pending Input (no grant).`
-          : `${task.short_id}: fresh worker dispatched into the project's target workspace.`,
+          ? `${task.title}: attempts cap reached — escalated to Pending Input (no grant).`
+          : `${task.title}: fresh worker dispatched into the project's target workspace.`,
       );
     },
     onError: (err) => setPageError(toBoardError(err)),
@@ -660,7 +656,7 @@ export function BoardPage() {
         const cascade = result.cascade_tasks ?? [];
         const orphans = result.orphaned_dependents ?? [];
         setPageNotice(
-          `${result.short_id} deleted — ${cascade.length} task${cascade.length === 1 ? "" : "s"} cascaded` +
+          `${epic.title} deleted — ${cascade.length} task${cascade.length === 1 ? "" : "s"} cascaded` +
             (orphans.length > 0 ? `; ${orphans.length} cross-epic dependent${orphans.length === 1 ? "" : "s"} orphaned (audited)` : ""),
         );
         return true;
@@ -678,17 +674,16 @@ export function BoardPage() {
     async (project: BoardProject, action: "archive" | "unarchive"): Promise<void> => {
       setPageError(null);
       try {
-        const updated =
-          action === "archive" ? await boardApi.archiveProject(project.id) : await boardApi.unarchiveProject(project.id);
+        await (action === "archive" ? boardApi.archiveProject(project.id) : boardApi.unarchiveProject(project.id));
         await queryClient.invalidateQueries({ queryKey: ["board"] });
         // #1964: archiving the focused lane would leave the scope
         // pointed at a project the active surface no longer renders —
         // reset to All (the archived lane lives in the drawer now).
         if (action === "archive" && focusProject === project.id) {
           setFocusProject("all");
-          setFocusEpic("all");
         }
-        setPageNotice(`${updated.short_id}: ${action === "archive" ? "archived (claims into it stopped)" : "unarchived (active again)"}.`);
+        // 2026-10-28 ruling 4: the notice names the project, not its id.
+        setPageNotice(`${project.name}: ${action === "archive" ? "archived (claims into it stopped)" : "unarchived (active again)"}.`);
       } catch (err) {
         setPageError(toBoardError(err));
       }
@@ -744,12 +739,15 @@ export function BoardPage() {
   const renderSwimlane = (project: BoardProject) => {
     const projectTasks = filteredTasks.filter((t) => t.project_id === project.id);
     const laneAllTasks = tasks.filter((t) => t.project_id === project.id);
-    // Unfiltered row count per epic (#1832 r2, finding 2): the
-    // band's "No tasks yet." must not fire when tasks exist but
-    // the lane's filter (epic chip / tag / search) hides them.
-    const laneRowsByEpic = new Map<string, number>();
-    for (const t of laneAllTasks) laneRowsByEpic.set(t.epic_id, (laneRowsByEpic.get(t.epic_id) ?? 0) + 1);
     const laneEpics = epicsByProject.get(project.id) ?? [];
+    // Ruling 3: activity-first order (alpha tiebreak) — computed once
+    // per lane render; the scroll cap does the visible-window cut.
+    const epicActivityById = new Map<string, number>();
+    for (const e of laneEpics) epicActivityById.set(e.id, epicActivity(e, laneAllTasks));
+    const sortedLaneEpics = [...laneEpics].sort(
+      (a, b) =>
+        (epicActivityById.get(b.id) ?? 0) - (epicActivityById.get(a.id) ?? 0) || a.title.localeCompare(b.title),
+    );
     // The swimlane's selection (derived — a vanished epic reads
     // as unselected) drives highlight/dim on the kanban cards
     // and scopes the header's New task.
@@ -757,9 +755,8 @@ export function BoardPage() {
     const highlightEpicId = selectedEpic?.id ?? null;
     return (
       <section key={project.id} data-swimlane={project.short_id} data-testid={`swimlane-${project.short_id}`} className="rounded-lg border border-border">
-        <header className="flex items-center gap-2 border-b border-border px-3 py-1.5">
+        <header className="flex flex-wrap items-center gap-2 border-b border-border px-3 py-1.5">
           <span className="text-xs font-semibold">{project.name}</span>
-          <span className="font-mono text-[10px] text-muted-foreground">{project.short_id}</span>
           <span className="text-[10px] text-muted-foreground" data-testid={`slots-${project.short_id}`}>
             {slotsInUse(project.id)}/{project.worker_slots} slots
           </span>
@@ -817,65 +814,61 @@ export function BoardPage() {
             />
           </div>
         </header>
-        {/* #1832 item 2: collapsible epic bands, tasks grouped
-         * beneath; clicking a band selects it (highlight own
-         * tasks, dim the lane's others, scope New task). */}
-        <div className="flex flex-col gap-1 border-b border-border px-2 py-1.5" data-testid={`epic-bands-${project.short_id}`}>
+        {/* 2026-10-28 rulings 2+3: ONE ROW per epic — title, status,
+         * counts at most; NO nested task list underneath (the row's
+         * click highlights the epic's task cards across the columns —
+         * now the ONLY epic→task navigation). The list is CAPPED at
+         * EPIC_LIST_MAX_VISIBLE rows; overflow scrolls INSIDE this
+         * container (its own region, never page growth), ordered by
+         * recent activity first (the newest of the epic's own
+         * updated_at and its task rows' updated_at — data the view
+         * layer already holds; alpha is the tiebreak/quiet fallback). */}
+        <div className="border-b border-border px-2 py-1.5" data-testid={`epic-bands-${project.short_id}`}>
           {laneEpics.length === 0 ? (
             <span className="px-1 text-[10px] text-muted-foreground/70">No epics yet — use New epic above.</span>
           ) : (
-            laneEpics.map((epic) => {
-              const collapsed = collapsedBands.has(epic.id);
-              const selected = selectedEpic?.id === epic.id;
-              const bandTasks = projectTasks.filter((t) => t.epic_id === epic.id);
-              return (
-                <div
-                  key={epic.id}
-                  data-testid={`epic-band-${epic.id}`}
-                  data-selected={selected ? "true" : undefined}
-                  className={cn(
-                    "rounded-md border transition-colors",
-                    selected ? "border-primary/50 bg-primary/5" : "border-border bg-muted/20 hover:border-primary/30",
-                  )}
-                >
-                  {/* The HEADER ROW is the selection surface (not the
-                   * whole container): a container-level click would
-                   * sit atop the task rows beneath it — in a real
-                   * pointer click the band's center lands on its
-                   * only task row (task-edit), never selecting. */}
+            <div
+              // 8.5rem = 4 × 1.75rem rows + 3 × gap-1 + slack: the cap
+              // fits exactly 4 rows with headroom (zoom/min-font row
+              // growth clips nothing) while >4 rows scroll INSIDE this
+              // region — pinned in tests/e2e/board.spec.ts.
+              className="flex max-h-[8.5rem] flex-col gap-1 overflow-y-auto"
+              data-testid={`epic-list-${project.short_id}`}
+              data-max-visible={EPIC_LIST_MAX_VISIBLE}
+            >
+              {sortedLaneEpics.map((epic) => {
+                const selected = selectedEpic?.id === epic.id;
+                return (
                   <div
-                    className="flex cursor-pointer select-none items-center gap-1.5 px-2 py-1"
-                    data-testid={`band-header-${epic.id}`}
+                    key={epic.id}
+                    data-testid={`epic-band-${epic.id}`}
+                    data-selected={selected ? "true" : undefined}
+                    data-epic-short-id={epic.short_id}
+                    className={cn(
+                      "flex min-h-[1.75rem] cursor-pointer select-none items-center gap-1.5 rounded-md border px-2 py-1 transition-colors",
+                      selected ? "border-primary/50 bg-primary/5" : "border-border bg-muted/20 hover:border-primary/30",
+                    )}
                     onClick={() => toggleEpicSelection(project.id, epic.id)}
                     onDoubleClick={() => void openEpicDrawer(epic.id)}
                     title={`${epic.title} — click to highlight its tasks; double-click for the epic drawer`}
                   >
-                    <button
-                      type="button"
-                      data-testid={`band-toggle-${epic.id}`}
-                      aria-expanded={!collapsed}
-                      aria-label={collapsed ? `Expand ${epic.title}` : `Collapse ${epic.title}`}
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        toggleBand(epic.id);
-                      }}
-                      className="rounded p-0.5 text-muted-foreground hover:bg-accent hover:text-foreground"
-                    >
-                      <ChevronRight className={cn("h-3 w-3 transition-transform", !collapsed && "rotate-90")} />
-                    </button>
-                    <span className="text-[11px] font-medium">{epic.title}</span>
-                    <span className="font-mono text-[10px] text-muted-foreground">{epic.short_id}</span>
-                    <span className="text-[10px] text-muted-foreground" data-testid={`band-progress-${epic.id}`}>
+                    {/* Ruling 4: the TITLE is the label — the epc- id
+                     * never renders here (it lives in the click-through
+                     * drawer; data attrs keep it for tests). */}
+                    <span className="min-w-0 flex-1 truncate text-[11px] font-medium" data-testid={`band-title-${epic.id}`}>
+                      {epic.title}
+                    </span>
+                    <span className="shrink-0 text-[10px] text-muted-foreground" data-testid={`band-progress-${epic.id}`}>
                       {epic.progress_done}/{epic.progress_total}
                     </span>
-                    {epic.status === "paused" && <Badge variant="warning" className="px-1.5 py-0 text-[10px]">paused</Badge>}
-                    {selected && <Badge variant="default" className="px-1.5 py-0 text-[10px]">selected</Badge>}
+                    {epic.status === "paused" && <Badge variant="warning" className="shrink-0 px-1.5 py-0 text-[10px]">paused</Badge>}
+                    {selected && <Badge variant="default" className="shrink-0 px-1.5 py-0 text-[10px]">selected</Badge>}
                     {/* #1832 item 3: epic kebab — the delete flow
                      * (in-flight surfacing + refuse/force-confirm
                      * inside the modal). The trigger stops
                      * propagation: the kebab never toggles the
-                     * band's selection. */}
-                    <span className="ml-auto">
+                     * row's selection. */}
+                    <span className="shrink-0">
                       <KebabMenu
                         ariaLabel={`Epic actions for ${epic.title}`}
                         testId={`epic-kebab-${epic.id}`}
@@ -892,49 +885,17 @@ export function BoardPage() {
                       />
                     </span>
                   </div>
-                  {!collapsed && (
-                    <div className="flex flex-col gap-0.5 px-2 pb-1.5 pt-0.5">
-                      {bandTasks.map((t) => (
-                        <button
-                          key={t.short_id}
-                          type="button"
-                          data-testid={`band-task-${epic.id}-${t.short_id}`}
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            setTaskDialog({ mode: "edit", task: t });
-                          }}
-                          className={cn(
-                            "flex items-center gap-2 rounded px-1.5 py-0.5 text-left text-[11px] hover:bg-accent",
-                            highlightEpicId && t.epic_id !== highlightEpicId && "opacity-40",
-                          )}
-                        >
-                          <span className="font-mono text-[10px] text-muted-foreground">{t.short_id}</span>
-                          <span className="truncate">{t.title}</span>
-                          <span className="ml-auto rounded bg-muted px-1 py-px text-[10px] text-muted-foreground">
-                            {STAGE_LABELS[t.stage as BoardStage] ?? t.stage}
-                          </span>
-                        </button>
-                      ))}
-                      {bandTasks.length === 0 &&
-                        (laneRowsByEpic.get(epic.id) ?? 0) > 0 && (
-                          <span className="px-1 text-[10px] text-muted-foreground/60" data-testid={`band-filtered-empty-${epic.id}`}>
-                            No tasks match the current filter.
-                          </span>
-                        )}
-                      {bandTasks.length === 0 &&
-                        (laneRowsByEpic.get(epic.id) ?? 0) === 0 && (
-                          <span className="px-1 text-[10px] text-muted-foreground/60" data-testid={`band-empty-${epic.id}`}>
-                            No tasks yet.
-                          </span>
-                        )}
-                    </div>
-                  )}
-                </div>
-              );
-            })
+                );
+              })}
+            </div>
           )}
         </div>
-        <div className="grid grid-cols-4 gap-2 p-2">
+        {/* Ruling 5: 4 columns cannot wrap cleanly at mobile widths —
+         * the standard responsive collapse: 2 columns on small
+         * screens, 4 from md up (cards keep min-w-0/break-words so
+         * long titles wrap INSIDE the card and buttons stay
+         * contained — see TaskCard). */}
+        <div className="grid grid-cols-2 gap-2 p-2 md:grid-cols-4" data-testid={`stage-grid-${project.short_id}`}>
           {MAIN_STAGES.map((stage) => (
             <StageCell
               key={stage}
@@ -1022,24 +983,25 @@ export function BoardPage() {
             value={focusProject}
             onChange={(e) => {
               setFocusProject(e.target.value);
-              setFocusEpic("all");
             }}
             className="h-8 rounded-md border border-border bg-background px-2 text-sm"
             data-testid="project-focus"
           >
             <option value="all">All projects</option>
             {/* #1964: archived projects never list here — the drawer is
-             * their only surface (focus is the ACTIVE board's scope). */}
+             * their only surface (focus is the ACTIVE board's scope).
+             * Ruling 4: the option label is the project NAME (the id
+             * lives in the option's value, never its text). */}
             {activeProjects.map((p) => (
               <option key={p.id} value={p.id}>
-                {p.name} ({p.short_id})
+                {p.name}
               </option>
             ))}
           </select>
           <Input
             value={search}
             onChange={(e) => setSearch(e.target.value)}
-            placeholder="Search short id, title, tag…"
+            placeholder="Search title, tag or id…"
             className="h-8 w-56"
             aria-label="Search tasks"
             data-testid="board-search"
@@ -1076,33 +1038,11 @@ export function BoardPage() {
             </Button>
           </div>
         </div>
+        {/* 2026-10-28 ruling 1: the epic pills are GONE — only REAL
+         * filters render here (the FAILED overlay, tag facets); epic
+         * association is discovered via the epic rows'
+         * click-highlight (ruling 2). */}
         <div className="flex flex-wrap items-center gap-1.5">
-          <button
-            onClick={() => setFocusEpic("all")}
-            className={cn(
-              "rounded-full px-2 py-0.5 text-[11px] transition-colors",
-              focusEpic === "all" ? "bg-primary/10 text-primary" : "bg-muted text-muted-foreground hover:bg-accent",
-            )}
-            data-testid="epic-chip-all"
-          >
-            All epics
-          </button>
-          {scopedEpics.map((e) => (
-            <button
-              key={e.id}
-              onClick={() => (focusEpic === e.id ? setFocusEpic("all") : setFocusEpic(e.id))}
-              onDoubleClick={() => void openEpicDrawer(e.id)}
-              title={`${e.title} — double-click for the epic drawer`}
-              className={cn(
-                "rounded-full px-2 py-0.5 text-[11px] transition-colors",
-                focusEpic === e.id ? "bg-primary/10 text-primary" : "bg-muted text-muted-foreground hover:bg-accent",
-              )}
-              data-testid={`epic-chip-${e.short_id}`}
-            >
-              {e.title}
-            </button>
-          ))}
-          <span className="mx-1 text-border">|</span>
           <button
             onClick={() => setFailedOnly(!failedOnly)}
             className={cn(
@@ -1147,12 +1087,13 @@ export function BoardPage() {
                     Did you mean:{" "}
                     {searchSuggestions.map((s) => (
                       <button
-                        key={s}
+                        key={s.shortId}
                         type="button"
-                        onClick={() => setSearch(s)}
-                        className="mr-1 rounded bg-accent px-1.5 py-0.5 font-mono text-[10px]"
+                        onClick={() => setSearch(s.title)}
+                        data-suggest-short-id={s.shortId}
+                        className="mr-1 rounded bg-accent px-1.5 py-0.5 text-[10px]"
                       >
-                        {s}
+                        {s.title}
                       </button>
                     ))}
                   </span>
@@ -1558,7 +1499,9 @@ export function BoardPage() {
           <Dialog.Overlay className="fixed inset-0 bg-black/40 z-50" />
           <Dialog.Content className="fixed left-1/2 top-1/2 z-50 flex w-[24rem] max-w-[calc(100vw-2rem)] -translate-x-1/2 -translate-y-1/2 flex-col gap-3 rounded-md border border-border bg-background p-4 shadow-xl">
             <Dialog.Title className="text-sm font-semibold">
-              Move <span className="font-mono text-xs">{donePrompt?.task.short_id}</span> to Done
+              {/* Ruling 4: the prompt names the TASK, not its id (the
+               * short id stays in the details drawer popup). */}
+              Move <span className="font-medium">{donePrompt?.task.title}</span> to Done
             </Dialog.Title>
             {donePrompt && <DoneReadinessView task={donePrompt.task} />}
             <label className="flex flex-col gap-1 text-xs">

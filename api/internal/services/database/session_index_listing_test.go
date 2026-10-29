@@ -44,13 +44,13 @@ func listSessionIndexRows(n int) *sqlmock.Rows {
 	rows := sqlmock.NewRows([]string{
 		"session_id", "title", "parent_session_id", "last_message_at",
 		"message_count", "last_seen_at", "has_unread", "context_used",
-		"archived", "short_id", "created_at", "parent_short_id",
+		"archived", "short_id", "created_at", "parent_short_id", "origin",
 	})
 	base := time.Now()
 	for i := 0; i < n; i++ {
 		rows.AddRow(
 			fmt.Sprintf("ses_row_%03d", i), fmt.Sprintf("Row %d", i), nil, nil,
-			0, nil, false, nil, false, nil, base.Add(-time.Duration(i)*time.Minute), nil,
+			0, nil, false, nil, false, nil, base.Add(-time.Duration(i)*time.Minute), nil, nil,
 		)
 	}
 	return rows
@@ -127,8 +127,8 @@ func TestListSessionIndex_ScanErrorPropagates(t *testing.T) {
 	rows := sqlmock.NewRows([]string{
 		"session_id", "title", "parent_session_id", "last_message_at",
 		"message_count", "last_seen_at", "has_unread", "context_used",
-		"archived", "short_id", "created_at", "parent_short_id",
-	}).AddRow("ses_bad", "Bad row", nil, "not-a-timestamp", 0, nil, false, nil, false, nil, nil, nil)
+		"archived", "short_id", "created_at", "parent_short_id", "origin",
+	}).AddRow("ses_bad", "Bad row", nil, "not-a-timestamp", 0, nil, false, nil, false, nil, nil, nil, nil)
 
 	mock.ExpectQuery(listSessionIndexOrderPin).
 		WithArgs("ws-1").

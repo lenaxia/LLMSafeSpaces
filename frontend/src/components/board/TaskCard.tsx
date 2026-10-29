@@ -66,19 +66,22 @@ interface TaskCardProps {
 }
 
 /**
- * TaskCard — §4.8's card: short ID (mono), pause/waiting chips, tags, the
- * structural blocked badge (🔗 N with live dependency stage chips, ruling
- * R3 — no evaluator, no Evaluate-now), the assignee busy indicator (the
- * #1687-hardened spinner on evidence the worker holds the claim), the
- * attempt counter with its escalation preview, and the backlog Start
- * affordance (task_start).
+ * TaskCard — §4.8's card. 2026-10-28 rulings 4+5: the TITLE is the
+ * primary label (the tsk- id lives only in the details drawer popup and
+ * data/aria attributes); the layout wraps — long titles wrap INSIDE the
+ * card (min-w-0 + break-words), action buttons sit in a shrink-0 cluster
+ * that can never bleed into a neighboring column. Pause/waiting chips,
+ * tags, the structural blocked badge (🔗 N with live dependency stage
+ * chips, ruling R3), the assignee busy indicator, the attempt counter
+ * with its escalation preview, and the backlog Start affordance
+ * (task_start) are unchanged.
  */
 export function TaskCard({ task, projectTasks, pending, refused, dimmed, highlighted, onStart, starting, kebabItems, onOpen, onDetails, onDragStart, onDragEnd }: TaskCardProps) {
   const [showBlockedBy, setShowBlockedBy] = useState(false);
   const anchor = prAnchorOf(task.tags);
   const depStages = (task.blocked_by ?? []).map((id) => {
     const dep = projectTasks.find((t) => t.short_id === id);
-    return { id, stage: dep?.stage };
+    return { id, stage: dep?.stage, title: dep?.title };
   });
   const escalateNext =
     task.attempts >= ATTEMPTS_CAP_DEFAULT &&
@@ -100,17 +103,27 @@ export function TaskCard({ task, projectTasks, pending, refused, dimmed, highlig
       onDragEnd={() => onDragEnd?.(task)}
       onClick={() => onOpen?.(task)}
       className={cn(
-        "cursor-grab rounded-md border border-border bg-card p-2 text-left shadow-sm transition-colors hover:border-primary/40",
+        "min-w-0 cursor-grab rounded-md border border-border bg-card p-2 text-left shadow-sm transition-colors hover:border-primary/40",
         pending && "opacity-60",
         refused && "border-destructive",
         dimmed && "opacity-40 saturate-50",
         highlighted && "border-primary/60 ring-1 ring-primary/40",
       )}
-      aria-label={`${task.short_id} ${task.title}`}
+      aria-label={task.title}
     >
+      {/* Ruling 5: title row — the title flexes and WRAPS within the
+       * card (min-w-0 flex-1 break-words); the actions cluster is
+       * shrink-0 so kebab/start/details stay inside the card's bounds
+       * at any column width. */}
       <div className="flex items-start justify-between gap-1">
-        <span className="font-mono text-[10px] text-muted-foreground">{task.short_id}</span>
-        <div className="flex items-center gap-1">
+        <p
+          className="mt-0.5 min-w-0 flex-1 break-words text-xs font-medium"
+          title={task.title}
+          data-testid={`card-title-${task.short_id}`}
+        >
+          {task.title}
+        </p>
+        <div className="flex shrink-0 items-center gap-0.5">
           {onDetails && (
             <button
               type="button"
@@ -149,20 +162,19 @@ export function TaskCard({ task, projectTasks, pending, refused, dimmed, highlig
               testId={`task-kebab-${task.short_id}`}
             />
           )}
-          {task.paused && (
-            <Badge variant="warning" className="px-1.5 py-0 text-[10px]" title="Paused — claim candidacy off, forward writes refused (#1747)">
-              paused
-            </Badge>
-          )}
-          {task.waiting_on === "concurrency_limit" && (
-            <Badge variant="muted" className="px-1.5 py-0 text-[10px]" title="Ready but the per-user/global concurrency cap is saturated (#1747)">
-              waiting: concurrency
-            </Badge>
-          )}
         </div>
       </div>
-      <p className="mt-0.5 line-clamp-2 text-xs font-medium">{task.title}</p>
       <div className="mt-1 flex flex-wrap items-center gap-1">
+        {task.paused && (
+          <Badge variant="warning" className="px-1.5 py-0 text-[10px]" title="Paused — claim candidacy off, forward writes refused (#1747)">
+            paused
+          </Badge>
+        )}
+        {task.waiting_on === "concurrency_limit" && (
+          <Badge variant="muted" className="px-1.5 py-0 text-[10px]" title="Ready but the per-user/global concurrency cap is saturated (#1747)">
+            waiting: concurrency
+          </Badge>
+        )}
         {task.is_blocked && (
           <button
             type="button"
@@ -226,9 +238,13 @@ export function TaskCard({ task, projectTasks, pending, refused, dimmed, highlig
       </div>
       {showBlockedBy && depStages.length > 0 && (
         <div className="mt-1.5 flex flex-col gap-1 rounded bg-muted/50 p-1.5" data-testid={`blocked-by-${task.short_id}`}>
-          {depStages.map(({ id, stage }) => (
-            <div key={id} className="flex items-center justify-between gap-2">
-              <span className="font-mono text-[10px]">{id}</span>
+          {depStages.map(({ id, stage, title }) => (
+            <div key={id} className="flex min-w-0 items-center justify-between gap-2" data-dep-id={id}>
+              {/* Ruling 4: the dependency is named by TITLE; the tsk- id
+               * rides the tooltip + data attr, not the chrome. */}
+              <span className="min-w-0 flex-1 truncate text-[10px]" title={id}>
+                {title ?? id}
+              </span>
               {stage ? <StageChip stage={stage} /> : <span className="text-[10px] text-muted-foreground">—</span>}
             </div>
           ))}

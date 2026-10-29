@@ -326,6 +326,12 @@ type SessionListItem struct {
 	LastMessageAt *time.Time `json:"lastMessageAt,omitempty"`
 	MessageCount  int        `json:"messageCount"`
 	Status        string     `json:"status"`
+	// Origin is the session's spawn provenance (#1966/ruling 6):
+	// "worker" marks a board/engine fresh-worker spawn (the sidebar's
+	// Workers group is populated from this); "routine" |
+	// "workflow" | "api" mark the trigger classes; ABSENT means a
+	// manual user session.
+	Origin string `json:"origin,omitempty"`
 	// Archived is present (true) only for archived sessions — ABSENT
 	// means not archived (#1627). Archived sessions are read-only at
 	// the proxy (sends 409 session_archived); history stays viewable.
