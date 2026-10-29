@@ -215,10 +215,14 @@ const boardPayloadSchemaImportPlan = `{
 // ({} is the legal full-inheritance reset), an unknown key refuses.
 // tier/projectId are ROUTING keys and stay inline on the tool call
 // (the placement pre-check refuses them in the file). stagePersonas
-// values are {name, instructions?} with the platform's caps; the
-// stage-key vocabulary (persona-eligible stages only) is the SEMANTIC
-// check's to name — a propertyNames enum would collapse the finding
-// to "does not satisfy propertyNames" without naming the stage.
+// values are role-first (owner ruling 2026-10-29): a bare role
+// reference string ("in_review": "reviewer") or an object
+// {roleId?, name?, instructions?} carrying at least one of
+// roleId/name (the semantic check names the rule — a schema anyOf
+// would render two confusing failures). The stage-key vocabulary
+// (persona-eligible stages only) is the SEMANTIC check's to name — a
+// propertyNames enum would collapse the finding to "does not satisfy
+// propertyNames" without naming the stage.
 const boardPayloadSchemaSetConfig = `{
 	"type": "object",
 	"additionalProperties": false,
@@ -227,15 +231,17 @@ const boardPayloadSchemaSetConfig = `{
 		"autoAssignReviewer": {"type": "boolean"},
 		"defaultWorkerSlots": {"type": "integer", "minimum": 1},
 		"stagePersonas": {"type": "object",
-			"additionalProperties": {"$ref": "#/$defs/persona"}}
+			"additionalProperties": {"oneOf": [{"$ref": "#/$defs/persona"}, {"$ref": "#/$defs/personaRoleRef"}]}}
 	}
 }`
 
 // boardPayloadSchemasRaw stitches the shared $defs (the criterion item
 // mirrors board.AcceptanceCriterion {text, met}; the persona item
-// mirrors board.PersonaConfig {name, instructions?}) and stamps the cap
-// placeholders (the placeholders keep the caps single-sourced as named
-// constants above); one raw schema per op.
+// mirrors board.PersonaConfig {roleId?, name?, instructions?} —
+// role-first, the legacy name+instructions shape still admitted; the
+// personaRoleRef item is the compact bare-string role reference) and
+// stamps the cap placeholders (the placeholders keep the caps
+// single-sourced as named constants above); one raw schema per op.
 func boardPayloadSchemasRaw() map[string]string {
 	withDefs := func(body string) string {
 		// Splice body's own keywords after $defs inside one root
@@ -244,9 +250,10 @@ func boardPayloadSchemasRaw() map[string]string {
 		stitched := `{"$defs": {"criterion": {"type": "object", "additionalProperties": false,` +
 			`"properties": {"text": {"type": "string", "minLength": 1, "maxLength": boardCritCap}, "met": {"type": "boolean"}},` +
 			`"required": ["text"]}, "persona": {"type": "object", "additionalProperties": false,` +
-			`"properties": {"name": {"type": "string", "minLength": 1, "maxLength": boardPersonaNameCap},` +
-			`"instructions": {"type": "string", "maxLength": boardPersonaInstrCap}},` +
-			`"required": ["name"]}}, ` +
+			`"properties": {"roleId": {"type": "string", "minLength": 1, "maxLength": boardPersonaRoleCap},` +
+			`"name": {"type": "string", "minLength": 1, "maxLength": boardPersonaNameCap},` +
+			`"instructions": {"type": "string", "maxLength": boardPersonaInstrCap}}},` +
+			`"personaRoleRef": {"type": "string", "minLength": 1, "maxLength": boardPersonaRoleCap}}, ` +
 			strings.TrimSpace(strings.TrimPrefix(body, "{"))
 		r := strings.NewReplacer(
 			"boardTitleCap", strconv.Itoa(boardPayloadTitleMaxChars),
@@ -255,6 +262,7 @@ func boardPayloadSchemasRaw() map[string]string {
 			"boardCritCap", strconv.Itoa(boardPayloadCritMaxChars),
 			"boardPersonaNameCap", strconv.Itoa(board.PersonaNameMax),
 			"boardPersonaInstrCap", strconv.Itoa(board.PersonaInstructionsMax),
+			"boardPersonaRoleCap", strconv.Itoa(board.PersonaRoleIDMax),
 		)
 		return r.Replace(stitched)
 	}
@@ -650,6 +658,27 @@ func boardSemanticFindings(op string, payload map[string]any) []boardPayloadFind
 						Fix:      "move the persona to in_progress or in_review, or drop the key",
 						Expected: "in_progress | in_review",
 						Actual:   stage,
+					})
+				}
+			}
+			// The role-first naming rule the object schema's anyOf
+			// leaves to semantics (a persona object carries a role
+			// reference or a legacy name — an object with NEITHER is
+			// the empty persona). Bare-string values always carry the
+			// reference; only objects can be empty.
+			for stage, v := range personas {
+				p, ok := v.(map[string]any)
+				if !ok {
+					continue
+				}
+				roleID, _ := p["roleId"].(string)
+				name, _ := p["name"].(string)
+				if strings.TrimSpace(roleID) == "" && strings.TrimSpace(name) == "" {
+					out = append(out, boardPayloadFinding{
+						Path: "stagePersonas." + stage, Rule: "persona-role-or-name", Severity: "error",
+						Problem:  "the persona object carries neither a roleId nor a name — a persona is a role reference first (owner ruling 2026-10-29), or the legacy name+instructions shape",
+						Fix:      "set roleId to an available agent role (see GET /api/v1/auth/me/agent-roles), or a non-empty name",
+						Expected: "roleId | name",
 					})
 				}
 			}

@@ -523,7 +523,7 @@ func NewRouter(services interfaces.Services, logger *apilogger.Logger, proxyHand
 
 	// Auth routes (public — no auth middleware)
 	authGroup := router.Group("/api/v1/auth")
-	registerAuthRoutes(authGroup, services, cfg.InstanceSettings, logger, cfg.cookieName(), cfg.CookieDomain, cfg.OrgSubdomainBaseDomain, cfg.SSOHandler, cfg.Turnstile, cfg.PasskeyHandler != nil, cfg.PasskeyDefaultSignup)
+	registerAuthRoutes(authGroup, services, cfg.InstanceSettings, logger, cfg.cookieName(), cfg.CookieDomain, cfg.OrgSubdomainBaseDomain, cfg.SSOHandler, cfg.Turnstile, cfg.PasskeyHandler != nil, cfg.PasskeyDefaultSignup, cfg.AgentRoleHandler)
 
 	// US-49.5: Password reset via email (public — the token IS the credential
 	// for confirm; request is always 202 with no enumeration).
@@ -1053,7 +1053,7 @@ func registrationGateMiddleware(instanceSettings *settings.InstanceService) gin.
 }
 
 // API key management routes.
-func registerAuthRoutes(rg *gin.RouterGroup, services interfaces.Services, instanceSettings *settings.InstanceService, logger *apilogger.Logger, cookieName, cookieDomain, subdomainBaseDomain string, ssoHandler *handlers.SSOHandler, turnstile TurnstileRouterConfig, passkeyEnabled, passkeyDefaultSignup bool) {
+func registerAuthRoutes(rg *gin.RouterGroup, services interfaces.Services, instanceSettings *settings.InstanceService, logger *apilogger.Logger, cookieName, cookieDomain, subdomainBaseDomain string, ssoHandler *handlers.SSOHandler, turnstile TurnstileRouterConfig, passkeyEnabled, passkeyDefaultSignup bool, roleH *handlers.AgentRoleHandler) {
 	authSvc := services.GetAuth()
 
 	// Public: feature flag discovery
@@ -1212,6 +1212,14 @@ func registerAuthRoutes(rg *gin.RouterGroup, services interfaces.Services, insta
 	// Authenticated: current user info
 	meGroup := rg.Group("")
 	meGroup.Use(authSvc.AuthMiddleware())
+	// Member-readable agent-role vocabulary (the board persona editor's
+	// dropdown + the persona RoleID validation set): platform roles +
+	// the acting user's org roles. The admin CRUD routes stay
+	// admin-gated; this is a selection read, the org prompt read's
+	// posture.
+	if roleH != nil {
+		meGroup.GET("/me/agent-roles", roleH.ListForMe)
+	}
 	meGroup.GET("/me", func(c *gin.Context) {
 		userID := authSvc.GetUserID(c)
 		if userID == "" {

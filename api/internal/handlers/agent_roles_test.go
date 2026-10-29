@@ -14,6 +14,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"github.com/stretchr/testify/mock"
 
 	"github.com/lenaxia/llmsafespaces/api/internal/services/role"
@@ -83,6 +84,10 @@ func (m *mockRoleStore) ClearWorkspaceAgentRole(ctx context.Context, wsID, userI
 }
 func (m *mockRoleStore) GetWorkspaceOrgID(ctx context.Context, wsID string) (string, error) {
 	args := m.Called(ctx, wsID)
+	return args.String(0), args.Error(1)
+}
+func (m *mockRoleStore) GetUserOrgID(ctx context.Context, userID string) (string, error) {
+	args := m.Called(ctx, userID)
 	return args.String(0), args.Error(1)
 }
 func (m *mockRoleStore) GetOrgPolicies(ctx context.Context, orgID string) ([]*types.OrgPolicy, error) {
@@ -346,4 +351,52 @@ func TestCreateOrg_IsDefault_True_InsertsFalseThenSwaps(t *testing.T) {
 
 	assert.Equal(t, http.StatusCreated, rr.Code)
 	store.AssertCalled(t, "SetOrgDefaultRole", mock.Anything, "org-1", "role-new")
+}
+
+// TestListForMe — the member-readable vocabulary (GET /api/v1/auth/me/agent-roles,
+// owner ruling 2026-10-29: personas REFERENCE agent roles): platform
+// roles plus the acting user's org roles when they belong to one;
+// platform-only when they do not; 401 without an authenticated user.
+func TestListForMe(t *testing.T) {
+	t.Run("platform + org roles", func(t *testing.T) {
+		store := new(mockRoleStore)
+		h := newRoleHandlerTest(store, "user-1")
+		store.On("ListAgentRoles", mock.Anything, "platform", "").Return([]*types.AgentRole{
+			{ID: "r-platform", Scope: "platform", Name: "Reviewer", Slug: "reviewer"},
+		}, nil)
+		store.On("GetUserOrgID", mock.Anything, "user-1").Return("org-1", nil)
+		store.On("ListAgentRoles", mock.Anything, "org", "org-1").Return([]*types.AgentRole{
+			{ID: "r-org", Scope: "org", Name: "Builder", Slug: "build"},
+		}, nil)
+
+		rr := doRoleRequest(t, http.MethodGet, "/me/agent-roles", "/me/agent-roles", h.ListForMe, nil)
+		assert.Equal(t, http.StatusOK, rr.Code)
+		var roles []*types.AgentRole
+		require.NoError(t, json.Unmarshal(rr.Body.Bytes(), &roles))
+		assert.Len(t, roles, 2)
+		assert.Equal(t, "reviewer", roles[0].Slug)
+		assert.Equal(t, "build", roles[1].Slug)
+	})
+
+	t.Run("solo user — platform only, no org arm", func(t *testing.T) {
+		store := new(mockRoleStore)
+		h := newRoleHandlerTest(store, "user-2")
+		store.On("ListAgentRoles", mock.Anything, "platform", "").Return([]*types.AgentRole{
+			{ID: "r-platform", Scope: "platform", Name: "Reviewer", Slug: "reviewer"},
+		}, nil)
+		store.On("GetUserOrgID", mock.Anything, "user-2").Return("", nil)
+
+		rr := doRoleRequest(t, http.MethodGet, "/me/agent-roles", "/me/agent-roles", h.ListForMe, nil)
+		assert.Equal(t, http.StatusOK, rr.Code)
+		var roles []*types.AgentRole
+		require.NoError(t, json.Unmarshal(rr.Body.Bytes(), &roles))
+		assert.Len(t, roles, 1)
+		store.AssertNotCalled(t, "ListAgentRoles", mock.Anything, "org", mock.Anything)
+	})
+
+	t.Run("unauthenticated — 401", func(t *testing.T) {
+		h := newRoleHandlerTest(new(mockRoleStore), "")
+		rr := doRoleRequest(t, http.MethodGet, "/me/agent-roles", "/me/agent-roles", h.ListForMe, nil)
+		assert.Equal(t, http.StatusUnauthorized, rr.Code)
+	})
 }

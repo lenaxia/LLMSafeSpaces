@@ -193,6 +193,45 @@ func TestBoardValidate_HappyPaths(t *testing.T) {
 			`{"epicId":"epc-bbbb2222","tasks":[{"key":"k","title":"T","description":"d","acceptanceCriteria":[{"text":"c"}]}]}`)
 		assert.True(t, report.Valid)
 	})
+
+	// Role-first persona shapes (owner ruling 2026-10-29): the bare
+	// role reference string, the {roleId, instructions?} object, and
+	// the legacy {name, instructions} object all validate clean.
+	t.Run("set_config role-first persona shapes", func(t *testing.T) {
+		for name, payload := range map[string]string{
+			"bare reference":        `{"stagePersonas":{"in_review":"reviewer"}}`,
+			"roleId object":         `{"stagePersonas":{"in_progress":{"roleId":"build"}}}`,
+			"roleId + override":     `{"stagePersonas":{"in_review":{"roleId":"reviewer","instructions":"Adversarial."}}}`,
+			"legacy name shape":     `{"stagePersonas":{"in_review":{"name":"auditor","instructions":"Verify."}}}`,
+			"roleId + display name": `{"stagePersonas":{"in_review":{"roleId":"11111111-1111-1111-1111-111111111111","name":"Reviewer"}}}`,
+		} {
+			report := validateFixture(t, "set_config", payload)
+			assert.True(t, report.Valid, "%s: expected valid, findings %+v", name, report.Findings)
+		}
+	})
+
+	t.Run("set_config persona violation classes", func(t *testing.T) {
+		// An object persona with neither roleId nor name — the
+		// semantic check names the role-or-name rule.
+		report := validateFixture(t, "set_config", `{"stagePersonas":{"in_review":{"instructions":"neither"}}}`)
+		assert.False(t, report.Valid)
+		require.Len(t, report.Findings, 1)
+		f := report.Findings[0]
+		assert.Equal(t, "stagePersonas.in_review", f.Path)
+		assert.Equal(t, "persona-role-or-name", f.Rule)
+		// An empty bare reference rejects at the schema (minLength).
+		report = validateFixture(t, "set_config", `{"stagePersonas":{"in_review":""}}`)
+		assert.False(t, report.Valid)
+		// An unknown field inside a persona object still rejects.
+		report = validateFixture(t, "set_config", `{"stagePersonas":{"in_review":{"roleId":"r","promt":"typo"}}}`)
+		assert.False(t, report.Valid)
+		assert.Contains(t, findingPaths(report), "stagePersonas.in_review")
+		// An ineligible stage keys the semantic stage finding.
+		report = validateFixture(t, "set_config", `{"stagePersonas":{"backlog":"build"}}`)
+		assert.False(t, report.Valid)
+		paths := findingPaths(report)
+		assert.Contains(t, paths, "stagePersonas.backlog")
+	})
 }
 
 func TestBoardValidate_ViolationClasses(t *testing.T) {

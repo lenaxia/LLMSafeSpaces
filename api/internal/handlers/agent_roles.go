@@ -28,6 +28,9 @@ type roleStore interface {
 	SetWorkspaceAgentRole(ctx context.Context, workspaceID, roleID, userID string) error
 	ClearWorkspaceAgentRole(ctx context.Context, workspaceID, userID string) error
 	GetWorkspaceOrgID(ctx context.Context, workspaceID string) (string, error)
+	// GetUserOrgID resolves the acting user's org ("" when they belong
+	// to none) — ListForMe's org-arm input.
+	GetUserOrgID(ctx context.Context, userID string) (string, error)
 	GetOrgPolicies(ctx context.Context, orgID string) ([]*types.OrgPolicy, error)
 	LogOrgEvent(ctx context.Context, orgID, actorID, action, targetID string, metadata map[string]any) error
 	LogAuditEvent(ctx context.Context, domain, actorID, action, targetID string, orgID *string, metadata map[string]any) error
@@ -377,6 +380,40 @@ func (h *AgentRoleHandler) DeleteOrg(c *gin.Context) {
 }
 
 // --- Workspace Role Selection ---
+
+// ListForMe renders the acting user's SELECTABLE agent-role vocabulary
+// (member-readable, route GET /api/v1/me/agent-roles): platform roles
+// plus their org's when they belong to one. This is the surface the
+// board persona editor's per-stage dropdown consumes and the set the
+// board config's persona RoleID validation resolves against — the
+// admin CRUD routes stay admin-gated; selection vocabulary is a
+// member read (the same posture as the org prompt read).
+func (h *AgentRoleHandler) ListForMe(c *gin.Context) {
+	userID := h.authSvc.GetUserID(c)
+	if userID == "" {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "authentication required"})
+		return
+	}
+	roles, err := h.store.ListAgentRoles(c.Request.Context(), "platform", "")
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to list platform roles"})
+		return
+	}
+	orgID, err := h.store.GetUserOrgID(c.Request.Context(), userID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to resolve user org"})
+		return
+	}
+	if orgID != "" {
+		orgRoles, err := h.store.ListAgentRoles(c.Request.Context(), "org", orgID)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to list org roles"})
+			return
+		}
+		roles = append(roles, orgRoles...)
+	}
+	c.JSON(http.StatusOK, roles)
+}
 
 func (h *AgentRoleHandler) GetWorkspaceRole(c *gin.Context) {
 	wsID := c.Param("id")

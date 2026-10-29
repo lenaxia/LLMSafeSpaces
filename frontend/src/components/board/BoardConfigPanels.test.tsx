@@ -10,7 +10,14 @@ import {
   BoardDefaultsDialog,
   ProjectConfigDialog,
 } from "./BoardConfigPanels";
-import { boardApi, type BoardConfig, type BoardProject, type ProjectBoardConfig } from "../../api/board";
+import {
+  boardApi,
+  type BoardConfig,
+  type BoardPersonaConfig,
+  type BoardProject,
+  type ProjectBoardConfig,
+} from "../../api/board";
+import { agentRolesApi } from "../../api/agentRoles";
 
 // BoardConfigPanels — the relocated board config surfaces (owner
 // ruling 2026-10-28: config ON the board, alongside the projects).
@@ -31,6 +38,41 @@ vi.mock("../../api/board", () => ({
   },
   BOARD_REVIEW_COLUMNS: ["off", "manual", "auto"],
 }));
+
+// The persona editor's role vocabulary (owner ruling 2026-10-29:
+// personas REFERENCE the platform's agent roles — the dropdown's
+// source).
+vi.mock("../../api/agentRoles", () => ({
+  agentRolesApi: {
+    listForMe: vi.fn(),
+  },
+}));
+
+/** The wire shape the save-body assertions read (roleId-first). */
+type BoardPersonaConfigShape = BoardPersonaConfig;
+
+const REVIEWER_ROLE = {
+  id: "11111111-1111-1111-1111-111111111111",
+  scope: "platform",
+  name: "Code Reviewer",
+  slug: "reviewer",
+  description: "",
+  isDefault: false,
+  config: {},
+  createdAt: "",
+  updatedAt: "",
+};
+const BUILD_ROLE = {
+  id: "22222222-2222-2222-2222-222222222222",
+  scope: "org",
+  name: "Builder",
+  slug: "build",
+  description: "",
+  isDefault: false,
+  config: {},
+  createdAt: "",
+  updatedAt: "",
+};
 
 const USER: BoardConfig = { reviewColumn: "manual", autoAssignReviewer: false, defaultWorkerSlots: 2 };
 const PC_A: ProjectBoardConfig = {
@@ -93,6 +135,7 @@ beforeEach(() => {
     id === "prj-aaaa1111" ? PC_A : id === "prj-cccc3333" ? PC_PERSONAS : PC_B,
   );
   vi.mocked(boardApi.updateProject).mockResolvedValue(PROJECT);
+  vi.mocked(agentRolesApi.listForMe).mockResolvedValue([REVIEWER_ROLE, BUILD_ROLE]);
 });
 
 describe("BoardDefaultsDialog — the user tier, ON the board", () => {
@@ -220,7 +263,7 @@ describe("BoardDefaultsDialog — the user tier, ON the board", () => {
     expect((body as { stagePersonas?: unknown }).stagePersonas).toEqual({});
   });
 
-  it("suppression warning fires when the composition is live and no in_review entry exists; the one-click import adds DefaultReviewerPersona", async () => {
+  it("suppression warning fires when the composition is live and no in_review entry exists; the one-click import adds the reviewer ROLE persona", async () => {
     const user = userEvent.setup();
     vi.mocked(boardApi.getUserBoardConfig).mockResolvedValue({
       ...USER,
@@ -234,13 +277,19 @@ describe("BoardDefaultsDialog — the user tier, ON the board", () => {
     expect(warning).toHaveTextContent(/suppresses the built-in auto-reviewer persona/);
     await user.click(screen.getByTestId("cfg-personas-user-add-reviewer"));
     expect(screen.queryByTestId("cfg-personas-user-warning")).not.toBeInTheDocument();
-    expect((screen.getByTestId("cfg-personas-user-in_review-name") as HTMLInputElement).value).toBe("reviewer");
+    // The vocabulary carries a reviewer role → the import is ROLE-FIRST
+    // (owner ruling 2026-10-29): the dropdown shows the role, the prose
+    // rides as the override layer, and the save carries the role id.
+    expect(screen.getByTestId("cfg-personas-user-in_review-role").textContent).toContain("Code Reviewer");
+    expect(screen.queryByTestId("cfg-personas-user-in_review-name")).not.toBeInTheDocument();
+    expect(
+      (screen.getByTestId("cfg-personas-user-in_review-instructions") as HTMLTextAreaElement).value,
+    ).toContain("board_record_verdict");
     await user.click(screen.getByTestId("cfg-save-global"));
     await waitFor(() => expect(boardApi.setUserBoardConfig).toHaveBeenCalled());
     const body = vi.mocked(boardApi.setUserBoardConfig).mock.calls[0]![0];
-    const sent = (body as { stagePersonas?: Record<string, { name: string; instructions?: string }> })
-      .stagePersonas!;
-    expect(sent.in_review?.name).toBe("reviewer");
+    const sent = (body as { stagePersonas?: Record<string, BoardPersonaConfigShape> }).stagePersonas!;
+    expect(sent.in_review?.roleId).toBe(REVIEWER_ROLE.id);
     expect(sent.in_review?.instructions).toContain("board_record_verdict");
   });
 
@@ -441,5 +490,47 @@ describe("ProjectConfigDialog — the project tier, alongside the projects", () 
     expect(save.disabled).toBe(true);
     expect(boardApi.setProjectBoardConfig).not.toHaveBeenCalled();
     expect(boardApi.updateProject).not.toHaveBeenCalled();
+  });
+  it("role-first editing — a persona carrying roleId renders the role dropdown + override, no free-form name input; the save carries the reference", async () => {
+    const user = userEvent.setup();
+    // A stored role-bearing persona (slug reference — the platform
+    // accepts id or slug).
+    vi.mocked(boardApi.getProjectBoardConfig).mockImplementation(async () => ({
+      project_id: "prj-dddd4444",
+      overrides: {
+        stagePersonas: {
+          in_review: { roleId: "reviewer", name: "Code Reviewer", instructions: "Verify adversarially." },
+        },
+      },
+      effective: {
+        ...USER,
+        stagePersonasSet: true,
+        stagePersonas: { in_review: { roleId: "reviewer", instructions: "Verify adversarially." } },
+      },
+    }));
+    renderProject();
+    const row = await screen.findByTestId("cfg-personas-prj-bbbb2222-in_review-row");
+    // (the dropdown renders the referenced role's label)
+    expect(row.textContent).toContain("Code Reviewer (platform)");
+    expect(screen.queryByTestId("cfg-personas-prj-bbbb2222-in_review-name")).not.toBeInTheDocument();
+    expect(screen.getByTestId("cfg-personas-prj-bbbb2222-in_review-role-note").textContent).toContain(
+      "single source of truth",
+    );
+    // Dirty the override → save carries the persona verbatim (the
+    // reference is never stripped).
+    const ta = screen.getByTestId("cfg-personas-prj-bbbb2222-in_review-instructions") as HTMLTextAreaElement;
+    await user.type(ta, " More.");
+    await user.click(screen.getByTestId("cfg-save-prj-bbbb2222"));
+    await waitFor(() => expect(boardApi.setProjectBoardConfig).toHaveBeenCalled());
+    const body = vi.mocked(boardApi.setProjectBoardConfig).mock.calls[0]![1];
+    const sent = (body as { stagePersonas?: Record<string, BoardPersonaConfigShape> }).stagePersonas!;
+    expect(sent.in_review?.roleId).toBe("reviewer");
+    expect(sent.in_review?.instructions).toBe("Verify adversarially. More.");
+  });
+
+  it("a legacy name-only persona stays editable in the role-less lane (name input renders)", async () => {
+    renderProject({ ...PROJECT, short_id: "prj-cccc3333" });
+    const name = await screen.findByTestId("cfg-personas-prj-cccc3333-in_review-name");
+    expect((name as HTMLInputElement).value).toBe("auditor");
   });
 });
