@@ -3,6 +3,7 @@
 
 import * as Dialog from "@radix-ui/react-dialog";
 import { useQuery } from "@tanstack/react-query";
+import { Link } from "react-router-dom";
 import { Button } from "../ui/Button";
 import { BoardErrorNotice } from "./BoardErrorNotice";
 import { X, Pencil, History } from "lucide-react";
@@ -74,6 +75,59 @@ interface TaskDrawerProps {
   projectTasks?: BoardTask[];
   /** The edit affordance — hands the task back for the edit dialog. */
   onEdit?: (task: BoardTask) => void;
+  /** The project's target workspace id — the session links' first chat
+   * route segment (2026-10-29 owner ruling: the drawer's assignee /
+   * implementer fields click straight through to the session's chat
+   * view). Without it the fields render as plain text (never a broken
+   * link). */
+  workspaceId?: string;
+}
+
+/** The chat-route session link — the drawer's one shared renderer for
+ * the assignee and implementer refs (owner ruling 2026-10-29: the ids
+ * popup is where ids live, and ids that name sessions are CLICKABLE).
+ * The value rides the read edge already phrase-translated (#1922) —
+ * the phrase is both the display text and the route segment; the cold
+ * window's raw harness id links too (still resolvable — never worse),
+ * flagged via data-deprecated for the UI, never a broken href. An
+ * archived/deleted session renders the link all the same: the chat
+ * page owns the not-found state. */
+function SessionLink({
+  sessionId,
+  workspaceId,
+  deprecated,
+  testId,
+  label,
+}: {
+  sessionId: string;
+  workspaceId?: string;
+  deprecated?: boolean;
+  testId: string;
+  label: string;
+}) {
+  if (!sessionId) return null;
+  if (!workspaceId) {
+    return (
+      <span data-testid={testId} title={sessionId}>
+        {sessionId}
+      </span>
+    );
+  }
+  return (
+    <Link
+      to={`/chat/${encodeURIComponent(workspaceId)}/${encodeURIComponent(sessionId)}`}
+      data-testid={testId}
+      data-deprecated={deprecated ? "true" : undefined}
+      title={
+        deprecated
+          ? `${sessionId} — raw session id (phrase not yet minted); opens the session's chat view`
+          : `${label} ${sessionId} — opens the session's chat view`
+      }
+      className="max-w-[11rem] truncate font-mono text-primary underline decoration-dotted underline-offset-2 hover:text-primary/80"
+    >
+      {sessionId}
+    </Link>
+  );
 }
 
 /** One timeline row's action-specific payload arm. */
@@ -143,7 +197,7 @@ function VerdictView({ verdict }: { verdict: BoardVerdict }) {
  * timeline (the events read — stage transitions, claims who/when, review
  * verdicts when present, dependency-graph changes, orphan/unblock).
  */
-export function TaskDrawer({ open, onOpenChange, task, projectTasks = [], onEdit }: TaskDrawerProps) {
+export function TaskDrawer({ open, onOpenChange, task, projectTasks = [], onEdit, workspaceId }: TaskDrawerProps) {
   const eventsQuery = useQuery({
     queryKey: ["board", "task-events", task?.short_id ?? null],
     queryFn: () => boardApi.taskEvents(task!.short_id, TASK_EVENTS_LIMIT),
@@ -205,13 +259,37 @@ export function TaskDrawer({ open, onOpenChange, task, projectTasks = [], onEdit
               <span className="text-muted-foreground">Claim / lease</span>
               <span className="flex items-center gap-2 font-mono text-[10px]">
                 {task.assignee_session ? (
-                  <span data-testid="drawer-assignee">{task.assignee_session}</span>
+                  <SessionLink
+                    sessionId={task.assignee_session}
+                    workspaceId={workspaceId}
+                    deprecated={task.assignee_session_deprecated}
+                    testId="drawer-assignee"
+                    label="Worker"
+                  />
                 ) : null}
                 <span data-testid="drawer-lease">
                   {task.lease_expires_at ? `until ${hhmm(task.lease_expires_at)}` : "unclaimed —"}
                 </span>
               </span>
             </div>
+            {/* 2026-10-29 owner ruling: the #1959 implementer identity is
+             * on the read edge — render it as the second clickable
+             * session ref (during review the assignee is the reviewer;
+             * this names the session that did the work). */}
+            {task.implementer_session && (
+              <div className="flex items-center justify-between rounded-md border border-border px-2 py-1.5">
+                <span className="text-muted-foreground" title="The session that moved this row to review (the original worker; during review the assignee is the reviewer)">
+                  Implementer
+                </span>
+                <SessionLink
+                  sessionId={task.implementer_session}
+                  workspaceId={workspaceId}
+                  deprecated={task.implementer_session_deprecated}
+                  testId="drawer-implementer"
+                  label="Implementer"
+                />
+              </div>
+            )}
             {deps.length > 0 && (
               <div className="flex flex-col gap-1 rounded-md border border-border px-2 py-1.5" data-testid="drawer-blocked-by">
                 <span className="text-[10px] uppercase tracking-wide text-muted-foreground">Blocked by</span>

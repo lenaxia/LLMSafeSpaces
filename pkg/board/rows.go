@@ -122,11 +122,17 @@ type Task struct {
 	// ruling's bounce re-dispatches. Captured at the forward exit
 	// (=assignee_session at that moment), preserved through the whole
 	// review lifecycle (the reviewer mint/stamp/lapse never touches
-	// it), cleared on every new episode. Internal engine addressing —
-	// deliberately NOT exposed on read edges (no phrase-translation
-	// debt); `json:"-"` keeps it off the wire.
-	ImplementerSession string `json:"-"`
-	ClaimToken         string `json:"claim_token,omitempty"`
+	// it), cleared on every new episode. Exposed on READ edges only
+	// (owner ruling 2026-10-29 — the board card/drawer links straight
+	// through to the implementer's session; during review the assignee
+	// is the reviewer, so this is the row's worker identity): the
+	// #1922 read-edge phrase translation resolves it exactly like
+	// assignee_session. Write paths keep it internal addressing.
+	ImplementerSession string `json:"implementer_session,omitempty"`
+	// ImplementerSessionDeprecated: the cold-window degrade flag for
+	// the field above — see AssigneeSessionDeprecated (#1922).
+	ImplementerSessionDeprecated bool   `json:"implementer_session_deprecated,omitempty"`
+	ClaimToken                   string `json:"claim_token,omitempty"`
 	// ClaimPersona is the live claim's persona provenance (#1941 mint,
 	// made durable by #1946): the configured persona name whose mint
 	// holds the row. Empty on every ordinary claim (worker grant,

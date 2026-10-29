@@ -46,15 +46,52 @@ func TestLookupSessionPhrases(t *testing.T) {
 
 func TestFlagUntranslated(t *testing.T) {
 	byProject := map[string][]*Task{
-		"p1": {{AssigneeSession: "ses_a"}, {AssigneeSession: "ses_b"}},
+		"p1": {
+			{AssigneeSession: "ses_a"},
+			{AssigneeSession: "ses_b"},
+			// The 2026-10-29 ruling's field: a review-lifecycle row can
+			// carry ONLY the implementer (claim cleared, identity kept).
+			{ImplementerSession: "ses_impl"},
+			// Both fields raw — both flag.
+			{AssigneeSession: "ses_c", ImplementerSession: "ses_impl_c"},
+		},
 	}
 	flagUntranslated(byProject)
 	for _, ts := range byProject {
 		for _, task := range ts {
-			if !task.AssigneeSessionDeprecated {
-				t.Errorf("resolve failure must flag %q deprecated (raw stays)", task.AssigneeSession)
+			if task.AssigneeSession != "" && !task.AssigneeSessionDeprecated {
+				t.Errorf("resolve failure must flag the raw assignee %q deprecated", task.AssigneeSession)
+			}
+			if task.ImplementerSession != "" && !task.ImplementerSessionDeprecated {
+				t.Errorf("resolve failure must flag the raw implementer %q deprecated", task.ImplementerSession)
 			}
 		}
+	}
+}
+
+// TestTranslateSessionField — the 2026-10-29 ruling's per-field helper:
+// each session field translates independently (warm phrase / cold
+// raw+flagged / empty stays unflagged / phrase-form is a no-op).
+func TestTranslateSessionField(t *testing.T) {
+	phrases := map[string]string{"ses_known": "amber-falcon-glides"}
+	cases := []struct {
+		name           string
+		in             string
+		wantVal        string
+		wantDeprecated bool
+	}{
+		{"empty stays empty and unflagged", "", "", false},
+		{"already-phrase guard", "amber-falcon-glides", "amber-falcon-glides", false},
+		{"warm translate", "ses_known", "amber-falcon-glides", false},
+		{"cold degrade raw+flagged", "ses_cold", "ses_cold", true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			val, deprecated := translateSessionField(tc.in, phrases)
+			if val != tc.wantVal || deprecated != tc.wantDeprecated {
+				t.Errorf("translateSessionField(%q) = (%q,%v), want (%q,%v)", tc.in, val, deprecated, tc.wantVal, tc.wantDeprecated)
+			}
+		})
 	}
 }
 
@@ -83,11 +120,11 @@ func TestTranslateActorSessionPhrase(t *testing.T) {
 }
 
 func TestPayloadAssigneeIDs(t *testing.T) {
-	payload := []byte(`{"snapshot":{"assignee_session":"ses_a","stage":"in_progress"},
+	payload := []byte(`{"snapshot":{"assignee_session":"ses_a","implementer_session":"ses_impl","stage":"in_progress"},
 		"other":{"nested":[{"assignee_session":"ses_b"},{"assignee_session":"amber-falcon-glides"}]}}`)
 	got := PayloadAssigneeIDs(payload)
 	slices.Sort(got) // set semantics — the map-walk's visit order is not contractual (Go map iteration is randomized; only the collected set is)
-	want := []string{"ses_a", "ses_b"}
+	want := []string{"ses_a", "ses_b", "ses_impl"}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("got %v want %v (phrase-form values are skipped)", got, want)
 	}
@@ -134,6 +171,33 @@ func TestTranslatePayloadAssignees(t *testing.T) {
 	}
 	if snap["assignee_session_deprecated"] != true {
 		t.Errorf("cold snapshot must carry assignee_session_deprecated=true, got %v", snap["assignee_session_deprecated"])
+	}
+
+	// The 2026-10-29 ruling's field: implementer_session rides the same
+	// emission translation (warm phrase / cold raw+flagged).
+	implPhrases := map[string]string{"ses_known": "amber-falcon-glides", "ses_impl_known": "brave-osprey-lands"}
+	impl := []byte(`{"snapshot":{"assignee_session":"ses_known","implementer_session":"ses_impl_known","implementer_session_deprecated":true}}`)
+	if err := json.Unmarshal(TranslatePayloadAssignees(impl, implPhrases), &m); err != nil {
+		t.Fatalf("implementer warm output must be valid JSON: %v", err)
+	}
+	snap = m["snapshot"].(map[string]any)
+	if snap["implementer_session"] != "brave-osprey-lands" {
+		t.Errorf("warm implementer must carry the phrase, got %v", snap["implementer_session"])
+	}
+	if _, flagged := snap["implementer_session_deprecated"]; flagged {
+		t.Errorf("warm implementer must drop the stale deprecation flag")
+	}
+
+	implCold := []byte(`{"snapshot":{"implementer_session":"ses_impl_cold"}}`)
+	if err := json.Unmarshal(TranslatePayloadAssignees(implCold, implPhrases), &m); err != nil {
+		t.Fatalf("implementer cold output must be valid JSON: %v", err)
+	}
+	snap = m["snapshot"].(map[string]any)
+	if snap["implementer_session"] != "ses_impl_cold" {
+		t.Errorf("cold implementer keeps the raw id (never worse), got %v", snap["implementer_session"])
+	}
+	if snap["implementer_session_deprecated"] != true {
+		t.Errorf("cold implementer carries implementer_session_deprecated=true, got %v", snap["implementer_session_deprecated"])
 	}
 }
 

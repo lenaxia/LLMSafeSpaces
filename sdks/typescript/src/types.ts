@@ -564,6 +564,16 @@ export interface BoardTask {
   is_blocked: boolean;
   blocked_by?: string[];
   assignee_session?: string;
+  /** Set when assignee_session could not be resolved to the session
+   * phrase (#1922 cold window — the value is the raw harness id, still
+   * a resolvable session ref). */
+  assignee_session_deprecated?: boolean;
+  /** #1959 implementer identity (the session that moved the row to
+   * in_review) — a resolvable session ref exactly like
+   * assignee_session (owner ruling 2026-10-29). */
+  implementer_session?: string;
+  /** Cold-window degrade flag for implementer_session. */
+  implementer_session_deprecated?: boolean;
   claim_token?: string;
   lease_expires_at?: string | null;
   last_progress_at?: string | null;
