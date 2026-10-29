@@ -20,6 +20,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -556,7 +557,13 @@ func mcpListModels(ctx context.Context, password string) (string, error) {
 // artificial timeout: it completes whenever the turn completes (a
 // client-side cap would serve no correctness purpose — opencode owns
 // the turn once admitted).
-func mcpCreateSession(ctx context.Context, password, prompt, title string) (string, error) {
+//
+// Idle-subscriptions v1 (design §5): subscribe=true additionally
+// registers the CALLER→child watch edge after creation + short-id
+// registration. The flag never gates creation itself — creation never
+// needed an origin — so every refusal path degrades to a loud warning
+// with "subscribed": false, never a failed create.
+func mcpCreateSession(ctx context.Context, password, prompt, title string, subscribe bool, injectedSession string) (string, error) {
 	prompt = strings.TrimSpace(prompt)
 	if prompt == "" {
 		return "", fmt.Errorf("prompt is required")
@@ -588,6 +595,16 @@ func mcpCreateSession(ctx context.Context, password, prompt, title string) (stri
 		regCancel()
 	}
 
+	// §5 create_session+subscribe: the CALLER watches the NEW session.
+	// The child is top-level by construction (create_session births
+	// peers, never subtasks) — only the CALLER's side needs the
+	// subagent check. The default event set (idle+error) applies.
+	subscribed := false
+	var subWarn string
+	if subscribe {
+		subscribed, subWarn = subscribeCallerToCreatedSession(ctx, password, client, sessionID, injectedSession)
+	}
+
 	logger := log
 	go func() {
 		if _, err := seamClientWithPassword(password).SessionSend(context.WithoutCancel(ctx), sessionID, prompt, "", nil); err != nil {
@@ -600,7 +617,7 @@ func mcpCreateSession(ctx context.Context, password, prompt, title string) (stri
 	// harness id never emits (degraded window: the seam timed out, the
 	// phrase arrives via the replica's next pull — emit the harness id
 	// with the deprecation clause).
-	result := map[string]string{
+	result := map[string]any{
 		"status":        "created",
 		"session_id":    sessionID,
 		"prompt_status": "delivering_in_background",
@@ -609,6 +626,12 @@ func mcpCreateSession(ctx context.Context, password, prompt, title string) (stri
 		result["session_id"] = shortID
 	} else {
 		result["deprecation"] = "session registered without a phrase (platform unavailable); address it by phrase after the replica converges — re-list with session_list"
+	}
+	if subscribe {
+		result["subscribed"] = subscribed
+		if subWarn != "" {
+			result["warning"] = subWarn
+		}
 	}
 	out, _ := json.Marshal(result)
 	return string(out), nil
@@ -1973,6 +1996,295 @@ func mcpSendMessage(ctx context.Context, password, sessionID, message, injectedS
 	}
 	out, _ := json.Marshal(result)
 	return string(out), nil
+}
+
+// --- session subscriptions (idle-subscriptions v1, design §5) --------------
+
+// sessionNotifierAtomic holds the process-wide subscription engine
+// (the sessionShortIDsAtomic precedent). The MCP handlers reach the
+// engine through currentSessionNotifier(); task 4's main wiring swaps
+// in the fully-wired engine (authority stream + facts ticker + the
+// V1-POST deliverer) via setSessionNotifier; tests swap in isolated
+// stores. The default carries the production registry store and the
+// ListSessions-backed lineage facts so the surface is functional the
+// moment the process boots — edges registered before the stream
+// wiring lands are durable in the store and start firing once the
+// consumer runs.
+var sessionNotifierAtomic atomic.Value // *sessionNotifier
+
+func init() {
+	sessionNotifierAtomic.Store(newSessionNotifier(sessionNotifierConfig{
+		Store: newSessionSubscriptionStore(defaultSessionSubscriptionsPath),
+		Facts: newHarnessSessionFacts(),
+	}))
+}
+
+func currentSessionNotifier() *sessionNotifier {
+	if v, ok := sessionNotifierAtomic.Load().(*sessionNotifier); ok {
+		return v
+	}
+	return nil
+}
+
+// setSessionNotifier swaps the engine (main wiring + tests).
+func setSessionNotifier(n *sessionNotifier) { sessionNotifierAtomic.Store(n) }
+
+// subscriptionRowsFor is the nil-safe registry read behind
+// list_subscriptions (the engine's store; nil engine ⇒ empty).
+func subscriptionRowsFor(subscriber string) []SubscriptionRow {
+	if n := currentSessionNotifier(); n != nil && n.store != nil {
+		return n.store.rowsForSubscriber(subscriber)
+	}
+	return nil
+}
+
+// resolveSubscriptionCaller resolves the CALLER (subscriber) identity
+// for the subscription tools: lsp_injected_session ONLY — the #1849
+// send_message posture (refuse an unattested origin; the agent is
+// never responsible for its own identity). The resolveCallerSession
+// degraded-pod fallback (single-busy-session heuristic,
+// mcp_tools.go's delete tools) is deliberately NOT used here: a wrong
+// guess registers a wrong durable edge, a silent failure the caller
+// cannot see. The injected ref resolves through the same §4.4
+// precedence as every other address and is validated by ID against
+// the harness (the by-ID probe is immune to the #1452 list gap).
+func resolveSubscriptionCaller(ctx context.Context, password, injectedSession string) (string, error) {
+	self := strings.TrimSpace(injectedSession)
+	if self == "" {
+		return "", fmt.Errorf("no caller identity: the platform could not inject your session ID — the workspace's opencode plugin is absent or outdated (degraded pod). Nothing was subscribed; report the missing plugin to the platform")
+	}
+	resolved, err := resolveSessionRef(ctx, password, self)
+	if err != nil {
+		return "", fmt.Errorf("caller identity: %w", err)
+	}
+	client := seamClientWithPassword(password)
+	exists, err := client.SessionExists(ctx, resolved)
+	if err != nil {
+		return "", fmt.Errorf("failed to resolve caller session %s: %w", emitID(resolved), err)
+	}
+	if !exists {
+		return "", fmt.Errorf("caller session %s not found in this workspace%s",
+			emitID(resolved), sessionSuggestClause(ctx, client, resolved))
+	}
+	return resolved, nil
+}
+
+// subscriptionLineage pulls the raw wire session list — the ONLY
+// surface carrying parentID (investigation C1; the authority
+// projection has no parent field) — and returns the id→parent map
+// ("" = top-level). The pull also folds into the engine's lineage
+// facts when they are the ListSessions-backed kind, so the notifier's
+// own registration/notify-time subtask guards (§4.6
+// belt-and-suspenders) see the same data.
+func subscriptionLineage(ctx context.Context, client *opencode.Client) (map[string]string, error) {
+	sessions, err := pullHarnessSessionList(ctx, client)
+	if err != nil {
+		return nil, err
+	}
+	if n := currentSessionNotifier(); n != nil {
+		if hf, ok := n.facts.(*harnessSessionFacts); ok {
+			hf.Load(sessions)
+		}
+	}
+	parents := make(map[string]string, len(sessions))
+	for i := range sessions {
+		if sessions[i].ID != "" {
+			parents[sessions[i].ID] = sessions[i].ParentID
+		}
+	}
+	return parents, nil
+}
+
+// mcpSubscribeSession registers caller→target — "watch this session,
+// wake me when its turn completes" (design §5). Order: fast-fail
+// event validation (no seam traffic), caller identity (#1849),
+// target resolution + existence (did-you-mean on miss), lineage both
+// sides (§4.6), then the engine's §4.1 guards (self/cycle/cap) and
+// the durable write. Every refusal is loud; nothing is guessed.
+func mcpSubscribeSession(ctx context.Context, password, targetRef string, events []string, injectedSession string) (string, error) {
+	targetRef = strings.TrimSpace(targetRef)
+	if targetRef == "" {
+		return "", fmt.Errorf("session_id is required")
+	}
+	// Fast-fail the closed vocabulary before any seam round trip.
+	if _, err := validateSubscriptionEvents(events); err != nil {
+		return "", err
+	}
+	caller, err := resolveSubscriptionCaller(ctx, password, injectedSession)
+	if err != nil {
+		return "", err
+	}
+	client := seamClientWithPassword(password)
+	target, rerr := resolveSessionRef(ctx, password, targetRef)
+	if rerr != nil {
+		return "", fmt.Errorf("session_id: %w", rerr)
+	}
+	exists, err := client.SessionExists(ctx, target)
+	if err != nil {
+		return "", fmt.Errorf("failed to resolve session %s: %w", emitID(target), err)
+	}
+	if !exists {
+		// #1663: a not-found id gets the near-miss did-you-mean clause;
+		// suggest-only, never an auto-correct.
+		return "", fmt.Errorf("session %s not found in this workspace (IDs from session_list)%s",
+			emitID(target), sessionSuggestClause(ctx, client, target))
+	}
+	// §4.6 subtask exclusion, BOTH sides, at registration: the parent
+	// receives subtask results synchronously through the task tool
+	// (broadcaster side is pure noise); subtasks return and terminate
+	// (subscriber side never takes wake-up turns).
+	parents, lerr := subscriptionLineage(ctx, client)
+	if lerr != nil {
+		return "", fmt.Errorf("could not verify session lineage: %w", lerr)
+	}
+	if parents[target] != "" {
+		return "", fmt.Errorf("%w: broadcaster %s is a subtask (its parent receives its result synchronously through the task tool)",
+			errNotifySubtaskSide, emitID(target))
+	}
+	if parents[caller] != "" {
+		return "", fmt.Errorf("%w: subscriber %s is a subtask (subagents return to their parent, never take wake-up turns)",
+			errNotifySubtaskSide, emitID(caller))
+	}
+	row, serr := currentSessionNotifier().Subscribe(target, caller, events)
+	if serr != nil {
+		return "", serr
+	}
+	if row == nil {
+		return "", fmt.Errorf("subscription registry unavailable — nothing was subscribed")
+	}
+	// #1756 §1: the identifier output IS the phrase (flagged when the
+	// replica is cold); a deprecated input form gets the notice.
+	id, degraded := emitIDFields(target)
+	result := map[string]any{
+		"status":     "subscribed",
+		"session_id": id,
+		"events":     row.Events,
+	}
+	if degraded {
+		result["session_id_deprecated"] = "true"
+	}
+	if note := strings.TrimSpace(deprecationNote(targetRef)); note != "" {
+		result["deprecation"] = note
+	}
+	out, _ := json.Marshal(result)
+	return string(out), nil
+}
+
+// mcpUnsubscribeSession removes the caller's watch edge on the target
+// — idempotent by contract (absent edge ⇒ not_subscribed, never an
+// error). No existence probe: removing an edge for a vanished session
+// IS the lazy-cleanup path; resolution failures still refuse loudly.
+func mcpUnsubscribeSession(ctx context.Context, password, targetRef, injectedSession string) (string, error) {
+	targetRef = strings.TrimSpace(targetRef)
+	if targetRef == "" {
+		return "", fmt.Errorf("session_id is required")
+	}
+	caller, err := resolveSubscriptionCaller(ctx, password, injectedSession)
+	if err != nil {
+		return "", err
+	}
+	target, rerr := resolveSessionRef(ctx, password, targetRef)
+	if rerr != nil {
+		return "", fmt.Errorf("session_id: %w", rerr)
+	}
+	status := "unsubscribed"
+	if !currentSessionNotifier().Unsubscribe(target, caller) {
+		status = "not_subscribed"
+	}
+	// #1756 §1 parity with subscribe.
+	id, degraded := emitIDFields(target)
+	result := map[string]any{
+		"status":     status,
+		"session_id": id,
+	}
+	if degraded {
+		result["session_id_deprecated"] = "true"
+	}
+	if note := strings.TrimSpace(deprecationNote(targetRef)); note != "" {
+		result["deprecation"] = note
+	}
+	out, _ := json.Marshal(result)
+	return string(out), nil
+}
+
+// mcpListSubscriptions lists outbound watch edges: the caller's by
+// default (caller identity required — #1849 posture), or the named
+// session's when session_id is passed (explicit target, no caller
+// identity needed). Phrases emitted, never raw harness ids on the
+// warm path (#1756 §1).
+func mcpListSubscriptions(ctx context.Context, password, targetRef, injectedSession string) (string, error) {
+	owner := ""
+	if ref := strings.TrimSpace(targetRef); ref != "" {
+		resolved, rerr := resolveSessionRef(ctx, password, ref)
+		if rerr != nil {
+			return "", fmt.Errorf("session_id: %w", rerr)
+		}
+		owner = resolved
+	} else {
+		caller, err := resolveSubscriptionCaller(ctx, password, injectedSession)
+		if err != nil {
+			return "", err
+		}
+		owner = caller
+	}
+	rows := subscriptionRowsFor(owner)
+	type subRow struct {
+		SessionID string   `json:"session_id"`
+		Events    []string `json:"events"`
+		CreatedAt string   `json:"created_at"`
+	}
+	outRows := make([]subRow, 0, len(rows))
+	for _, row := range rows {
+		outRows = append(outRows, subRow{
+			SessionID: emitID(row.Broadcaster),
+			Events:    row.Events,
+			CreatedAt: row.CreatedAt.UTC().Format(time.RFC3339),
+		})
+	}
+	// nil Events marshals as null — emit [] not null for an empty set.
+	for i := range outRows {
+		if outRows[i].Events == nil {
+			outRows[i].Events = []string{}
+		}
+	}
+	payload, _ := json.Marshal(map[string]any{
+		"count":         len(outRows),
+		"subscriptions": outRows,
+	})
+	return string(payload), nil
+}
+
+// subscribeCallerToCreatedSession is create_session's §5 subscribe
+// leg: register caller→child after creation + short-id registration.
+// The flag NEVER gates creation (creation never needed an origin), so
+// every refusal here degrades to (false, warning) — the loud-but-
+// non-fatal posture — instead of failing the create. The child is
+// top-level by construction, so only the CALLER's side needs the
+// subagent check (§4.6).
+func subscribeCallerToCreatedSession(ctx context.Context, password string, client *opencode.Client, childID, injectedSession string) (bool, string) {
+	self := strings.TrimSpace(injectedSession)
+	if self == "" {
+		return false, "subscribe requested but no caller identity: the platform could not inject your session ID (degraded pod) — the session was created; subscribe explicitly with subscribe_session once the plugin is back"
+	}
+	caller, err := resolveSessionRef(ctx, password, self)
+	if err != nil {
+		return false, fmt.Sprintf("subscribe skipped: caller identity did not resolve: %v", err)
+	}
+	exists, err := client.SessionExists(ctx, caller)
+	if err != nil || !exists {
+		return false, "subscribe skipped: caller identity could not be verified against the harness (degraded pod?) — the session was created; subscribe explicitly with subscribe_session"
+	}
+	parents, lerr := subscriptionLineage(ctx, client)
+	if lerr != nil {
+		return false, "subscribe skipped: could not verify caller lineage: " + lerr.Error()
+	}
+	if parents[caller] != "" {
+		return false, "subscribe flag ignored: the caller is a subagent session (parent set) — subagents return to their parent and never take wake-up turns; the new session was created, but you are not subscribed to it"
+	}
+	if _, serr := currentSessionNotifier().Subscribe(childID, caller, nil); serr != nil {
+		return false, "subscribe failed: " + serr.Error()
+	}
+	return true, ""
 }
 
 // --- abort_session --------------------------------------------------------

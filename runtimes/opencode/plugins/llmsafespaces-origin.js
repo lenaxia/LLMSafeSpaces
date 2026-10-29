@@ -38,13 +38,22 @@
  *  ATTRIBUTION ONLY, never a gate (the #1747 §5 manager grant is
  *  repealed, ruling 2026-10-27 / tsk-copper-refectory-generates):
  *  the seam stamps it into the audit actor, and injection OVERWRITES
- *  any model-supplied copy. Kept in lockstep with the agentd registry
- *  by TestMCPBoard_ManagerInjectionSupply (both directions). */
+ *  any model-supplied copy. The session idle-subscription trio (design
+ *  /workspace/reports/session-subscription-design.md §5) carries the
+ *  caller as the SUBSCRIBER identity (#1849 posture — agentd refuses
+ *  an unattested origin), and create_session carries it for the
+ *  optional subscribe flag's caller→child watch edge. Kept in
+ *  lockstep with the agentd registry by
+ *  TestMCPBoard_ManagerInjectionSupply (both directions). */
 const INJECTED_SESSION_TOOLS = new Set([
   "llmsafespaces_send_message",
   "llmsafespaces_session_metadata",
   "llmsafespaces_delete_session",
   "llmsafespaces_session_delete_bulk",
+  "llmsafespaces_subscribe_session",
+  "llmsafespaces_unsubscribe_session",
+  "llmsafespaces_list_subscriptions",
+  "llmsafespaces_create_session",
   "llmsafespaces_board_create_project",
   "llmsafespaces_board_update_project",
   "llmsafespaces_board_project_archive",

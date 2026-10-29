@@ -29,7 +29,9 @@ import (
 
 	"github.com/lenaxia/llmsafespaces/cmd/workspace-agentd/sessionstate"
 	"github.com/lenaxia/llmsafespaces/pkg/agentd"
+	opencode "github.com/lenaxia/llmsafespaces/pkg/agent/opencode"
 	"github.com/lenaxia/llmsafespaces/pkg/redact"
+	"github.com/lenaxia/llmsafespaces/pkg/session"
 	"github.com/lenaxia/llmsafespaces/pkg/version"
 )
 
@@ -268,6 +270,22 @@ func main() {
 		// alerts). Cadence: half the 30s lease-convergence bound.
 		go runSessionStateWatchdog(bgCtx, os.Getenv("WORKSPACE_ID"), stateAuthority, sessionstate.ReconcileCadence)
 	}
+
+	// Session idle-subscriptions v1 (design/0071): the fully-wired
+	// notifier — a sibling consumer of the authority's ordered frame
+	// stream (the same seam the API usagestream consumer dials), the
+	// durable registry, the ListSessions lineage facts, and the detached
+	// seam-POST deliverer — swapped into the MCP subscription surface
+	// (setSessionNotifier) and run on the background context. Shutdown:
+	// runShutdown's bgCancel stops the consumer + facts ticker and joins
+	// them on bgWg; in-flight deliveries detach (context.WithoutCancel,
+	// §4.5) so a wake-up whose intent is durable survives the cancel.
+	notifier := wireSessionNotifier(sessionNotifierWiring{
+		Authority: stateAuthority,
+		Password:  password,
+		Logger:    log,
+	})
+	startSessionNotifierLoops(bgCtx, &bgWg, notifier)
 
 	startedAt := time.Now()
 	var ledgerInFlight func() int64
@@ -675,4 +693,135 @@ func runShutdown(adminSrv, userSrv *http.Server, bgCancel context.CancelFunc, bg
 	// its own exit (supervise_opencode.go). Bounded; see
 	// shutdown_sync.go.
 	flushWorkspaceWritesLogged()
+}
+
+// --- session idle-subscriptions v1 (design/0071): production wiring ---------
+
+// notifyFactsRefreshInterval is the lineage-facts refresher cadence
+// (§4.6): ParentID lives only on the opencode session list, so the
+// subtask set — and the §4.1 lazy prune — ride one bounded pull per
+// minute (the ops-metrics ticker's cadence class; lineage changes are
+// rare next to the tracker's own list refreshes).
+const notifyFactsRefreshInterval = 60 * time.Second
+
+// sessionNotifierWiring carries the main-wiring inputs for the session
+// notifier. StorePath "" selects the production registry file
+// (/sandbox-runtime/session-subscriptions.json — the shortids replica's
+// storage class); tests point it at a temp file to exercise the
+// restart/reload semantics hermetically.
+type sessionNotifierWiring struct {
+	Authority *sessionstate.Authority
+	Password  string
+	StorePath string
+	Logger    *zap.Logger
+}
+
+// wireSessionNotifier constructs the production subscription engine
+// (design/0071 §4) and swaps it into the MCP surface
+// (setSessionNotifier — the mcp_tools.go init() default carries only
+// the store + facts, so edges registered before this point stay
+// durable and simply start firing once the consumer runs):
+//
+//   - Stream/Snapshot: the authority's ordered frame stream + state
+//     projection — every state-changing path (harness folds, the #1722
+//     evidence settles, lease rederives) crosses fanout, so one
+//     consumer sees every busy→idle transition regardless of origin.
+//     A nil authority (degraded boot) wires no stream: Run returns
+//     immediately, the MCP surface + boot outbox drain still work.
+//   - Deliver: the seam client factory (seamClientWithPassword — the
+//     loopback client, resolved per call so agent-addr generation
+//     changes ride through) carrying the detached V1 POST vehicle.
+//   - Facts/FactsPull: the ListSessions-backed lineage snapshot plus
+//     its refresher — the only surface carrying ParentID.
+//   - Debounce: AGENTD_NOTIFY_DEBOUNCE (ruling 3; Go duration string,
+//     malformed → warn + the 5s default).
+//   - Phrase resolution (log bodies, did-you-mean, send-target
+//     canonicalization) rides the process-wide short-id replica
+//     (session_shortids.go) — currentSessionShortIDs, warmed by its
+//     own boot pull and on-miss worker.
+func wireSessionNotifier(w sessionNotifierWiring) *sessionNotifier {
+	logger := w.Logger
+	if logger == nil {
+		logger = zap.NewNop()
+	}
+	seam := func() *opencode.Client { return seamClientWithPassword(w.Password) }
+	cfg := sessionNotifierConfig{
+		Store:     newSessionSubscriptionStore(w.StorePath),
+		Facts:     newHarnessSessionFacts(),
+		FactsPull: func(ctx context.Context) ([]session.Session, error) { return pullHarnessSessionList(ctx, seam()) },
+		Debounce:  notifyDebounceFromEnv(os.Getenv, logger),
+		Deliver:   newSeamSettleDeliverer(seam, nil, logger),
+		Logger:    logger,
+	}
+	if w.Authority != nil {
+		cfg.Stream = w.Authority.Stream
+		cfg.Snapshot = w.Authority.State
+	}
+	n := newSessionNotifier(cfg)
+	setSessionNotifier(n)
+	return n
+}
+
+// startSessionNotifierLoops runs the engine's lifecycle on the
+// background context, every goroutine joined on wg (clean shutdown via
+// the caller's cancel): the consumer loop (Run — the single tracker
+// mutator, resubscribing after slow-consumer drops), then the boot leg
+// — harness-gated outbox drain (ruling 4's retry-ONCE, sequenced after
+// the first successful session-list pull: the boot-reseed discipline,
+// never spending the one retry on a harness that is not up yet) and
+// the lineage-facts ticker.
+func startSessionNotifierLoops(ctx context.Context, wg *sync.WaitGroup, n *sessionNotifier) {
+	if n == nil {
+		return
+	}
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		n.Run(ctx)
+	}()
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		notifyWaitForHarness(ctx, n)
+		n.RetryOutbox(ctx)
+		ticker := time.NewTicker(notifyFactsRefreshInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				n.RefreshFacts(ctx)
+			}
+		}
+	}()
+}
+
+// notifyWaitForHarness blocks until the lineage pull answers once (the
+// startStateAuthorityReseed ladder's cadence: 500ms doubling to 15s) or
+// ctx ends. The successful pull is folded through RefreshFacts so the
+// subtask set + lazy prune see the same list the drain's deliveries
+// address.
+func notifyWaitForHarness(ctx context.Context, n *sessionNotifier) {
+	if n == nil || n.cfg.FactsPull == nil {
+		return
+	}
+	backoff := 500 * time.Millisecond
+	const maxBackoff = 15 * time.Second
+	for ctx.Err() == nil {
+		if _, err := n.cfg.FactsPull(ctx); err == nil {
+			n.RefreshFacts(ctx)
+			return
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(backoff):
+		}
+		if backoff*2 > maxBackoff {
+			backoff = maxBackoff
+		} else {
+			backoff *= 2
+		}
+	}
 }
