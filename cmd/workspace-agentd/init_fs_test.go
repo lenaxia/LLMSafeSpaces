@@ -167,6 +167,16 @@ func TestInitFS_HappyPath_FreshPVC(t *testing.T) {
 	fmBytes, err := os.ReadFile(tr.cfg + "/free-models.json")
 	require.NoError(t, err)
 	assert.Equal(t, `{"models":[]}`, string(fmBytes))
+
+	// Gate-script patterns doc (2026-10-29 owner ruling): the embedded
+	// canonical #1812 worked patterns materialize at
+	// $runtimeDir/docs/gate-script-patterns.md — the stable pod path
+	// trigger_create's description points agents at. Boot-time copy:
+	// init-fs runs before any app container, so the doc precedes the
+	// first agent session.
+	docBytes, err := os.ReadFile(filepath.Join(tr.rt, "docs", gateScriptPatternsDocName))
+	require.NoError(t, err, "gate-script patterns doc must materialize at $runtimeDir/docs/")
+	assert.Equal(t, string(gateScriptPatternsDoc), string(docBytes))
 }
 
 // TestInitFS_PrePlantedSymlink_ReplacedWithoutFollowing is the attack
@@ -263,6 +273,12 @@ func TestInitFS_Idempotent(t *testing.T) {
 	pw, err := os.ReadFile(tr.cfg + "/password")
 	require.NoError(t, err)
 	require.Equal(t, "pw-two\n", string(pw), "password re-installed on re-run")
+
+	// The gate-docs copy rides the idempotent re-run: still present,
+	// still the embedded bytes (identical-content no-op).
+	docBytes, err := os.ReadFile(filepath.Join(tr.rt, "docs", gateScriptPatternsDocName))
+	require.NoError(t, err, "gate-script patterns doc must survive the idempotent re-run")
+	assert.Equal(t, string(gateScriptPatternsDoc), string(docBytes))
 }
 
 // TestInitFS_MissingPasswordSource_Fails: G46 class — a workspace

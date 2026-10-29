@@ -17,6 +17,11 @@
 # so the kubelet image-volume pull is cheap on the resume path. The
 # binary is static (CGO_ENABLED=0).
 #
+# The binary embeds the #1812 gate-script patterns doc (go:embed of
+# cmd/workspace-agentd/gate_script_patterns.md, owner ruling 2026-10-29)
+# and materializes it to /sandbox-runtime/docs/ at boot — docs ride the
+# binary, so the image's file count stays binary + CA bundle.
+#
 # Binary path inside the image MUST match the controller's
 # agentdBinaryRelPath (/usr/local/bin/workspace-agentd) — the pod env pin
 # LLMSAFESPACES_AGENTD_BINARY is /agentd + that path once mounted.
