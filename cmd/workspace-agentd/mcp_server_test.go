@@ -1220,6 +1220,8 @@ func TestMCPHandler_ToolDescriptionGuidance(t *testing.T) {
 			"{{key}}",                                                           // jinja-style substitution form
 			"[trigger script vars]",                                             // the trailing metadata block
 			"fails CLOSED",                                                      // failure posture
+			"Unhandled exceptions count toward auto-disable",                    // the platform invariant, stated
+			"must catch its own exceptions",                                     // the author rule: posture is a choice, self-caught
 			"rejected (400) alongside workflowId",                               // routine-only rule surfaced
 			"never calls the LLM at all",                                        // script-only triggers have no LLM leg
 			"Worked example",                                                    // the doc mandate: a worked example in the description
