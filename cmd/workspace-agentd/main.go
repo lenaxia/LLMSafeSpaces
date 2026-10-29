@@ -280,11 +280,22 @@ func main() {
 	// runShutdown's bgCancel stops the consumer + facts ticker and joins
 	// them on bgWg; in-flight deliveries detach (context.WithoutCancel,
 	// §4.5) so a wake-up whose intent is durable survives the cancel.
+	// Workspace event bus (design 0072): when AGENTD_EVENTBUS_ADDR
+	// configures a Redis, the notifier's settle leg switches from the
+	// direct per-subscriber fan-out to publish-once + the notifier
+	// consumer group (same suppression/rate/compose; consumer-group
+	// ack/pending is the at-least-once engine), and the lease
+	// consumer group stands ready for the API nudge ladder's
+	// publishes. Unset (default) or unreachable → nil bus → the v1
+	// point-to-point delivery layer runs verbatim.
+	workspaceBus := eventbusFromEnv(os.Getenv, log)
 	notifier := wireSessionNotifier(sessionNotifierWiring{
 		Authority: stateAuthority,
 		Password:  password,
+		Bus:       workspaceBus,
 		Logger:    log,
 	})
+	runEventbusConsumers(bgCtx, &bgWg, workspaceBus, notifier, password, log)
 	startSessionNotifierLoops(bgCtx, &bgWg, notifier)
 
 	startedAt := time.Now()
@@ -713,7 +724,11 @@ type sessionNotifierWiring struct {
 	Authority *sessionstate.Authority
 	Password  string
 	StorePath string
-	Logger    *zap.Logger
+	// Bus (design 0072): optional eventbus producer seam; nil keeps
+	// the v1 direct delivery leg (the default when
+	// AGENTD_EVENTBUS_ADDR is unset or unreachable).
+	Bus    settlePublisher
+	Logger *zap.Logger
 }
 
 // wireSessionNotifier constructs the production subscription engine
@@ -751,6 +766,7 @@ func wireSessionNotifier(w sessionNotifierWiring) *sessionNotifier {
 		FactsPull: func(ctx context.Context) ([]session.Session, error) { return pullHarnessSessionList(ctx, seam()) },
 		Debounce:  notifyDebounceFromEnv(os.Getenv, logger),
 		Deliver:   newSeamSettleDeliverer(seam, nil, logger),
+		Bus:       w.Bus,
 		Logger:    logger,
 	}
 	if w.Authority != nil {

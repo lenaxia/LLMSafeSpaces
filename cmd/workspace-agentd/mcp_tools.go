@@ -2101,7 +2101,42 @@ func subscriptionLineage(ctx context.Context, client *opencode.Client) (map[stri
 // target resolution + existence (did-you-mean on miss), lineage both
 // sides (§4.6), then the engine's §4.1 guards (self/cycle/cap) and
 // the durable write. Every refusal is loud; nothing is guessed.
-func mcpSubscribeSession(ctx context.Context, password, targetRef string, events []string, injectedSession string) (string, error) {
+// subscriptionEventsFromTopics is the design 0072 topics alias: the
+// event-bus vocabulary meeting the v1 registry. Each topic must be
+// session.{id}.{idle|error|*} addressing THIS broadcaster (any id
+// form — the comparison is post-resolution, so a caller may spell
+// the id either way); "*" expands to both events. Anything else —
+// lease.*, task.*, a foreign session's topics — is a loud refusal
+// (arbitrary pattern subscription is a future subscribe_events tool,
+// not an overload of this one). Returns the topic-derived event set
+// for union with `events`.
+func subscriptionEventsFromTopics(topics []string, broadcaster string) ([]string, error) {
+	var out []string
+	for _, raw := range topics {
+		topic := strings.TrimSpace(raw)
+		parts := strings.Split(topic, ".")
+		if len(parts) != 3 || parts[0] != "session" || parts[2] == "" {
+			return nil, fmt.Errorf("topics entries must be session.<id>.idle, session.<id>.error, or session.<id>.* — got %q (other topic families are not watchable here)", raw)
+		}
+		seg := strings.TrimSpace(parts[1])
+		if seg != "*" {
+			if resolved := canonicalNotifyDestination(seg); resolved != broadcaster && seg != broadcaster {
+				return nil, fmt.Errorf("topic %q addresses a different session than %s", raw, emitID(broadcaster))
+			}
+		}
+		switch parts[2] {
+		case subscriptionEventIdle, subscriptionEventError:
+			out = append(out, parts[2])
+		case "*":
+			out = append(out, subscriptionEventIdle, subscriptionEventError)
+		default:
+			return nil, fmt.Errorf("topic %q settles on %q — only idle, error, or * are watchable", raw, parts[2])
+		}
+	}
+	return out, nil
+}
+
+func mcpSubscribeSession(ctx context.Context, password, targetRef string, events []string, topics []string, injectedSession string) (string, error) {
 	targetRef = strings.TrimSpace(targetRef)
 	if targetRef == "" {
 		return "", fmt.Errorf("session_id is required")
@@ -2128,6 +2163,22 @@ func mcpSubscribeSession(ctx context.Context, password, targetRef string, events
 		// suggest-only, never an auto-correct.
 		return "", fmt.Errorf("session %s not found in this workspace (IDs from session_list)%s",
 			emitID(target), sessionSuggestClause(ctx, client, target))
+	}
+	// The design 0072 topics alias: validate against the RESOLVED
+	// broadcaster (any id spelling the caller used), then union into
+	// the v1 event set — one registry row, two vocabularies.
+	if len(topics) > 0 {
+		derived, terr := subscriptionEventsFromTopics(topics, target)
+		if terr != nil {
+			return "", terr
+		}
+		events = append(events, derived...)
+		if len(events) == 0 {
+			events = nil // sanitize to the validator's default-both
+		}
+		if _, verr := validateSubscriptionEvents(events); verr != nil {
+			return "", verr
+		}
 	}
 	// §4.6 subtask exclusion, BOTH sides, at registration: the parent
 	// receives subtask results synchronously through the task tool

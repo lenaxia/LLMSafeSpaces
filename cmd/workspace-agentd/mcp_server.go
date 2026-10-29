@@ -568,8 +568,9 @@ func mcpToolCatalog() []mcpTool {
 			InputSchema: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
-					"sessionId": map[string]any{"type": "string", "description": "The session to WATCH — its 3-word phrase (from session_list / session_metadata; case-insensitive), an unambiguous title/slug alias, or (deprecated, one release) the full/hashed id"},
-					"events":    map[string]any{"type": "array", "items": map[string]any{"type": "string", "enum": []string{"idle", "error"}}, "description": "Optional: which turn-completions wake you — \"idle\" (turn completed), \"error\" (turn ended in error). Default: both. Anything else is a loud refusal"},
+				"sessionId": map[string]any{"type": "string", "description": "The session to WATCH — its 3-word phrase (from session_list / session_metadata; case-insensitive), an unambiguous title/slug alias, or (deprecated, one release) the full/hashed id"},
+				"events":    map[string]any{"type": "array", "items": map[string]any{"type": "string", "enum": []string{"idle", "error"}}, "description": "Optional: which turn-completions wake you — \"idle\" (turn completed), \"error\" (turn ended in error). Default: both. Anything else is a loud refusal"},
+				"topics":    map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Optional (design 0072): the event-bus topic alias of `events` — session.<id>.idle, session.<id>.error, or session.<id>.* for both. The <id> must be this same session (any address form); other topics (lease.*, task.*) are a loud refusal — arbitrary pattern subscription is a future tool. Unions with `events`"},
 				},
 				"required": []string{"sessionId"},
 			},
@@ -1220,10 +1221,11 @@ func callMCPTool(ctx context.Context, password, name string, args map[string]any
 		injected, _ := args["lsp_injected_session"].(string)
 		return mcpSendMessage(ctx, password, sessionID, message, injected)
 	case "subscribe_session":
-		// Idle-subscriptions v1 (§5). Caller identity is the plugin's
-		// lsp_injected_session stamp ONLY — the #1849 send_message
-		// posture (refuse unattested origin); the resolveCallerSession
-		// degraded-pod fallback belongs to the delete tools, not here.
+		// Idle-subscriptions v1 (§5) + the design 0072 topics alias.
+		// Caller identity is the plugin's lsp_injected_session stamp
+		// ONLY — the #1849 send_message posture (refuse unattested
+		// origin); the resolveCallerSession degraded-pod fallback
+		// belongs to the delete tools, not here.
 		target := argStr(args, "sessionId")
 		var events []string
 		if raw, present := args["events"]; present && raw != nil {
@@ -1241,8 +1243,22 @@ func callMCPTool(ctx context.Context, password, name string, args map[string]any
 				events = append(events, s)
 			}
 		}
+		var topics []string
+		if raw, present := args["topics"]; present && raw != nil {
+			items, ok := raw.([]any)
+			if !ok {
+				return "", fmt.Errorf("topics must be an array of topic strings (session.<id>.idle|error|*)")
+			}
+			for _, v := range items {
+				s, ok := v.(string)
+				if !ok {
+					return "", fmt.Errorf("topics entries must be strings (session.<id>.idle|error|*)")
+				}
+				topics = append(topics, s)
+			}
+		}
 		injected, _ := args["lsp_injected_session"].(string)
-		return mcpSubscribeSession(ctx, password, target, events, injected)
+		return mcpSubscribeSession(ctx, password, target, events, topics, injected)
 	case "unsubscribe_session":
 		target := argStr(args, "sessionId")
 		injected, _ := args["lsp_injected_session"].(string)

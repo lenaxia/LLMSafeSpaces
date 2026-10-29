@@ -58,6 +58,7 @@ import (
 	"github.com/lenaxia/llmsafespaces/cmd/workspace-agentd/sessionstate"
 	abiv1 "github.com/lenaxia/llmsafespaces/pkg/abi/v1"
 	"github.com/lenaxia/llmsafespaces/pkg/agent/opencode"
+	"github.com/lenaxia/llmsafespaces/pkg/eventbus"
 	"github.com/lenaxia/llmsafespaces/pkg/session"
 	"go.uber.org/zap"
 	"google.golang.org/protobuf/proto"
@@ -100,6 +101,17 @@ type settleNotice struct {
 // notifier.
 type settleDeliverer interface {
 	DeliverSettle(ctx context.Context, notice settleNotice) error
+}
+
+// settlePublisher is the event-bus seam (design 0072): one settle
+// becomes ONE topic event — session.{id}.{idle|error} — appended to
+// the workspace stream; the notifier CONSUMER GROUP turns it back
+// into per-subscriber deliveries with consumer-group ack/pending as
+// the at-least-once engine (replacing the outbox's write-before-send
+// on the bus path). eventbus.Bus satisfies this; the narrow interface
+// keeps the notifier's tests free of a transport.
+type settlePublisher interface {
+	Publish(ctx context.Context, ev eventbus.Event) (string, error)
 }
 
 // logOnlySettleDeliverer is the task-1 default: delivery "succeeds"
@@ -291,7 +303,10 @@ type sessionFacts interface {
 // sessionNotifierConfig wires the notifier. Stream and Snapshot are
 // the authority seams (production: Authority.Stream / Authority.State);
 // Facts is the lineage seam (task 4 wires the ListSessions refresher);
-// Deliver is the delivery seam (task 2).
+// Deliver is the delivery seam (task 2). Bus (design 0072) switches
+// the settle leg from the direct per-subscriber fan-out to
+// publish-once + the notifier consumer group — nil keeps v1
+// point-to-point semantics (the default; every v1 test pins it).
 type sessionNotifierConfig struct {
 	Store    *sessionSubscriptionStore
 	Stream   func(ctx context.Context) (<-chan *abiv1.StreamFrame, func(), error)
@@ -303,7 +318,9 @@ type sessionNotifierConfig struct {
 	// Debounce <= 0 ⇒ notifyDebounceDefault.
 	Debounce time.Duration
 	Deliver  settleDeliverer
-	Logger   *zap.Logger
+	// Bus: optional eventbus producer seam (design 0072 §3).
+	Bus    settlePublisher
+	Logger *zap.Logger
 }
 
 // sessionNotifier is the subscription engine. Concurrency shape: the
@@ -824,16 +841,93 @@ func (n *sessionNotifier) debounceFired(sid, kind string) {
 			zap.String("broadcaster", sid))
 		return
 	}
+	// Bus path (design 0072): ONE topic event per settle — the stream
+	// entry is the durable intent; the notifier consumer group fans
+	// out per subscriber under consumer-group ack/pending. The direct
+	// v1 leg stays the default (Bus nil) and the failure fallback.
+	if n.cfg.Bus != nil {
+		title := ""
+		if st := n.tracker[sid]; st != nil {
+			title = st.title
+		}
+		n.mu.Unlock()
+		n.publishSettle(sid, kind, title)
+		return
+	}
 	notices := n.collectSettlesLocked(sid, kind)
 	n.mu.Unlock()
-	n.deliverNotices(notices)
+	n.deliverNotices(n.deliveryContext(), notices)
 }
 
-// collectSettlesLocked enqueues (persists) the outbox intents for
-// every row whose event set matches the settle kind, and returns the
-// delivery notices. Ordering contract: the intent is durable BEFORE
-// any delivery is attempted (ruling 4). Caller holds mu.
-func (n *sessionNotifier) collectSettlesLocked(sid, kind string) []settleNotice {
+// publishSettle is the bus leg's publish: session.{sid}.{kind} to the
+// workspace stream, payload {session, settle, title}. A publish
+// failure falls back to the DIRECT v1 leg — a lost wake-up is the
+// failure that matters (§4.5); a duplicate (bus leg retried by the
+// pending machinery after this process already fell back) is
+// tolerated by contract.
+func (n *sessionNotifier) publishSettle(sid, kind, title string) {
+	_, err := n.cfg.Bus.Publish(n.deliveryContext(), eventbus.Event{
+		Topic: eventbus.SessionSettleTopic(sid, kind),
+		At:    time.Now(),
+		Payload: map[string]string{
+			"session": sid,
+			"settle":  kind,
+			"title":   title,
+		},
+	})
+	if err == nil {
+		notifyCount(notifyOutcomeBusPublished)
+		n.logger.Debug("session notifier: settle published to the workspace event bus",
+			zap.String("broadcaster", sid),
+			zap.String("settle", kind))
+		return
+	}
+	n.logger.Warn("session notifier: bus publish failed — falling back to the direct delivery leg",
+		zap.String("broadcaster", sid),
+		zap.String("settle", kind),
+		zap.Error(err))
+	n.mu.Lock()
+	notices := n.collectSettlesLocked(sid, kind)
+	n.mu.Unlock()
+	n.deliverNotices(n.deliveryContext(), notices)
+}
+
+// ConsumeSettleEvent is the notifier consumer group's handler
+// (design 0072 §3): one session.{id}.{idle|error} bus message becomes
+// the SAME per-subscriber deliveries the direct leg makes — identical
+// suppression, rate bound, and compose; the only difference is the
+// delivery layer: an un-acked message (hard failure) is redelivered
+// by the consumer group's pending machinery, not retried by the
+// outbox (the stream entry is the durable intent — no outbox enqueue
+// on this path). Rate refusals and suppressions are FINAL outcomes
+// (acked), never errors.
+func (n *sessionNotifier) ConsumeSettleEvent(ctx context.Context, msg eventbus.Message) error {
+	sid, kind, ok := eventbus.ParseSessionSettle(msg.Event.Topic)
+	if !ok {
+		return nil // foreign topic: pattern-filtered upstream; ack
+	}
+	if kind != subscriptionEventIdle && kind != subscriptionEventError {
+		return nil // vocabulary is a convention — unknown settle kinds ack unread
+	}
+	title := msg.Event.Payload["title"]
+	n.mu.Lock()
+	notices := n.selectSettleNoticesLocked(sid, kind)
+	n.mu.Unlock()
+	for i := range notices {
+		if title != "" && notices[i].Title == "" {
+			notices[i].Title = title // the bus payload's title survives a cold tracker
+		}
+	}
+	return n.deliverNotices(ctx, notices)
+}
+
+// selectSettleNoticesLocked runs the per-subscriber selection for one
+// settle: event-set match, subscriber-side subtask exclusion (§4.6),
+// §4.4 suppression — the identical gates on both delivery layers
+// (direct v1 and bus consumer; design 0072 preserves the semantics
+// and changes only the transport). Returns the delivery notices;
+// caller holds mu.
+func (n *sessionNotifier) selectSettleNoticesLocked(sid, kind string) []settleNotice {
 	var notices []settleNotice
 	now := time.Now()
 	for _, row := range n.store.rowsForBroadcaster(sid) {
@@ -855,14 +949,28 @@ func (n *sessionNotifier) collectSettlesLocked(sid, kind string) []settleNotice 
 			notifyCount(notifyOutcomeSuppressed)
 			continue
 		}
-		p := pendingNotification{Broadcaster: sid, Subscriber: row.Subscriber, Event: kind, EnqueuedAt: now}
-		n.store.enqueue(p)
 		title := ""
 		if st := n.tracker[sid]; st != nil {
 			title = st.title
 		}
 		notices = append(notices, settleNotice{
 			Broadcaster: sid, Subscriber: row.Subscriber, Event: kind, Title: title, EnqueuedAt: now,
+		})
+	}
+	return notices
+}
+
+// collectSettlesLocked enqueues (persists) the outbox intents for the
+// selected settles and returns the delivery notices. Ordering
+// contract: the intent is durable BEFORE any delivery is attempted
+// (ruling 4). The bus path does NOT pass through here — the stream
+// entry is its durable intent. Caller holds mu.
+func (n *sessionNotifier) collectSettlesLocked(sid, kind string) []settleNotice {
+	notices := n.selectSettleNoticesLocked(sid, kind)
+	for _, notice := range notices {
+		n.store.enqueue(pendingNotification{
+			Broadcaster: notice.Broadcaster, Subscriber: notice.Subscriber,
+			Event: notice.Event, EnqueuedAt: notice.EnqueuedAt,
 		})
 	}
 	return notices
@@ -889,10 +997,19 @@ func subscriptionEventMatches(events []string, kind string) bool {
 // context.WithoutCancel, so the cancellation parent here matters only
 // to vehicles that choose to honor it. §8: one warn-level log per
 // delivered notification with both phrases.
-func (n *sessionNotifier) deliverNotices(notices []settleNotice) {
-	parent := n.deliveryContext()
+//
+// The returned error aggregates HARD failures only (the bus consumer
+// propagates it to leave the message pending — the consumer group's
+// redelivery is the retry). Rate refusals are final outcomes, never
+// errors; a nil ctx parent falls back to the Run loop's delivery
+// context (the v1 call sites).
+func (n *sessionNotifier) deliverNotices(ctx context.Context, notices []settleNotice) error {
+	if ctx == nil {
+		ctx = n.deliveryContext()
+	}
+	var hard error
 	for _, notice := range notices {
-		err := n.cfg.Deliver.DeliverSettle(parent, notice)
+		err := n.cfg.Deliver.DeliverSettle(ctx, notice)
 		if err != nil {
 			if errors.Is(err, errNotifyRateLimited) {
 				// The storm backstop refused this wake-up: drop the
@@ -910,6 +1027,7 @@ func (n *sessionNotifier) deliverNotices(notices []settleNotice) {
 					zap.String("event", notice.Event))
 				continue
 			}
+			hard = errors.Join(hard, fmt.Errorf("subscriber %s: %w", notice.Subscriber, err))
 			n.logger.Warn("session notifier: settle delivery failed — intent stays in the outbox",
 				zap.String("broadcaster", notice.Broadcaster),
 				zap.String("subscriber", notice.Subscriber),
@@ -927,6 +1045,7 @@ func (n *sessionNotifier) deliverNotices(notices []settleNotice) {
 			Event: notice.Event, EnqueuedAt: notice.EnqueuedAt,
 		})
 	}
+	return hard
 }
 
 // RetryOutbox is ruling 4's boot drain: every intent persisted by a

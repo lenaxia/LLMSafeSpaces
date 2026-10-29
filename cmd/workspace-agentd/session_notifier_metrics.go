@@ -29,6 +29,9 @@ package main
 //	refused_rate                — §4.5 per-subscriber storm backstop
 //	outbox_retried_delivered    — ruling 4: a boot outbox retry landed
 //	outbox_retried_dropped      — ruling 4: retry-once exhausted, dropped
+//	bus_published               — design 0072: a settle published to the
+//	                              workspace event bus (the notifier
+//	                              consumer group delivers from there)
 
 import (
 	"github.com/prometheus/client_golang/prometheus"
@@ -49,6 +52,7 @@ const (
 	notifyOutcomeRefusedRate          = "refused_rate"
 	notifyOutcomeOutboxRetriedSent    = "outbox_retried_delivered"
 	notifyOutcomeOutboxRetriedDropped = "outbox_retried_dropped"
+	notifyOutcomeBusPublished         = "bus_published"
 )
 
 var sessionNotifyMetrics = struct {
