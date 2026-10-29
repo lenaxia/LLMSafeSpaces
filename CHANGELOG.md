@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed — no per-row worker pill inside the sidebar's Workers group (2026-10-29 owner ruling, tsk-inky-quadrant-weeds)
+
+- **The origin pill is suppressed on every row inside the Workers group — the group header IS the classification** (owner ruling, verbatim: "The worker pill takes up a ton of space. I can only see 1-2 characters of each session title." / "I don't think we need the worker pill if they are all grouped already."). The suppression covers the group's root rows AND their nested subagent subtrees (`SessionTreeRow` gains a `suppressOriginBadge` prop the `WorkersGroup` renderer passes down), so session titles get the full available row width — the pill was the only badge chrome between the flexible title and the trailing context/time metadata. The origin information survives at zero horizontal cost as a native `title` tooltip on the row (`Origin: worker`); busy state was never the pill's to carry (it rides the row's status icon, unchanged). Rows OUTSIDE the group keep their origin badges verbatim — main-list routine/workflow sessions and Archived-group rows are untouched. Pinned by `Sidebar.workers.test.tsx`: group rows render without the pill with the tooltip carrying the origin, nested subagent rows inherit the suppression, and main-list rows keep badge + pill-tooltip exactly as before.
+
 ## [0.44.7] - 2026-10-29
 
 ### Changed — the EXISTING sidebar Workers group is provenance-populated with real nesting; worker provenance on the session list payload (rulings 6+7, 2026-10-28 owner rulings, tsk-polished-finch-paints)
