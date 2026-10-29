@@ -197,6 +197,65 @@ func (s *BoardSuite) TestReads_AssigneePhraseColdDegrade() {
 	assert.Empty(s.T(), deprecatedFlag(s, got))
 }
 
+// TestReads_ImplementerSessionPhrase pins the 2026-10-29 owner ruling's
+// read edge: implementer_session (#1959's bounce identity, captured at
+// the in_progress→in_review forward exit) is EXPOSED on the public task
+// reads with the same #1922 translation — the phrase once minted, the
+// raw harness id + implementer_session_deprecated flag in the cold
+// window — while the stored row stays canonical.
+func (s *BoardSuite) TestReads_ImplementerSessionPhrase() {
+	ctx := context.Background()
+	ws := s.seedWorkspace()
+	p := s.seedProject(ws, 2)
+	e := s.seedEpic(p, board.EpicActive)
+	t1 := s.seedTask(e, "implementer phrase pin", nil, true)
+	s.seedPhraseRowCleanup(ws)
+
+	claim, raw := s.claimWithAssignee(ws)
+	worker := board.Actor{Kind: board.ActorUser, UserID: testUser, Surface: board.SurfaceAgent,
+		ClaimToken: claim.ClaimToken, WorkspaceID: ws}
+
+	// Cold window: the forward exit captures the RAW implementer and no
+	// session_index row exists yet — the read degrades raw+flagged.
+	_, err := s.svc.MoveStage(ctx, worker, t1.ID, "", board.StageInReview, "https://example.test/evidence", "")
+	require.NoError(s.T(), err)
+
+	got, err := s.svc.GetTask(ctx, t1.ID, "")
+	require.NoError(s.T(), err)
+	assert.Equal(s.T(), raw, got.ImplementerSession, "cold implementer degrades to the raw harness id (never worse)")
+	assert.Contains(s.T(), jsonOf(s, got), `"implementer_session_deprecated":true`, "the cold window carries the implementer deprecation flag")
+
+	// The listing surface rides the same seam.
+	tasks, err := s.svc.ListTasks(ctx, p.ID, "", "")
+	require.NoError(s.T(), err)
+	require.Len(s.T(), tasks, 1)
+	assert.Equal(s.T(), raw, tasks[0].ImplementerSession, "ListTasks serves the raw implementer in the cold window")
+	assert.Contains(s.T(), jsonOf(s, tasks[0]), `"implementer_session_deprecated":true`)
+
+	// Convergence: mint the phrase — the next read serves it on BOTH
+	// session fields, flag-free.
+	s.seedPhraseRow(ws, raw, "amber-falcon-glides")
+	got, err = s.svc.GetTask(ctx, t1.ID, "")
+	require.NoError(s.T(), err)
+	assert.Equal(s.T(), "amber-falcon-glides", got.AssigneeSession, "the assignee converges to the phrase")
+	assert.Equal(s.T(), "amber-falcon-glides", got.ImplementerSession, "the implementer converges to the phrase (same consult)")
+	assert.NotContains(s.T(), jsonOf(s, got), "implementer_session_deprecated", "minted rows carry no implementer flag")
+	assert.NotContains(s.T(), got.ImplementerSession, "ses_", "the raw harness id never leaves the read edge")
+
+	wt, err := s.svc.GetTaskInWorkspace(ctx, ws, t1.ID, "")
+	require.NoError(s.T(), err)
+	assert.Equal(s.T(), "amber-falcon-glides", wt.ImplementerSession, "GetTaskInWorkspace (the MCP board_read surface) serves the implementer phrase")
+
+	// Storage stays canonical: the forward exit wrote the raw harness
+	// id into BOTH columns (read-time translation only).
+	var storedAssignee, storedImplementer string
+	require.NoError(s.T(), s.pool.QueryRow(ctx,
+		`SELECT coalesce(assignee_session,''), coalesce(implementer_session,'') FROM tasks WHERE id=$1`, t1.ID).
+		Scan(&storedAssignee, &storedImplementer))
+	assert.Equal(s.T(), raw, storedAssignee, "the stored assignee_session stays the canonical harness id")
+	assert.Equal(s.T(), raw, storedImplementer, "the stored implementer_session stays the canonical harness id")
+}
+
 // TestReads_ActorSessionPhrase pins surface 2: board_events.actor's
 // session_id is translated at READ time (the stored audit row is
 // append-only, never rewritten) — phrase when the session is known, raw

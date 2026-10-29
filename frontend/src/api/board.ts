@@ -77,6 +77,16 @@ export interface BoardTask {
    * session phrase — the value is the raw harness id (design-0066 cold
    * window), flagged per the #1817/#1821 SSE precedent. */
   assignee_session_deprecated?: boolean;
+  /** #1959 implementer identity — the session that moved the row to
+   * in_review (the ORIGINAL worker; the assignee during review is the
+   * reviewer). Exposed on reads per the 2026-10-29 owner ruling: a
+   * resolvable session ref exactly like assignee_session (the phrase
+   * when the session index knows it, raw harness id + flag when cold).
+   * Empty before the first forward exit and on every new episode. */
+  implementer_session?: string;
+  /** Cold-window degrade flag for implementer_session — see
+   * assignee_session_deprecated. */
+  implementer_session_deprecated?: boolean;
   claim_token?: string;
   lease_expires_at?: string | null;
   last_progress_at?: string | null;

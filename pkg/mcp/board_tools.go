@@ -97,7 +97,10 @@ var boardReadTool = mcp.NewTool("board_read",
 		"pending_input=true as a badge on its REAL stage). kind=epics lists the project's epics with "+
 		"derived progress. q= searches your board (short id exact or title match, board-wide when "+
 		"project_id is omitted) with did-you-mean suggestions on zero-hit near-misses. health=true "+
-		"renders the board health snapshot instead."),
+		"renders the board health snapshot instead. Task rows carry assignee_session / "+
+		"implementer_session as RESOLVABLE session refs (owner ruling 2026-10-29): the 3-word "+
+		"phrase when the session index knows the session, else the raw harness id (*_deprecated "+
+		"flagged) — both forms address the session surfaces for inspection."),
 	mcp.WithString("project_id", mcp.Description("Project short id, phrase form (prj-amber-lantern-ambles; legacy prj-XXXXXXXX still resolves, deprecated)")),
 	mcp.WithString("stage", mcp.Description("Optional stage filter (wire set: backlog, in_progress, in_review, done, failed, or pending_input = the flag filter — rows awaiting input on any real stage)")),
 	mcp.WithBoolean("failed", mcp.Description("#1813 failed-state filter: true lists only tasks whose last attempt failed (crash loop, exhaustion — last_attempt_failed overlay), false only clean rows")),

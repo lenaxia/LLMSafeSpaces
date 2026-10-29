@@ -11,6 +11,7 @@
 
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { MemoryRouter } from "react-router-dom";
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { TaskDrawer } from "./TaskDrawer";
 import type { BoardTask, BoardAuditEvent } from "../../api/board";
@@ -254,5 +255,59 @@ describe("TaskDrawer", () => {
       </QueryClientProvider>,
     );
     expect(container.textContent).toBe("");
+  });
+
+  // --- 2026-10-29 owner ruling: session refs are clickable links ------
+
+  function renderDrawerLinked(props: Partial<Parameters<typeof TaskDrawer>[0]> = {}) {
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    return render(
+      <QueryClientProvider client={qc}>
+        <MemoryRouter>
+          <TaskDrawer open onOpenChange={() => {}} task={TASK} projectTasks={[TASK, DEP]} workspaceId="ws-1" {...props} />
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+  }
+
+  it("links the assignee ref to the session's chat view (the /chat/:workspaceId/:sessionId target)", () => {
+    renderDrawerLinked({ task: { ...TASK, assignee_session: "amber-falcon-glides" } });
+    const link = screen.getByTestId("drawer-assignee") as HTMLAnchorElement;
+    expect(link.getAttribute("href")).toBe("/chat/ws-1/amber-falcon-glides");
+    expect(link.textContent).toBe("amber-falcon-glides");
+  });
+
+  it("renders the implementer session as a link (#1959 identity — the original worker)", () => {
+    renderDrawerLinked({
+      task: {
+        ...TASK,
+        stage: "in_review",
+        assignee_session: undefined,
+        lease_expires_at: undefined,
+        implementer_session: "brave-osprey-lands",
+      },
+    });
+    const link = screen.getByTestId("drawer-implementer") as HTMLAnchorElement;
+    expect(link.getAttribute("href")).toBe("/chat/ws-1/brave-osprey-lands");
+    expect(link.textContent).toBe("brave-osprey-lands");
+    // The implementer row only exists when the identity does.
+    expect(screen.queryByTestId("drawer-implementer")).not.toBeNull();
+  });
+
+  it("keeps the link valid through the #1922 cold window (deprecated flag, raw id — never a broken link)", () => {
+    renderDrawerLinked({
+      task: { ...TASK, assignee_session: "ses_ed9183a46ffeRiNw2PddpL5dAA", assignee_session_deprecated: true },
+    });
+    const link = screen.getByTestId("drawer-assignee") as HTMLAnchorElement;
+    expect(link.getAttribute("href")).toBe("/chat/ws-1/ses_ed9183a46ffeRiNw2PddpL5dAA");
+    expect(link.getAttribute("data-deprecated")).toBe("true");
+    expect(link.textContent).toContain("ses_ed9183a46ffeRiNw2PddpL5dAA");
+  });
+
+  it("degrades to plain text without a workspace id (never a broken link)", () => {
+    renderDrawer({ task: { ...TASK, assignee_session: "amber-falcon-glides" } });
+    const ref = screen.getByTestId("drawer-assignee");
+    expect(ref.tagName).toBe("SPAN");
+    expect(ref.closest("a")).toBeNull();
   });
 });
