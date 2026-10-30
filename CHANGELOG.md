@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — the workspace event bus is ARMED for production: controller flags + sidecar env + helm values (design 0072 rollout wiring, tsk-weathered-urn-ambles)
+
+- **The bus ships dormant no more**: two controller flags — `--workspace-eventbus-addr` (host:port or a credentialess `redis://` URL) and `--workspace-eventbus-password-secret` (`NAME:KEY` of an existing secret, e.g. `llmsafespaces-credentials:redis-password`) — compose into EVERY agentd sidecar as `AGENTD_EVENTBUS_ADDR` (a plain value; pod specs are readable, so credentials never ride it) plus `AGENTD_EVENTBUS_PASSWORD` (a secretKeyRef to the named secret). Armed pods run the notifier's delivery leg on the per-workspace Redis Stream with the v1 point-to-point fallback; UNSET (the default) renders no eventbus env at all and every pod keeps the exact pre-0072 dormant posture. Boot validation refuses the two misconfigurations up front — a malformed `NAME:KEY` or a secret with no address exits at startup (an address with no secret is legal: an authless Redis, logged) — and the helm chart carries the install-time twin (`controller.workspaceEventbusPasswordSecret` without `controller.workspaceEventbusAddr` refuses to RENDER).
+- **agentd's password leg**: `AGENTD_EVENTBUS_PASSWORD` composes onto host:port redis options only when the parsed options carry no credentials of their own (a credentialed URL keeps what it embedded); pinned over an authed miniredis — the right password wires the bus, a wrong one disables to nil (never a half-authed client). The intended production values (the talos-ops-prod bump is a SEPARATE follow-up, not this change): the `llmsafespaces-valkey` svc address plus the platform credentials secret's `redis-password` key the API already uses.
+- Pinned by: the agentd password-composition pin; the 3 controller sidecar env pins (composed / addr-only / absent-when-unconfigured); the flag-surface pins (parse-into-returned-struct via the `Into` seam — the #1548 orphaning posture — plus defaults-dormant); the `parseEventbusWiring` boot-validation table (dormant / authless-legal / NAME:KEY split / four refusals); and 4 helm render pins (both flags verbatim, addr-only, absent-by-default, secret-without-addr fails with the guard's message).
+
 ## [0.44.8] - 2026-10-29
 
 ### Added — the board's session refs click straight through to the session (owner ruling 2026-10-29, tsk-teal-vocalist-orders)
