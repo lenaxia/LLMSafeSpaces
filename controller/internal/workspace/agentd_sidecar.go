@@ -158,6 +158,23 @@ func (r *WorkspaceReconciler) buildAgentdSidecarContainer(workspace *v1.Workspac
 		// in cmd/workspace-agentd/sidecar_boot.go.
 		{Name: "LLMSAFESPACE_BOOTSTRAP_SECRETS_OUT", Value: "/sandbox-runtime/rt/secrets.json"},
 	}
+	// Design 0072 (the workspace bus rollout): the address is a plain
+	// value (no credentials — pod specs are readable), the password
+	// rides a secretKeyRef to the platform credentials secret. Both
+	// only when the reconciler carries a configured bus — absent means
+	// the env stays unset and agentd's bus sits dormant (the v1
+	// point-to-point default).
+	if r.EventbusAddr != "" {
+		env = append(env, corev1.EnvVar{Name: "AGENTD_EVENTBUS_ADDR", Value: r.EventbusAddr})
+		if r.EventbusPasswordSecretName != "" {
+			env = append(env, corev1.EnvVar{Name: "AGENTD_EVENTBUS_PASSWORD", ValueFrom: &corev1.EnvVarSource{
+				SecretKeyRef: &corev1.SecretKeySelector{
+					LocalObjectReference: corev1.LocalObjectReference{Name: r.EventbusPasswordSecretName},
+					Key:                  r.EventbusPasswordSecretKey,
+				},
+			}})
+		}
+	}
 	// #1332: the dev_preview_url MCP tool runs in THIS container in
 	// sidecar mode. LLMSAFESPACE_API_URL above is the in-cluster svc
 	// coordinate the boot phase requires — user-facing URLs must come

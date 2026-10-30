@@ -94,6 +94,27 @@ type WorkspaceReconciler struct {
 	// Empty = path-based dev preview (unchanged behavior).
 	PreviewOriginBaseDomain string
 
+	// EventbusAddr (design 0072, the workspace bus rollout): when
+	// non-empty, every agentd sidecar receives AGENTD_EVENTBUS_ADDR with
+	// this value — a plaintext host:port or redis:// URL WITHOUT
+	// credentials (the pod spec is no place for a password) — and the
+	// bus goes live for that workspace (the notifier's delivery leg
+	// rides the stream with the v1 point-to-point fallback). Empty (the
+	// default) = the bus stays dormant in every pod, exactly the
+	// pre-0072 posture. Same value as --workspace-eventbus-addr.
+	EventbusAddr string
+
+	// EventbusPasswordSecretName/Key carry the bus Redis credentials to
+	// the sidecar as a secretKeyRef (AGENTD_EVENTBUS_PASSWORD) — the
+	// platform credentials secret the API itself uses is the natural
+	// source (e.g. llmsafespaces-credentials/redis-password). The key
+	// must exist when EventbusAddr is set (validated at startup — a bus
+	// address whose password secret is missing would arm every pod with
+	// a doomed connection; agentd degrades each one to bus-disabled,
+	// loudly, but the controller refuses the misconfiguration up front).
+	EventbusPasswordSecretName string
+	EventbusPasswordSecretKey  string
+
 	// APIPublicURL (#1332) is the externally reachable API origin wired
 	// into every container that runs agentd tooling as
 	// LLMSAFESPACE_API_PUBLIC_URL — the origin the dev_preview_url MCP

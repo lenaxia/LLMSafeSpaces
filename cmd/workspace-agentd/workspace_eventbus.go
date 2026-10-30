@@ -131,6 +131,16 @@ func eventbusFromEnv(getenv func(string) string, logger *zap.Logger) *eventbus.R
 			zap.String("addr", redactRedisAddr(raw)), zap.String("reason", urlFreeReason(err)))
 		return nil
 	}
+	// AGENTD_EVENTBUS_PASSWORD (the secretKeyRef spelling — the
+	// controller injects it from the platform's credentials secret so
+	// the address itself stays a plaintext host:port in the pod spec):
+	// applied only when the parsed options carry NO credentials of
+	// their own — a redis://user:pass@… URL keeps what it embedded
+	// (the env is for the host:port form; both-set is a config smell
+	// the URL wins, silently and deterministically).
+	if pw := strings.TrimSpace(getenv("AGENTD_EVENTBUS_PASSWORD")); pw != "" && opts.Password == "" {
+		opts.Password = pw
+	}
 	client := redis.NewClient(opts)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
