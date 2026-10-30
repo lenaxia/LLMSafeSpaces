@@ -241,6 +241,19 @@ func TestBoardValidate_HappyPaths(t *testing.T) {
 		report = validateFixture(t, "set_config", `{"stagePersonas":{"in_review":{"roleId":"   "}}}`)
 		assert.False(t, report.Valid)
 		assert.Equal(t, "persona-role-ref", report.Findings[0].Rule)
+		// A whitespace-only BARE reference rejects too (review round 2,
+		// PR #1990): the schema's minLength cannot see whitespace, but
+		// the semantic check trim-checks — admission identical to the
+		// platform decoder on both shapes.
+		report = validateFixture(t, "set_config", `{"stagePersonas":{"in_review":"   "}}`)
+		assert.False(t, report.Valid)
+		wsFound := false
+		for _, f := range report.Findings {
+			if f.Path == "stagePersonas.in_review" && f.Rule == "persona-role-ref" {
+				wsFound = true
+			}
+		}
+		assert.True(t, wsFound, "the whitespace bare-string reference must carry the persona-role-ref finding: %+v", report.Findings)
 		// An empty bare reference rejects at the schema (minLength).
 		report = validateFixture(t, "set_config", `{"stagePersonas":{"in_review":""}}`)
 		assert.False(t, report.Valid)

@@ -177,8 +177,8 @@ func runSidecarCommand(_ []string) int {
 	// US-4b: the sidecar's stores live on the consumer-split volumes —
 	// the controller wires the env overrides; helpers default to the
 	// /sandbox-runtime consts for env-less local runs.
-	bootCfgPath, bootPromptPath, bootDirsPath := bootAgentConfigPathsWithEnv()
-	agentConfigWriter := ensureBootAgentConfig(bootCfgPath, bootPromptPath, bootDirsPath, password)
+	bootCfgPath, bootPromptPath, bootDirsPath, bootRolesPath := bootAgentConfigPathsWithEnv()
+	agentConfigWriter := ensureBootAgentConfig(bootCfgPath, bootPromptPath, bootDirsPath, bootRolesPath, password)
 
 	deps := buildSidecarDeps(sidecarConfig{
 		password:    password,

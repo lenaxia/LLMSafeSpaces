@@ -45,6 +45,19 @@ const (
 	// death, no plaintext-on-PVC concern (it's a list of public path
 	// globs, not secrets).
 	AllowedDirsPath = "/sandbox-runtime/allowed-dirs.json"
+	// AgentRolesPath is where the bootstrap subcommand writes the
+	// workspace's addressable agent-role vocabulary (a JSON array of
+	// role entries — id + slug/name + the role config's behavior
+	// fields). The AgentConfigWriter reads it once at init and
+	// materializes each role as a NAMED opencode agent
+	// (agent.<roleID> — prompt/model/mode/tools) so a board
+	// stage-persona dispatch (spec["agent"] = <roleId>, the A8
+	// agentID seam) resolves to the role's own system prompt instead
+	// of silently falling back to the build agent (NODE-EXECUTE-
+	// CONTRACT §A8: opencode never errors on an unknown agentID).
+	// Same tmpfs lifecycle as admin-prompt.md: written at every pod
+	// bootstrap, wiped on pod death, never on the PVC.
+	AgentRolesPath = "/sandbox-runtime/agent-roles.json"
 	// ModelResolutionWarningPath is where the materialize subcommand records
 	// that the workspace's persisted default model could not be resolved to
 	// any provider in agent-config.json (e.g. a relay-only model selected
@@ -79,6 +92,15 @@ const (
 	AgentdAdminPort = 4098 // agentd admin HTTP API (healthz, readyz, statusz) — US-22.8
 	AgentdAdminAddr = "0.0.0.0:4098"
 	AuthUsername    = "opencode" // Basic Auth username for opencode
+	// ErrorCodeAgentNotFound is the A8 pre-validation rejection
+	// (NODE-EXECUTE-CONTRACT §A8): an agent-node dispatch named an
+	// agent absent from opencode's live registry — the failure that
+	// opencode itself would have swallowed (silent build-agent
+	// fallback). Rides the 200 workflow-execute error envelope so the
+	// engine-side callers (the board spawner) can branch on it: a
+	// persona'd spawn degrades to a persona-less re-dispatch instead
+	// of spawning a silently role-less worker.
+	ErrorCodeAgentNotFound = "agent_not_found"
 )
 
 // OverlayMountPath is the agentd image-volume mount inside workspace

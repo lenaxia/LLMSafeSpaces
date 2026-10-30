@@ -33,6 +33,13 @@ type bootstrapResponse struct {
 	WorkspaceConfig            json.RawMessage `json:"workspaceConfig,omitempty"`
 	AdminPrompt                string          `json:"adminPrompt,omitempty"`
 	AllowedExternalDirectories []string        `json:"allowedExternalDirectories,omitempty"`
+	// AgentRoles is the workspace's addressable agent-role vocabulary
+	// (a types.MaterializedAgentRole JSON array) written VERBATIM to
+	// agentd.AgentRolesPath — the ConfigWriter materializes each entry
+	// as a named opencode agent so stage-persona dispatches resolve
+	// (the A8 seam). RawMessage on purpose: the pod never interprets
+	// the vocabulary, it stages it.
+	AgentRoles json.RawMessage `json:"agentRoles,omitempty"`
 }
 
 // bootstrapRequest is the JSON body POSTed to the API. ContractVersion
@@ -99,6 +106,16 @@ func runBootstrapCommand(args []string, _ io.Writer, stderr io.Writer) int {
 	// agentd.AllowedDirsPath. Symmetric with
 	// --admin-prompt-out; exposed as a flag so tests can target a t.TempDir().
 	allowedDirsOut := fs.String("allowed-dirs-out", agentd.AllowedDirsPath, "output allowed-dirs.json path")
+	// agentRolesOut is the file the bootstrap subcommand writes the
+	// workspace's agent-role vocabulary to (VERBATIM — a JSON array of
+	// types.MaterializedAgentRole), if the API returns a non-empty
+	// list. The AgentConfigWriter reads it via loadAgentRoles and
+	// materializes each role as a named opencode agent (agent.<roleID>)
+	// — the resolution seam for board stage-persona dispatches
+	// (spec["agent"] = <roleId>; NODE-EXECUTE-CONTRACT §A8). Defaults
+	// to agentd.AgentRolesPath. Symmetric with --admin-prompt-out;
+	// exposed as a flag so tests can target a t.TempDir().
+	agentRolesOut := fs.String("agent-roles-out", agentd.AgentRolesPath, "output agent-roles.json path")
 
 	if err := fs.Parse(args); err != nil {
 		return 2
@@ -140,9 +157,10 @@ func runBootstrapCommand(args []string, _ io.Writer, stderr io.Writer) int {
 	var wsCfg json.RawMessage
 	var adminPrompt string
 	var allowedDirs []string
+	var agentRoles json.RawMessage
 	var fetchErr error
 	for attempt := 1; ; attempt++ {
-		secrets, notModified, wsCfg, adminPrompt, allowedDirs, fetchErr = fetchBootstrapSecrets(context.Background(), *apiURL, *workspaceID, string(token), priorHash)
+		secrets, notModified, wsCfg, adminPrompt, allowedDirs, agentRoles, fetchErr = fetchBootstrapSecrets(context.Background(), *apiURL, *workspaceID, string(token), priorHash)
 		if fetchErr == nil || hasPriorBatch || attempt >= bootstrapFetchAttempts || errors.Is(fetchErr, errBootstrapUnauthorized) {
 			break
 		}
@@ -203,6 +221,14 @@ func runBootstrapCommand(args []string, _ io.Writer, stderr io.Writer) int {
 		}
 	}
 
+	if len(agentRoles) > 0 && string(agentRoles) != "null" {
+		if err := atomicWriteSecrets(*agentRolesOut, agentRoles, 0o640); err != nil {
+			_, _ = fmt.Fprintf(stderr, "bootstrap: failed to write agent-roles.json: %v\n", err)
+		} else {
+			_, _ = fmt.Fprintf(stderr, "bootstrap: wrote agent-roles (%d bytes)\n", len(agentRoles))
+		}
+	}
+
 	_, _ = fmt.Fprintf(stderr, "bootstrap: success, %d bytes secrets\n", len(secrets))
 	return 0
 }
@@ -211,14 +237,14 @@ func runBootstrapCommand(args []string, _ io.Writer, stderr io.Writer) int {
 // returns notModified=true on 304 (caller keeps the prior file); the
 // secrets payload of a 200 is written verbatim by the caller — envelope
 // or legacy bare array, both are the exact bytes to persist.
-func fetchBootstrapSecrets(ctx context.Context, apiURL, workspaceID, token, clientManifestHash string) (json.RawMessage, bool, json.RawMessage, string, []string, error) {
+func fetchBootstrapSecrets(ctx context.Context, apiURL, workspaceID, token, clientManifestHash string) (json.RawMessage, bool, json.RawMessage, string, []string, json.RawMessage, error) {
 	body, err := json.Marshal(bootstrapRequest{
 		WorkspaceID:        workspaceID,
 		ContractVersion:    bootstrapContractV2,
 		ClientManifestHash: clientManifestHash,
 	})
 	if err != nil {
-		return nil, false, nil, "", nil, err
+		return nil, false, nil, "", nil, nil, err
 	}
 
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
@@ -227,7 +253,7 @@ func fetchBootstrapSecrets(ctx context.Context, apiURL, workspaceID, token, clie
 	//nolint:gosec // G704: apiURL is controller-set via LLMSAFESPACE_API_URL env var, not user-controllable
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, apiURL+"/internal/v1/pod-bootstrap", bytes.NewReader(body))
 	if err != nil {
-		return nil, false, nil, "", nil, err
+		return nil, false, nil, "", nil, nil, err
 	}
 	req.Header.Set("Authorization", "Bearer "+token)
 	req.Header.Set("Content-Type", "application/json")
@@ -236,29 +262,29 @@ func fetchBootstrapSecrets(ctx context.Context, apiURL, workspaceID, token, clie
 	//nolint:gosec // G704: apiURL is controller-set, not user-controllable
 	resp, err := client.Do(req)
 	if err != nil {
-		return nil, false, nil, "", nil, err
+		return nil, false, nil, "", nil, nil, err
 	}
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode == http.StatusNotModified {
-		return nil, true, nil, "", nil, nil
+		return nil, true, nil, "", nil, nil, nil
 	}
 	if resp.StatusCode != http.StatusOK {
 		if resp.StatusCode == http.StatusUnauthorized {
-			return nil, false, nil, "", nil, errBootstrapUnauthorized
+			return nil, false, nil, "", nil, nil, errBootstrapUnauthorized
 		}
-		return nil, false, nil, "", nil, fmt.Errorf("API returned %d", resp.StatusCode)
+		return nil, false, nil, "", nil, nil, fmt.Errorf("API returned %d", resp.StatusCode)
 	}
 
 	var result bootstrapResponse
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return nil, false, nil, "", nil, fmt.Errorf("decode response: %w", err)
+		return nil, false, nil, "", nil, nil, fmt.Errorf("decode response: %w", err)
 	}
 
 	if len(result.Secrets) == 0 {
 		result.Secrets = json.RawMessage("[]")
 	}
-	return result.Secrets, false, result.WorkspaceConfig, result.AdminPrompt, result.AllowedExternalDirectories, nil
+	return result.Secrets, false, result.WorkspaceConfig, result.AdminPrompt, result.AllowedExternalDirectories, result.AgentRoles, nil
 }
 
 // readPriorBatch inspects the existing batch file in one read:

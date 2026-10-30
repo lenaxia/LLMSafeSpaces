@@ -150,9 +150,11 @@ type AgentRoleRef struct {
 // RoleDirectory resolves the agent-role vocabulary a board owner may
 // reference from stagePersonas (the platform's agent_roles surface —
 // org-level + platform roles available to the user). Installed through
-// WithRoleDirectory; nil keeps the persona seam role-blind (legacy
-// prose personas decode and run exactly as before — pkg/board never
-// requires the directory, the app wires it).
+// WithRoleDirectory; nil keeps the persona seam role-blind (a
+// role-bearing set REFUSES on set under a nil directory — the
+// role-only codec admits role references only and validates them
+// against this vocabulary when one is installed; there is no other
+// persona shape to fall back to).
 type RoleDirectory interface {
 	// AgentRolesForUser lists the roles addressable by the user
 	// (platform roles plus their org's when they belong to one).

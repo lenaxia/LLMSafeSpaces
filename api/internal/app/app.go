@@ -1123,6 +1123,15 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 		// permission.external_directory (the LIVE key on pinned opencode)
 		// so agents stop prompting for /tmp/* on every session.
 		podBootstrapHandler.SetSettingsReader(instanceSettings)
+		// Wire the agent-role vocabulary reader so the bootstrap response
+		// carries the workspace's addressable roles (platform + the
+		// workspace's org): agentd stages them to
+		// /sandbox-runtime/agent-roles.json and the ConfigWriter
+		// materializes each as a NAMED opencode agent (agent.<roleID>) —
+		// without them a stage-persona dispatch (spec["agent"] = <roleId>)
+		// silently runs the build agent (the A8 fallback). Enforced by
+		// TestPodBootstrapHandler_AgentRoleReaderWired.
+		podBootstrapHandler.SetAgentRoleReader(pgOrgStore)
 		// User provider-credential bind/unbind routes are NOT under
 		// /api/v1/workspaces/:id (they live under /api/v1/provider-credentials/:id/bind/:workspaceId),
 		// so WorkspaceAccessMiddleware does not cover them. Wire the

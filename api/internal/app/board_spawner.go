@@ -28,6 +28,7 @@ import (
 	"time"
 
 	apiwf "github.com/lenaxia/llmsafespaces/api/internal/workflows"
+	"github.com/lenaxia/llmsafespaces/pkg/agentd"
 	"github.com/lenaxia/llmsafespaces/pkg/board"
 	"github.com/lenaxia/llmsafespaces/pkg/types"
 	wf "github.com/lenaxia/llmsafespaces/pkg/workflows"
@@ -153,6 +154,25 @@ func boardSpawnRequest(c *board.Claim) *apiwf.NodeExecRequest {
 	}
 }
 
+// boardSpawnRequestPersonalessRetry builds the DEGRADED re-dispatch for
+// a spawn the pod rejected with agentd's A8 agent_not_found (the
+// referenced role never materialized in that pod's opencode registry —
+// a role created after the pod's bootstrap, or a stale tmpfs). The
+// claim renders PERSONA-LESS (the charter's persona arm and the
+// agent key both drop — byte-identical to a pre-persona spawn), and
+// the RunID carries a fresh "-np" suffix: #1957's mux keys charter
+// delivery on the (workflow, run) pair and silently DROPS a re-used
+// key, so the degraded dispatch must never re-use the rejected
+// episode's RunID. One-shot by construction — the degraded spec
+// carries no agent key, so it cannot agent_not_found again.
+func boardSpawnRequestPersonalessRetry(c *board.Claim) *apiwf.NodeExecRequest {
+	degraded := *c
+	degraded.Persona = nil
+	req := boardSpawnRequest(&degraded)
+	req.RunID += "-np"
+	return req
+}
+
 // newBoardSpawner builds the production spawn seam: resolve the target
 // workspace's pod, dispatch a fresh-session charter through the agentd
 // user mux, and return the minted session id.
@@ -192,6 +212,26 @@ func newBoardSpawner(activator spawnActivator, executor spawnDispatcher, origins
 		resp, err := executor.Execute(ctx, c.WorkspaceID, podIP, boardSpawnRequest(c))
 		if err != nil {
 			return "", fmt.Errorf("board: spawn dispatch: %w", err)
+		}
+		// A8 degrade (owner ruling posture: never a silently role-less
+		// worker): the pod's opencode registry lacks the referenced
+		// role's agent (stale bootstrap — the role vocabulary is
+		// delivered at pod boot), and agentd's pre-validation refused
+		// the dispatch instead of letting opencode silently fall back
+		// to the build agent. Degrade ONCE to the persona-less
+		// dispatch (warn-logged; the stored ref stays visible in the
+		// config view; the next pod bootstrap materializes the role
+		// and the next episode heals). Without this the episode would
+		// churn: re-arm re-claims, re-resolves the persona api-side
+		// (the role exists there), and re-dispatches into the same
+		// rejection forever — the reviewerless-review trap.
+		if resp.SessionID == "" && resp.ErrorCode == agentd.ErrorCodeAgentNotFound && c.Persona != nil {
+			slog.WarnContext(ctx, "board: spawn: role agent not materialized in the workspace pod (A8 agent_not_found) — degrading to a persona-less dispatch",
+				"workspaceID", c.WorkspaceID, "taskId", c.TaskID, "roleId", c.Persona.RoleID, "detail", resp.Detail)
+			resp, err = executor.Execute(ctx, c.WorkspaceID, podIP, boardSpawnRequestPersonalessRetry(c))
+			if err != nil {
+				return "", fmt.Errorf("board: spawn dispatch: %w", err)
+			}
 		}
 		if resp.SessionID == "" {
 			return "", fmt.Errorf("board: spawn: agentd returned no session id (errorCode=%s detail=%s)",
@@ -242,7 +282,11 @@ func newBoardSpawner(activator spawnActivator, executor spawnDispatcher, origins
 // 2026-10-24) absorbed the auto-assigned reviewer's dedicated dispatch
 // (#1832 item 5, part 2 — newReviewAssigner/reviewerCharterPrompt): a
 // persona-bearing stage entry now rides the SAME spawner above with a
-// Persona-carrying Claim (see boardCharterPrompt); the reviewer
-// persona's instructions live in pkg/board's DefaultReviewerPersona
-// (the legacy reviewColumn=auto + autoAssignReviewer composition) or
-// in the stagePersonas config.
+// Persona-carrying Claim (see boardCharterPrompt). The default
+// reviewer composition is the seeded built-in `reviewer` platform
+// agent role (board.DefaultReviewerRoleSlug — its system prompt
+// carries the verdict-channel charter; the api seeds it at startup),
+// and an org/user override points in_review at their own role: either
+// way the BEHAVIOR lives in the referenced role (materialized into
+// the workspace pod's opencode registry at bootstrap), never in the
+// board layer.

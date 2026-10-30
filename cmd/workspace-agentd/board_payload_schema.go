@@ -240,9 +240,11 @@ const boardPayloadSchemaSetConfig = `{
 // the ROLE-REFERENCE object — {roleId} and nothing else, mirroring
 // board.PersonaConfig (the legacy name/instructions shape is not
 // admitted anywhere); the personaRoleRef item is the canonical
-// bare-string role reference) and stamps the cap placeholders (the
-// placeholders keep the caps single-sourced as named constants
-// above); one raw schema per op.
+// bare-string role reference — the schema's minLength cannot see
+// whitespace, so the SEMANTIC check trim-rejects a blank string and
+// admission is identical to the platform decoder on both shapes) and
+// stamps the cap placeholders (the placeholders keep the caps
+// single-sourced as named constants above); one raw schema per op.
 func boardPayloadSchemasRaw() map[string]string {
 	withDefs := func(body string) string {
 		// Splice body's own keywords after $defs inside one root
@@ -667,9 +669,22 @@ func boardSemanticFindings(op string, payload map[string]any) []boardPayloadFind
 			// to semantics (a persona object carries exactly one
 			// non-empty, trim-aware roleId — an object with a
 			// whitespace-only or absent roleId is the empty persona).
-			// Bare-string values always carry the reference; only
-			// objects can be empty.
+			// Bare-string values carry the reference but are STILL
+			// trim-checked: the platform decoder rejects a
+			// whitespace-only string, and this surface must agree —
+			// identical admission on both surfaces.
 			for stage, v := range personas {
+				if s, ok := v.(string); ok {
+					if strings.TrimSpace(s) == "" {
+						out = append(out, boardPayloadFinding{
+							Path: "stagePersonas." + stage, Rule: "persona-role-ref", Severity: "error",
+							Problem:  "the bare-string role reference is empty after trimming — a persona IS a role reference (owner ruling 2026-10-29, role-only)",
+							Fix:      "set the value to an available agent role's id or slug (see GET /api/v1/auth/me/agent-roles)",
+							Expected: "non-empty role reference",
+						})
+					}
+					continue
+				}
 				p, ok := v.(map[string]any)
 				if !ok {
 					continue

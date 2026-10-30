@@ -89,10 +89,13 @@ func (d *boardRoleDirectory) AgentRolesForUser(ctx context.Context, userID strin
 // reviewer composition (board.DefaultReviewerPersona, the slug
 // reference) resolves to a role deterministically and every spawned
 // reviewer runs on it; an org/user overriding the reviewer points
-// in_review at their own role instead. Idempotent: an existing role
-// with the reviewer slug (any scope — an org may own their own) makes
-// the seed a no-op. This is ROLE SEEDING, not a persona migration —
-// no persona data is read, transformed, or written.
+// in_review at their own role instead. Idempotent: an existing
+// PLATFORM-scope role with the reviewer slug makes the seed a no-op
+// (the list below is platform scope only — an org-scoped namesake
+// does NOT suppress the seed, because org roles are not visible to
+// boards owned by users outside that org; the default reviewer must
+// resolve for every board). This is ROLE SEEDING, not a persona
+// migration — no persona data is read, transformed, or written.
 func seedBuiltinReviewerRole(ctx context.Context, store boardRoleStore) error {
 	roles, err := store.ListAgentRoles(ctx, "platform", "")
 	if err != nil {

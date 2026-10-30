@@ -182,6 +182,33 @@ func (s *BoardSuite) TestPersonaRoles_StoredNonRoleShapeIsDrift() {
 	require.ErrorAs(s.T(), err, &de)
 }
 
+// TestPersonaRoles_StoredNonRoleShapeIsDriftUserTier — the USER-tier
+// twin of the project-tier drift pin (review round 2, PR #1990): the
+// decode path is shared, but the defaults table (board_config_defaults)
+// is a separate storage belt — pinned so a future tier-specific decode
+// shortcut cannot quietly admit the legacy shape on one of them.
+func (s *BoardSuite) TestPersonaRoles_StoredNonRoleShapeIsDriftUserTier() {
+	ctx := context.Background()
+
+	// Hand-insert the legacy row past every write belt.
+	_, err := s.pool.Exec(ctx, `
+		INSERT INTO board_config_defaults (user_id, key, value)
+		VALUES ($1, 'stagePersonas', '{"in_progress": {"name": "auditor", "instructions": "Verify."}}'::jsonb)
+		ON CONFLICT (user_id, key) DO UPDATE SET value = EXCLUDED.value`,
+		s.owner().UserID)
+	s.Require().NoError(err)
+	s.T().Cleanup(func() {
+		_, _ = s.pool.Exec(ctx, `DELETE FROM board_config_defaults WHERE user_id=$1 AND key='stagePersonas'`, s.owner().UserID)
+	})
+
+	svc := board.NewService(s.pool, s.cfg, board.WithRoleDirectory(personaRoleDirectory()))
+	_, err = svc.GetUserBoardConfig(ctx, s.owner())
+	require.Error(s.T(), err, "the stored non-role shape never decodes on the user tier either")
+	require.Contains(s.T(), err.Error(), "storage drift", "the failure class is server-side drift, not caller input")
+	var de *board.StorageDriftError
+	require.ErrorAs(s.T(), err, &de)
+}
+
 // TestPersonaRoles_DefaultReviewerResolvesToRole — the default reviewer
 // composition (reviewColumn=auto + autoAssignReviewer, no explicit
 // personas) resolves to the SEEDED reviewer agent role (owner ruling
