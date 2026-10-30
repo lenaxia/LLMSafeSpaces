@@ -205,7 +205,9 @@ var boardCreateTaskTool = mcp.NewTool("board_create_task",
 		"anchor review-of:<subject-short-id> (#1832 — a review story whose subject's done transition settles it: "+
 		"done when its criteria are ALL met, drift_review flag (pending_input) when unmet — the park "+
 		"is a FLAG on the row's real stage (000050), never a costume column). depends_on adds "+
-		"prerequisite edges in the same write (#1747)."),
+		"prerequisite edges in the same write (#1747). Worked story patterns (six use-case charters, "+
+		"lifecycles, plan shapes, the shared process discipline) live at "+
+		"/sandbox-runtime/docs/sprint-board-patterns/ — grep '^Description:' there for the catalog."),
 	mcp.WithString("epic_id", mcp.Required(), mcp.Description("Epic short id, phrase form (epc-meek-gondola-waits; legacy epc-XXXXXXXX still resolves, deprecated)")),
 	mcp.WithString("title", mcp.Required(), mcp.Description("Story title")),
 	mcp.WithString("description", mcp.Required(), mcp.Description("REQUIRED at create (#1849): markdown; seeds the fresh worker's charter (R9)")),
@@ -440,7 +442,9 @@ var boardImportPlanTool = mcp.NewTool("board_import_plan",
 		"claimable set; unarchive first (the minted epic itself is always draft, never terminal). "+
 		"dry_run=true validates WITHOUT writing — the render "+
 		"(graph, warnings, initial ready set) is the user's plan-approval moment. Stories address each other "+
-		"by payload key; edges live within the workspace."),
+		"by payload key; edges live within the workspace. Worked story patterns (an epic+plan with a "+
+		"dependency edge among them) live at /sandbox-runtime/docs/sprint-board-patterns/ — "+
+		"grep '^Description:' there for the catalog."),
 	mcp.WithString("project_id", mcp.Required(), mcp.Description("Project short id, phrase form (prj-amber-lantern-ambles; legacy prj-XXXXXXXX still resolves, deprecated)")),
 	mcp.WithString("epic_title", mcp.Required(), mcp.Description("The created epic's title")),
 	mcp.WithString("outcome", mcp.Description("The epic's outcome (steering wheel)")),

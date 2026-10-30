@@ -1310,6 +1310,28 @@ func TestMCPHandler_ToolDescriptionGuidance(t *testing.T) {
 		// covers manual runs and mapped fired runs, not every run input.
 		assert.Contains(t, d, "enforced on manual runs and on fired runs that carry input mapping")
 		assert.NotContains(t, d, "enforced on every workflow_run input", "the #1419-disproved misconception may not return")
+		// 2026-10-30 owner ruling — the worked DAG patterns moved into the
+		// pod-side doc directory materialized by init-fs; this pointer is
+		// drift-pinned so it cannot regress silently (#1415/0059 class).
+		assert.Contains(t, d, "/sandbox-runtime/docs/workflow-patterns/", "the worked-DAG-patterns doc pointer must stay")
+		assert.Contains(t, d, "grep '^Description:'", "the catalog is grepped, never hand-maintained")
+	})
+
+	// 2026-10-30 owner ruling — the worked Sprint Board story patterns
+	// live at the pod-side doc directory materialized by init-fs; the
+	// create/plan descriptions point at it. Drift-pinned (the
+	// #1415/0059 class — this surface has lost description text
+	// silently before).
+	t.Run("board pattern-doc pointers", func(t *testing.T) {
+		d, ok := descs["board_create_task"]
+		require.True(t, ok, "board_create_task in tools/list")
+		assert.Contains(t, d, "/sandbox-runtime/docs/sprint-board-patterns/", "board_create_task must point at the worked story patterns")
+		p, ok := descs["board_import_plan"]
+		require.True(t, ok, "board_import_plan in tools/list")
+		assert.Contains(t, p, "/sandbox-runtime/docs/sprint-board-patterns/", "board_import_plan must point at the worked story patterns")
+		for _, desc := range []string{d, p} {
+			assert.Contains(t, desc, "grep '^Description:'", "the catalog is grepped, never hand-maintained")
+		}
 	})
 
 	t.Run("workflow_update guidance", func(t *testing.T) {

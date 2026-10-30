@@ -30,7 +30,9 @@ var workflowGetTool = mcp.NewTool("workflow_get",
 )
 
 var workflowCreateTool = mcp.NewTool("workflow_create",
-	mcp.WithDescription("Create a new workflow definition"),
+	mcp.WithDescription("Create a new workflow definition. Worked DAG patterns (canonical DAGs across all "+
+		"four node types and every trigger wiring, the {{.path}} placeholder rules, inputSchema gotchas) "+
+		"live at /sandbox-runtime/docs/workflow-patterns/ — grep '^Description:' there for the catalog."),
 	mcp.WithString("name", mcp.Required(), mcp.Description("Workflow name")),
 	mcp.WithString("spec_yaml", mcp.Required(), mcp.Description("Workflow DAG spec — a JSON document string or YAML text (single document); YAML is converted server-side")),
 	mcp.WithString("status", mcp.Description("Workflow status: draft (default), active, archived")),
