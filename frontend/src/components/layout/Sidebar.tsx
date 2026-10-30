@@ -233,7 +233,7 @@ export function Sidebar({ onNavigate }: Props) {
             )}
           >
             <KanbanSquare className="h-4 w-4 shrink-0 text-muted-foreground" />
-            <span>Board</span>
+            <span>Sprint Board</span>
           </button>
         </div>
         <div className="border-t border-border mx-2 my-1" />

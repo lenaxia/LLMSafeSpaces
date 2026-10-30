@@ -71,8 +71,11 @@ describe("SettingsPage", () => {
     expect(screen.queryByText("Platform Audit")).not.toBeInTheDocument();
     expect(screen.queryByText("Admin")).not.toBeInTheDocument();
     // Board config relocated ON the board (owner ruling 2026-10-28 —
-    // "alongside the projects and on the board itself"): no Task Board
-    // tab in Settings; /settings/board-config redirects to the board.
+    // "alongside the projects and on the board itself"): no Sprint
+    // Board (formerly Task Board) tab in Settings;
+    // /settings/board-config redirects to the board.
+    expect(screen.queryByText("Sprint Board")).not.toBeInTheDocument();
+    expect(screen.queryByText("Sprint Board Config")).not.toBeInTheDocument();
     expect(screen.queryByText("Task Board")).not.toBeInTheDocument();
     expect(screen.queryByText("Task Board Config")).not.toBeInTheDocument();
   });

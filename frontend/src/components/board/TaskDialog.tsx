@@ -124,7 +124,7 @@ export function TaskDialog({
         <Dialog.Overlay className="fixed inset-0 bg-black/40 z-50" />
         <Dialog.Content
           className="fixed left-1/2 top-1/2 z-50 flex max-h-[85vh] w-[32rem] max-w-[calc(100vw-2rem)] -translate-x-1/2 -translate-y-1/2 flex-col overflow-hidden rounded-md border border-border bg-background shadow-xl"
-          aria-label={editing ? `Edit task ${task?.short_id}` : "New task"}
+          aria-label={editing ? `Edit story ${task?.short_id}` : "New story"}
         >
           <div className="flex items-center justify-between border-b border-border px-4 py-3">
             <Dialog.Title className="text-sm font-semibold">
@@ -132,12 +132,12 @@ export function TaskDialog({
                 <>
                   {/* 2026-10-28 ruling 4: the TITLE leads; the id is the
                    * secondary mono ref (click-through popup — ids allowed). */}
-                  Task <span className="font-medium">{task?.title}</span>{" "}
+                  Story <span className="font-medium">{task?.title}</span>{" "}
                   <span className="font-mono text-xs text-muted-foreground">{task?.short_id}</span>
                   {epic === null && task && <span className="ml-2 text-xs text-muted-foreground">{task.epic_name}</span>}
                 </>
               ) : (
-                <>New task {epic && <span className="ml-2 text-xs text-muted-foreground">in {epic.title}</span>}</>
+                <>New story {epic && <span className="ml-2 text-xs text-muted-foreground">in {epic.title}</span>}</>
               )}
             </Dialog.Title>
             <Dialog.Close asChild>
@@ -152,7 +152,7 @@ export function TaskDialog({
 
             <label className="flex flex-col gap-1 text-xs">
               <span className="font-medium">Title</span>
-              <Input value={title} onChange={(e) => setTitle(e.target.value)} placeholder="Task title" data-testid="task-title" />
+              <Input value={title} onChange={(e) => setTitle(e.target.value)} placeholder="Story title" data-testid="task-title" />
             </label>
 
             <label className="flex flex-col gap-1 text-xs">
@@ -307,7 +307,7 @@ export function TaskDialog({
                 variant="destructive"
                 size="sm"
                 data-testid="delete-task"
-                title="Destructive: removes the task; the audit keeps the full snapshot (#1747)"
+                title="Destructive: removes the story; the audit keeps the full snapshot (#1747)"
                 onClick={async () => {
                   try {
                     const ok = await onDelete();
@@ -317,7 +317,7 @@ export function TaskDialog({
                   }
                 }}
               >
-                Delete task
+                Delete story
               </Button>
             ) : (
               <span />
