@@ -70,45 +70,70 @@ const (
 // the Go constant.
 const DefaultBoardWorkerSlots = 2
 
-// PersonaNameMax, PersonaInstructionsMax and PersonaRoleIDMax bound one
-// persona config's text fields (the #1837 P1b discipline: caps on every
-// stored text field). The name rides log lines and event payloads; the
-// instructions ride the spawned charter verbatim; the role reference
-// rides the spawn dispatch (the opencode agentID) and must stay a
-// short, opaque token — a UUID or slug, never a prompt.
-const (
-	PersonaNameMax         = 64
-	PersonaInstructionsMax = 4096
-	PersonaRoleIDMax       = 128
-)
+// PersonaRoleIDMax bounds one persona's role reference (the #1837 P1b
+// discipline: a cap on the stored text field). The reference rides the
+// spawn dispatch (the opencode agentID) and must stay a short, opaque
+// token — a UUID or slug, never a prompt.
+const PersonaRoleIDMax = 128
 
-// PersonaConfig is ONE stage's configured agent persona (the
-// stage-persona claim-then-spawn mechanism): when a task ENTERS a
-// stage carrying one, the engine claims the row (existing lease +
-// claim-token semantics) and spawns a fresh session chartered as this
-// persona. Stage-generic by construction — any persona-bearing stage;
-// nothing is hardwired to a particular persona or stage.
+// PersonaConfig is ONE stage's configured agent persona — a ROLE
+// REFERENCE, nothing else (owner ruling 2026-10-29: "Board stages
+// should ONLY ever have roles configured, there is no custom
+// definition in the board itself. ROLES are the way to define
+// behavior for board stages."). RoleID names a platform agent role
+// (by id or slug); the referenced role is the single source of truth
+// for the spawned worker's model, tool surface, and system prompt —
+// including the reviewer's verdict-channel charter, which the platform
+// seeds INTO the built-in reviewer role (see
+// board.DefaultReviewerRoleSystemPrompt). The board layer defines no
+// behavior of its own: name and instructions do not exist here, on
+// the wire, or in storage.
 //
-// Role-first (owner ruling 2026-10-29: "we can use the agent roles the
-// platform already has. Rather than redefining them that way they can
-// be reused."): RoleID references a platform agent role (by id or
-// slug — the role-owning surface resolves both), and the role is the
-// single source of truth for the spawned worker's model, tool surface,
-// and system prompt. Instructions is the OPTIONAL override layer
-// layered on top of the role's system prompt for edge cases (most
-// stages need none). Name is the display label (log lines, audit
-// events, the charter's persona line); the legacy {name, instructions}
-// shape still decodes — a name-only persona with no resolvable role is
-// a role-less override, byte-identical to the pre-role behavior.
+// Wire/storage shapes: the BARE STRING ("in_review": "reviewer") is
+// canonical; the {roleId} object decodes but carries nothing else.
+// Anything else — the legacy {name, instructions} shape above all —
+// rejects loud and never decodes (owner ruling: no personas were ever
+// created, so nothing needs to migrate; a stored non-role shape is
+// storage drift).
 type PersonaConfig struct {
-	// RoleID references the platform agent role whose model/tools/
-	// system-prompt define this persona (matched by id or slug against
-	// the available set; empty = the legacy prose-only persona).
+	// RoleID references the platform agent role (matched by id or
+	// slug against the available set; canonicalized to the role id at
+	// spawn resolution).
 	RoleID string `json:"roleId,omitempty"`
-	Name   string `json:"name,omitempty"`
-	// Instructions is the persona's charter preamble layered OVER the
-	// referenced role's system prompt (optional in every shape).
-	Instructions string `json:"instructions,omitempty"`
+}
+
+// personaUnresolvedLabel is the display identity of a persona whose
+// role reference is empty (the degradation shape applyPersonaRole
+// never mints but Label must still render for). Never an authored
+// value: decode rejects empty references.
+const personaUnresolvedLabel = "(unresolved role)"
+
+// MarshalJSON renders the CANONICAL wire/storage form: the bare role
+// reference string.
+func (p PersonaConfig) MarshalJSON() ([]byte, error) {
+	return json.Marshal(p.RoleID)
+}
+
+// UnmarshalJSON admits exactly two shapes: the bare reference string
+// (canonical) and the {roleId} object (decodable, carries nothing
+// else). Unknown fields reject (the strict-vocabulary discipline — a
+// name/instructions/typo key must never ride silently into storage).
+func (p *PersonaConfig) UnmarshalJSON(raw []byte) error {
+	var ref string
+	if err := json.Unmarshal(raw, &ref); err == nil {
+		p.RoleID = ref
+		return nil
+	}
+	var obj struct {
+		RoleID string `json:"roleId"`
+	}
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&obj); err != nil {
+		return fmt.Errorf("a persona is a role reference — the bare id/slug string (canonical) or the {roleId} object; got %s", string(raw))
+	}
+	p.RoleID = obj.RoleID
+	return nil
 }
 
 // AgentRoleRef is one selectable agent role in the persona vocabulary:
@@ -134,51 +159,20 @@ type RoleDirectory interface {
 	AgentRolesForUser(ctx context.Context, userID string) ([]AgentRoleRef, error)
 }
 
-// ResolveAgentRoleRef matches one persona's RoleID (or, for legacy
-// name-only personas, its Name) against the available roles: exact id
-// match, then exact slug match, then — the migration's name→role
-// synthesis — a name match. nil when nothing matches (the role-less
-// override shape).
-func ResolveAgentRoleRef(p PersonaConfig, roles []AgentRoleRef) *AgentRoleRef {
-	if p.RoleID != "" {
-		for i := range roles {
-			if roles[i].ID == p.RoleID || roles[i].Slug == p.RoleID {
-				return &roles[i]
-			}
-		}
-		return nil // an explicit reference that does not resolve — never silently re-point it at a name match
-	}
-	if p.Name == "" {
+// ResolveAgentRoleRef matches one role reference (id or slug) against
+// the available roles: exact id match, then exact slug match. nil when
+// nothing matches — an explicit reference that does not resolve NEVER
+// silently re-points (the caller degrades; see applyPersonaRole).
+func ResolveAgentRoleRef(ref string, roles []AgentRoleRef) *AgentRoleRef {
+	if ref == "" {
 		return nil
 	}
 	for i := range roles {
-		if roles[i].Slug == p.Name || roles[i].Name == p.Name {
+		if roles[i].ID == ref || roles[i].Slug == ref {
 			return &roles[i]
 		}
 	}
 	return nil
-}
-
-// MigratePersonaRoles stamps RoleIDs onto legacy name-only personas by
-// resolving each against the available roles (the stored-config
-// migration: name→role where possible). Unresolvable personas are kept
-// verbatim — the instructions survive as a role-less override. Pure:
-// the caller owns persistence (a migrated row is only stored when a
-// client writes the resolved shape back).
-func MigratePersonaRoles(m map[string]PersonaConfig, roles []AgentRoleRef) map[string]PersonaConfig {
-	if m == nil {
-		return nil
-	}
-	out := make(map[string]PersonaConfig, len(m))
-	for stage, p := range m {
-		if p.RoleID == "" && p.Name != "" {
-			if r := ResolveAgentRoleRef(p, roles); r != nil {
-				p.RoleID = r.ID
-			}
-		}
-		out[stage] = p
-	}
-	return out
 }
 
 // personaEligibleStages lists the stages a persona can be configured
@@ -379,23 +373,22 @@ func ValidateBoardConfigKey(key string, raw json.RawMessage) error {
 }
 
 // decodePersonaMap decodes + validates the stagePersonas value. The
-// role-first shapes (owner ruling 2026-10-29: personas REFERENCE agent
-// roles instead of redefining them): stage → bare role reference
-// string ("in_review": "reviewer") or stage → {roleId?, name?,
-// instructions?} with at least one of roleId/name non-empty. The
-// legacy {name, instructions} object decodes verbatim (backward
-// compat from storage AND wire — existing stored personas keep their
-// meaning; the read edge migrates name→role where roles resolve).
-// Every stage key must be persona-eligible (a stage a live claim can
-// exist in), and no unknown fields inside a persona object (the
-// strict-vocabulary discipline at the nested level;
-// DisallowUnknownFields — an accidental "instructions"-typo must
-// never ride silently into storage).
+// ROLE-ONLY shapes (owner ruling 2026-10-29: "Board stages should ONLY
+// ever have roles configured, there is no custom definition in the
+// board itself."): stage → bare role reference string ("in_review":
+// "reviewer", canonical) or stage → the {roleId} object (decodable,
+// carries nothing else). Nothing else decodes — the legacy {name,
+// instructions} shape above all rejects loud (owner ruling: no
+// personas were ever created, so there is nothing to migrate or
+// keep decoding). Every stage key must be persona-eligible (a stage a
+// live claim can exist in), every reference non-empty (trim-aware —
+// parity with agentd's validate_file semantic check, one contract per
+// shape), and no unknown fields inside the {roleId} object.
 func decodePersonaMap(raw json.RawMessage) (map[string]PersonaConfig, error) {
 	var m map[string]json.RawMessage
 	dec := json.NewDecoder(bytes.NewReader(raw))
 	if err := dec.Decode(&m); err != nil {
-		return nil, fmt.Errorf("must be an object mapping stage → role reference or {roleId, name?, instructions?}, got %s", string(raw))
+		return nil, fmt.Errorf("must be an object mapping stage → role reference (id or slug), got %s", string(raw))
 	}
 	out := make(map[string]PersonaConfig, len(m))
 	for stage, praw := range m {
@@ -406,33 +399,14 @@ func decodePersonaMap(raw json.RawMessage) (map[string]PersonaConfig, error) {
 			return nil, fmt.Errorf("stage %q must not map to null — omit the stage key to inherit", stage)
 		}
 		var p PersonaConfig
-		// The compact wire shape: a bare role reference string.
-		var ref string
-		if err := json.Unmarshal(praw, &ref); err == nil {
-			p.RoleID = ref
-		} else {
-			pdec := json.NewDecoder(bytes.NewReader(praw))
-			pdec.DisallowUnknownFields()
-			if err := pdec.Decode(&p); err != nil {
-				return nil, fmt.Errorf("stage %q persona must be a role reference string or an object {roleId?, name?, instructions?}: %v", stage, err)
-			}
+		if err := json.Unmarshal(praw, &p); err != nil {
+			return nil, fmt.Errorf("stage %q: %v", stage, err)
 		}
-		// The role-or-name rule is TRIM-aware (parity with agentd's
-		// validate_file semantic check — one contract per shape): a
-		// whitespace-only roleId or name is the empty slot. An EMPTY
-		// name alongside a roleId is legal (the display label is
-		// optional when the role carries it).
-		if strings.TrimSpace(p.RoleID) == "" && strings.TrimSpace(p.Name) == "" {
-			return nil, fmt.Errorf("stage %q persona requires a role reference (roleId) or a non-empty name", stage)
+		if strings.TrimSpace(p.RoleID) == "" {
+			return nil, fmt.Errorf("stage %q persona requires a non-empty role reference (roleId — the id or slug of an available agent role)", stage)
 		}
 		if len(p.RoleID) > PersonaRoleIDMax {
 			return nil, fmt.Errorf("stage %q persona role reference exceeds %d characters", stage, PersonaRoleIDMax)
-		}
-		if len(p.Name) > PersonaNameMax {
-			return nil, fmt.Errorf("stage %q persona name exceeds %d characters", stage, PersonaNameMax)
-		}
-		if len(p.Instructions) > PersonaInstructionsMax {
-			return nil, fmt.Errorf("stage %q persona instructions exceed %d characters", stage, PersonaInstructionsMax)
 		}
 		out[stage] = p
 	}
@@ -668,26 +642,13 @@ func (st *Store) replaceBoardProjectConfigOverrides(ctx context.Context, project
 
 // --- Service seam ----------------------------------------------------------------
 
-// rolesForUser resolves the available agent-role vocabulary through the
-// installed directory (nil directory or nil user → nil roles — the
-// role-blind posture; the read edge degrades to unmigrated personas).
-// Directory read failures degrade to nil WITH a warn line — reads
-// never fail over the vocabulary.
-func (s *Service) rolesForUser(ctx context.Context, userID string) []AgentRoleRef {
-	roles, err := s.rolesForUserErr(ctx, userID)
-	if err != nil {
-		slog.WarnContext(ctx, "board: agent-role directory read failed — personas stay in the legacy shape",
-			"user_id", userID, "err", err.Error())
-		return nil
-	}
-	return roles
-}
-
-// rolesForUserErr is rolesForUser's error-carrying core: the SET path
-// must distinguish a directory OUTAGE (a plain error — 500-class,
-// retryable once the role service is reachable) from an unresolvable
-// reference (GuardInput — 400, the caller's payload names a role the
-// vocabulary never carried).
+// rolesForUserErr resolves the available agent-role vocabulary through
+// the installed directory (nil directory or nil user → nil roles —
+// the role-blind posture). Its callers must distinguish a directory
+// OUTAGE (a plain error — 500-class on the set path, retryable once
+// the role service is reachable; a degrade-to-persona-less warn on
+// the spawn path) from an unresolvable reference (GuardInput — 400,
+// the caller's payload names a role the vocabulary never carried).
 func (s *Service) rolesForUserErr(ctx context.Context, userID string) ([]AgentRoleRef, error) {
 	if s.roles == nil || userID == "" {
 		return nil, nil
@@ -695,47 +656,15 @@ func (s *Service) rolesForUserErr(ctx context.Context, userID string) ([]AgentRo
 	return s.roles.AgentRolesForUser(ctx, userID)
 }
 
-// migratePersonaRoleRefs lazily migrates one decoded override's legacy
-// name-only personas to role references (owner ruling 2026-10-29: the
-// stored-config migration — name→role where the vocabulary resolves,
-// instructions preserved as the override layer, unresolvable names
-// kept verbatim as role-less personas). In-memory only: a migrated
-// shape persists when a client writes the resolved map back (the
-// REPLACE discipline — reads never mutate storage).
-func (s *Service) migratePersonaRoleRefs(ctx context.Context, userID string, o *BoardConfigOverride) {
-	if o == nil || o.StagePersonas == nil {
-		return
-	}
-	legacy := false
-	for _, p := range *o.StagePersonas {
-		if p.RoleID == "" && p.Name != "" {
-			legacy = true
-			break
-		}
-	}
-	if !legacy {
-		return // nothing to resolve — no directory round-trip
-	}
-	roles := s.rolesForUser(ctx, userID)
-	if len(roles) == 0 {
-		return
-	}
-	m := MigratePersonaRoles(*o.StagePersonas, roles)
-	if m != nil {
-		o.StagePersonas = &m
-	}
-}
-
 // validatePersonaRoleRefs is the SET-path belt (board_set_config's
-// role validation): every persona carrying an explicit role reference
-// must resolve against the available set (id or slug). Error classes
-// are kept DISTINCT — the caller's remedy differs: a role-blind
-// deployment (no directory installed) refuses a role-bearing payload
-// (GuardInput: this deployment can never honor a reference); a
-// directory read failure is a plain error (500-class: retry once the
-// role service is reachable — the payload may be perfectly valid); an
-// unresolvable reference is GuardInput (400: name a role the
-// vocabulary carries).
+// role validation): every persona's role reference must resolve
+// against the available set (id or slug). Error classes are kept
+// DISTINCT — the caller's remedy differs: a role-blind deployment
+// (no directory installed) refuses the payload (GuardInput: this
+// deployment can never honor a reference); a directory read failure
+// is a plain error (500-class: retry once the role service is
+// reachable — the payload may be perfectly valid); an unresolvable
+// reference is GuardInput (400: name a role the vocabulary carries).
 func (s *Service) validatePersonaRoleRefs(ctx context.Context, userID string, in *BoardConfigOverride) error {
 	if in == nil || in.StagePersonas == nil {
 		return nil
@@ -751,7 +680,7 @@ func (s *Service) validatePersonaRoleRefs(ctx context.Context, userID string, in
 	}
 	if s.roles == nil {
 		return &GuardError{Code: GuardInput, Detail: fmt.Sprintf(
-			"stagePersonas carries role references (%s) but this deployment has no agent-role directory — store a name+instructions persona instead, or install the role service",
+			"stagePersonas carries role references (%s) but this deployment has no agent-role directory — install the role service, then set stagePersonas",
 			strings.Join(refs, ", "))}
 	}
 	roles, err := s.rolesForUserErr(ctx, userID)
@@ -767,14 +696,7 @@ func (s *Service) validatePersonaRoleRefs(ctx context.Context, userID string, in
 		known = "none are available to this owner"
 	}
 	for _, ref := range refs {
-		found := false
-		for i := range roles {
-			if roles[i].ID == ref || roles[i].Slug == ref {
-				found = true
-				break
-			}
-		}
-		if !found {
+		if ResolveAgentRoleRef(ref, roles) == nil {
 			return &GuardError{Code: GuardInput, Detail: fmt.Sprintf(
 				"stagePersonas role reference %q does not match an available agent role (available: %s)", ref, known)}
 		}
@@ -785,20 +707,15 @@ func (s *Service) validatePersonaRoleRefs(ctx context.Context, userID string, in
 // userBoardConfigOverride reads the acting user's stored board-wide
 // defaults and decodes them (fail-closed on drift: an unknown key or
 // malformed value surfacing from storage is an error, never a
-// silently ignored value). Legacy name-only personas migrate to role
-// references in the decoded shape (lazy, in-memory — see
-// migratePersonaRoleRefs).
+// silently ignored value — under the role-only ruling a stored
+// non-role persona shape is drift, full stop: no decode, no
+// migration, the 500-class StorageDriftError names it).
 func (s *Service) userBoardConfigOverride(ctx context.Context, userID string) (*BoardConfigOverride, error) {
 	raw, err := s.store.loadBoardConfigDefaults(ctx, s.q(), userID)
 	if err != nil {
 		return nil, err
 	}
-	o, err := decodeBoardConfigRows("user defaults", raw)
-	if err != nil {
-		return nil, err
-	}
-	s.migratePersonaRoleRefs(ctx, userID, o)
-	return o, nil
+	return decodeBoardConfigRows("user defaults", raw)
 }
 
 // GetUserBoardConfig renders the acting user's effective board-wide
@@ -849,20 +766,14 @@ func (s *Service) SetUserBoardConfig(ctx context.Context, actor Actor, in *Board
 }
 
 // decodeProjectOverrides loads + decodes one project's override map
-// with the persona lazy-migration applied (the owner's role
-// vocabulary resolves the project-tier personas; the effectiveConfig
-// seam and both config reads share it).
-func (s *Service) decodeProjectOverrides(ctx context.Context, ownerUserID, projectID string) (*BoardConfigOverride, error) {
+// (fail-closed on drift, the user-tier read's discipline). The
+// effectiveConfig seam and both config reads share it.
+func (s *Service) decodeProjectOverrides(ctx context.Context, projectID string) (*BoardConfigOverride, error) {
 	raw, err := s.store.loadBoardProjectConfigOverrides(ctx, s.q(), projectID)
 	if err != nil {
 		return nil, err
 	}
-	o, err := decodeBoardConfigRows("project overrides", raw)
-	if err != nil {
-		return nil, err
-	}
-	s.migratePersonaRoleRefs(ctx, ownerUserID, o)
-	return o, nil
+	return decodeBoardConfigRows("project overrides", raw)
 }
 
 // buildBoardConfigView renders the source-annotated view from the two
@@ -960,7 +871,7 @@ func (s *Service) GetBoardConfigView(ctx context.Context, actor Actor, projectID
 	if err := requireManagerAction(actor, p); err != nil {
 		return nil, err
 	}
-	ov, err := s.decodeProjectOverrides(ctx, p.UserID, p.ID)
+	ov, err := s.decodeProjectOverrides(ctx, p.ID)
 	if err != nil {
 		return nil, err
 	}
@@ -996,7 +907,7 @@ func (s *Service) GetProjectBoardConfig(ctx context.Context, actor Actor, projec
 	if err != nil {
 		return nil, err
 	}
-	ov, err := s.decodeProjectOverrides(ctx, p.UserID, p.ID)
+	ov, err := s.decodeProjectOverrides(ctx, p.ID)
 	if err != nil {
 		return nil, err
 	}

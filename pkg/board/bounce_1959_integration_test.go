@@ -66,6 +66,7 @@ func (s *BoardSuite) armRearmWindow1959(svc *board.Service, spawner *windowSpawn
 		board.WithPRDriftSource(s.drift),
 		board.WithPendingInputSource(s.pending),
 		board.WithFailpoint(s.fps.fp),
+		board.WithRoleDirectory(personaRoleDirectory()),
 	)
 
 	c, err := svc.ClaimNext(ctx, "w-"+ws, ws)
@@ -112,8 +113,10 @@ func (s *BoardSuite) TestBounce1959_VerdictFiresInsideMintStampWindow() {
 	task := s.seedTask(e, "bounce-window", nil, false)
 
 	spawner := &windowSpawner{}
-	svc := board.NewService(s.pool, s.cfg, board.WithWorkerSpawner(spawner.Spawn))
-	s.setStagePersonas(svc, p, map[string]board.PersonaConfig{"in_review": {Name: "reviewer"}})
+	svc := board.NewService(s.pool, s.cfg,
+		board.WithWorkerSpawner(spawner.Spawn),
+		board.WithRoleDirectory(personaRoleDirectory()))
+	s.setStagePersonas(svc, p, map[string]board.PersonaConfig{"in_review": {RoleID: "reviewer"}})
 
 	implementer, reviewerToken := s.armRearmWindow1959(svc, spawner, task, ws)
 	_ = implementer // the no-seam arm below exercises the fresh-worker fallback, not the re-dispatch target
@@ -157,8 +160,10 @@ func (s *BoardSuite) TestBounce1959_ManualBounceInsideMintStampWindow() {
 	task := s.seedTask(e, "bounce-manual", nil, false)
 
 	spawner := &windowSpawner{}
-	svc := board.NewService(s.pool, s.cfg, board.WithWorkerSpawner(spawner.Spawn))
-	s.setStagePersonas(svc, p, map[string]board.PersonaConfig{"in_review": {Name: "reviewer"}})
+	svc := board.NewService(s.pool, s.cfg,
+		board.WithWorkerSpawner(spawner.Spawn),
+		board.WithRoleDirectory(personaRoleDirectory()))
+	s.setStagePersonas(svc, p, map[string]board.PersonaConfig{"in_review": {RoleID: "reviewer"}})
 
 	implementer, reviewerToken := s.armRearmWindow1959(svc, spawner, task, ws)
 	_ = implementer // the no-seam arm below exercises the fresh-worker fallback, not the re-dispatch target
@@ -214,8 +219,9 @@ func (s *BoardSuite) TestBounce1959_RedispatchReachesOriginalImplementer() {
 		board.WithWorkerSpawner(spawner.Spawn),
 		board.WithBounceRedispatcher(redispatch.Deliver),
 		board.WithTurnEvidenceSource(turnsEvidence{turns: 3}),
+		board.WithRoleDirectory(personaRoleDirectory()),
 	)
-	s.setStagePersonas(svc, p, map[string]board.PersonaConfig{"in_review": {Name: "reviewer"}})
+	s.setStagePersonas(svc, p, map[string]board.PersonaConfig{"in_review": {RoleID: "reviewer"}})
 
 	implementer, reviewerToken := s.armRearmWindow1959(svc, spawner, task, ws)
 	spawnsBefore := len(spawner.claims)
@@ -260,8 +266,9 @@ func (s *BoardSuite) TestBounce1959_FallbackOnDeadOriginal_NeverTurned() {
 		board.WithWorkerSpawner(spawner.Spawn),
 		board.WithBounceRedispatcher(redispatch.Deliver),
 		board.WithTurnEvidenceSource(turnsEvidence{turns: 0}), // never-turned
+		board.WithRoleDirectory(personaRoleDirectory()),
 	)
-	s.setStagePersonas(svc, p, map[string]board.PersonaConfig{"in_review": {Name: "reviewer"}})
+	s.setStagePersonas(svc, p, map[string]board.PersonaConfig{"in_review": {RoleID: "reviewer"}})
 	_, reviewerToken := s.armRearmWindow1959(svc, spawner, task, ws)
 	spawnsBefore := len(spawner.claims)
 
@@ -297,8 +304,9 @@ func (s *BoardSuite) TestBounce1959_FallbackOnDeadOriginal_DeliveryFailure() {
 		board.WithWorkerSpawner(spawner.Spawn),
 		board.WithBounceRedispatcher(redispatch.Deliver),
 		board.WithTurnEvidenceSource(turnsEvidence{turns: 3}),
+		board.WithRoleDirectory(personaRoleDirectory()),
 	)
-	s.setStagePersonas(svc, p, map[string]board.PersonaConfig{"in_review": {Name: "reviewer"}})
+	s.setStagePersonas(svc, p, map[string]board.PersonaConfig{"in_review": {RoleID: "reviewer"}})
 	_, reviewerToken := s.armRearmWindow1959(svc, spawner, task, ws)
 	spawnsBefore := len(spawner.claims)
 
@@ -323,8 +331,10 @@ func (s *BoardSuite) TestBounce1959_NoIdentityFallsBackToFreshSpawn() {
 	task := s.seedTask(e, "bounce-noid", nil, false)
 
 	spawner := &windowSpawner{}
-	svc := board.NewService(s.pool, s.cfg, board.WithWorkerSpawner(spawner.Spawn))
-	s.setStagePersonas(svc, p, map[string]board.PersonaConfig{"in_review": {Name: "reviewer"}})
+	svc := board.NewService(s.pool, s.cfg,
+		board.WithWorkerSpawner(spawner.Spawn),
+		board.WithRoleDirectory(personaRoleDirectory()))
+	s.setStagePersonas(svc, p, map[string]board.PersonaConfig{"in_review": {RoleID: "reviewer"}})
 
 	// Simulate the pre-migration row: in_review, live persona claim,
 	// BOTH identity columns empty (the migration backfill missed it —
@@ -365,8 +375,9 @@ func (s *BoardSuite) TestBounce1959_Round2RecapturesImplementer() {
 		board.WithWorkerSpawner(spawner.Spawn),
 		board.WithBounceRedispatcher(redispatch.Deliver),
 		board.WithTurnEvidenceSource(turnsEvidence{turns: 3}),
+		board.WithRoleDirectory(personaRoleDirectory()),
 	)
-	s.setStagePersonas(svc, p, map[string]board.PersonaConfig{"in_review": {Name: "reviewer"}})
+	s.setStagePersonas(svc, p, map[string]board.PersonaConfig{"in_review": {RoleID: "reviewer"}})
 
 	implementer, reviewerToken := s.armRearmWindow1959(svc, spawner, task, ws)
 

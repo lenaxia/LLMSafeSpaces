@@ -94,7 +94,7 @@ func TestMCPBoardConfig_SetWire(t *testing.T) {
 		setupRenameWorkspaceEnv(t, api)
 
 		path := filepath.Join(t.TempDir(), "cfg.json")
-		require.NoError(t, os.WriteFile(path, []byte(`{"reviewColumn":"manual","stagePersonas":{"in_review":{"name":"auditor","instructions":"Verify."}}}`), 0o600))
+		require.NoError(t, os.WriteFile(path, []byte(`{"reviewColumn":"manual","stagePersonas":{"in_review":"reviewer"}}`), 0o600))
 
 		out, err := callMCPTool(context.Background(), mcpTestPassword, "board_set_config", map[string]any{
 			"tier": "user", "configFile": path, "lsp_injected_session": "ses_collab1",
@@ -109,7 +109,7 @@ func TestMCPBoardConfig_SetWire(t *testing.T) {
 		assert.Equal(t, `"user"`, string(wire["tier"]))
 		assert.Equal(t, `"manual"`, string(wire["reviewColumn"]), "the file's fields pass through verbatim")
 		require.NotNil(t, wire["stagePersonas"])
-		assert.Contains(t, string(wire["stagePersonas"]), "auditor")
+		assert.Contains(t, string(wire["stagePersonas"]), "reviewer")
 		assert.Equal(t, `"ws-1"`, string(wire["workspaceID"]), "the resolver stamp rides")
 		assert.Equal(t, `"ses_collab1"`, string(wire["sessionId"]), "the caller's session rides the audit attribution")
 		_, hasFile := wire["configFile"]
@@ -229,7 +229,7 @@ func TestMCPBoardConfig_ValidateFile(t *testing.T) {
 
 	t.Run("happy paths: full map, empty reset, absent keys", func(t *testing.T) {
 		for _, content := range []string{
-			`{"reviewColumn":"manual","autoAssignReviewer":false,"defaultWorkerSlots":3,"stagePersonas":{"in_review":{"name":"auditor","instructions":"Verify."}}}`,
+			`{"reviewColumn":"manual","autoAssignReviewer":false,"defaultWorkerSlots":3,"stagePersonas":{"in_review":"reviewer"}}`,
 			`{}`,
 		} {
 			out, path := run(t, content)
@@ -241,7 +241,7 @@ func TestMCPBoardConfig_ValidateFile(t *testing.T) {
 	})
 
 	t.Run("the suppression advisory: an explicit map without in_review warns (never blocks)", func(t *testing.T) {
-		out, _ := run(t, `{"stagePersonas":{"in_progress":{"name":"builder"}}}`)
+		out, _ := run(t, `{"stagePersonas":{"in_progress":"build"}}`)
 		assert.Contains(t, out, `"valid":true`, "a warning never blocks")
 		assert.Contains(t, out, "reviewer-suppression")
 		assert.Contains(t, out, "in_review")
@@ -262,7 +262,7 @@ func TestMCPBoardConfig_ValidateFile(t *testing.T) {
 			{`{"bogus":true}`, "bogus"},
 			{`{"reviewColumn":"sideways"}`, "reviewColumn"},
 			{`{"stagePersonas":{"backlog":{"name":"x"}}}`, "backlog"},
-			{`{"stagePersonas":{"in_review":{"instructions":"no name"}}}`, "in_review"},
+			{`{"stagePersonas":{"in_review":{}}}`, "in_review"},
 			{`{"autoAssignReviewer":"yes"}`, "autoAssignReviewer"},
 			{`{"defaultWorkerSlots":0}`, "defaultWorkerSlots"},
 		} {

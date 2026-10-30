@@ -58,7 +58,7 @@ func TestPersonaProvenanceForStage(t *testing.T) {
 			name: "project map lists the stage: project_override",
 			user: user,
 			project: &BoardConfigOverride{StagePersonas: personaMap(map[string]PersonaConfig{
-				StageInReview: {Name: "auditor"},
+				StageInReview: {RoleID: "auditor"},
 			})},
 			eff: eff, stage: StageInReview,
 			want: PersonaSourceProjectOverride,
@@ -66,10 +66,10 @@ func TestPersonaProvenanceForStage(t *testing.T) {
 		{
 			name: "project map owns the stages it does not list: none_explicit",
 			user: &BoardConfigOverride{StagePersonas: personaMap(map[string]PersonaConfig{
-				StageInReview: {Name: "auditor"},
+				StageInReview: {RoleID: "auditor"},
 			})},
 			project: &BoardConfigOverride{StagePersonas: personaMap(map[string]PersonaConfig{
-				StageInProgress: {Name: "builder"},
+				StageInProgress: {RoleID: "builder"},
 			})},
 			eff: eff, stage: StageInReview,
 			want: PersonaSourceNoneExplicit,
@@ -77,7 +77,7 @@ func TestPersonaProvenanceForStage(t *testing.T) {
 		{
 			name: "user map listed stage (no project map): user_default",
 			user: &BoardConfigOverride{StagePersonas: personaMap(map[string]PersonaConfig{
-				StageInReview: {Name: "auditor"},
+				StageInReview: {RoleID: "auditor"},
 			})},
 			project: proj, eff: eff, stage: StageInReview,
 			want: PersonaSourceUserDefault,
@@ -85,7 +85,7 @@ func TestPersonaProvenanceForStage(t *testing.T) {
 		{
 			name: "user map owns the stages it does not list: none_explicit (composition dead)",
 			user: &BoardConfigOverride{StagePersonas: personaMap(map[string]PersonaConfig{
-				StageInProgress: {Name: "builder"},
+				StageInProgress: {RoleID: "builder"},
 			})},
 			project: proj, eff: eff, stage: StageInReview,
 			want: PersonaSourceNoneExplicit,
@@ -114,7 +114,7 @@ func TestPersonaProvenanceForStage(t *testing.T) {
 // must resolve nil.
 func TestPersonaProvenanceForStage_AgreesWithPersonaForStage(t *testing.T) {
 	user := &BoardConfigOverride{StagePersonas: personaMap(map[string]PersonaConfig{
-		StageInReview: {Name: "auditor"},
+		StageInReview: {RoleID: "auditor"},
 	})}
 	proj := &BoardConfigOverride{}
 	effUser := MergeBoardConfig(DefaultBoardConfig(), user)
@@ -125,7 +125,7 @@ func TestPersonaProvenanceForStage_AgreesWithPersonaForStage(t *testing.T) {
 		// eagerly, and a nil p would panic before assert.Nil reports.
 		found := "nil"
 		if p != nil {
-			found = p.Name
+			found = p.RoleID
 		}
 		switch src {
 		case PersonaSourceProjectOverride, PersonaSourceUserDefault, PersonaSourceDefaultReviewer:

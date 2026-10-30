@@ -11,10 +11,11 @@ import (
 	"github.com/lenaxia/llmsafespaces/pkg/board"
 )
 
-// persona_roles_integration_test.go — the role-first persona seams at
-// the Service level (owner ruling 2026-10-29: personas REFERENCE the
-// platform's agent roles). PG harness; the fake RoleDirectory stands
-// in for the app's agent_roles-backed concrete.
+// persona_roles_integration_test.go — the ROLE-ONLY persona seams at
+// the Service level (owner ruling 2026-10-29, round 2: "Board stages
+// should ONLY ever have roles configured, there is no custom
+// definition in the board itself."). PG harness; the fake
+// RoleDirectory stands in for the app's agent_roles-backed concrete.
 
 // fakeRoleDirectory is the RoleDirectory seam's test double.
 type fakeRoleDirectory struct {
@@ -28,18 +29,29 @@ func (f *fakeRoleDirectory) AgentRolesForUser(context.Context, string) ([]board.
 
 var reviewerRole = board.AgentRoleRef{ID: "11111111-1111-1111-1111-111111111111", Slug: "reviewer", Name: "Code Reviewer", Scope: "platform"}
 
+// buildRole is the second fixture role (a non-reviewer vocabulary
+// entry for stale-ref and fallback arms).
+var buildRole = board.AgentRoleRef{ID: "33333333-3333-3333-3333-333333333333", Slug: "build", Name: "Builder", Scope: "org"}
+
+// personaRoleDirectory is the standard two-role vocabulary (the seeded
+// platform reviewer plus one org role) — the shape a healthy
+// deployment renders after startup seeding.
+func personaRoleDirectory() *fakeRoleDirectory {
+	return &fakeRoleDirectory{roles: []board.AgentRoleRef{reviewerRole, buildRole}}
+}
+
 // TestPersonaRoles_SetValidatesRoleRefs — board_set_config's role
-// validation belt: a persona carrying an explicit role reference the
-// available set cannot resolve REJECTS (GuardInput naming it); an id
-// or slug reference that resolves writes. A role-bearing set with NO
-// directory installed also refuses (never store a reference this
-// deployment can never honor).
+// validation belt: a reference the available set cannot resolve
+// REJECTS (GuardInput naming it); an id or slug reference that
+// resolves writes (and the stored row is the canonical bare-string
+// map). A role-bearing set with NO directory installed also refuses
+// (never store a reference this deployment can never honor).
 func (s *BoardSuite) TestPersonaRoles_SetValidatesRoleRefs() {
 	ctx := context.Background()
 	ws := s.seedWorkspace()
 	p := s.seedProject(ws, 2)
 
-	dirSvc := board.NewService(s.pool, s.cfg, board.WithRoleDirectory(&fakeRoleDirectory{roles: []board.AgentRoleRef{reviewerRole}}))
+	dirSvc := board.NewService(s.pool, s.cfg, board.WithRoleDirectory(personaRoleDirectory()))
 
 	// Unknown reference rejects, naming it.
 	_, err := dirSvc.SetProjectBoardConfig(ctx, s.owner(), p.ID, "", &board.BoardConfigOverride{
@@ -49,26 +61,26 @@ func (s *BoardSuite) TestPersonaRoles_SetValidatesRoleRefs() {
 	require.Contains(s.T(), err.Error(), `"ghost" does not match an available agent role`)
 
 	// Slug reference resolves and writes.
-	m := map[string]board.PersonaConfig{"in_review": {RoleID: "reviewer", Instructions: "Adversarial."}}
+	m := map[string]board.PersonaConfig{"in_review": {RoleID: "reviewer"}}
 	_, err = dirSvc.SetProjectBoardConfig(ctx, s.owner(), p.ID, "", &board.BoardConfigOverride{StagePersonas: &m})
 	s.Require().NoError(err)
+	var stored string
+	s.Require().NoError(s.pool.QueryRow(ctx,
+		`SELECT value::text FROM board_project_config_overrides WHERE project_id=$1 AND key='stagePersonas'`,
+		p.ID).Scan(&stored))
+	s.Contains(stored, `"reviewer"`, "the stored row is the canonical bare-string map")
 
 	// Id reference resolves too.
 	idm := map[string]board.PersonaConfig{"in_progress": {RoleID: reviewerRole.ID}}
 	_, err = dirSvc.SetProjectBoardConfig(ctx, s.owner(), p.ID, "", &board.BoardConfigOverride{StagePersonas: &idm})
 	s.Require().NoError(err)
 
-	// A legacy name-only persona still writes (no reference, no
-	// validation) — the pre-role vocabulary stays legal.
-	legacy := map[string]board.PersonaConfig{"in_review": {Name: "auditor", Instructions: "Verify."}}
-	_, err = dirSvc.SetProjectBoardConfig(ctx, s.owner(), p.ID, "", &board.BoardConfigOverride{StagePersonas: &legacy})
-	s.Require().NoError(err)
-
 	// Role-blind deployment (no directory): a role-bearing set refuses
 	// rather than storing an unresolvable reference — with the
 	// role-blind remedy named (review round 1 finding 2: the classes
 	// stay DISTINCT — this is a deployment posture, not a payload
-	// typo).
+	// typo). Under role-only EVERY persona carries a reference, so the
+	// blind deployment cannot set personas at all.
 	blindSvc := board.NewService(s.pool, s.cfg)
 	_, err = blindSvc.SetProjectBoardConfig(ctx, s.owner(), p.ID, "", &board.BoardConfigOverride{
 		StagePersonas: &map[string]board.PersonaConfig{"in_review": {RoleID: "reviewer"}},
@@ -80,10 +92,9 @@ func (s *BoardSuite) TestPersonaRoles_SetValidatesRoleRefs() {
 }
 
 // TestPersonaRoles_SetDirectoryOutageIs500Class — review round 1
-// finding 2: a TRANSIENT directory read failure during a role-bearing
-// set is a plain error (500-class, retryable — the payload may be
-// perfectly valid), never GuardInput; a name-only set never touches
-// the directory at all.
+// finding 2: a TRANSIENT directory read failure during a set is a
+// plain error (500-class, retryable — the payload may be perfectly
+// valid), never GuardInput.
 func (s *BoardSuite) TestPersonaRoles_SetDirectoryOutageIs500Class() {
 	ctx := context.Background()
 	ws := s.seedWorkspace()
@@ -99,24 +110,20 @@ func (s *BoardSuite) TestPersonaRoles_SetDirectoryOutageIs500Class() {
 	require.Contains(s.T(), err.Error(), "retry", "the remedy is retry, not payload surgery")
 	var ge *board.GuardError
 	require.NotErrorAs(s.T(), err, &ge, "an outage is 500-class — never a 400 guard")
-
-	// Name-only set: no reference, no directory round-trip — writes
-	// clean straight through the outage.
-	legacy := map[string]board.PersonaConfig{"in_review": {Name: "auditor", Instructions: "Verify."}}
-	_, err = outage.SetProjectBoardConfig(ctx, s.owner(), p.ID, "", &board.BoardConfigOverride{StagePersonas: &legacy})
-	s.Require().NoError(err)
 }
 
-// TestPersonaRoles_StaleRefDegradesToRoleless — review round 1
-// finding 1: an EXPLICIT role reference the vocabulary no longer
-// resolves (the role was deleted after storage — the delete path has
-// no stagePersonas cleanup) DEGRADES at spawn time: the spawn
-// envelope carries NO RoleID (a dead agentID never rides the
-// dispatch), the reference survives as the display label, and the
-// instructions ride as the override. The STORED row keeps the
+// TestPersonaRoles_StaleRefDegradesToPersonaLess — the role-only
+// degradation (owner ruling 2026-10-29, round 2): an EXPLICIT role
+// reference the vocabulary no longer resolves (the role was deleted
+// after storage — the delete path has no stagePersonas cleanup)
+// DEGRADES at spawn time to NO PERSONA: the claim carries none (no
+// mint stamp, no agent on the dispatch — byte-identical to a
+// persona-less stage; the ROLE is the behavior, and an unresolvable
+// role means there is no behavior to spawn). The STORED row keeps the
 // reference (the owner sees the drift in the config view and can fix
-// it); only the spawn degrades.
-func (s *BoardSuite) TestPersonaRoles_StaleRefDegradesToRoleless() {
+// it); the reconciler's re-arm heals once the vocabulary carries the
+// role again.
+func (s *BoardSuite) TestPersonaRoles_StaleRefDegradesToPersonaLess() {
 	ctx := context.Background()
 	ws := s.seedWorkspace()
 	p := s.seedProject(ws, 2)
@@ -124,8 +131,8 @@ func (s *BoardSuite) TestPersonaRoles_StaleRefDegradesToRoleless() {
 	task := s.seedTask(e, "stale-ref", nil, false)
 
 	// Store a VALID reference through a directory that carries it.
-	seed := board.NewService(s.pool, s.cfg, board.WithRoleDirectory(&fakeRoleDirectory{roles: []board.AgentRoleRef{reviewerRole}}))
-	m := map[string]board.PersonaConfig{"in_progress": {RoleID: "reviewer", Instructions: "Ship carefully."}}
+	seed := board.NewService(s.pool, s.cfg, board.WithRoleDirectory(personaRoleDirectory()))
+	m := map[string]board.PersonaConfig{"in_progress": {RoleID: "reviewer"}}
 	_, err := seed.SetProjectBoardConfig(ctx, s.owner(), p.ID, "", &board.BoardConfigOverride{StagePersonas: &m})
 	s.Require().NoError(err)
 
@@ -133,18 +140,12 @@ func (s *BoardSuite) TestPersonaRoles_StaleRefDegradesToRoleless() {
 	spawner := &claimCapture{}
 	svc := board.NewService(s.pool, s.cfg,
 		board.WithWorkerSpawner(spawner.Spawn),
-		board.WithRoleDirectory(&fakeRoleDirectory{roles: []board.AgentRoleRef{
-			{ID: "33333333-3333-3333-3333-333333333333", Slug: "build", Name: "Builder"},
-		}}))
+		board.WithRoleDirectory(&fakeRoleDirectory{roles: []board.AgentRoleRef{buildRole}}))
 
 	c, err := svc.ClaimNext(ctx, "w-"+ws, ws)
 	s.Require().NoError(err)
 	s.Require().Equal(task.ID, c.TaskID)
-	s.Require().NotNil(c.Persona)
-	s.Equal("", c.Persona.RoleID, "the stale reference never rides the spawn envelope")
-	s.Equal("reviewer", c.Persona.Name, "the reference survives as the display label")
-	s.Equal("Ship carefully.", c.Persona.Instructions, "the override layer rides unchanged")
-	s.Equal("reviewer", c.Persona.Label())
+	s.Require().Nil(c.Persona, "the stale reference degrades to NO persona — nothing role-less ever spawns")
 
 	// The STORED row keeps the reference verbatim — the config view
 	// renders the drift for the owner to fix, only the spawn degrades.
@@ -153,84 +154,42 @@ func (s *BoardSuite) TestPersonaRoles_StaleRefDegradesToRoleless() {
 	s.Equal("reviewer", (*pc.Overrides.StagePersonas)["in_progress"].RoleID, "storage keeps the stored truth")
 }
 
-// TestPersonaRoles_ReadMigration — the stored-config migration: a
-// legacy name-only persona (stored pre-role) renders with a resolved
-// RoleID on read (both config reads AND the effective engine path);
-// an unresolvable name keeps the legacy shape verbatim; the migration
-// is LAZY — the stored row is byte-identical until a client writes
-// the resolved shape back.
-func (s *BoardSuite) TestPersonaRoles_ReadMigration() {
+// TestPersonaRoles_StoredNonRoleShapeIsDrift — the NO-migration ruling
+// (owner ruling 2026-10-29: "We do not need migration, we have never
+// created any personas ever."): a stored non-role persona shape (the
+// pre-role {name, instructions} row — hand-inserted past the write
+// belts, the only way one can exist) NEVER decodes: every config read
+// fails closed with the storage-drift error class (500, not a 400 the
+// caller could "fix" — the caller did nothing wrong). No lazy
+// name→role resolution, no compat decode, no backfill.
+func (s *BoardSuite) TestPersonaRoles_StoredNonRoleShapeIsDrift() {
 	ctx := context.Background()
 	ws := s.seedWorkspace()
 	p := s.seedProject(ws, 2)
 
-	// Store legacy personas through a role-blind service (the
-	// pre-role platform shape).
-	blind := board.NewService(s.pool, s.cfg)
-	legacy := map[string]board.PersonaConfig{
-		"in_review":   {Name: "reviewer", Instructions: "Verify."},
-		"in_progress": {Name: "implementer", Instructions: "Ship."},
-	}
-	_, err := blind.SetProjectBoardConfig(ctx, s.owner(), p.ID, "", &board.BoardConfigOverride{StagePersonas: &legacy})
+	// Hand-insert the legacy row past every write belt.
+	_, err := s.pool.Exec(ctx, `
+		INSERT INTO board_project_config_overrides (project_id, key, value)
+		VALUES ($1, 'stagePersonas', '{"in_review": {"name": "auditor", "instructions": "Verify."}}'::jsonb)`,
+		p.ID)
 	s.Require().NoError(err)
 
-	dir := &fakeRoleDirectory{roles: []board.AgentRoleRef{reviewerRole}}
-	svc := board.NewService(s.pool, s.cfg, board.WithRoleDirectory(dir))
-
-	// The project config read renders the resolved reference for the
-	// resolvable name, the verbatim legacy shape for the other.
-	pc, err := svc.GetProjectBoardConfig(ctx, s.owner(), p.ID, "")
-	s.Require().NoError(err)
-	s.Require().NotNil(pc.Overrides.StagePersonas)
-	s.Equal(board.PersonaConfig{
-		RoleID: reviewerRole.ID, Name: "reviewer", Instructions: "Verify.",
-	}, (*pc.Overrides.StagePersonas)["in_review"], "a resolvable stored name migrates in the rendered shape")
-	s.Equal(legacy["in_progress"], (*pc.Overrides.StagePersonas)["in_progress"], "an unresolvable name keeps the legacy shape")
-	s.Equal(reviewerRole.ID, pc.Effective.StagePersonas["in_review"].RoleID, "the effective row carries the reference")
-
-	// The view read (board_get_config's shape) migrates identically.
-	view, err := svc.GetBoardConfigView(ctx, s.owner(), p.ID, "")
-	s.Require().NoError(err)
-	s.Require().NotNil(view.Personas["in_review"].Persona)
-	s.Equal(reviewerRole.ID, view.Personas["in_review"].Persona.RoleID)
-
-	// LAZY: the stored row is unchanged (reads never mutate storage).
-	// (jsonb renders `: ` separators — match on the value, not tight
-	// JSON punctuation.)
-	var stored string
-	s.Require().NoError(s.pool.QueryRow(ctx,
-		`SELECT value::text FROM board_project_config_overrides WHERE project_id=$1 AND key='stagePersonas'`,
-		p.ID).Scan(&stored))
-	s.Contains(stored, `"reviewer"`)
-	s.NotContains(stored, "roleId", "the migration renders in the decoded shape only — the row persists as written")
-
-	// The engine's effective path resolves it too: the spawn envelope
-	// carries the role reference.
-	e := s.seedEpic(p, board.EpicActive)
-	task := s.seedTask(e, "migrate", nil, false)
-	spawner := &claimCapture{}
-	svc2 := board.NewService(s.pool, s.cfg,
-		board.WithWorkerSpawner(spawner.Spawn),
-		board.WithRoleDirectory(&fakeRoleDirectory{roles: []board.AgentRoleRef{
-			reviewerRole,
-			{ID: "44444444-4444-4444-4444-444444444444", Slug: "implementer", Name: "Implementer"},
-		}}))
-	c, err := svc2.ClaimNext(ctx, "w-"+ws, ws)
-	s.Require().NoError(err)
-	s.Require().Equal(task.ID, c.TaskID)
-	s.Require().NotNil(c.Persona)
-	s.Equal("44444444-4444-4444-4444-444444444444", c.Persona.RoleID, "the implementer persona resolves its role on the spawn envelope")
-	s.Equal("Ship.", c.Persona.Instructions, "the stored instructions ride as the override layer")
+	svc := board.NewService(s.pool, s.cfg, board.WithRoleDirectory(personaRoleDirectory()))
+	_, err = svc.GetProjectBoardConfig(ctx, s.owner(), p.ID, "")
+	require.Error(s.T(), err, "the stored non-role shape never decodes")
+	require.Contains(s.T(), err.Error(), "storage drift", "the failure class is server-side drift, not caller input")
+	var de *board.StorageDriftError
+	require.ErrorAs(s.T(), err, &de)
 }
 
-// TestPersonaRoles_DefaultReviewerPointsAtRole — the default reviewer
+// TestPersonaRoles_DefaultReviewerResolvesToRole — the default reviewer
 // composition (reviewColumn=auto + autoAssignReviewer, no explicit
-// personas) POINTS AT the reviewer agent role when the vocabulary
-// carries one (owner ruling 2026-10-29): the spawned reviewer persona
-// carries the role reference with the charter prose layered on as the
-// override. No reviewer role → the legacy prose persona runs
-// byte-identically (RoleID empty).
-func (s *BoardSuite) TestPersonaRoles_DefaultReviewerPointsAtRole() {
+// personas) resolves to the SEEDED reviewer agent role (owner ruling
+// 2026-10-29, round 2: the verdict-channel charter is the role's
+// system prompt): the spawned reviewer persona carries ONLY the
+// canonical role reference — no name, no instructions, nothing to
+// drift.
+func (s *BoardSuite) TestPersonaRoles_DefaultReviewerResolvesToRole() {
 	ctx := context.Background()
 	ws := s.seedWorkspace()
 	p := s.seedProject(ws, 2)
@@ -239,13 +198,13 @@ func (s *BoardSuite) TestPersonaRoles_DefaultReviewerPointsAtRole() {
 
 	// The composition fires with no config anywhere (clear the
 	// harness's isolation seed), and the directory carries a reviewer
-	// role (slug match).
+	// role (slug match — the seeded platform role's shape).
 	_, err := s.pool.Exec(ctx, `DELETE FROM board_config_defaults WHERE user_id=$1`, testUser)
 	s.Require().NoError(err)
 	spawner := &claimCapture{}
 	svc := board.NewService(s.pool, s.cfg,
 		board.WithWorkerSpawner(spawner.Spawn),
-		board.WithRoleDirectory(&fakeRoleDirectory{roles: []board.AgentRoleRef{reviewerRole}}))
+		board.WithRoleDirectory(personaRoleDirectory()))
 
 	c, err := svc.ClaimNext(ctx, "w-"+ws, ws)
 	s.Require().NoError(err)
@@ -256,15 +215,18 @@ func (s *BoardSuite) TestPersonaRoles_DefaultReviewerPointsAtRole() {
 	s.Require().Len(spawner.claims, 2, "grant + the composition's reviewer")
 	rc := spawner.claims[1]
 	require.NotNil(s.T(), rc.Persona)
-	s.Equal(reviewerRole.ID, rc.Persona.RoleID, "the default reviewer composition POINTS AT the reviewer agent role")
-	s.Equal(board.DefaultReviewerPersona.Name, rc.Persona.Name, "the display name survives")
-	s.Equal(board.DefaultReviewerPersona.Instructions, rc.Persona.Instructions, "the charter prose rides as the override layer")
+	s.Equal(reviewerRole.ID, rc.Persona.RoleID, "the default reviewer composition resolves to the reviewer agent role's canonical id")
+	s.Equal(board.PersonaConfig{RoleID: reviewerRole.ID}, *rc.Persona, "the persona IS the canonicalized role reference — nothing else composes onto it")
 }
 
-// TestPersonaRoles_DefaultReviewerFallsBackWithoutRole — no reviewer
-// role in the vocabulary: the composition's persona keeps the legacy
-// prose-only shape (RoleID empty — the fallback the ruling names).
-func (s *BoardSuite) TestPersonaRoles_DefaultReviewerFallsBackWithoutRole() {
+// TestPersonaRoles_DefaultReviewerDegradesWithoutRole — no reviewer
+// role in the vocabulary (a deployment whose seeding never landed):
+// the composition's slug reference is unresolvable, so the reviewer
+// persona DEGRADES to persona-less — no reviewer claim is minted, no
+// reviewer spawns (the ROLE is the behavior; without it there is
+// nothing to run). The transition itself lands exactly like a
+// persona-less in_review entry.
+func (s *BoardSuite) TestPersonaRoles_DefaultReviewerDegradesWithoutRole() {
 	ctx := context.Background()
 	ws := s.seedWorkspace()
 	p := s.seedProject(ws, 2)
@@ -277,9 +239,7 @@ func (s *BoardSuite) TestPersonaRoles_DefaultReviewerFallsBackWithoutRole() {
 	// A directory WITHOUT a reviewer role (only unrelated roles).
 	svc := board.NewService(s.pool, s.cfg,
 		board.WithWorkerSpawner(spawner.Spawn),
-		board.WithRoleDirectory(&fakeRoleDirectory{roles: []board.AgentRoleRef{
-			{ID: "33333333-3333-3333-3333-333333333333", Slug: "build", Name: "Builder"},
-		}}))
+		board.WithRoleDirectory(&fakeRoleDirectory{roles: []board.AgentRoleRef{buildRole}}))
 
 	c, err := svc.ClaimNext(ctx, "w-"+ws, ws)
 	s.Require().NoError(err)
@@ -287,9 +247,5 @@ func (s *BoardSuite) TestPersonaRoles_DefaultReviewerFallsBackWithoutRole() {
 	_, err = svc.MoveStage(ctx, s.agent(c.Assignee, c.ClaimToken), "", c.ShortID, board.StageInReview, "", "")
 	s.Require().NoError(err)
 
-	s.Require().Len(spawner.claims, 2)
-	rc := spawner.claims[1]
-	require.NotNil(s.T(), rc.Persona)
-	s.Equal("", rc.Persona.RoleID, "no reviewer role — the legacy composition stands (prose only)")
-	s.Equal(board.DefaultReviewerPersona, *rc.Persona)
+	s.Require().Len(spawner.claims, 1, "the worker grant only — the unresolvable reviewer persona spawns nothing")
 }

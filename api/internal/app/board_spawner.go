@@ -36,13 +36,13 @@ import (
 // boardCharterPrompt builds the fresh worker's charter (ruling R2: the
 // description "seeds the worker charter"; criteria + addressing + token
 // ride along). A claim carrying a Persona (the stage-persona
-// claim-then-spawn mechanism) renders the persona preamble — identity,
-// stage, optional instructions — before the shared task body; a
-// persona-less claim renders today's charter byte-identically. A
-// role-referencing persona (owner ruling 2026-10-29) names its role:
-// the role's own system prompt rides the dispatch (see
-// boardSpawnRequest), the charter preamble stays the board's layered
-// context, never a parallel role definition.
+// claim-then-spawn mechanism) renders the ROLE preamble — one line
+// naming the referenced agent role; the role's own system prompt (its
+// model/tools/behavior, including the reviewer's verdict-channel
+// charter) rides the dispatch itself (see boardSpawnRequest), never
+// the charter: the board layer composes no behavior (owner ruling
+// 2026-10-29, role-only). A persona-less claim renders today's charter
+// byte-identically.
 func boardCharterPrompt(c *board.Claim) string {
 	var b strings.Builder
 	stage := c.Stage
@@ -50,11 +50,8 @@ func boardCharterPrompt(c *board.Claim) string {
 		stage = board.StageInProgress
 	}
 	if c.Persona != nil {
-		fmt.Fprintf(&b, "You are the '%s' persona for task %s at stage %s (claim token: %s).\n\n",
+		fmt.Fprintf(&b, "You are the '%s' agent role for task %s at stage %s (claim token: %s).\n\n",
 			c.Persona.Label(), c.ShortID, stage, c.ClaimToken)
-		if c.Persona.Instructions != "" {
-			fmt.Fprintf(&b, "%s\n\n", c.Persona.Instructions)
-		}
 	} else {
 		fmt.Fprintf(&b, "You are the worker for task %s (claim token: %s).\n\n", c.ShortID, c.ClaimToken)
 	}
@@ -89,7 +86,7 @@ func boardCharterPrompt(c *board.Claim) string {
 	// above is the persona's working context; the persona-less charter
 	// keeps today's trailer byte-identically.
 	if c.Persona != nil {
-		fmt.Fprintf(&b, "Deliver the '%s' persona's outcome for stage %s per its instructions above — the task\n", c.Persona.Label(), stage)
+		fmt.Fprintf(&b, "Deliver the '%s' agent role's outcome for stage %s per the role's charter — the task\n", c.Persona.Label(), stage)
 		b.WriteString("body is your working context, not an implementer loop to run. If a BOARD LEASE NUDGE\n")
 		b.WriteString("message arrives, call board_heartbeat ONCE immediately, then continue. The claim token above\n")
 		b.WriteString("authorizes your in-flight writes for this task only.\n")
@@ -131,13 +128,15 @@ func boardRunID(c *board.Claim) string {
 // a bare-task-id re-inline anywhere in the dispatch path reds the
 // dispatch pin (TestBoardSpawner_DispatchCarriesEpisodeRunID).
 //
-// Owner ruling 2026-10-29: a persona carrying a role reference rides
-// the dispatch as the agent-node's `agent` field (the opencode
-// agentID — the same seam the workflow engine's routine fires use,
-// engine.go's spec["agent"]=trigger.Agent). The referenced agent role
-// is the single source of truth for the spawned worker's model, tool
-// surface, and system prompt; the charter prompt stays the board's
-// layered context.
+// Owner ruling 2026-10-29 (role-only): a persona IS its role
+// reference, and spec["agent"] = <role> is the ONLY persona dispatch
+// shape (the opencode agentID — the same seam the workflow engine's
+// routine fires use, engine.go's spec["agent"]=trigger.Agent). The
+// referenced agent role is the single source of truth for the spawned
+// worker's model, tool surface, and system prompt; the charter prompt
+// is the board's layered context and composes no behavior. A claim
+// with no resolvable role (persona-less, or the defensive empty-role
+// shape) dispatches with NO agent key — byte-identical to pre-persona.
 func boardSpawnRequest(c *board.Claim) *apiwf.NodeExecRequest {
 	spec := map[string]any{
 		"prompt":  boardCharterPrompt(c),

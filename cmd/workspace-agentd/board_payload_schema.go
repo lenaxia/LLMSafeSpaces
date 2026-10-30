@@ -76,8 +76,8 @@ func boardOpForTool(tool string) string {
 // 200 characters; the tag/criterion caps mirror the platform's
 // MaxTags/MaxTagBytes/MaxCriterionBytes in schema-expressible form —
 // the platform's own byte caps stay authoritative on the wire. The
-// persona caps mirror board.PersonaNameMax/PersonaInstructionsMax
-// (same values, platform-authoritative on the wire).
+// persona role-reference cap mirrors board.PersonaRoleIDMax (same
+// value, platform-authoritative on the wire).
 const (
 	boardPayloadTitleMaxChars = 200
 	boardPayloadTagMaxItems   = 16
@@ -215,14 +215,14 @@ const boardPayloadSchemaImportPlan = `{
 // ({} is the legal full-inheritance reset), an unknown key refuses.
 // tier/projectId are ROUTING keys and stay inline on the tool call
 // (the placement pre-check refuses them in the file). stagePersonas
-// values are role-first (owner ruling 2026-10-29): a bare role
-// reference string ("in_review": "reviewer") or an object
-// {roleId?, name?, instructions?} carrying at least one of
-// roleId/name (the semantic check names the rule — a schema anyOf
-// would render two confusing failures). The stage-key vocabulary
-// (persona-eligible stages only) is the SEMANTIC check's to name — a
-// propertyNames enum would collapse the finding to "does not satisfy
-// propertyNames" without naming the stage.
+// values are ROLE REFERENCES ONLY (owner ruling 2026-10-29, round 2):
+// a bare role reference string ("in_review": "reviewer" — canonical)
+// or the {roleId} object carrying exactly one non-empty roleId (the
+// semantic check names the rule — a schema anyOf would render two
+// confusing failures). The stage-key vocabulary (persona-eligible
+// stages only) is the SEMANTIC check's to name — a propertyNames enum
+// would collapse the finding to "does not satisfy propertyNames"
+// without naming the stage.
 const boardPayloadSchemaSetConfig = `{
 	"type": "object",
 	"additionalProperties": false,
@@ -236,12 +236,13 @@ const boardPayloadSchemaSetConfig = `{
 }`
 
 // boardPayloadSchemasRaw stitches the shared $defs (the criterion item
-// mirrors board.AcceptanceCriterion {text, met}; the persona item
-// mirrors board.PersonaConfig {roleId?, name?, instructions?} —
-// role-first, the legacy name+instructions shape still admitted; the
-// personaRoleRef item is the compact bare-string role reference) and
-// stamps the cap placeholders (the placeholders keep the caps
-// single-sourced as named constants above); one raw schema per op.
+// mirrors board.AcceptanceCriterion {text, met}; the persona item is
+// the ROLE-REFERENCE object — {roleId} and nothing else, mirroring
+// board.PersonaConfig (the legacy name/instructions shape is not
+// admitted anywhere); the personaRoleRef item is the canonical
+// bare-string role reference) and stamps the cap placeholders (the
+// placeholders keep the caps single-sourced as named constants
+// above); one raw schema per op.
 func boardPayloadSchemasRaw() map[string]string {
 	withDefs := func(body string) string {
 		// Splice body's own keywords after $defs inside one root
@@ -250,14 +251,12 @@ func boardPayloadSchemasRaw() map[string]string {
 		stitched := `{"$defs": {"criterion": {"type": "object", "additionalProperties": false,` +
 			`"properties": {"text": {"type": "string", "minLength": 1, "maxLength": boardCritCap}, "met": {"type": "boolean"}},` +
 			`"required": ["text"]}, "persona": {"type": "object", "additionalProperties": false,` +
-			// name carries NO minLength (parity with the platform decoder,
-			// review round 1 finding 3): an empty name alongside a roleId
-			// is legal — the display label is optional when the role
-			// carries it; the trim-aware role-or-name rule is the SEMANTIC
-			// check's, identically on both surfaces.
-			`"properties": {"roleId": {"type": "string", "minLength": 1, "maxLength": boardPersonaRoleCap},` +
-			`"name": {"type": "string", "maxLength": boardPersonaNameCap},` +
-			`"instructions": {"type": "string", "maxLength": boardPersonaInstrCap}}},` +
+			// The role-only shape: exactly {roleId}. The trim-aware
+			// non-empty rule is the SEMANTIC check's (persona-role-ref),
+			// identically on both surfaces — the schema cannot see
+			// whitespace.
+			`"properties": {"roleId": {"type": "string", "minLength": 1, "maxLength": boardPersonaRoleCap}},` +
+			`"required": ["roleId"]},` +
 			`"personaRoleRef": {"type": "string", "minLength": 1, "maxLength": boardPersonaRoleCap}}, ` +
 			strings.TrimSpace(strings.TrimPrefix(body, "{"))
 		r := strings.NewReplacer(
@@ -265,8 +264,6 @@ func boardPayloadSchemasRaw() map[string]string {
 			"boardTagCap", strconv.Itoa(boardPayloadTagMaxChars),
 			"boardTagItems", strconv.Itoa(boardPayloadTagMaxItems),
 			"boardCritCap", strconv.Itoa(boardPayloadCritMaxChars),
-			"boardPersonaNameCap", strconv.Itoa(board.PersonaNameMax),
-			"boardPersonaInstrCap", strconv.Itoa(board.PersonaInstructionsMax),
 			"boardPersonaRoleCap", strconv.Itoa(board.PersonaRoleIDMax),
 		)
 		return r.Replace(stitched)
@@ -666,24 +663,24 @@ func boardSemanticFindings(op string, payload map[string]any) []boardPayloadFind
 					})
 				}
 			}
-			// The role-first naming rule the object schema's anyOf
-			// leaves to semantics (a persona object carries a role
-			// reference or a legacy name — an object with NEITHER is
-			// the empty persona). Bare-string values always carry the
-			// reference; only objects can be empty.
+			// The role-reference rule the object schema's anyOf leaves
+			// to semantics (a persona object carries exactly one
+			// non-empty, trim-aware roleId — an object with a
+			// whitespace-only or absent roleId is the empty persona).
+			// Bare-string values always carry the reference; only
+			// objects can be empty.
 			for stage, v := range personas {
 				p, ok := v.(map[string]any)
 				if !ok {
 					continue
 				}
 				roleID, _ := p["roleId"].(string)
-				name, _ := p["name"].(string)
-				if strings.TrimSpace(roleID) == "" && strings.TrimSpace(name) == "" {
+				if strings.TrimSpace(roleID) == "" {
 					out = append(out, boardPayloadFinding{
-						Path: "stagePersonas." + stage, Rule: "persona-role-or-name", Severity: "error",
-						Problem:  "the persona object carries neither a roleId nor a name — a persona is a role reference first (owner ruling 2026-10-29), or the legacy name+instructions shape",
-						Fix:      "set roleId to an available agent role (see GET /api/v1/auth/me/agent-roles), or a non-empty name",
-						Expected: "roleId | name",
+						Path: "stagePersonas." + stage, Rule: "persona-role-ref", Severity: "error",
+						Problem:  "the persona object carries no non-empty roleId — a persona IS a role reference (owner ruling 2026-10-29, role-only); the board defines no behavior of its own",
+						Fix:      "set roleId to an available agent role (see GET /api/v1/auth/me/agent-roles)",
+						Expected: "roleId (non-empty)",
 					})
 				}
 			}
@@ -705,7 +702,7 @@ func boardSemanticFindings(op string, payload map[string]any) []boardPayloadFind
 				out = append(out, boardPayloadFinding{
 					Path: "stagePersonas", Rule: "reviewer-suppression", Severity: "warning",
 					Problem: "an explicit stagePersonas map OWNS every stage it does not list — this one has no in_review entry, so whatever in_review runs on today (an inherited persona, or the built-in auto-reviewer under the reviewColumn=auto + autoAssignReviewer composition) is suppressed",
-					Fix:     fmt.Sprintf("deliberate opt-out: keep it; otherwise add an in_review entry — the default reviewer is %q (board_get_config renders it under personas.in_review when the composition is live)", board.DefaultReviewerPersona.Name),
+					Fix:     fmt.Sprintf("deliberate opt-out: keep it; otherwise add an in_review entry — the default reviewer is %q (board_get_config renders it under personas.in_review when the composition is live)", board.DefaultReviewerPersona.RoleID),
 				})
 			}
 		}

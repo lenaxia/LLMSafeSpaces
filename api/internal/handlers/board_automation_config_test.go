@@ -90,7 +90,7 @@ func TestBoardAutomationConfig_SetConfig(t *testing.T) {
 		mgr := newFakeBoardManager()
 		r := newBoardAutomationRouterWithManager(t, newFakeBoardService(), mgr)
 		w := doBoard(t, r, http.MethodPut, "/internal/v1/automation/board/config",
-			`{"workspaceID":"ws-1","sessionId":"ses_caller","tier":"user","reviewColumn":"manual","stagePersonas":{"in_review":{"name":"auditor","instructions":"Verify."}}}`)
+			`{"workspaceID":"ws-1","sessionId":"ses_caller","tier":"user","reviewColumn":"manual","stagePersonas":{"in_review":"reviewer"}}`)
 		require.Equal(t, http.StatusOK, w.Code, w.Body.String())
 		assert.Equal(t, 1, mgr.calls["set_user_board_config"])
 		require.NotNil(t, mgr.lastGlobalConfigSet)
@@ -128,7 +128,7 @@ func TestBoardAutomationConfig_SetConfig(t *testing.T) {
 		mgr := newFakeBoardManager()
 		r := newBoardAutomationRouterWithManager(t, newFakeBoardService(), mgr)
 		w := doBoard(t, r, http.MethodPut, "/internal/v1/automation/board/config",
-			`{"workspaceID":"ws-1","tier":"project","projectId":"prj-aaaa1111","stagePersonas":{"backlog":{"name":"x"}}}`)
+			`{"workspaceID":"ws-1","tier":"project","projectId":"prj-aaaa1111","stagePersonas":{"backlog":"build"}}`)
 		assert.Equal(t, http.StatusBadRequest, w.Code)
 		assert.Contains(t, w.Body.String(), "persona-eligible stages")
 	})
@@ -175,11 +175,12 @@ func TestBoardAutomationConfig_SetConfig(t *testing.T) {
 
 // TestBoardAutomationConfig_SetConfigBodyCap: the seam config PUT
 // enforces the SAME 64 KiB cap its REST twin deliberately does
-// (board_config.go) — the padding rides a LEGAL key (a persona's
-// instructions), so the cap is the only refusal that can fire.
+// (board_config.go) — the padding rides a real config key (a
+// persona's role reference), and the cap fires BEFORE any key-gate
+// validation, so the cap is the only refusal that can fire.
 func TestBoardAutomationConfig_SetConfigBodyCap(t *testing.T) {
-	overCap := `{"workspaceID":"ws-1","tier":"user","stagePersonas":{"in_review":{"name":"n","instructions":"` +
-		strings.Repeat("a", 70*1024) + `"}}}`
+	overCap := `{"workspaceID":"ws-1","tier":"user","stagePersonas":{"in_review":"` +
+		strings.Repeat("a", 70*1024) + `"}}`
 
 	t.Run("sized body: refused 400 with the cap message, no write fires", func(t *testing.T) {
 		mgr := newFakeBoardManager()

@@ -67,6 +67,18 @@ import (
 
 type boardE2ELookup struct{}
 
+// e2eRoleDirectory is the persona vocabulary fixture (the platform's
+// seeded reviewer role, mirrored).
+var e2eRoleDirectory = &e2eRoleDir{roles: []board.AgentRoleRef{
+	{ID: "11111111-1111-1111-1111-111111111111", Slug: "reviewer", Name: "Reviewer", Scope: "platform"},
+}}
+
+type e2eRoleDir struct{ roles []board.AgentRoleRef }
+
+func (d *e2eRoleDir) AgentRolesForUser(context.Context, string) ([]board.AgentRoleRef, error) {
+	return d.roles, nil
+}
+
 func (boardE2ELookup) GetWorkspace(_ context.Context, workspaceID string) (*types.WorkspaceMetadata, error) {
 	return &types.WorkspaceMetadata{ID: workspaceID, UserID: "user-7"}, nil
 }
@@ -453,7 +465,11 @@ func TestIntegrationBoardManagerE2E(t *testing.T) {
 		SweepInterval:   time.Second,
 	}, board.WithWorkerSpawner(func(_ context.Context, c *board.Claim) (string, error) {
 		return "sess-e2e-worker-" + c.ShortID, nil
-	}))
+	}),
+		// Role-only personas: the seam's vocabulary mirrors the
+		// platform's seeded reviewer role (the production api seeds it
+		// at startup — the e2e fixture mirrors its shape).
+		board.WithRoleDirectory(e2eRoleDirectory))
 
 	cs := k8sfake.NewSimpleClientset()
 	cs.PrependReactor("create", "tokenreviews", func(action k8stesting.Action) (bool, runtime.Object, error) {
@@ -766,9 +782,7 @@ func e2eBoardConfigSections(t *testing.T, ctx context.Context, client *opencode.
 	resp, err = dispatchBoardManagerTool(ctx, client, e2eMCPPassword, "board_set_config", map[string]any{
 		"lsp_injected_session": mgrSession,
 		"tier":                 "user",
-		"configFile": e2ePayloadFile(t, `{"autoAssignReviewer":true,`+
-			`"stagePersonas":{"in_review":{"name":"E2E Reviewer",`+
-			`"instructions":"Read the acceptance criteria; refuse hollow evidence."}}}`),
+		"configFile":           e2ePayloadFile(t, `{"autoAssignReviewer":true,"stagePersonas":{"in_review":"reviewer"}}`),
 	}, "sa-token", wsPod)
 	require.NoError(t, err)
 	require.Equal(t, http.StatusOK, resp.Status, resp.Body)
@@ -779,7 +793,7 @@ func e2eBoardConfigSections(t *testing.T, ctx context.Context, client *opencode.
 	rev := userView.Personas["in_review"]
 	assert.Equal(t, board.PersonaSourceUserDefault, rev.Source)
 	require.NotNil(t, rev.Persona, "the stored persona renders in the view")
-	assert.Equal(t, "E2E Reviewer", rev.Persona.Name)
+	assert.Equal(t, "reviewer", rev.Persona.RoleID, "the stored persona is the role reference, rendered raw")
 
 	// The write landed in PG (the user defaults table carries the row).
 	var n int

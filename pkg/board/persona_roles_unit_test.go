@@ -12,55 +12,59 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// persona_roles_unit_test.go — the role-first persona vocabulary's
-// unit belts (owner ruling 2026-10-29: "we can use the agent roles the
-// platform already has. Rather than redefining them that way they can
-// be reused."). RED-first for RoleID on PersonaConfig, the bare-string
-// role reference decode, and the name→role migration helpers.
+// persona_roles_unit_test.go — the ROLE-ONLY persona vocabulary's unit
+// belts (owner ruling 2026-10-29, round 2: "Board stages should ONLY
+// ever have roles configured, there is no custom definition in the
+// board itself. ROLES are the way to define behavior for board
+// stages."). A persona IS a role reference: the bare id/slug string is
+// canonical, the {roleId} object decodes, the legacy
+// name/instructions shape and the name→role migration are GONE (owner
+// ruling: no personas were ever created — nothing to migrate).
 
-// TestPersonaRoleRefValidation — the persona map accepts the role-first
-// shapes (bare reference string, {roleId}, {roleId, instructions},
-// {roleId, name}) AND the legacy {name, instructions}; the empty-both
-// and oversize-reference shapes reject.
+// TestPersonaRoleRefValidation — the persona map admits exactly the
+// two role-reference shapes; empty (trim-aware), oversize, and the
+// legacy shapes reject loud.
 func TestPersonaRoleRefValidation(t *testing.T) {
-	// Accepted role-first shapes.
-	mustNotErr(t, ConfigKeyStagePersonas, `{"in_review":"reviewer"}`)                                          // the compact wire form
-	mustNotErr(t, ConfigKeyStagePersonas, `{"in_progress":{"roleId":"build"}}`)                                // object, reference only
-	mustNotErr(t, ConfigKeyStagePersonas, `{"in_review":{"roleId":"reviewer","instructions":"Adversarial."}}`) // override layer
-	mustNotErr(t, ConfigKeyStagePersonas, `{"in_review":{"roleId":"`+strings.Repeat("a", PersonaRoleIDMax)+`"}}`)
-	mustNotErr(t, ConfigKeyStagePersonas, `{"in_review":{"roleId":"11111111-1111-1111-1111-111111111111","name":"Reviewer"}}`) // id + display name
+	// Accepted shapes — role references, nothing else.
+	mustNotErr(t, ConfigKeyStagePersonas, `{"in_review":"reviewer"}`)           // the canonical bare string
+	mustNotErr(t, ConfigKeyStagePersonas, `{"in_progress":{"roleId":"build"}}`) // the {roleId} object
+	mustNotErr(t, ConfigKeyStagePersonas, `{"in_review":"`+strings.Repeat("a", PersonaRoleIDMax)+`"}`)
+	mustNotErr(t, ConfigKeyStagePersonas, `{"in_review":{"roleId":"11111111-1111-1111-1111-111111111111"}}`)
 
-	// The legacy shape still decodes (backward compat, storage + wire).
-	mustNotErr(t, ConfigKeyStagePersonas, `{"in_review":{"name":"auditor","instructions":"Verify."}}`)
+	// Rejected shapes — the trim-aware non-empty rule (whitespace-only
+	// is the empty slot; parity with agentd's validate_file semantic
+	// check, one contract per shape).
+	mustReject(t, ConfigKeyStagePersonas, `{"in_review":""}`, "non-empty role reference")
+	mustReject(t, ConfigKeyStagePersonas, `{"in_review":"   "}`, "non-empty role reference")
+	mustReject(t, ConfigKeyStagePersonas, `{"in_review":{}}`, "non-empty role reference")
+	mustReject(t, ConfigKeyStagePersonas, `{"in_review":{"roleId":""}}`, "non-empty role reference")
+	mustReject(t, ConfigKeyStagePersonas, `{"in_review":{"roleId":"   "}}`, "non-empty role reference")
+	mustReject(t, ConfigKeyStagePersonas, `{"in_review":{"roleId":"`+strings.Repeat("a", PersonaRoleIDMax+1)+`"}}`, "exceeds")
+	mustReject(t, ConfigKeyStagePersonas, `{"in_review":"`+strings.Repeat("a", PersonaRoleIDMax+1)+`"}`, "exceeds")
 
-	// Trim-parity with agentd's validate_file semantic check (review
-	// round 1 finding 3 — ONE contract per shape): an EMPTY name
-	// alongside a roleId is legal; whitespace-only roleId or name is
-	// the empty slot and rejects.
-	mustNotErr(t, ConfigKeyStagePersonas, `{"in_review":{"roleId":"reviewer","name":""}}`)
-
-	// Rejected shapes.
-	mustReject(t, ConfigKeyStagePersonas, `{"in_review":""}`, "requires a role reference (roleId) or a non-empty name")
-	mustReject(t, ConfigKeyStagePersonas, `{"in_review":{}}`, "requires a role reference (roleId) or a non-empty name")
-	mustReject(t, ConfigKeyStagePersonas, `{"in_review":{"instructions":"neither role nor name"}}`, "requires a role reference (roleId) or a non-empty name")
-	mustReject(t, ConfigKeyStagePersonas, `{"in_review":{"name":"   "}}`, "requires a role reference (roleId) or a non-empty name")
-	mustReject(t, ConfigKeyStagePersonas, `{"in_review":{"roleId":"   "}}`, "requires a role reference (roleId) or a non-empty name")
-	mustReject(t, ConfigKeyStagePersonas, `{"in_review":{"roleId":"`+strings.Repeat("a", PersonaRoleIDMax+1)+`"}}`, "role reference exceeds")
-	mustReject(t, ConfigKeyStagePersonas, `{"in_review":{"roleId":"r","promt":"typo"}}`, "unknown field")
+	// The legacy shapes are GONE — no decode, no compat (owner ruling:
+	// no personas were ever created; a stored non-role shape is drift).
+	mustReject(t, ConfigKeyStagePersonas, `{"in_review":{"name":"auditor","instructions":"Verify."}}`, "role reference")
+	mustReject(t, ConfigKeyStagePersonas, `{"in_review":{"name":"reviewer"}}`, "role reference")
+	mustReject(t, ConfigKeyStagePersonas, `{"in_review":{"instructions":"Verify."}}`, "role reference")
+	mustReject(t, ConfigKeyStagePersonas, `{"in_review":{"roleId":"r","instructions":"override"}}`, "role reference")
+	// Unknown fields in the {roleId} object (the strict vocabulary at
+	// the nested level — a typo must never ride silently).
+	mustReject(t, ConfigKeyStagePersonas, `{"in_review":{"roleId":"r","promt":"typo"}}`, "role reference")
 }
 
-// TestPersonaRoleRefDecode — decode resolves the compact and object
-// shapes to the same typed persona; the round-trip through storage
-// rows preserves the reference.
+// TestPersonaRoleRefDecode — decode resolves the bare string and the
+// {roleId} object to the SAME typed persona; the storage round-trip
+// preserves the reference in the canonical form.
 func TestPersonaRoleRefDecode(t *testing.T) {
-	raw := json.RawMessage(`{"in_review":"reviewer","in_progress":{"roleId":"build","instructions":"Ship it."}}`)
+	raw := json.RawMessage(`{"in_review":"reviewer","in_progress":{"roleId":"build"}}`)
 	m, err := decodePersonaMap(raw)
 	require.NoError(t, err)
 	assert.Equal(t, PersonaConfig{RoleID: "reviewer"}, m["in_review"])
-	assert.Equal(t, PersonaConfig{RoleID: "build", Instructions: "Ship it."}, m["in_progress"])
+	assert.Equal(t, PersonaConfig{RoleID: "build"}, m["in_progress"])
 
-	// Round-trip: encode → decode keeps the reference (the storage row
-	// shape).
+	// Round-trip: encode → decode keeps the reference; the storage row
+	// is the canonical bare-string map (both shapes normalize).
 	o := &BoardConfigOverride{StagePersonas: &m}
 	var row configRow
 	for _, r := range o.rows() {
@@ -68,93 +72,109 @@ func TestPersonaRoleRefDecode(t *testing.T) {
 			row = r
 		}
 	}
+	assert.JSONEq(t, `{"in_review":"reviewer","in_progress":"build"}`, string(row.Value),
+		"the canonical storage form is the bare reference string")
 	back, err := DecodeBoardConfigOverride(map[string]json.RawMessage{row.Key: row.Value})
 	require.NoError(t, err)
 	assert.Equal(t, m, *back.StagePersonas)
 }
 
-// TestResolveAgentRoleRef — resolution precedence: an explicit RoleID
-// matches id or slug EXACTLY (an unresolvable explicit reference is
-// never silently re-pointed at a name match); a name-only persona
-// (the migration input) matches slug then name; nothing matches
-// nothing.
+// TestPersonaConfigCodec — PersonaConfig's codec pins the wire
+// contract: MarshalJSON renders the bare reference (canonical),
+// UnmarshalJSON admits the bare string and the {roleId} object and
+// refuses everything else (including the legacy name shape).
+func TestPersonaConfigCodec(t *testing.T) {
+	b, err := json.Marshal(PersonaConfig{RoleID: "reviewer"})
+	require.NoError(t, err)
+	assert.Equal(t, `"reviewer"`, string(b), "the canonical wire form is the bare string")
+
+	for _, raw := range []string{`"reviewer"`, `{"roleId":"reviewer"}`} {
+		var p PersonaConfig
+		require.NoError(t, json.Unmarshal([]byte(raw), &p), raw)
+		assert.Equal(t, PersonaConfig{RoleID: "reviewer"}, p, raw)
+	}
+	for _, raw := range []string{`{"name":"reviewer"}`, `{"roleId":"r","instructions":"x"}`, `5`, `true`} {
+		var p PersonaConfig
+		require.Error(t, json.Unmarshal([]byte(raw), &p), "the non-role shape must refuse: %s", raw)
+	}
+}
+
+// TestResolveAgentRoleRef — resolution: an explicit reference (the
+// ONLY persona shape) matches id or slug EXACTLY; an unresolvable
+// reference is never silently re-pointed; nothing in, nothing out.
 func TestResolveAgentRoleRef(t *testing.T) {
 	roles := []AgentRoleRef{
 		{ID: "11111111-1111-1111-1111-111111111111", Slug: "reviewer", Name: "Code Reviewer", Scope: "platform"},
 		{ID: "22222222-2222-2222-2222-222222222222", Slug: "build", Name: "Builder", Scope: "org"},
 	}
 
-	// Explicit references: id and slug both address the role.
-	r := ResolveAgentRoleRef(PersonaConfig{RoleID: "11111111-1111-1111-1111-111111111111"}, roles)
+	// References: id and slug both address the role.
+	r := ResolveAgentRoleRef("11111111-1111-1111-1111-111111111111", roles)
 	require.NotNil(t, r)
 	assert.Equal(t, "reviewer", r.Slug)
-	r = ResolveAgentRoleRef(PersonaConfig{RoleID: "reviewer"}, roles)
+	r = ResolveAgentRoleRef("reviewer", roles)
 	require.NotNil(t, r)
 	assert.Equal(t, "11111111-1111-1111-1111-111111111111", r.ID)
+	r = ResolveAgentRoleRef("Builder", roles)
+	require.Nil(t, r, "the DISPLAY name is not an addressable reference — id or slug only")
 
 	// An unresolvable EXPLICIT reference stays unresolvable — a stored
-	// "reviewer-2" roleId never falls back to a name/slug match.
-	assert.Nil(t, ResolveAgentRoleRef(PersonaConfig{RoleID: "gone", Name: "reviewer"}, roles))
-
-	// The migration's name→role synthesis: slug match, then name match.
-	r = ResolveAgentRoleRef(PersonaConfig{Name: "reviewer"}, roles)
-	require.NotNil(t, r)
-	assert.Equal(t, "11111111-1111-1111-1111-111111111111", r.ID)
-	r = ResolveAgentRoleRef(PersonaConfig{Name: "Builder"}, roles)
-	require.NotNil(t, r)
-	assert.Equal(t, "22222222-2222-2222-2222-222222222222", r.ID)
-
-	// Nothing in, nothing out.
-	assert.Nil(t, ResolveAgentRoleRef(PersonaConfig{}, roles))
-	assert.Nil(t, ResolveAgentRoleRef(PersonaConfig{Name: "ghost"}, roles))
+	// "reviewer-2" never falls back to a fuzzy match.
+	assert.Nil(t, ResolveAgentRoleRef("gone", roles))
+	assert.Nil(t, ResolveAgentRoleRef("reviewer ", roles), "matching is exact, not trimmed")
+	assert.Nil(t, ResolveAgentRoleRef("", roles))
+	assert.Nil(t, ResolveAgentRoleRef("reviewer", nil))
 }
 
-// TestMigratePersonaRoles — the stored-config migration's pure core:
-// legacy name-only personas stamp the resolved role's id; unresolvable
-// names keep the persona verbatim (the instructions survive as a
-// role-less override); already-role-bearing personas are untouched
-// (including slug references — canonicalization is the spawn-time
-// applyPersonaRole's job, never a storage rewrite).
-func TestMigratePersonaRoles(t *testing.T) {
-	roles := []AgentRoleRef{
-		{ID: "11111111-1111-1111-1111-111111111111", Slug: "reviewer", Name: "Code Reviewer"},
-	}
-	in := map[string]PersonaConfig{
-		"in_review":   {Name: "reviewer", Instructions: "Verify."},     // resolves by slug
-		"in_progress": {Name: "implementer", Instructions: "Ship it."}, // unresolvable — kept verbatim
-	}
-	out := MigratePersonaRoles(in, roles)
-	assert.Equal(t, PersonaConfig{
-		RoleID: "11111111-1111-1111-1111-111111111111", Name: "reviewer", Instructions: "Verify.",
-	}, out["in_review"], "a resolvable name stamps the role id (name + instructions preserved)")
-	assert.Equal(t, in["in_progress"], out["in_progress"], "an unresolvable name keeps the legacy persona verbatim")
-
-	// A slug reference rides untouched (never rewritten in storage).
-	slugRef := map[string]PersonaConfig{"in_review": {RoleID: "reviewer"}}
-	assert.Equal(t, slugRef, MigratePersonaRoles(slugRef, roles))
-
-	assert.Nil(t, MigratePersonaRoles(nil, roles))
-}
-
-// TestPersonaLabel — the non-empty identity the claim stamps render:
-// name first, else the role reference (a role-first persona may carry
-// no name at all).
+// TestPersonaLabel — the display/stamp identity the claim mint renders:
+// the role reference (the only authored value); the empty shape renders
+// the unresolved placeholder.
 func TestPersonaLabel(t *testing.T) {
-	assert.Equal(t, "auditor", PersonaConfig{Name: "auditor", RoleID: "r1"}.Label())
 	assert.Equal(t, "reviewer", PersonaConfig{RoleID: "reviewer"}.Label())
-	assert.Equal(t, "", PersonaConfig{}.Label())
+	assert.Equal(t, "11111111-1111-1111-1111-111111111111", PersonaConfig{RoleID: "11111111-1111-1111-1111-111111111111"}.Label())
+	assert.Equal(t, personaUnresolvedLabel, PersonaConfig{}.Label())
 }
 
-// TestStaleRoleRefLabel — the degraded persona's display identity
-// (review round 1 finding 1: an explicit reference the vocabulary no
-// longer resolves DEGRADES to the role-less shape; the reference
-// survives as the label so the charter/audit stamps stay non-empty,
-// rune-truncated to the name cap).
-func TestStaleRoleRefLabel(t *testing.T) {
-	assert.Equal(t, "reviewer", staleRoleRefLabel("reviewer", ""), "no name — the reference is the label")
-	assert.Equal(t, "auditor", staleRoleRefLabel("ghost-role", "auditor"), "the persona's own name wins")
-	long := strings.Repeat("r", PersonaRoleIDMax)
-	got := staleRoleRefLabel(long, "")
-	assert.Len(t, got, PersonaNameMax, "the reference truncates to the name cap")
-	assert.Equal(t, strings.Repeat("r", PersonaNameMax), got)
+// TestDefaultReviewerPersonaIsRoleRefOnly — the default reviewer
+// composition is a ROLE REFERENCE to the built-in reviewer agent role
+// (slug form): no name, no instructions — the verdict-channel charter
+// lives in the role's system prompt, never a board-layer persona.
+func TestDefaultReviewerPersonaIsRoleRefOnly(t *testing.T) {
+	assert.Equal(t, PersonaConfig{RoleID: DefaultReviewerRoleSlug}, DefaultReviewerPersona)
+	assert.Equal(t, "reviewer", DefaultReviewerRoleSlug)
+	// The persona carries NO behavior of its own: the codec's wire
+	// form is the bare slug.
+	b, err := json.Marshal(DefaultReviewerPersona)
+	require.NoError(t, err)
+	assert.Equal(t, `"reviewer"`, string(b))
 }
+
+// TestDefaultReviewerRoleSystemPrompt — the built-in reviewer role's
+// system prompt is the verdict-channel charter VERBATIM: the
+// board_record_verdict contract, the criteria walk (board_update_task
+// setCriteriaMet), the Done guard, and the never-merge rule. The
+// platform seeds this prose into the agent-roles table at startup
+// (seedBuiltinReviewerRole) — this pin is the single source's
+// tripwire: the constant may not drift away from the charter's
+// load-bearing clauses.
+func TestDefaultReviewerRoleSystemPrompt(t *testing.T) {
+	p := DefaultReviewerRoleSystemPrompt
+	for _, sub := range []string{
+		"Verify EACH acceptance criterion adversarially",
+		"board_record_verdict",
+		"verdict=approve",
+		"ALL criteria met",
+		"verdict=fail with findings",
+		"Never merge, never push",
+		"board_update_task {taskId, claimToken, setCriteriaMet:{index, met}}",
+		"board_move_stage→done completes the review",
+	} {
+		assert.Contains(t, p, sub)
+	}
+	assert.Less(t, len(p), PersonaInstructionsMaxLegacy, "the charter stays a prompt, not a document")
+}
+
+// PersonaInstructionsMaxLegacy is the retired cap's value kept as a
+// sanity bound for the seeded prose (the config key's own cap is gone
+// with the instructions field; this is a tripwire, not a wire limit).
+const PersonaInstructionsMaxLegacy = 4096

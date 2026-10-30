@@ -58,8 +58,10 @@ func (s *BoardSuite) TestCriteriaMet_1946_ReviewerGrantEndToEnd() {
 	task := s.seedTask(e, "e2e", nil, false) // criteria UNMET
 
 	spawner := &claimCapture{}
-	svc := board.NewService(s.pool, s.cfg, board.WithWorkerSpawner(spawner.Spawn))
-	s.setStagePersonas(svc, p, map[string]board.PersonaConfig{"in_review": {Name: "reviewer"}})
+	svc := board.NewService(s.pool, s.cfg,
+		board.WithWorkerSpawner(spawner.Spawn),
+		board.WithRoleDirectory(personaRoleDirectory()))
+	s.setStagePersonas(svc, p, map[string]board.PersonaConfig{"in_review": {RoleID: "reviewer"}})
 
 	c, err := svc.ClaimNext(ctx, "w-"+ws, ws)
 	s.Require().NoError(err)
@@ -70,7 +72,7 @@ func (s *BoardSuite) TestCriteriaMet_1946_ReviewerGrantEndToEnd() {
 	token, persona := s.claimPersona(task.ID)
 	s.Require().NotNil(token)
 	require.NotNil(s.T(), persona, "the mint stamps its persona provenance on the row")
-	s.Equal("reviewer", *persona)
+	s.Equal(reviewerRole.ID, *persona, "the stamp is the canonicalized role reference")
 	s.Require().Len(spawner.claims, 2)
 	s.Equal(*token, spawner.claims[1].ClaimToken, "the reviewer's charter carries the minted token")
 
@@ -86,7 +88,7 @@ func (s *BoardSuite) TestCriteriaMet_1946_ReviewerGrantEndToEnd() {
 	// The per-criterion audit trail carries the persona provenance.
 	evs := s.criteriaMetEvents(p.ID)
 	s.Require().Len(evs, 2)
-	s.Equal("reviewer", evs[0]["persona"])
+	s.Equal(reviewerRole.ID, evs[0]["persona"])
 	s.Equal(float64(0), evs[0]["index"])
 	s.Equal(true, evs[0]["met"])
 	s.Equal("c1", evs[0]["criterion"])
@@ -117,7 +119,9 @@ func (s *BoardSuite) TestCriteriaMet_1946_TaskWorkerSelfCertificationRefused() {
 	s.seedTask(e, "self-cert", nil, false)
 
 	spawner := &claimCapture{}
-	svc := board.NewService(s.pool, s.cfg, board.WithWorkerSpawner(spawner.Spawn))
+	svc := board.NewService(s.pool, s.cfg,
+		board.WithWorkerSpawner(spawner.Spawn),
+		board.WithRoleDirectory(personaRoleDirectory()))
 	s.setStagePersonas(svc, p, map[string]board.PersonaConfig{}) // opt-out: plain worker claim
 
 	c, err := svc.ClaimNext(ctx, "w-"+ws, ws)
@@ -149,8 +153,10 @@ func (s *BoardSuite) TestCriteriaMet_1946_GuardMatrix() {
 	task := s.seedTask(e, "matrix", nil, false)
 
 	spawner := &claimCapture{}
-	svc := board.NewService(s.pool, s.cfg, board.WithWorkerSpawner(spawner.Spawn))
-	s.setStagePersonas(svc, p, map[string]board.PersonaConfig{"in_review": {Name: "reviewer"}})
+	svc := board.NewService(s.pool, s.cfg,
+		board.WithWorkerSpawner(spawner.Spawn),
+		board.WithRoleDirectory(personaRoleDirectory()))
+	s.setStagePersonas(svc, p, map[string]board.PersonaConfig{"in_review": {RoleID: "reviewer"}})
 
 	c, err := svc.ClaimNext(ctx, "w-"+ws, ws)
 	s.Require().NoError(err)
@@ -200,8 +206,10 @@ func (s *BoardSuite) TestCriteriaMet_1946_PausedRowRefuses() {
 	task := s.seedTask(e, "paused", nil, false)
 
 	spawner := &claimCapture{}
-	svc := board.NewService(s.pool, s.cfg, board.WithWorkerSpawner(spawner.Spawn))
-	s.setStagePersonas(svc, p, map[string]board.PersonaConfig{"in_review": {Name: "reviewer"}})
+	svc := board.NewService(s.pool, s.cfg,
+		board.WithWorkerSpawner(spawner.Spawn),
+		board.WithRoleDirectory(personaRoleDirectory()))
+	s.setStagePersonas(svc, p, map[string]board.PersonaConfig{"in_review": {RoleID: "reviewer"}})
 
 	c, err := svc.ClaimNext(ctx, "w-"+ws, ws)
 	s.Require().NoError(err)
@@ -243,8 +251,10 @@ func (s *BoardSuite) TestCriteriaMet_1946_ClosedUnmergedDriftClearsProvenance() 
 	seedPersonaClaimed := func(title string) (*board.Task, string) {
 		task := s.seedTask(e, title, []string{"pr:7"}, false)
 		spawner := &claimCapture{}
-		svc := board.NewService(s.pool, s.cfg, board.WithWorkerSpawner(spawner.Spawn))
-		s.setStagePersonas(svc, p, map[string]board.PersonaConfig{"in_review": {Name: "reviewer"}})
+		svc := board.NewService(s.pool, s.cfg,
+			board.WithWorkerSpawner(spawner.Spawn),
+			board.WithRoleDirectory(personaRoleDirectory()))
+		s.setStagePersonas(svc, p, map[string]board.PersonaConfig{"in_review": {RoleID: "reviewer"}})
 		c, err := svc.ClaimNext(context.Background(), "w-"+ws, ws)
 		s.Require().NoError(err)
 		_, err = svc.MoveStage(context.Background(), s.agent(c.Assignee, c.ClaimToken), "", c.ShortID, board.StageInReview, "", "")
@@ -301,8 +311,10 @@ func (s *BoardSuite) TestCriteriaMet_1946_BounceClearsProvenance() {
 	task := s.seedTask(e, "bounce-clear", nil, false)
 
 	spawner := &claimCapture{}
-	svc := board.NewService(s.pool, s.cfg, board.WithWorkerSpawner(spawner.Spawn))
-	s.setStagePersonas(svc, p, map[string]board.PersonaConfig{"in_review": {Name: "reviewer"}})
+	svc := board.NewService(s.pool, s.cfg,
+		board.WithWorkerSpawner(spawner.Spawn),
+		board.WithRoleDirectory(personaRoleDirectory()))
+	s.setStagePersonas(svc, p, map[string]board.PersonaConfig{"in_review": {RoleID: "reviewer"}})
 
 	c, err := svc.ClaimNext(ctx, "w-"+ws, ws)
 	s.Require().NoError(err)
