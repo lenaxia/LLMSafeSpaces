@@ -19,6 +19,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"os"
 	"regexp"
@@ -553,6 +554,42 @@ func execAgentNode(ctx context.Context, password string, w http.ResponseWriter, 
 		}
 	}
 
+	// Board-worker spawns return EARLY (the 2026-10-29 live-fire): the
+	// board spawner needs the session IDENTITY, not the turn's result —
+	// and gating the response on turn completion made the identity
+	// stamps (assignee_session, the session_origins worker mark) hostage
+	// to the worker's ENTIRE first turn. A first turn longer than the
+	// API executor's 15-minute client timeout produced exactly the
+	// live-fire: the client errored, spawnSync skipped both stamps, and
+	// a fully-working worker ran on as an anonymous orphan (no card
+	// link, no busy indicator, no Workers-folder classification, the
+	// lease ladder blind to its row). So for the board-worker NodeID
+	// ONLY: dispatch the charter message DETACHED (WithoutCancel — the
+	// request context dies with the response; the goroutine ends when
+	// the turn does, one per spawn) and answer with the session id the
+	// moment it exists. IDENTITY PRECEDES DELIVERY OUTCOME BY DESIGN
+	// (review round 1's wording): a delivery failure now differs from
+	// the old blocking shape — the stamps land and the lease sits
+	// re-armed up to its window before the lapse heal, rather than the
+	// old session-less error envelope. The detached leg is unreachable
+	// by /v1/workflow/node/cancel (the registry unregisters the node
+	// ~1s in); no production caller today — worker abort rides
+	// /session/<id>/abort. NOTE: the NodeID literal "board-worker" is a
+	// RESERVED dispatch id shared with the provenance gate below — a
+	// user DAG agent node must never carry it (it would take this early
+	// arm and, in ephemeral mode, leak its session past the skipped
+	// teardown); the production spawner is the only issuer
+	// (session: "new").
+	if req.NodeID == "board-worker" {
+		//nolint:gosec,contextcheck // G118: deliberate — the charter delivery outlives the spawn request BY DESIGN (the request context dies with the early envelope; the bound lives in the helper); a delivery failure is the lease-lapse heal's case
+		go dispatchAgentMessageDetached(password, sessionID, data.Agent, prompt, req.WorkflowID, req.NodeID, req.RunID)
+		writeWorkflowSuccessSession(w, map[string]any{
+			"session_id": sessionID,
+			"dispatched": true,
+		}, sessionID, "")
+		return
+	}
+
 	// #1470: every failure past this point knows the session, and the
 	// envelope must report sessionId iff the session still EXISTS when
 	// the node finishes — preserved modes keep it, ephemeral modes tear
@@ -827,6 +864,48 @@ func resolveSecretRef(s string, secrets map[string]string) string {
 		result = strings.ReplaceAll(result, "{{secrets."+name+"}}", val)
 	}
 	return result
+}
+
+// dispatchAgentMessageDetached delivers the board-worker charter
+// message WITHOUT holding the spawn response (the 2026-10-29
+// live-fire fix's delivery leg): the goroutine owns the full blocking
+// POST — opencode answers at TURN COMPLETION, and a worker's first
+// turn can run for hours — under a context bound generous enough to
+// outlive any real first turn (2h; past it the POST aborts and the
+// lease-lapse contract heals, exactly as a delivery failure would).
+// The dedupe key derivation mirrors the blocking path (#1327): a
+// re-drive of the same logical spawn upserts the same transcript
+// message. Failures LOG and nothing else — the spawn already
+// succeeded, the worker self-directs, and a worker that never started
+// is the lease-lapse heal's case, not this goroutine's.
+func dispatchAgentMessageDetached(password, sessionID, agent, prompt, workflowID, nodeID, runID string) {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Hour)
+	defer cancel()
+	dedupeKey := workflowAgentMessageKey(workflowID, nodeID, runID)
+	body := fmt.Sprintf(`{"agentID":%q,"parts":[{"type":"text","text":%q}]}`, agent, prompt)
+	if dedupeKey != "" {
+		body = fmt.Sprintf(`{"messageID":%q,"agentID":%q,"parts":[{"type":"text","text":%q}]}`, dedupeKey, agent, prompt)
+	}
+	httpReq, err := http.NewRequestWithContext(ctx, "POST",
+		fmt.Sprintf("%s/session/%s/message", getAgentAddr(), sessionID),
+		strings.NewReader(body))
+	if err != nil {
+		slog.Warn("board: worker charter dispatch: request build failed", "session", sessionID, "err", err.Error())
+		return
+	}
+	httpReq.SetBasicAuth(agentd.AuthUsername, password)
+	httpReq.Header.Set("Content-Type", "application/json")
+	resp, err := (&http.Client{}).Do(httpReq)
+	if err != nil {
+		slog.Warn("board: worker charter dispatch failed (lease-lapse heals)", "session", sessionID, "err", err.Error())
+		return
+	}
+	defer func() { _ = resp.Body.Close() }()
+	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 1<<20))
+	if resp.StatusCode != http.StatusOK {
+		slog.Warn("board: worker charter dispatch non-200 (lease-lapse heals)",
+			"session", sessionID, "status", resp.StatusCode)
+	}
 }
 
 // createOpencodeSession creates a session via the opencode HTTP API.
