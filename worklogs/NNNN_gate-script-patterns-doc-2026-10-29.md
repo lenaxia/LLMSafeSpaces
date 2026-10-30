@@ -67,13 +67,16 @@ without prompt bloat.
   binary — "ships in the agentd image" is satisfied at the binary
   layer, one release unit.
 
-- **Pointer, not content** — three sites, all net-smaller:
+- **Pointer, not content** — three sites, all net-smaller (measured on
+  the DECODED description strings — the bytes a client actually
+  receives; the raw source literals, escapes unexpanded, measure
+  −72/−28/−25):
   - agentd catalog (mcp_server.go trigger_create): the
     `count_open_items` digest example → the pointer sentence (−59).
   - pkg/mcp (workflow_tools.go triggerCreateTool): the `n = 2; n >= 3`
     example → the same pointer sentence (−15).
   - trigger-body schema blurb (InputSchema `trigger` description):
-    posture detail condensed + the pointer appended (−13); the
+    posture detail condensed + the pointer appended (−25); the
     platform invariant ("Unhandled exceptions count toward
     auto-disable") stays in the main descriptions, which the existing
     pins watch.
@@ -91,7 +94,11 @@ without prompt bloat.
   lands, identical → no rewrite (mtime-pinned), stale → replaced;
   `_ModeIsPublicData` — 0644.
 - init-fs subprocess suite: fresh boot materializes the doc under
-  `$runtimeDir/docs/`; the idempotent re-run keeps it (byte-equal).
+  `$runtimeDir/docs/`; the idempotent re-run keeps it (byte-equal);
+  a blocked copy (directory at the doc path) never blocks boot —
+  exit 0 + non-fatal log + `init-fs: ok` (§6).
+- `TestEnsureGateScriptPatternsDoc_ErrorPaths`: dstDir-is-a-file and
+  dst-is-a-directory both return wrapped errors, no temp strays (§6).
 - Catalog tests: pointer Contains-pinned in BOTH catalogs; NotContains
   pins hold the examples gone (`count_open_items`, `n >= 3`); the
   schema blurb pointer pinned via the schemaDescs seam; all existing
@@ -102,8 +109,34 @@ without prompt bloat.
 ## §5 Out of scope (deliberate)
 
 Human-facing docs that still carry fuller worked examples
-(`docs/api/mcp.md` § Triggers, `README-LLM.md`, the Go SDK doc
-comment) are NOT description sites — no prompt cost — and their
-examples are the fuller JSON/SDK forms, not the trivial one being
-replaced. Left untouched; the doc links from the three agent-visible
-sites only.
+(`docs/api/mcp.md` § Triggers, `README-LLM.md`) are NOT description
+sites — no prompt cost — and their examples are the fuller JSON forms,
+not the trivial one being replaced. The four SDK doc comments
+(`sdks/go/workflows.go`, `sdks/python/llmsafespaces/client.py`,
+`sdks/java/…/TriggersService.java`, `sdks/typescript/src/client.ts`)
+DO still carry the exact `count_open_items` trivial form — corrected
+from an earlier draft of this section, which wrongly said the remaining
+examples were all fuller forms (PR #1987 review). Left as-is
+deliberately: SDK doc comments are developer documentation compiled
+into each SDK's idioms (Go doc comments, Python/docstring,
+JSDoc/JavaDoc), not agent prompt surfaces — zero prompt cost — and
+rewriting four SDK surfaces is churn outside this task's prompt-cost
+scope. The pointer targets the three agent-visible sites only.
+
+## §6 Review iteration (PR #1987)
+
+First review round (CHANGES_REQUESTED on `990493ab`): implementation
+verified correct end-to-end; the gaps were all in tests/records:
+
+- The best-effort "never blocks boot" contract was verified by
+  reading, not execution → added
+  `TestInitFS_GateDocCopyBlocked_NeverBlocksBoot` (a directory planted
+  at the doc path, init-fs still exits 0 + logs non-fatal + completes;
+  mutation-checked — routing step 7 through `fail()` reddens it).
+- `ensureGateScriptPatternsDoc` had no unhappy-path unit tests → added
+  `TestEnsureGateScriptPatternsDoc_ErrorPaths` (dstDir-is-a-file →
+  wrapped "gate-docs dir" error; dst-is-a-directory → wrapped
+  "gate-docs rename" error, no `.gate-docs-*` temp strays).
+- Worklog §5 factual error on the SDK doc comments → corrected above.
+- PR-body char deltas now state their measurement basis (decoded
+  description strings: −59/−15/−25).

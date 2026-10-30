@@ -281,6 +281,33 @@ func TestInitFS_Idempotent(t *testing.T) {
 	assert.Equal(t, string(gateScriptPatternsDoc), string(docBytes))
 }
 
+// TestInitFS_GateDocCopyBlocked_NeverBlocksBoot pins step 7's
+// best-effort contract (2026-10-29 owner ruling): the gate-docs copy is
+// ADVISORY content and must never be able to fail a boot. A directory
+// planted at the doc's stable pod path breaks the final rename (a file
+// cannot replace a directory); init-fs must still exit 0, log the
+// failure loudly as non-fatal, and complete the init. If a future edit
+// routes step 7 through fail() instead, every workspace pod crash-loops
+// at Init:Error (controller/internal/workspace/boot_failure.go class)
+// and THIS test reddens — the non-fatal posture must stay executed, not
+// just read.
+func TestInitFS_GateDocCopyBlocked_NeverBlocksBoot(t *testing.T) {
+	bin := buildAgentdBinary(t)
+	tr := newInitFSTree(t)
+	tr.writePasswordSource(t, "pw\n", "")
+
+	// Block the copy: a directory where the doc belongs makes the
+	// temp-file rename fail.
+	require.NoError(t, os.MkdirAll(filepath.Join(tr.rt, "docs", gateScriptPatternsDocName), 0o755))
+
+	exit, stderr := runInitFSSubcommand(t, bin, tr.args()...)
+	require.Equal(t, 0, exit, "a failed gate-docs copy must NEVER block boot; stderr=%q", stderr)
+	assert.Contains(t, stderr, "gate-docs copy failed (non-fatal)",
+		"the blocked copy must be logged loudly (the bytes live in the binary — degradation is to the pointer alone)")
+	assert.Contains(t, stderr, "init-fs: ok",
+		"the init must run to completion past the failed copy")
+}
+
 // TestInitFS_MissingPasswordSource_Fails: G46 class — a workspace
 // without its password file is silently non-functional; the init must
 // fail loudly (Init:Error), not boot into a broken state.

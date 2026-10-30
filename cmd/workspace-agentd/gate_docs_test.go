@@ -115,3 +115,37 @@ func TestEnsureGateScriptPatternsDoc_ModeIsPublicData(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, os.FileMode(0o644), info.Mode().Perm())
 }
+
+// TestEnsureGateScriptPatternsDoc_ErrorPaths: the unhappy legs — both
+// return wrapped errors carrying the step's identity (never panic,
+// never strand a temp file); init-fs turns these into the non-fatal
+// boot log pinned by TestInitFS_GateDocCopyBlocked_NeverBlocksBoot.
+// These are the only error branches reachable without root.
+func TestEnsureGateScriptPatternsDoc_ErrorPaths(t *testing.T) {
+	t.Run("dst dir path is an existing file", func(t *testing.T) {
+		dir := t.TempDir()
+		blocker := filepath.Join(dir, "docs")
+		require.NoError(t, os.WriteFile(blocker, []byte("a file where the dir belongs"), 0o644))
+
+		err := ensureGateScriptPatternsDoc(blocker)
+		require.Error(t, err, "MkdirAll over an existing file must surface an error")
+		assert.Contains(t, err.Error(), "gate-docs dir", "wrapped with the step's identity")
+	})
+
+	t.Run("dst is an existing directory", func(t *testing.T) {
+		dir := t.TempDir()
+		require.NoError(t, os.MkdirAll(filepath.Join(dir, gateScriptPatternsDocName), 0o755))
+
+		err := ensureGateScriptPatternsDoc(dir)
+		require.Error(t, err, "rename of the temp file onto a directory must surface an error")
+		assert.Contains(t, err.Error(), "gate-docs rename", "wrapped with the step's identity")
+
+		// The write path must clean up after itself: only the blocking
+		// directory remains, no .gate-docs-* temp strays.
+		entries, readErr := os.ReadDir(dir)
+		require.NoError(t, readErr)
+		require.Len(t, entries, 1, "exactly one entry must remain (the blocker)")
+		assert.Equal(t, gateScriptPatternsDocName, entries[0].Name(),
+			"the blocking directory survives untouched; no temp files are stranded")
+	})
+}
