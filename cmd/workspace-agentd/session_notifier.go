@@ -339,6 +339,16 @@ type sessionNotifier struct {
 	tracker     map[string]*notifierSession // canonical id → derived state
 	debounces   map[string]*armedDebounce   // canonical broadcaster id → timer
 	suppression suppressionTracker          // §4.4 already-notified ledger (mu-guarded)
+	// debounceLegs counts ARMED-but-unresolved debounce timer legs: Add
+	// at arm time, Done exactly once when the leg resolves — either the
+	// timer body returning (fired) or the cancel that stopped the timer
+	// before it fired (absorbed; timer.Stop's return value is the exact
+	// discriminator). waitDebounceLegs joins them: a leg's work does not
+	// end at delivery — the outbox dismiss persist (marshal, file
+	// fsync, rename, dir fsync) trails the deliverer's return, and on a
+	// loaded runner that trail outlives any sleep a caller might guess.
+	// Bookkeeping only: no call site changes behavior.
+	debounceLegs sync.WaitGroup
 	// deliverCtx is the Run loop's context (the delivery leg's
 	// cancellation parent); nil until Run starts — timer legs fired
 	// before/without Run fall back to a fresh background ctx.
@@ -797,11 +807,17 @@ func (n *sessionNotifier) settleGatesPassLocked(sid string, st *notifierSession)
 }
 
 // armDebounceLocked arms (or re-arms) the broadcaster's settle timer.
-// Caller holds mu.
+// Caller holds mu. The leg is registered on debounceLegs BEFORE the
+// timer exists (the body can never run without its unit counted), and
+// resolves it in its defer — or the pre-fire cancel absorbs it.
 func (n *sessionNotifier) armDebounceLocked(sid, kind string) {
 	n.cancelDebounceLocked(sid)
 	a := &armedDebounce{kind: kind}
-	a.timer = time.AfterFunc(n.debounce, func() { n.debounceFired(sid, kind) })
+	n.debounceLegs.Add(1)
+	a.timer = time.AfterFunc(n.debounce, func() {
+		defer n.debounceLegs.Done()
+		n.debounceFired(sid, kind)
+	})
 	n.debounces[sid] = a
 }
 
@@ -809,7 +825,13 @@ func (n *sessionNotifier) armDebounceLocked(sid, kind string) {
 // within the window — the idle→busy flutter — cancels the notify).
 func (n *sessionNotifier) cancelDebounceLocked(sid string) {
 	if a, ok := n.debounces[sid]; ok {
-		a.timer.Stop()
+		if a.timer.Stop() {
+			// Stop() true ⇒ the body never ran and never will —
+			// absorb its leg unit here. The fired path's Done runs
+			// in the body's defer; Stop's return value makes the
+			// two mutually exclusive, so the counter stays exact.
+			n.debounceLegs.Done()
+		}
 		delete(n.debounces, sid)
 	}
 }
@@ -820,6 +842,20 @@ func (n *sessionNotifier) cancelAllDebounces() {
 	for sid := range n.debounces {
 		n.cancelDebounceLocked(sid)
 	}
+}
+
+// waitDebounceLegs blocks until every debounce timer leg has fully
+// returned, trailing store persist (the enqueue/dismiss fsync-rename
+// pairs) included. The shutdown seam for teardown paths that remove the
+// store's directory: RemoveAll racing a trailing leg write is the
+// "unlinkat: directory not empty" CI class. Callers must have stopped
+// the ARMING source first (Run's ctx canceled and joined, or the
+// frame-driving goroutine returned) — arm-while-waiting at counter zero
+// is the WaitGroup reuse hazard, and a leg armed after this return
+// would race the teardown it exists to protect. Safe to call with
+// nothing armed (returns immediately).
+func (n *sessionNotifier) waitDebounceLegs() {
+	n.debounceLegs.Wait()
 }
 
 // debounceFired is the timer body: still-armed check (the cancel may
