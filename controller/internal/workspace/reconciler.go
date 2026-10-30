@@ -107,11 +107,12 @@ type WorkspaceReconciler struct {
 	// EventbusPasswordSecretName/Key carry the bus Redis credentials to
 	// the sidecar as a secretKeyRef (AGENTD_EVENTBUS_PASSWORD) — the
 	// platform credentials secret the API itself uses is the natural
-	// source (e.g. llmsafespaces-credentials/redis-password). The key
-	// must exist when EventbusAddr is set (validated at startup — a bus
-	// address whose password secret is missing would arm every pod with
-	// a doomed connection; agentd degrades each one to bus-disabled,
-	// loudly, but the controller refuses the misconfiguration up front).
+	// source (e.g. llmsafespaces-credentials/redis-password). Boot
+	// validation checks the NAME:KEY SYNTAX only — the secret's
+	// existence in the cluster is NOT looked up at startup, so a
+	// typo'd name boots clean and surfaces per-pod as a
+	// CreateContainerConfigError at pod create (visible, not silent:
+	// the workspace never goes Ready with a broken reference).
 	EventbusPasswordSecretName string
 	EventbusPasswordSecretKey  string
 

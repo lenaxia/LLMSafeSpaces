@@ -10,6 +10,7 @@ package workspace
 // credentials secret — the password never renders into a pod spec).
 
 import (
+	"context"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -71,5 +72,63 @@ func TestAgentdSidecarEventbusEnv_AbsentWhenUnconfigured(t *testing.T) {
 	for _, e := range c.Env {
 		assert.NotContains(t, e.Name, "AGENTD_EVENTBUS",
 			"unconfigured bus: no eventbus env at all — agentd stays dormant (the pre-0072 posture)")
+	}
+}
+
+// TestPodMainContainerEventbusEnv_ComposesWhenConfigured pins the
+// SINGLE-CONTAINER topology leg (review round 1, finding 2a): the main
+// container runs the agentd server process (the notifier + bus
+// consumers), so it must carry the same eventbusEnv the sidecar gets
+// (#1332 both-modes convention) — ADDR plain, PASSWORD secretKeyRef.
+func TestPodMainContainerEventbusEnv_ComposesWhenConfigured(t *testing.T) {
+	pwSecret := makePasswordSecret("ws-bus-main", "default")
+	ws := makeWorkspace("ws-bus-main", "default", v1.WorkspacePhaseCreating)
+	ws.Status.PVCName = "pvc-" + ws.Name
+	ws.Spec.Runtime = "base"
+	r := reconcilerFor(t, pwSecret, makeBoundPVC(ws.Status.PVCName, "default", ws.UID), makeRuntimeEnv("base"))
+	r.EventbusAddr = "llmsafespaces-valkey.llmsafespaces.svc.cluster.local:6379"
+	r.EventbusPasswordSecretName = "llmsafespaces-credentials"
+	r.EventbusPasswordSecretKey = "redis-password"
+
+	pod, err := r.buildPod(context.Background(), ws)
+	require.NoError(t, err)
+
+	var main *corev1.Container
+	for i := range pod.Spec.Containers {
+		if pod.Spec.Containers[i].Name == "workspace" {
+			main = &pod.Spec.Containers[i]
+			break
+		}
+	}
+	require.NotNil(t, main, "the main workspace container must exist")
+
+	addr, hasAddr := envVar(main, "AGENTD_EVENTBUS_ADDR")
+	require.True(t, hasAddr, "the MAIN container must carry AGENTD_EVENTBUS_ADDR (single-container mode runs the bus consumers here)")
+	assert.Equal(t, r.EventbusAddr, addr.Value, "the address is the plain configured value — credentials NEVER ride it")
+	pw, hasPw := envVar(main, "AGENTD_EVENTBUS_PASSWORD")
+	require.True(t, hasPw, "the MAIN container must carry AGENTD_EVENTBUS_PASSWORD")
+	require.NotNil(t, pw.ValueFrom, "the password must be a secretKeyRef, never a plain value")
+	require.NotNil(t, pw.ValueFrom.SecretKeyRef)
+	assert.Equal(t, "llmsafespaces-credentials", pw.ValueFrom.SecretKeyRef.Name)
+	assert.Equal(t, "redis-password", pw.ValueFrom.SecretKeyRef.Key)
+}
+
+// TestPodMainContainerEventbusEnv_AbsentWhenUnconfigured: the dormant
+// default holds at the FULL pod level — no container, main or sidecar,
+// carries any eventbus env.
+func TestPodMainContainerEventbusEnv_AbsentWhenUnconfigured(t *testing.T) {
+	pwSecret := makePasswordSecret("ws-bus-off", "default")
+	ws := makeWorkspace("ws-bus-off", "default", v1.WorkspacePhaseCreating)
+	ws.Status.PVCName = "pvc-" + ws.Name
+	ws.Spec.Runtime = "base"
+	r := reconcilerFor(t, pwSecret, makeBoundPVC(ws.Status.PVCName, "default", ws.UID), makeRuntimeEnv("base"))
+
+	pod, err := r.buildPod(context.Background(), ws)
+	require.NoError(t, err)
+	for i := range pod.Spec.Containers {
+		for _, e := range pod.Spec.Containers[i].Env {
+			assert.NotContains(t, e.Name, "AGENTD_EVENTBUS",
+				"unconfigured bus: container %q must carry no eventbus env", pod.Spec.Containers[i].Name)
+		}
 	}
 }

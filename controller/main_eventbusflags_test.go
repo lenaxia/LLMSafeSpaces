@@ -61,11 +61,15 @@ func TestParseEventbusWiring(t *testing.T) {
 	}{
 		{name: "unconfigured is the dormant default", addr: "", secretRef: "", wantName: "", wantKey: ""},
 		{name: "addr without secret is legal (authless Redis)", addr: "some-redis:6379", secretRef: "", wantName: "", wantKey: ""},
+		{name: "IPv6 literal carries no @ and is legal", addr: "[::1]:6379", secretRef: "", wantName: "", wantKey: ""},
 		{name: "addr plus NAME:KEY splits", addr: "some-redis:6379", secretRef: "llmsafespaces-credentials:redis-password", wantName: "llmsafespaces-credentials", wantKey: "redis-password"},
 		{name: "secret without addr refuses", addr: "", secretRef: "llmsafespaces-credentials:redis-password", wantErr: true},
 		{name: "secret missing the KEY refuses", addr: "some-redis:6379", secretRef: "llmsafespaces-credentials:", wantErr: true},
 		{name: "secret missing the NAME refuses", addr: "some-redis:6379", secretRef: ":redis-password", wantErr: true},
 		{name: "secret with no colon at all refuses", addr: "some-redis:6379", secretRef: "llmsafespaces-credentials", wantErr: true},
+		{name: "credentialed redis URL refuses (the password must ride the secret, never the addr)", addr: "redis://:sekrit@some-redis:6379", secretRef: "", wantErr: true},
+		{name: "credentialed URL with secret also set still refuses (addr is checked first)", addr: "redis://agent:pw@some-redis:6379", secretRef: "creds:redis-password", wantErr: true},
+		{name: "bare user:pass@host form refuses", addr: "agent:pw@some-redis:6379", secretRef: "", wantErr: true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

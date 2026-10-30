@@ -137,9 +137,14 @@ func eventbusFromEnv(getenv func(string) string, logger *zap.Logger) *eventbus.R
 	// applied only when the parsed options carry NO credentials of
 	// their own — a redis://user:pass@… URL keeps what it embedded
 	// (the env is for the host:port form; both-set is a config smell
-	// the URL wins, silently and deterministically).
-	if pw := strings.TrimSpace(getenv("AGENTD_EVENTBUS_PASSWORD")); pw != "" && opts.Password == "" {
-		opts.Password = pw
+	// — the URL wins, deterministically, and NOW loudly: the warn is
+	// the operator's signal to drop one of the two).
+	if pw := strings.TrimSpace(getenv("AGENTD_EVENTBUS_PASSWORD")); pw != "" {
+		if opts.Password != "" {
+			logger.Warn("AGENTD_EVENTBUS_PASSWORD set alongside a credentialed AGENTD_EVENTBUS_ADDR URL — the URL's own credentials win; drop one (the env is the secretKeyRef spelling for credentialess host:port addresses)")
+		} else {
+			opts.Password = pw
+		}
 	}
 	client := redis.NewClient(opts)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)

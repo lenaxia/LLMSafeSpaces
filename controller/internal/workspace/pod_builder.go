@@ -333,6 +333,14 @@ func (r *WorkspaceReconciler) buildPod(ctx context.Context, workspace *v1.Worksp
 		)
 	}
 
+	// Design 0072 (the workspace bus rollout): the bus env, on the same
+	// #1332 convention — single-container mode runs the notifier + the
+	// eventbus consumer groups in THIS container's agentd process (the
+	// main boot path reads them); sidecar mode wires the identical env
+	// in agentd_sidecar.go for the sidecar process. Credentialess
+	// address + secretKeyRef password; nil (no env) when unconfigured.
+	mainContainer.Env = append(mainContainer.Env, r.eventbusEnv()...)
+
 	// Workspace setup init (packages + initScript).
 	if len(workspace.Spec.Packages) > 0 || workspace.Spec.InitScript != "" {
 		initContainers = append(initContainers, buildWorkspaceSetupInit(workspace, runtimeImage))

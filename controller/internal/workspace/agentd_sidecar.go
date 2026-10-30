@@ -94,6 +94,33 @@ func validateAgentdSidecarConfig(sidecarEnabled bool, agentdImage string) error 
 // predates the #933 upsert): the readiness probe must carry it because
 // the sidecar's /v1/readyz is bearer-gated whenever the token exists.
 // Called only when AgentdSidecarEnabled (validated at startup).
+// eventbusEnv renders the design-0072 bus env for whichever container
+// runs agentd's server surface — the MAIN container (single-container
+// mode: the notifier + bus consumers run in the main agentd process)
+// and the SIDECAR (sidecar mode: they run in the sidecar process) both
+// append this (#1332 convention: deployment-wide agentd env wired
+// explicitly per mode; the env is inert for a process that never reads
+// it). AGENTD_EVENTBUS_ADDR is the credentialess plain value (pod
+// specs are readable — the controller refuses userinfo at boot);
+// AGENTD_EVENTBUS_PASSWORD rides a secretKeyRef to the platform
+// credentials secret. Nil when the bus is unconfigured — no eventbus
+// env at all, the dormant pre-0072 posture.
+func (r *WorkspaceReconciler) eventbusEnv() []corev1.EnvVar {
+	if r.EventbusAddr == "" {
+		return nil
+	}
+	env := []corev1.EnvVar{{Name: "AGENTD_EVENTBUS_ADDR", Value: r.EventbusAddr}}
+	if r.EventbusPasswordSecretName != "" {
+		env = append(env, corev1.EnvVar{Name: "AGENTD_EVENTBUS_PASSWORD", ValueFrom: &corev1.EnvVarSource{
+			SecretKeyRef: &corev1.SecretKeySelector{
+				LocalObjectReference: corev1.LocalObjectReference{Name: r.EventbusPasswordSecretName},
+				Key:                  r.EventbusPasswordSecretKey,
+			},
+		}})
+	}
+	return env
+}
+
 func (r *WorkspaceReconciler) buildAgentdSidecarContainer(workspace *v1.Workspace, adminToken string) corev1.Container {
 	trueVal := true
 	falseVal := false
@@ -158,23 +185,10 @@ func (r *WorkspaceReconciler) buildAgentdSidecarContainer(workspace *v1.Workspac
 		// in cmd/workspace-agentd/sidecar_boot.go.
 		{Name: "LLMSAFESPACE_BOOTSTRAP_SECRETS_OUT", Value: "/sandbox-runtime/rt/secrets.json"},
 	}
-	// Design 0072 (the workspace bus rollout): the address is a plain
-	// value (no credentials — pod specs are readable), the password
-	// rides a secretKeyRef to the platform credentials secret. Both
-	// only when the reconciler carries a configured bus — absent means
-	// the env stays unset and agentd's bus sits dormant (the v1
-	// point-to-point default).
-	if r.EventbusAddr != "" {
-		env = append(env, corev1.EnvVar{Name: "AGENTD_EVENTBUS_ADDR", Value: r.EventbusAddr})
-		if r.EventbusPasswordSecretName != "" {
-			env = append(env, corev1.EnvVar{Name: "AGENTD_EVENTBUS_PASSWORD", ValueFrom: &corev1.EnvVarSource{
-				SecretKeyRef: &corev1.SecretKeySelector{
-					LocalObjectReference: corev1.LocalObjectReference{Name: r.EventbusPasswordSecretName},
-					Key:                  r.EventbusPasswordSecretKey,
-				},
-			}})
-		}
-	}
+	// Design 0072 (the workspace bus rollout): see eventbusEnv — shared
+	// with the main container (#1332 convention: both modes wired
+	// explicitly).
+	env = append(env, r.eventbusEnv()...)
 	// #1332: the dev_preview_url MCP tool runs in THIS container in
 	// sidecar mode. LLMSAFESPACE_API_URL above is the in-cluster svc
 	// coordinate the boot phase requires — user-facing URLs must come

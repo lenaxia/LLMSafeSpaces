@@ -99,16 +99,97 @@ implementation TREE BYTE-IDENTICAL to the handoff (verified
 `git diff bc4640f01 <impl-commit>` = empty) — preservation of the green
 suites is provable, only the history shape changed.
 
+## Review rounds (AI reviewer, pr-review.yml)
+
+### Round 1 — CHANGES_REQUESTED (head c887d9fc2)
+
+The verdict: the envtest suite uncompilable on the exact tree, and —
+the fundamental one — the arming wiring a functional NO-OP in both pod
+topologies. Both correct; the handoff's "all suites green" was true
+only for the surfaces its session ran, and its env injection armed a
+process that never read it.
+
+- **Finding 1 (blocking, envtest uncompilable)** — `SetupControllers`
+  gained 3 params but the `//go:build envtest` caller was not updated;
+  the envtest TAG compiles the file out of plain `go test ./...`, which
+  is exactly how both the handoff's and this session's verification
+  missed it. FIXED: the dormant caller updated (+ a comment on why the
+  tag hides it), and — the armed-posture pin the reviewer asked for —
+  `TestEnvtestSetupWiring_EventbusArmsPodEnv` drives the FULL
+  production plumbing (flags → SetupControllers → reconciler →
+  buildPod) against a real apiserver and asserts the pod's MAIN
+  container carries both env vars in their exact shapes. It lives in
+  its OWN package (`controller/internal/controller/eventbuswiring/`)
+  for a mechanical reason: controller-runtime v0.20's controller-name
+  registry is process-global and never unregisters (pkg/controller/
+  name.go checkName) — a second SetupControllers in the same test
+  binary collides ("controller with name workspace already exists").
+  New CI step in envtest.yml runs it (the #820 drift class — a test
+  file no workflow executes — is why the step is explicit).
+- **Finding 2 (blocking, the wiring armed nothing)** — two legs:
+  (a) single-container mode (the helm DEFAULT): agentd runs in the
+  MAIN container, and pod_builder.go had zero eventbus wiring;
+  (b) sidecar mode: the env landed in a container whose process
+  (`agentd --sidecar`) never calls eventbusFromEnv — the consumers
+  lived only in the single-container boot path. FIXED both: a shared
+  `eventbusEnv()` reconciler helper appended in pod_builder.go (main
+  container) AND agentd_sidecar.go (the #1332 both-modes convention
+  the reviewer cited), and `wireSidecarNotifierBus`
+  (cmd/workspace-agentd/sidecar_eventbus.go) runs the SAME
+  notifier + bus-consumer wiring in the sidecar process — which also
+  closes the latent 0071 gap (the sidecar serves the MCP subscription
+  surface but never ran its delivery engine). Pinned: the main
+  -container buildPod pins (composed / absent-when-unconfigured) and
+  the sidecar wiring pins (armed-from-env / nil-bus-when-unarmed /
+  notifier-always-wired).
+- **Security (the credentialess invariant was prose-only)** — an
+  operator passing `redis://:password@host` got that string into every
+  pod spec AND the controller's authless-arm log line, raw. FIXED by
+  ENFORCING rather than documenting: the controller boot guard refuses
+  any "@"-bearing address (userinfo requires "@" in every spelling; no
+  legitimate Redis coordinate — host, host:port, redis:// URL, IPv6
+  literal — contains one), the helm chart carries the same check as a
+  render failure, and the agentd side already redacted (round 1 of
+  PR #1979). Pinned in the parseEventbusWiring table (credentialed
+  URL / bare user:pass@host / both-with-secret / IPv6-legal arms) and
+  the chart suite (three credentialed spellings fail render with the
+  guard's message).
+- **Robustness** — the reconciler comment claimed the secret key is
+  "validated at startup"; boot validation checks NAME:KEY SYNTAX only
+  (no cluster lookup — a typo'd name surfaces per-pod as
+  CreateContainerConfigError, visible not silent). Comment corrected
+  to the honest posture. And the both-set config smell (credentialed
+  URL + password env) now WARNS instead of winning silently — pinned
+  (`TestEventbusPasswordBothSetWarnsAndURLWins`, zap observer: the
+  warn fires and the URL's credentials still wire).
+- **Minor** — the dead `if addr == ""` branch in parseEventbusWiring
+  (both arms returned the same) restructured away.
+- **Alignment** — design/0072's "Affects" line said "No proto/ABI,
+  controller, or frontend changes"; amended with the rollout note
+  (status line + parenthetical) so the doc matches what shipped.
+
+Not introduced but documented (found while verifying): an UNFILTERED
+`-race -tags envtest ./controller/internal/controller/` run fails on
+origin/main too — a pre-existing race between controller goroutines
+sharing a test logger buffer in a shape CI never executes (every
+envtest step is `-run`-filtered; both filtered runs green here with
+-race).
+
 ## Verification (2026-10-30, this worktree; CI on the PR head)
 
 - `go build ./...` → exit 0.
 - `go test -count=1 ./controller/...` → all ok (workspace 68s incl.
-  the 3 env pins; the main-package flag/boot pins green).
-- `go test -count=1 -run 'TestEventbus|TestRunEventbusConsumers'
-  ./cmd/workspace-agentd/` → ok (the full 377s agentd suite was green
-  at the handoff head; the package is untouched since — the password
-  pin re-run here confirms).
-- `go test -count=1 ./helm/...` → ok 43.6s (helm v3.16.4 on PATH; the
-  4 new eventbus render pins PASS, no skips).
-- `golangci-lint run ./controller/... ./helm/...` → 0 issues;
-  `make fmt-check` → clean.
+  the sidecar + main-container env pins; the main-package
+  flag/boot pins green incl. the credentialess-refusal arms).
+- `go test -count=1 -race ./cmd/workspace-agentd/` → ok 423.6s (the
+  full agentd suite with the sidecar wiring + both-set warn pins; the
+  handoff's 377s baseline was without -race).
+- `go test -count=1 ./helm/...` → ok 37.4s (helm v3.16.4 on PATH; the
+  eventbus render pins incl. the credentialed-addr refusals PASS, no
+  skips).
+- envtest (CI shapes, KUBEBUILDER_ASSETS 1.35.0, -race):
+  `./controller/internal/controller/ -run TestEnvtestSetupWiring` →
+  ok 7.4s; `./controller/internal/controller/eventbuswiring/` → ok
+  8.4s (the armed-posture pin).
+- `golangci-lint run ./controller/... ./cmd/workspace-agentd/...
+  ./helm/...` → 0 issues; `make fmt-check` → clean.

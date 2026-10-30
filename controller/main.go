@@ -141,7 +141,10 @@ func registerEventbusFlagsInto(fs *flag.FlagSet) *eventbusFlags {
 
 // mustEventbusWiring validates the design-0072 bus wiring at boot,
 // exiting on a malformed configuration and logging the authless-Redis
-// arm; the NAME:KEY split is the return.
+// arm; the NAME:KEY split is the return. The authless log line prints
+// the address safely — parseEventbusWiring has already refused any
+// userinfo-bearing form, so the logged value is credentialess by
+// construction.
 func mustEventbusWiring(setupLog logr.Logger, f *eventbusFlags) (string, string) {
 	name, key, err := parseEventbusWiring(f.addr, f.passwordSecret)
 	if err != nil {
@@ -154,23 +157,35 @@ func mustEventbusWiring(setupLog logr.Logger, f *eventbusFlags) (string, string)
 	return name, key
 }
 
-// parseEventbusWiring validates the design-0072 bus flags at boot:
-// a malformed NAME:KEY secret reference, or a secret reference with no
-// address, refuses startup (a set address with no secret is legal — an
-// authless Redis — and logged by the caller).
+// parseEventbusWiring validates the design-0072 bus flags at boot.
+// Three refusals: a secret reference with no address, a malformed
+// NAME:KEY, and — the credentialess invariant, ENFORCED rather than
+// documented — an address carrying userinfo (an operator reflexively
+// passing redis://:password@host would otherwise put that string
+// verbatim into every pod spec and the controller's own log lines).
+// A set address with no secret is legal (an authless Redis) and logged
+// by the caller.
 func parseEventbusWiring(addr, secretRef string) (name, key string, err error) {
+	if secretRef != "" && addr == "" {
+		return "", "", errors.New("--workspace-eventbus-password-secret set without --workspace-eventbus-addr")
+	}
+	if addr == "" {
+		return "", "", nil // the dormant default
+	}
+	// Userinfo requires "@" in every spelling (redis://user:pass@host
+	// and the bare user:pass@host form alike) and no legitimate Redis
+	// coordinate — host, host:port, redis:// URL, IPv6 literal —
+	// contains one, so one substring check refuses every
+	// password-bearing address.
+	if strings.Contains(addr, "@") {
+		return "", "", errors.New("--workspace-eventbus-addr must be credentialess (host:port or redis:// URL) — pass the password via --workspace-eventbus-password-secret instead")
+	}
 	if secretRef == "" {
-		if addr == "" {
-			return "", "", nil
-		}
 		return "", "", nil // armed, authless: legal
 	}
 	parts := strings.SplitN(secretRef, ":", 2)
 	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
 		return "", "", errors.New("--workspace-eventbus-password-secret must be NAME:KEY")
-	}
-	if addr == "" {
-		return "", "", errors.New("--workspace-eventbus-password-secret set without --workspace-eventbus-addr")
 	}
 	return parts[0], parts[1], nil
 }

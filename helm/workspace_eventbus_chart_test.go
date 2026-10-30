@@ -73,3 +73,21 @@ func TestControllerArgs_WorkspaceEventbus_SecretWithoutAddrFailsRender(t *testin
 	require.Error(t, err, "a password secret without an address must refuse to render")
 	require.Contains(t, err.Error(), "workspaceEventbusPasswordSecret requires controller.workspaceEventbusAddr")
 }
+
+// TestControllerArgs_WorkspaceEventbus_CredentialedAddrFailsRender:
+// the credentialess invariant at render time — an address carrying
+// userinfo ("@" appears in no legitimate Redis coordinate) refuses to
+// render, so a password can never ride the addr value into a pod spec
+// or a controller log line. The controller's boot guard is the same
+// check.
+func TestControllerArgs_WorkspaceEventbus_CredentialedAddrFailsRender(t *testing.T) {
+	for _, addr := range []string{
+		"redis://:sekrit@llmsafespaces-valkey.llmsafespaces.svc.cluster.local:6379",
+		"redis://agent:pw@some-redis:6379",
+		"agent:pw@some-redis:6379",
+	} {
+		err := helmTemplateErr(t, "controller:\n  workspaceEventbusAddr: \""+addr+"\"\n")
+		require.Error(t, err, "a userinfo-bearing addr (%q) must refuse to render", addr)
+		require.Contains(t, err.Error(), "workspaceEventbusAddr must be credentialess")
+	}
+}
