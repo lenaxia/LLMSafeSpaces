@@ -1203,6 +1203,13 @@ func TestTriggerTools_InputMappingArgsPassThrough(t *testing.T) {
 	assert.Contains(t, triggerCreateTool.Description, "fail")
 	assert.Contains(t, triggerCreateTool.Description, "must catch its own exceptions")
 	assert.Contains(t, triggerCreateTool.Description, "fail-open")
+	// 2026-10-29 owner ruling — the worked patterns (external polling,
+	// conditional requests, state dedup, failure postures, self-contained
+	// prompts) moved into the pod-side doc; this pointer REPLACED the
+	// trivial n>=3 example, net-smaller. Drift-pinned so the pointer
+	// cannot regress silently (#1415 class).
+	assert.Contains(t, triggerCreateTool.Description, "/sandbox-runtime/docs/gate-script-patterns.md")
+	assert.NotContains(t, triggerCreateTool.Description, "n >= 3")
 	b, err = json.Marshal(triggerUpdateTool.InputSchema)
 	require.NoError(t, err)
 	assert.Contains(t, string(b), "input_from")

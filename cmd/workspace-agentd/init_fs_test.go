@@ -167,6 +167,16 @@ func TestInitFS_HappyPath_FreshPVC(t *testing.T) {
 	fmBytes, err := os.ReadFile(tr.cfg + "/free-models.json")
 	require.NoError(t, err)
 	assert.Equal(t, `{"models":[]}`, string(fmBytes))
+
+	// Gate-script patterns doc (2026-10-29 owner ruling): the embedded
+	// canonical #1812 worked patterns materialize at
+	// $runtimeDir/docs/gate-script-patterns.md — the stable pod path
+	// trigger_create's description points agents at. Boot-time copy:
+	// init-fs runs before any app container, so the doc precedes the
+	// first agent session.
+	docBytes, err := os.ReadFile(filepath.Join(tr.rt, "docs", gateScriptPatternsDocName))
+	require.NoError(t, err, "gate-script patterns doc must materialize at $runtimeDir/docs/")
+	assert.Equal(t, string(gateScriptPatternsDoc), string(docBytes))
 }
 
 // TestInitFS_PrePlantedSymlink_ReplacedWithoutFollowing is the attack
@@ -263,6 +273,39 @@ func TestInitFS_Idempotent(t *testing.T) {
 	pw, err := os.ReadFile(tr.cfg + "/password")
 	require.NoError(t, err)
 	require.Equal(t, "pw-two\n", string(pw), "password re-installed on re-run")
+
+	// The gate-docs copy rides the idempotent re-run: still present,
+	// still the embedded bytes (identical-content no-op).
+	docBytes, err := os.ReadFile(filepath.Join(tr.rt, "docs", gateScriptPatternsDocName))
+	require.NoError(t, err, "gate-script patterns doc must survive the idempotent re-run")
+	assert.Equal(t, string(gateScriptPatternsDoc), string(docBytes))
+}
+
+// TestInitFS_GateDocCopyBlocked_NeverBlocksBoot pins step 7's
+// best-effort contract (2026-10-29 owner ruling): the gate-docs copy is
+// ADVISORY content and must never be able to fail a boot. A directory
+// planted at the doc's stable pod path breaks the final rename (a file
+// cannot replace a directory); init-fs must still exit 0, log the
+// failure loudly as non-fatal, and complete the init. If a future edit
+// routes step 7 through fail() instead, every workspace pod crash-loops
+// at Init:Error (controller/internal/workspace/boot_failure.go class)
+// and THIS test reddens — the non-fatal posture must stay executed, not
+// just read.
+func TestInitFS_GateDocCopyBlocked_NeverBlocksBoot(t *testing.T) {
+	bin := buildAgentdBinary(t)
+	tr := newInitFSTree(t)
+	tr.writePasswordSource(t, "pw\n", "")
+
+	// Block the copy: a directory where the doc belongs makes the
+	// temp-file rename fail.
+	require.NoError(t, os.MkdirAll(filepath.Join(tr.rt, "docs", gateScriptPatternsDocName), 0o755))
+
+	exit, stderr := runInitFSSubcommand(t, bin, tr.args()...)
+	require.Equal(t, 0, exit, "a failed gate-docs copy must NEVER block boot; stderr=%q", stderr)
+	assert.Contains(t, stderr, "gate-docs copy failed (non-fatal)",
+		"the blocked copy must be logged loudly (the bytes live in the binary — degradation is to the pointer alone)")
+	assert.Contains(t, stderr, "init-fs: ok",
+		"the init must run to completion past the failed copy")
 }
 
 // TestInitFS_MissingPasswordSource_Fails: G46 class — a workspace
