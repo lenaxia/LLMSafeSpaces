@@ -114,3 +114,65 @@ the wire did not move. No Go, no openapi, no migration, no MCP.
 Frontend-only worktree off origin/main (979a071d2), conventional commit,
 CHANGELOG [Unreleased], this worklog, COORDINATE.md row. PR iterates with
 the GitHub AI reviewer until APPROVED — never self-merge.
+
+## Review round 1 (PR #1988 — REQUEST CHANGES, findings F1–F3): the guards read the wrong map
+
+The AI reviewer's verdict on `bb56d1f3f`: mechanically faithful, but the
+drop-on-save rule diverged from the guard logic that interprets the draft —
+**F1** `suppressWarning` tested `draft.map["in_review"]` (RAW), while both
+save bodies persist `persistablePersonaMap(draft.map)`: with the composition
+live (the default posture: auto + on) and a stored role-less `in_review`
+entry (legacy shape, unpicked row, or import fallback), the warning was
+masked while the save sent `stagePersonas: {}` — the exact hazard class the
+warning exists to catch, execution-validated by the reviewer against the
+head. **F2** the no-reviewer-role import fallback was a warning-DISMISSING
+no-op (import click → warning gone; save → `{}`; with `roles=[]` the picker
+has zero options — unrecoverable through the UI); the project tier's
+inherited-legacy import variant had the same defect; the comment claiming
+"display continuity" was inaccurate (the row renders only "Pick a role…").
+**F3** the empty note keyed on the raw key count — an all-role-less draft
+hid the note describing exactly what saving materializes.
+
+**Fix (the reviewer's one-root-cause remediation):** the guards read the
+PERSISTABLE map. `const persistable = persistablePersonaMap(draft.map)` in
+`PersonaEditor`; `suppressWarning` tests `!persistable["in_review"]`; the
+empty note tests `Object.keys(persistable).length === 0`. An import that
+lands role-less now KEEPS the warning visible until a role is actually
+picked (picking is the only thing that makes the entry real — and when a
+reviewer role exists the import is roleId-first and dismisses legitimately).
+No save-body change (they already persistable-filtered); no wire change.
+
+**Pins added (5):**
+
+- F1: stored legacy `in_review` + composition LIVE → warning fires AND the
+  save really sends `stagePersonas: {}` (the warning is honest).
+- F2 (user tier): vocabulary without a reviewer role → import adds the
+  unpicked picker row, warning STAYS; picking Builder dismisses it; the save
+  carries the picked roleId.
+- F2 (project tier): an inherited LEGACY (role-less) reviewer → same shape
+  (the import copies the role-less entry; the warning stays).
+- F3: an explicit draft whose entries are all role-less renders the
+  empty-map note (both the stored-legacy and the added-unpicked states).
+- Unresolvable stored roleId (reviewer's cheap-adjacent #4): renders as its
+  own select option and persists verbatim (preserved from main, previously
+  unpinned — pins the `roleOptions` current-push branch).
+
+**Comment corrections:** `reviewerImport`'s "display continuity" claim
+(nothing displays the fallback — there is no legacy lane) now states the
+actual contract: an unpicked picker row that does not persist and cannot
+dismiss the warning.
+
+## Verification (round 2)
+
+- `npx vitest run src/components/board/BoardConfigPanels.test.tsx` — 33/33.
+- Full frontend suite — 224 files, 2576/2576 green.
+- `tsc --noEmit` clean; `eslint` on the touched files 0 errors.
+
+## Process (round 2)
+
+Work continued in an isolated detached worktree at `bb56d1f3f`
+(`/tmp/opencode/pro-worktree`) — the shared `/workspace/persona-role-only`
+worktree carries a SIBLING task's uncommitted full-stack WIP
+(tsk-spurious-auction-triumphs: bare-string role refs + reviewer-role
+seeding), left untouched. Conventional commit on `persona-role-only`;
+iterate with the GitHub AI reviewer until APPROVED — never self-merge.

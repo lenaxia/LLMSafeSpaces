@@ -119,9 +119,11 @@ function personaLabel(p: BoardPersonaConfig | undefined, roles: AgentRole[]): st
  * default-reviewer composition points at it — ruling 2026-10-29),
  * with the mirrored charter prose riding the stored shape (the
  * editor never shows it — role-ONLY). When no reviewer role exists
- * the legacy name+instructions shape is returned for display
- * continuity, but it carries no roleId and therefore does not
- * persist (the role-only drop-on-save rule). */
+ * the legacy name+instructions shape is returned as an UNPICKED
+ * PICKER ROW (there is no legacy lane to display it in — role-only):
+ * it carries no roleId, so a save drops it, and because the guards
+ * below read the PERSISTABLE map the warning stays up until a role
+ * is actually picked — never a silent suppression. */
 function reviewerImport(roles: AgentRole[]): BoardPersonaConfig {
   const role = roles.find((r) => r.slug === "reviewer" || r.name === "reviewer");
   if (role) {
@@ -213,10 +215,19 @@ export function PersonaEditor(props: {
   const effectiveInherited = (stage: string): BoardPersonaConfig | undefined =>
     props.inherited !== null ? props.inherited[stage] : undefined;
   const inheritedReviewer = effectiveInherited("in_review");
-  // The suppression hazard: an explicit map about to be saved with no
-  // in_review entry, while in_review currently runs on SOMETHING.
+  // The guards read the PERSISTABLE map — exactly what a save sends
+  // (persistablePersonaMap drops role-less entries at both save
+  // bodies) — NEVER the raw draft: a role-less in_review entry (a
+  // stored legacy {name, instructions} shape, an added-but-unpicked
+  // row, or the import's no-reviewer-role fallback) does NOT count
+  // as an in_review persona. Reading the raw map masked the
+  // suppression the warning exists to catch (review F1–F3, PR #1988:
+  // warning hidden, save sends stagePersonas: {}).
+  const persistable = persistablePersonaMap(draft.map);
+  // The suppression hazard: an explicit map about to be saved with
+  // no in_review entry, while in_review currently runs on SOMETHING.
   const suppressWarning =
-    draft.explicit && !draft.map["in_review"] && (props.compositionActive || inheritedReviewer !== undefined);
+    draft.explicit && !persistable["in_review"] && (props.compositionActive || inheritedReviewer !== undefined);
 
   // The picker's option list: every available role, labeled for
   // display. There is NO role-less option (role-ONLY). An
@@ -286,7 +297,10 @@ export function PersonaEditor(props: {
         </div>
       </div>
 
-      {draft.explicit && Object.keys(draft.map).length === 0 && (
+      {/* The note describes what SAVING materializes: a map whose
+       * entries are all role-less persists as {} (the drop rule) —
+       * keyed on the persistable map, same as the save bodies. */}
+      {draft.explicit && Object.keys(persistable).length === 0 && (
         <p className="text-xs text-amber-600 dark:text-amber-400" data-testid={`${props.testPrefix}-empty-note`}>
           {props.tier === "project"
             ? "Override with empty map = no personas for this project (the inherited map is suppressed)."
