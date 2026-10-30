@@ -251,6 +251,15 @@ func TestRunWatchdogTriggerSurfacePinned(t *testing.T) {
 	if !strings.Contains(body, `WATCHDOG_MIN_AGE_MINUTES: "10"`) {
 		t.Error("run-watchdog.yml min-age env is not 10 — the dead-man latency was deliberately lowered from 15 on 2026-10-30 (see the env's rationale comment)")
 	}
+	// Env↔deref coupling (review r1 finding): the pin above holds the
+	// env DEFINITION; without this, renaming the bash deref alone
+	// silently reverts the operative threshold to the :-15 fallback
+	// while every string-contains pin stays green — the exact
+	// silent-drift class this file's header documents (r1 inert
+	// permissions, r2 renamed Decision tag).
+	if !strings.Contains(body, "${WATCHDOG_MIN_AGE_MINUTES:-15}") {
+		t.Error("run-watchdog.yml no longer dereferences ${WATCHDOG_MIN_AGE_MINUTES:-15} — the min-age env and the jq emission have drifted apart (one-sided rename = operative threshold silently reverts to 15m)")
+	}
 	if !strings.Contains(body, "cron: '*/10 * * * *'") {
 		t.Error("run-watchdog.yml lost the */10 schedule — the nominal cadence the issue_comment trigger supplements")
 	}

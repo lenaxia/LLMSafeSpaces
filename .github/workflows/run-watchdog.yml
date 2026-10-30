@@ -77,7 +77,14 @@ on:
   # most likely to be staring at a dark PR are exactly the moments the
   # watchdog looks. Recursion-safe: fault comments posted with
   # GITHUB_TOKEN do not re-trigger issue_comment workflows (the
-  # documented recursion exemption) — no self-loop.
+  # documented recursion exemption) — no self-loop. COST (review
+  # note, r1): a sweep is ~1-2 min ubuntu + up to 200 PRs × 4-5 gh
+  # calls against the shared ~1,000 req/hr GITHUB_TOKEN budget, and
+  # the newest-wins concurrency group lets a comment burst supersede
+  # an in-flight sweep (idempotent — the next sweep re-covers). Cheap
+  # at today's open-PR counts; revisit if comment volume or PR count
+  # grows (a `paths`-style scope is not available to this trigger —
+  # filtering would need an early-exit step in the job).
   issue_comment:
     types: [created]
   workflow_dispatch:
