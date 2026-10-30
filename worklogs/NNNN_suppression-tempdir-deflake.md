@@ -53,58 +53,96 @@ shares the shape (last frame arms a timer that fires and delivers);
 the corrupted-input row is simply where the scheduler happened to park
 the leg in that run. The fix is class-wide, not row-specific.
 
-## §3 The fix — a join, not a sleep
+## §3 The fix — a gated join, not a sleep
 
 - `sessionNotifier.legWG sync.WaitGroup` counts IN-FLIGHT timer legs.
   `armDebounceLocked` reserves (`Add(1)`) BEFORE `time.AfterFunc`
-  exists — a leg fired the instant AfterFunc returns finds its
-  reservation made (Add concurrent with Wait at counter zero is the
-  one forbidden shape; the arm path holds `mu` and quiesce's
-  cancel-then-check takes the same `mu`, ordering them).
+  exists, under the same `mu` quiesce takes — every live reservation is
+  visible to quiesce's critical section.
 - The leg body's `defer n.legWG.Done()` releases it.
 - `cancelDebounceLocked` retracts the reservation when
   `a.timer.Stop()` returns TRUE (proof the leg will never run). The
   Stop-false shapes (fired / running / finished) balance through the
   leg's own defer; a completed leg has already deleted its map entry,
   so a late cancel never double-Dones.
-- `sessionNotifier.quiesce()` — cancel every armed timer, `legWG.Wait()`,
-  and LOOP until an inspection under `mu` finds the armed map empty
-  (an entry whose timer fired stays mapped until its leg takes the
-  lock; a fold racing a canceled Run can re-arm one — each pass
-  shrinks the set).
-- `quiesceNotifier(n)` (fixture t.Cleanup) now calls `n.quiesce()` —
-  the deterministic join replaces the sleep. The `debounce` parameter
-  is gone; all six call sites updated.
+- `sessionNotifier.quiesce()` — the deterministic join, in two moves:
+  1. **the gate**: `quiescing = true` under `mu` permanently refuses
+     new arms (`armDebounceLocked` is the ONLY leg creator), so past
+     this critical section the in-flight set can only shrink;
+  2. **the join**: `legWG.Wait()` waits exactly the legs that existed
+     at the gate — pending timers were stopped and retracted above;
+     fired legs (running or parked in their deliverer) complete before
+     Wait returns.
+- `quiesceNotifier(n)` (fixture t.Cleanup) calls it — the deterministic
+  join replaces the sleep. The `debounce` parameter is gone; all six
+  call sites updated.
 
-Production semantics unchanged: nothing outside tests waits on the
-counter — it is pure bookkeeping on the existing arm/cancel paths.
-`Run`'s `defer cancelAllDebounces()` behaves identically (the extra
-`Done()` on a winning Stop only balances the counter). No CHANGELOG
+Review r1 shaped this: the first cut looped
+cancel→Wait→recheck, which the reviewer correctly flagged as still
+racy against a concurrent arm (the quiet-check orders the map, not the
+Wait — `WaitGroup` Add racing a Wait that already read zero can be
+missed, and a fired leg deletes its map entry BEFORE delivering, so an
+empty map does not imply a quiet leg). The gate removes the race
+structurally instead of polling around it: no leg can be BORN past the
+gate, so the one Wait is exact. Corollary pinned below: once quiesce
+returns, the engine can never write the store again — RemoveAll is
+safe the moment it finishes, not merely probably-now.
+
+Production semantics unchanged: nothing outside tests calls quiesce or
+sets the gate — pure bookkeeping on the existing arm/cancel paths.
+`Run`'s `defer cancelAllDebounces()` behaves identically. No CHANGELOG
 entry: test-scoped, prod shutdown semantics untouched.
 
-Failure-path tradeoff, accepted: the join is unbounded. A leg parked
-on a blocked deliverer (e.g. the seam server's `block` channel in
-TestOutboxWriteBeforeSendClearOnSuccess) hangs quiesce instead of
-failing fast — but that shape already means the test is broken, and
-the old sleep's "clean" failure raced RemoveAll instead. On every
-green path the leg has completed by cleanup time, so the Wait returns
-immediately.
+Failure-path ergonomics (review r1 R2, the #1986 deadlock-ergonomics
+class): the join is unbounded by design, so every cleanup-path
+park must be releasable. `seamSrv` gains `releaseBlock()` (close-once)
+with a `t.Cleanup` guard in TestOutboxWriteBeforeSendClearOnSuccess —
+a require.* failure before the happy-path close now unparks the POST
+instead of stalling quiesceNotifier to the package timeout. The join
+pin's `blockingDeliverer` carries the same close-once `unblock()`.
+
+## §3a The pins (review r1's hard gate) — born red under mutation
+
+- `TestQuiesceJoinsInFlightDebounceLeg` — a deliverer that parks
+  mid-leg (enqueue persisted, dismiss pending); quiesce must NOT
+  return while parked, MUST return after release. **M1** (drop
+  `legWG.Wait` from quiesce): deterministic red.
+- `TestQuiesceRetractsCanceledLegReservation` — arm then cancel inside
+  the window (a winning Stop); quiesce must return promptly.
+  **M3** (drop the Stop-true `Done`): red — quiesce hangs on the
+  leaked reservation.
+- `TestQuiesceGatesArmingAfterReturn` — after quiesce returns, a late
+  fold (the racing-Run shape) must arm nothing and deliver nothing.
+  **M2** (drop the `quiescing` gate): deterministic red — the fold
+  arms, the timer fires, the notice lands inside assertNoNotice's
+  window.
+
+All three mutations re-checked red on this tree; restored after each.
 
 ## §4 Evidence
 
 - `go test ./cmd/workspace-agentd -run
   'TestSuppressionUnresolvableDestinationNeverSuppresses' -race
-  -count=30` — 30/30 PASS (2.3s).
+  -count=30` — 30/30 PASS (both rounds).
 - Notifier family (`TestSuppression|TestTracker|TestDebounce|TestOutbox|
-  TestRate|TestNotify|TestDelivery|TestRun|TestAuthority`) `-race
-  -count=5` — ok (152s).
-- Full `go test ./cmd/workspace-agentd` — ok once (378s).
-- `go vet ./cmd/workspace-agentd` clean; `make fmt-check` clean.
+  TestRate|TestNotify|TestDelivery|TestRun|TestAuthority|TestQuiesce`)
+  `-race -count=5` — ok (152s, round 2).
+- Quiesce pins alone `-race -count=5` — 15/15 PASS.
+- Full `go test ./cmd/workspace-agentd` — ok once per round (round 2:
+  375s).
+- Mutations M1 (Wait dropped), M2 (gate dropped), M3 (retraction Done
+  dropped): each reddens its pin deterministically; tree restored
+  after each (diff-verified).
+- `go vet ./cmd/workspace-agentd` clean; `gofmt -l` clean; `make
+  fmt-check` clean (round 1).
 
 ## §5 Files
 
-- `cmd/workspace-agentd/session_notifier.go` — legWG field, arm/cancel
-  reservation accounting, `quiesce()` (test-support join).
+- `cmd/workspace-agentd/session_notifier.go` — legWG + quiescing gate
+  fields, arm/cancel reservation accounting, `quiesce()` (test-support
+  gated join).
 - `cmd/workspace-agentd/session_notifier_test.go` — quiesceNotifier
-  rewritten as the join; call sites simplified.
-- `cmd/workspace-agentd/session_notifier_delivery_test.go` — call sites.
+  rewritten as the join; call sites simplified; the three quiesce
+  contract pins + blockingDeliverer.
+- `cmd/workspace-agentd/session_notifier_delivery_test.go` — call
+  sites; seamSrv.releaseBlock close-once + failure-path cleanup guard.

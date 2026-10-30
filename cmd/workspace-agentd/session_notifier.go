@@ -347,6 +347,13 @@ type sessionNotifier struct {
 	// leg's trailing store persist cannot outlive a test's t.TempDir
 	// (the RemoveAll race PR #1986's round-2 review evidenced).
 	legWG sync.WaitGroup
+	// quiescing, once set under mu, PERMANENTLY disables arming:
+	// armDebounceLocked is the only creator of timer legs, so after the
+	// flag is observed no new reservation can appear and quiesce()'s
+	// Wait joins a set that can only drain to zero — the join is
+	// deterministic even against a fold racing a canceled Run. Test
+	// support only (set by quiesce); production never sets it.
+	quiescing bool
 	// deliverCtx is the Run loop's context (the delivery leg's
 	// cancellation parent); nil until Run starts — timer legs fired
 	// before/without Run fall back to a fresh background ctx.
@@ -807,10 +814,13 @@ func (n *sessionNotifier) settleGatesPassLocked(sid string, st *notifierSession)
 // armDebounceLocked arms (or re-arms) the broadcaster's settle timer.
 // Caller holds mu.
 func (n *sessionNotifier) armDebounceLocked(sid, kind string) {
+	if n.quiescing {
+		return // teardown gated arming — no leg can be born past quiesce
+	}
 	n.cancelDebounceLocked(sid)
-	// Reserve the leg BEFORE the timer exists: a leg fired the instant
-	// AfterFunc returns must find its reservation already made (Add
-	// concurrent with Wait at counter zero is the one forbidden shape).
+	// Reserve the leg BEFORE the timer exists, under the same mu the
+	// quiesce gate takes: every live reservation is therefore visible
+	// to quiesce's critical section, whose Wait joins exactly that set.
 	n.legWG.Add(1)
 	a := &armedDebounce{kind: kind}
 	a.timer = time.AfterFunc(n.debounce, func() {
@@ -843,30 +853,36 @@ func (n *sessionNotifier) cancelAllDebounces() {
 	}
 }
 
-// quiesce deterministically stills the debounce machinery: cancels
-// every ARMED timer, then JOINS every in-flight timer leg. Test
-// support (the fixture cleanup's backstop): a fired leg keeps writing
-// the store document after its deliverer returned — the outbox enqueue
-// before delivery and the dismiss persist after it, both inside the
-// test's t.TempDir — and t.TempDir's RemoveAll races those trailing
-// writes ("unlinkat ... directory not empty"). A timed sleep cannot
-// join a descheduled goroutine; this does. The loop re-cancels while
-// any entry survives: an entry whose timer already fired stays mapped
-// until its leg takes the lock, and a fold racing a canceled Run can
-// re-arm one — each pass shrinks the set, terminating at quiet.
+// quiesce deterministically stills the debounce machinery — the test
+// teardown join (fixture cleanup's backstop). A fired leg keeps
+// writing the store document after its deliverer returned — the outbox
+// enqueue before delivery and the dismiss persist after it, both
+// inside the test's t.TempDir — and t.TempDir's RemoveAll races those
+// trailing writes ("unlinkat ... directory not empty", PR #1986
+// round-2). A timed sleep cannot join a descheduled goroutine; this
+// does, in two moves:
+//
+//   - the gate: quiescing under mu permanently refuses new arms
+//     (armDebounceLocked is the ONLY leg creator), so after this
+//     critical section the in-flight set can only shrink;
+//   - the join: every reservation was made under the same mu, so
+//     legWG.Wait() waits exactly the legs that existed at the gate —
+//     pending timers were stopped and their reservations retracted
+//     above; fired legs (running or parked in their deliverer) are
+//     still counted and complete before Wait returns.
+//
+// Once quiesce returns, the engine can never write the store again:
+// RemoveAll is safe the moment it finishes, not merely probably-now.
+// Production never calls this — Run's own teardown keeps
+// cancelAllDebounces semantics unchanged.
 func (n *sessionNotifier) quiesce() {
-	for {
-		n.mu.Lock()
-		for sid := range n.debounces {
-			n.cancelDebounceLocked(sid)
-		}
-		quiet := len(n.debounces) == 0
-		n.mu.Unlock()
-		n.legWG.Wait()
-		if quiet {
-			return
-		}
+	n.mu.Lock()
+	n.quiescing = true
+	for sid := range n.debounces {
+		n.cancelDebounceLocked(sid)
 	}
+	n.mu.Unlock()
+	n.legWG.Wait()
 }
 
 // debounceFired is the timer body: still-armed check (the cancel may

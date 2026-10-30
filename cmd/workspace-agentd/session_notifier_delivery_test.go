@@ -306,12 +306,13 @@ func TestComposeSettleNotification(t *testing.T) {
 // seamSrv is a recording fake V1 seam: every POST /session/{id}/message
 // lands in posts; per-test flags customize the response.
 type seamSrv struct {
-	srv      *httptest.Server
-	mu       sync.Mutex
-	posts    []seamPost
-	fail     bool
-	block    chan struct{} // non-nil ⇒ each request parks until released
-	inflight chan struct{} // signaled when a request starts (block mode)
+	srv       *httptest.Server
+	mu        sync.Mutex
+	posts     []seamPost
+	fail      bool
+	block     chan struct{} // non-nil ⇒ each request parks until released
+	inflight  chan struct{} // signaled when a request starts (block mode)
+	blockOnce sync.Once     // releaseBlock stays close-once across cleanups
 }
 
 type seamPost struct {
@@ -377,6 +378,17 @@ func (s *seamSrv) count() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return len(s.posts)
+}
+
+// releaseBlock unparks every parked request, close-once: the test body
+// releases on its happy path, and a t.Cleanup guard releases on
+// FAILURE paths — a require.* fatal before the happy-path close would
+// otherwise park the delivery leg forever and hang quiesceNotifier's
+// join to the package timeout (the #1986 deadlock-ergonomics class).
+func (s *seamSrv) releaseBlock() {
+	if s.block != nil {
+		s.blockOnce.Do(func() { close(s.block) })
+	}
 }
 
 func (s *seamSrv) last() seamPost {
@@ -447,6 +459,7 @@ func TestDeliveryCarriesErrorWording(t *testing.T) {
 func TestOutboxWriteBeforeSendClearOnSuccess(t *testing.T) {
 	s := newSeamSrv(t)
 	s.block = make(chan struct{})
+	t.Cleanup(s.releaseBlock) // failure paths unpark the POST — quiesce's join never stalls
 	store := newSessionSubscriptionStore(storePath(t))
 	n := newSessionNotifier(sessionNotifierConfig{
 		Store:    store,
@@ -468,7 +481,7 @@ func TestOutboxWriteBeforeSendClearOnSuccess(t *testing.T) {
 		t.Fatal("the delivery POST never started")
 	}
 	require.Equal(t, 1, store.outboxLen(), "the intent is durable BEFORE the POST completes (ruling 4)")
-	close(s.block)
+	s.releaseBlock()
 
 	require.Eventually(t, func() bool { return store.outboxLen() == 0 },
 		2*time.Second, 10*time.Millisecond, "the ack clears the intent")
