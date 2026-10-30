@@ -1357,7 +1357,7 @@ func TestMCPHandler_ToolDescriptionGuidance(t *testing.T) {
 			"BOARD LEASE NUDGE",                      // the trigger the worker is told to watch for
 			"observedProgressAt",                     // the response's stamp field
 			"claim_token",                            // the 409 code that means the claim is gone
-			"re-read the task",                       // the recovery path
+			"re-read it with board_read",             // the recovery path (story vocabulary, ruling 2026-10-30)
 		} {
 			assert.Contains(t, d, want)
 		}
