@@ -114,14 +114,23 @@ type eventbusFlags struct {
 }
 
 func registerEventbusFlags() *eventbusFlags {
+	return registerEventbusFlagsInto(flag.CommandLine)
+}
+
+// registerEventbusFlagsInto is the Into seam (the relayFlags pattern):
+// registration bound into a FRESH FlagSet is what the #1548 orphaning
+// regression pin parses against — a value return or field copy here
+// would strand the parsed flags in a dead struct exactly like the
+// relay incident.
+func registerEventbusFlagsInto(fs *flag.FlagSet) *eventbusFlags {
 	var f eventbusFlags
-	flag.StringVar(&f.addr, "workspace-eventbus-addr", "",
+	fs.StringVar(&f.addr, "workspace-eventbus-addr", "",
 		"Design 0072 (the workspace event bus): when set (host:port or a credentialess redis:// URL), "+
 			"every agentd sidecar receives AGENTD_EVENTBUS_ADDR with this value and the bus goes live "+
 			"(the notifier's delivery rides the per-workspace Redis Stream with the v1 point-to-point "+
 			"fallback). Credentials ride --workspace-eventbus-password-secret, never this flag. "+
 			"Empty (the default) keeps the bus dormant in every pod.")
-	flag.StringVar(&f.passwordSecret, "workspace-eventbus-password-secret", "",
+	fs.StringVar(&f.passwordSecret, "workspace-eventbus-password-secret", "",
 		"The bus Redis credentials as NAME:KEY of an existing secret (e.g. "+
 			"llmsafespaces-credentials:redis-password); delivered to sidecars as a secretKeyRef "+
 			"(AGENTD_EVENTBUS_PASSWORD) so the password never appears in a pod spec. "+
