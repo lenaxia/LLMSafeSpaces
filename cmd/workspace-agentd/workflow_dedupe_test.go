@@ -49,18 +49,20 @@ import (
 // dead context (#1470 WithoutCancel pin); the sleep precedes the mutex
 // so teardown DELETEs never queue behind it.
 type dedupeHarness struct {
-	mu            sync.Mutex
-	nextSession   int
-	messages      []dedupeHarnessMessage // one per accepted POST
-	createdSess   int
-	deletedSess   []string
-	failMessages  bool
-	messageStatus int
-	garbageBody   bool
-	failDeletes   bool
-	deleteStatus  int
-	blockMessages bool
-	srv           *httptest.Server
+	mu             sync.Mutex
+	nextSession    int
+	messages       []dedupeHarnessMessage // one per accepted POST
+	createdSess    int
+	deletedSess    []string
+	failMessages   bool
+	messageStatus  int
+	garbageBody    bool
+	failDeletes    bool
+	deleteStatus   int
+	blockMessages  bool
+	agentNames     []string // extra A8 registry names beyond "build"
+	agentListProbe int      // GET /agent reads served
+	srv            *httptest.Server
 }
 
 type dedupeHarnessMessage struct {
@@ -71,6 +73,15 @@ type dedupeHarnessMessage struct {
 
 func newDedupeHarness(t *testing.T) *dedupeHarness {
 	t.Helper()
+	// A8 cache hygiene: the package-level agent-registry cache must not
+	// leak a previous test's stub answer into this one — every harness
+	// starts from a cold registry so each stub serves its own list.
+	t.Cleanup(func() {
+		agentRegistryCache.Lock()
+		agentRegistryCache.password = ""
+		agentRegistryCache.names = nil
+		agentRegistryCache.Unlock()
+	})
 	h := &dedupeHarness{}
 	h.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if h.blockMessages && r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/message") {
@@ -79,6 +90,19 @@ func newDedupeHarness(t *testing.T) *dedupeHarness {
 		h.mu.Lock()
 		defer h.mu.Unlock()
 		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/agent":
+			// A8 pre-validation source: the harness serves opencode's
+			// live registry (build always; extra names via agentNames).
+			// NOTE: h.mu is already held by the outer handler.
+			h.agentListProbe++
+			names := make([]string, 0, len(h.agentNames)+1)
+			names = append(names, h.agentNames...)
+			names = append(names, "build")
+			entries := make([]string, 0, len(names))
+			for _, n := range names {
+				entries = append(entries, fmt.Sprintf(`{"name":%q}`, n))
+			}
+			fmt.Fprintf(w, "[%s]", strings.Join(entries, ","))
 		case r.Method == http.MethodPost && r.URL.Path == "/session":
 			h.createdSess++
 			h.nextSession++
@@ -165,6 +189,29 @@ func (h *dedupeHarness) deletes() []string {
 	out := make([]string, len(h.deletedSess))
 	copy(out, h.deletedSess)
 	return out
+}
+
+// created reports how many POST /session creates the harness served.
+func (h *dedupeHarness) created() int {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.createdSess
+}
+
+// acceptedMessages copies the accepted message POSTs (id + parsed body).
+func (h *dedupeHarness) acceptedMessages() []dedupeHarnessMessage {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	out := make([]dedupeHarnessMessage, len(h.messages))
+	copy(out, h.messages)
+	return out
+}
+
+// agentListReads counts GET /agent probes the harness served.
+func (h *dedupeHarness) agentListReads() int {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.agentListProbe
 }
 
 // pointAgentAddrAt routes the production harness calls (create, message,

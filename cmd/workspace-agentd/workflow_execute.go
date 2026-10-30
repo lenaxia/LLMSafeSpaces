@@ -24,6 +24,7 @@ import (
 	"os"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/expr-lang/expr"
@@ -520,6 +521,34 @@ func execAgentNode(ctx context.Context, password string, w http.ResponseWriter, 
 		prompt = renderTemplateRefs(prompt, input)
 	}
 
+	// A8 pre-validation (NODE-EXECUTE-CONTRACT §A8, validated probe on
+	// pinned opencode): opencode does NOT error on an unknown agentID —
+	// it silently falls back to the default (`build`) agent, so a
+	// stage-persona dispatch referencing a role the pod never
+	// materialized would run the build agent with NONE of the role's
+	// system prompt while appearing successful. Validate the agent
+	// name against opencode's live registry (GET /agent) BEFORE the
+	// session create and reject unknown names with error_code
+	// agent_not_found in the 200 envelope — the caller (the board
+	// spawner) reads ErrorCode and degrades the dispatch persona-less
+	// instead of spawning a silently role-less worker. Empty agent
+	// (the default dispatch) skips the gate — there is nothing to
+	// resolve. A failed LIST probe fails the node loudly too
+	// (agent_list_failed): an unvalidatable dispatch is not a
+	// validatable-in-practice one.
+	if data.Agent != "" {
+		names, failCode, failDetail := opencodeAgentNames(ctx, password)
+		if failCode != "" {
+			writeWorkflowError(w, http.StatusOK, failCode, failDetail)
+			return
+		}
+		if _, ok := names[data.Agent]; !ok {
+			writeWorkflowError(w, http.StatusOK, agentd.ErrorCodeAgentNotFound,
+				fmt.Sprintf("agent %q not found (A8 pre-validation: opencode would silently fall back to the build agent)", data.Agent))
+			return
+		}
+	}
+
 	sessionMode := data.Session
 	if sessionMode == "" {
 		sessionMode = "ephemeral"
@@ -906,6 +935,68 @@ func dispatchAgentMessageDetached(password, sessionID, agent, prompt, workflowID
 		slog.Warn("board: worker charter dispatch non-200 (lease-lapse heals)",
 			"session", sessionID, "status", resp.StatusCode)
 	}
+}
+
+// agentRegistryCache holds the last successful GET /agent name set.
+// Per the A8 contract the list is static within a pod's life (agents
+// are loaded from config at opencode boot; the config is written
+// before the muxes serve), so one cached fetch per password serves
+// every dispatch — password rotation (pod restart generation) is the
+// only invalidation key that can change the answer.
+var agentRegistryCache struct {
+	sync.Mutex
+	password string
+	names    map[string]struct{}
+}
+
+// opencodeAgentNames resolves opencode's live agent registry
+// (GET /agent — the A8 validation source). Returns the name set and
+// an empty code on success; on failure returns nil names plus a
+// non-empty (code, detail) pair the caller writes as the node's error
+// envelope (never a silent pass-through: an unvalidatable agent
+// reference must not reach the silent-fallback leg).
+func opencodeAgentNames(ctx context.Context, password string) (map[string]struct{}, string, string) {
+	agentRegistryCache.Lock()
+	cached := agentRegistryCache.names
+	cacheOK := agentRegistryCache.password == password
+	agentRegistryCache.Unlock()
+	if cacheOK && cached != nil {
+		return cached, "", ""
+	}
+
+	req, _ := http.NewRequestWithContext(ctx, "GET", getAgentAddr()+"/agent", nil)
+	req.SetBasicAuth(agentd.AuthUsername, password)
+	resp, err := (&http.Client{}).Do(req)
+	if err != nil {
+		return nil, "agent_list_failed", fmt.Sprintf("opencode agent list: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		return nil, "agent_list_failed", fmt.Sprintf("opencode agent list returned %d", resp.StatusCode)
+	}
+	var listing []struct {
+		Name string `json:"name"`
+	}
+	if err := decodeStrict(resp.Body, &listing); err != nil {
+		return nil, "agent_list_failed", fmt.Sprintf("cannot parse opencode agent list: %v", err)
+	}
+	names := make(map[string]struct{}, len(listing))
+	for _, a := range listing {
+		if a.Name != "" {
+			names[a.Name] = struct{}{}
+		}
+	}
+	if len(names) == 0 {
+		// A 200 with an empty/blank registry is not a usable answer —
+		// every name would "fail" validation against a probe that
+		// clearly did not describe the live opencode.
+		return nil, "agent_list_failed", "opencode agent list: empty registry"
+	}
+	agentRegistryCache.Lock()
+	agentRegistryCache.password = password
+	agentRegistryCache.names = names
+	agentRegistryCache.Unlock()
+	return names, "", ""
 }
 
 // createOpencodeSession creates a session via the opencode HTTP API.

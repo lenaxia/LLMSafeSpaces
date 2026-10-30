@@ -71,9 +71,11 @@ func (s *BoardSuite) TestPersona_StageEntryClaimsThenSpawns() {
 	task := s.seedTask(e, "persona-entry", nil, false)
 
 	spawner := &claimCapture{}
-	svc := board.NewService(s.pool, s.cfg, board.WithWorkerSpawner(spawner.Spawn))
+	svc := board.NewService(s.pool, s.cfg,
+		board.WithWorkerSpawner(spawner.Spawn),
+		board.WithRoleDirectory(personaRoleDirectory()))
 	s.setStagePersonas(svc, p, map[string]board.PersonaConfig{
-		"in_review": {Name: "auditor", Instructions: "Verify adversarially."},
+		"in_review": {RoleID: reviewerRole.ID},
 	})
 
 	c, err := svc.ClaimNext(ctx, "w-"+ws, ws)
@@ -94,8 +96,7 @@ func (s *BoardSuite) TestPersona_StageEntryClaimsThenSpawns() {
 	s.Require().Len(spawner.claims, 2, "worker grant + persona worker")
 	pc := spawner.claims[1]
 	require.NotNil(s.T(), pc.Persona, "the in_review spawn carries the persona")
-	s.Equal("auditor", pc.Persona.Name)
-	s.Equal("Verify adversarially.", pc.Persona.Instructions)
+	s.Equal(reviewerRole.ID, pc.Persona.RoleID, "the persona IS the canonicalized role reference")
 	s.Equal(board.StageInReview, pc.Stage)
 	s.Equal(*row.ClaimToken, pc.ClaimToken, "the charter carries the MINTED token (claim-before-spawn)")
 	s.Equal(1, s.countProjectEvents(p.ID, "persona_claim"), "the mint records its audit event")
@@ -146,7 +147,9 @@ func (s *BoardSuite) TestPersona_FlippedDefaultFiresReviewerPersona() {
 	task := s.seedTask(e, "flipped", nil, false)
 
 	spawner := &claimCapture{}
-	svc := board.NewService(s.pool, s.cfg, board.WithWorkerSpawner(spawner.Spawn))
+	svc := board.NewService(s.pool, s.cfg,
+		board.WithWorkerSpawner(spawner.Spawn),
+		board.WithRoleDirectory(personaRoleDirectory()))
 	// Deliberately NO config: the code default floor decides. Clear the
 	// harness's isolation seed (the user-level stagePersonas opt-out)
 	// so "no config anywhere" is literally true for this project's owner.
@@ -162,7 +165,7 @@ func (s *BoardSuite) TestPersona_FlippedDefaultFiresReviewerPersona() {
 	s.Require().Len(spawner.claims, 2, "grant + the flipped-default reviewer")
 	rc := spawner.claims[1]
 	require.NotNil(s.T(), rc.Persona)
-	s.Equal(board.DefaultReviewerPersona.Name, rc.Persona.Name)
+	s.Equal(reviewerRole.ID, rc.Persona.RoleID, "the flipped floor resolves the built-in reviewer role")
 	s.Equal(board.StageInReview, rc.Stage)
 	s.Require().NotNil(s.rawTask(task.ID).ClaimToken, "the reviewer HOLDS a claim (one lease, one token)")
 }
@@ -179,7 +182,9 @@ func (s *BoardSuite) TestPersona_LegacyCompositionIsReviewerPersona() {
 	task := s.seedTask(e, "legacy", nil, false)
 
 	spawner := &claimCapture{}
-	svc := board.NewService(s.pool, s.cfg, board.WithWorkerSpawner(spawner.Spawn))
+	svc := board.NewService(s.pool, s.cfg,
+		board.WithWorkerSpawner(spawner.Spawn),
+		board.WithRoleDirectory(personaRoleDirectory()))
 	_, err := svc.SetUserBoardConfig(ctx, s.owner(), &board.BoardConfigOverride{
 		ReviewColumn: strPtr("auto"),
 	})
@@ -199,7 +204,7 @@ func (s *BoardSuite) TestPersona_LegacyCompositionIsReviewerPersona() {
 	s.Require().Len(spawner.claims, 2, "grant + reviewer")
 	rc := spawner.claims[1]
 	require.NotNil(s.T(), rc.Persona)
-	s.Equal(board.DefaultReviewerPersona.Name, rc.Persona.Name)
+	s.Equal(reviewerRole.ID, rc.Persona.RoleID, "the composition resolves the built-in reviewer role")
 	s.Equal(board.StageInReview, rc.Stage)
 	s.Require().NotNil(s.rawTask(task.ID).ClaimToken, "the reviewer HOLDS a claim (one lease, one token)")
 
@@ -257,16 +262,20 @@ func (s *BoardSuite) TestPersona_DeadWorkerLeaseLapseFreshReclaim() {
 	svc := board.NewService(s.pool, s.cfg,
 		board.WithWorkerSpawner(spawner.Spawn),
 		board.WithWorkerAborter(s.aborter.Abort),
+		board.WithRoleDirectory(personaRoleDirectory()),
 	)
-	s.setStagePersonas(svc, p, map[string]board.PersonaConfig{"in_review": {Name: "reviewer"}})
+	s.setStagePersonas(svc, p, map[string]board.PersonaConfig{"in_review": {RoleID: "reviewer"}})
 
-	// The reconciler needs the spawner for the re-arm's fresh spawn.
+	// The reconciler needs the spawner for the re-arm's fresh spawn
+	// (and the directory — the re-arm's persona resolution shares the
+	// spawn-time canonicalization).
 	s.recon = board.NewReconciler(s.pool, s.cfg,
 		board.WithWorkerSpawner(spawner.Spawn),
 		board.WithWorkerAborter(s.aborter.Abort),
 		board.WithPRDriftSource(s.drift),
 		board.WithPendingInputSource(s.pending),
 		board.WithFailpoint(s.fps.fp),
+		board.WithRoleDirectory(personaRoleDirectory()),
 	)
 
 	c, err := svc.ClaimNext(ctx, "w-"+ws, ws)
@@ -296,7 +305,7 @@ func (s *BoardSuite) TestPersona_DeadWorkerLeaseLapseFreshReclaim() {
 	s.Require().Len(spawner.claims, 3, "a FRESH persona worker spawned")
 	fresh := spawner.claims[2]
 	require.NotNil(s.T(), fresh.Persona)
-	s.Equal("reviewer", fresh.Persona.Name)
+	s.Equal(reviewerRole.ID, fresh.Persona.RoleID)
 	s.Equal(board.StageInReview, fresh.Stage)
 	s.Equal(*row.ClaimToken, fresh.ClaimToken)
 	s.Equal(attemptsAtEntry, row.Attempts)
@@ -334,7 +343,9 @@ func (s *BoardSuite) TestPersona_RearmUnderPureFlippedDefault() {
 	task := s.seedTask(e, "pure-default", nil, false)
 
 	spawner := &claimCapture{}
-	svc := board.NewService(s.pool, s.cfg, board.WithWorkerSpawner(spawner.Spawn))
+	svc := board.NewService(s.pool, s.cfg,
+		board.WithWorkerSpawner(spawner.Spawn),
+		board.WithRoleDirectory(personaRoleDirectory()))
 	// ZERO config rows anywhere: clear the harness's isolation seed.
 	_, err := s.pool.Exec(ctx, `DELETE FROM board_config_defaults WHERE user_id=$1`, testUser)
 	s.Require().NoError(err)
@@ -352,6 +363,7 @@ func (s *BoardSuite) TestPersona_RearmUnderPureFlippedDefault() {
 		board.WithPRDriftSource(s.drift),
 		board.WithPendingInputSource(s.pending),
 		board.WithFailpoint(s.fps.fp),
+		board.WithRoleDirectory(personaRoleDirectory()),
 	)
 
 	// The reviewer dies; the healing loop must converge with NO config
@@ -365,7 +377,7 @@ func (s *BoardSuite) TestPersona_RearmUnderPureFlippedDefault() {
 	s.Require().NotNil(row.ClaimToken, "the re-arm fires under the pure default posture (no config rows)")
 	s.Require().Len(spawner.claims, 3, "a fresh default-posture reviewer spawned")
 	require.NotNil(s.T(), spawner.claims[2].Persona)
-	s.Equal(board.DefaultReviewerPersona.Name, spawner.claims[2].Persona.Name)
+	s.Equal(reviewerRole.ID, spawner.claims[2].Persona.RoleID)
 }
 
 // TestPersona_PausedRowRefusesRearm — round-2 blocking finding #3: the
@@ -381,14 +393,17 @@ func (s *BoardSuite) TestPersona_PausedRowRefusesRearm() {
 	task := s.seedTask(e, "paused", nil, false)
 
 	spawner := &claimCapture{}
-	svc := board.NewService(s.pool, s.cfg, board.WithWorkerSpawner(spawner.Spawn))
-	s.setStagePersonas(svc, p, map[string]board.PersonaConfig{"in_review": {Name: "reviewer"}})
+	svc := board.NewService(s.pool, s.cfg,
+		board.WithWorkerSpawner(spawner.Spawn),
+		board.WithRoleDirectory(personaRoleDirectory()))
+	s.setStagePersonas(svc, p, map[string]board.PersonaConfig{"in_review": {RoleID: "reviewer"}})
 	s.recon = board.NewReconciler(s.pool, s.cfg,
 		board.WithWorkerSpawner(spawner.Spawn),
 		board.WithWorkerAborter(s.aborter.Abort),
 		board.WithPRDriftSource(s.drift),
 		board.WithPendingInputSource(s.pending),
 		board.WithFailpoint(s.fps.fp),
+		board.WithRoleDirectory(personaRoleDirectory()),
 	)
 
 	c, err := svc.ClaimNext(ctx, "w-"+ws, ws)
@@ -429,8 +444,10 @@ func (s *BoardSuite) TestPersona_HeartbeatOnReviewClaim() {
 	task := s.seedTask(e, "hb", nil, false)
 
 	spawner := &claimCapture{}
-	svc := board.NewService(s.pool, s.cfg, board.WithWorkerSpawner(spawner.Spawn))
-	s.setStagePersonas(svc, p, map[string]board.PersonaConfig{"in_review": {Name: "reviewer"}})
+	svc := board.NewService(s.pool, s.cfg,
+		board.WithWorkerSpawner(spawner.Spawn),
+		board.WithRoleDirectory(personaRoleDirectory()))
+	s.setStagePersonas(svc, p, map[string]board.PersonaConfig{"in_review": {RoleID: "reviewer"}})
 
 	c, err := svc.ClaimNext(ctx, "w-"+ws, ws)
 	s.Require().NoError(err)
@@ -480,14 +497,16 @@ func (s *BoardSuite) TestPersona_ImplementerPersonaRidesGrant() {
 	s.seedTask(e, "impl-persona", nil, false)
 
 	spawner := &claimCapture{}
-	svc := board.NewService(s.pool, s.cfg, board.WithWorkerSpawner(spawner.Spawn))
-	s.setStagePersonas(svc, p, map[string]board.PersonaConfig{"in_progress": {Name: "implementer"}})
+	svc := board.NewService(s.pool, s.cfg,
+		board.WithWorkerSpawner(spawner.Spawn),
+		board.WithRoleDirectory(personaRoleDirectory()))
+	s.setStagePersonas(svc, p, map[string]board.PersonaConfig{"in_progress": {RoleID: buildRole.ID}})
 
 	_, err := svc.ClaimNext(ctx, "w-"+ws, ws)
 	s.Require().NoError(err)
 	s.Require().Len(spawner.claims, 1)
 	require.NotNil(s.T(), spawner.claims[0].Persona, "the grant's charter carries the implementer persona")
-	s.Equal("implementer", spawner.claims[0].Persona.Name)
+	s.Equal(buildRole.ID, spawner.claims[0].Persona.RoleID)
 	s.Equal(board.StageInProgress, spawner.claims[0].Stage)
 }
 
@@ -504,10 +523,12 @@ func (s *BoardSuite) TestPersona_BounceAfterPersonaClaim() {
 	task := s.seedTask(e, "bounce", nil, false)
 
 	spawner := &claimCapture{}
-	svc := board.NewService(s.pool, s.cfg, board.WithWorkerSpawner(spawner.Spawn))
+	svc := board.NewService(s.pool, s.cfg,
+		board.WithWorkerSpawner(spawner.Spawn),
+		board.WithRoleDirectory(personaRoleDirectory()))
 	s.setStagePersonas(svc, p, map[string]board.PersonaConfig{
-		"in_review":   {Name: "reviewer"},
-		"in_progress": {Name: "implementer"},
+		"in_review":   {RoleID: "reviewer"},
+		"in_progress": {RoleID: buildRole.ID},
 	})
 
 	c, err := svc.ClaimNext(ctx, "w-"+ws, ws)
@@ -529,7 +550,7 @@ func (s *BoardSuite) TestPersona_BounceAfterPersonaClaim() {
 	bounced := spawner.claims[2]
 	s.Equal(board.StageInProgress, bounced.Stage)
 	require.NotNil(s.T(), bounced.Persona)
-	s.Equal("implementer", bounced.Persona.Name)
+	s.Equal(buildRole.ID, bounced.Persona.RoleID)
 	require.NotEmpty(s.T(), bounced.VerdictChain, "the bounced implementer sees the verdict chain")
 
 	// The persona review round's claim is consumed by the bounce.
@@ -550,8 +571,10 @@ func (s *BoardSuite) TestPersona_ApproveDoneOnPersonaClaim() {
 	task := s.seedTask(e, "approve", nil, true) // criteria pre-met for the Done guard
 
 	spawner := &claimCapture{}
-	svc := board.NewService(s.pool, s.cfg, board.WithWorkerSpawner(spawner.Spawn))
-	s.setStagePersonas(svc, p, map[string]board.PersonaConfig{"in_review": {Name: "reviewer"}})
+	svc := board.NewService(s.pool, s.cfg,
+		board.WithWorkerSpawner(spawner.Spawn),
+		board.WithRoleDirectory(personaRoleDirectory()))
+	s.setStagePersonas(svc, p, map[string]board.PersonaConfig{"in_review": {RoleID: "reviewer"}})
 
 	c, err := svc.ClaimNext(ctx, "w-"+ws, ws)
 	s.Require().NoError(err)

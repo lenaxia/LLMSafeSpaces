@@ -31,10 +31,12 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 
 	"github.com/lenaxia/llmsafespaces/pkg/agent"
 	dsecrets "github.com/lenaxia/llmsafespaces/pkg/agentd/secrets"
+	"github.com/lenaxia/llmsafespaces/pkg/types"
 )
 
 // RelayModel is one free-tier model discovered from opencode's /provider
@@ -85,6 +87,17 @@ func WithAllowedDirsPath(p string) ConfigWriterOption {
 	return func(w *ConfigWriter) { w.allowedDirsPath = p }
 }
 
+// WithAgentRolesPath sets the path to the workspace's addressable
+// agent-role vocabulary (a types.MaterializedAgentRole JSON array
+// written by the agentd bootstrap subcommand). The writer reads it
+// once at construction and materializes each role as a NAMED opencode
+// agent (agent.<roleID> — the A8 resolution seam for board
+// stage-persona dispatches). Empty (the default) means no role
+// materialization.
+func WithAgentRolesPath(p string) ConfigWriterOption {
+	return func(w *ConfigWriter) { w.agentRolesPath = p }
+}
+
 // WithPreMarshalHook registers a function invoked on the rendered config
 // map immediately before final marshal. agentd uses this to inject its
 // built-in admin MCP server (the "llmsafespaces" entry pointing at
@@ -105,20 +118,22 @@ func WithPreMarshalHook(fn func(map[string]json.RawMessage)) ConfigWriterOption 
 type ConfigWriter struct {
 	mu              sync.Mutex
 	path            string
-	providerRaw     json.RawMessage  // raw "provider" map JSON from FormatOpenCodeConfig; nil = no providers
-	model           string           // fully-qualified "providerID/modelID" form; "" = no model
-	relay           *relaySource     // nil = relay not yet injected / skipped
-	mcpServers      []MCPServerEntry // staged MCP servers from SetMCPServers; nil = none
-	adminPrompt     string           // admin-configured system prompt; "" = none
-	agentRaw        json.RawMessage  // existing "agent" config from loadExisting, preserved across rebuilds
-	modeRaw         json.RawMessage  // existing "mode" config from loadExisting, preserved across rebuilds
-	permissionRaw   json.RawMessage  // existing top-level "permission" config from loadExisting; the LIVE permission key on pinned opencode (tier-ruling wire finding: mode.permissions is inert)
-	mcpRaw          json.RawMessage  // existing "mcp" object from loadExisting (e.g. user-staged servers written by materialize, Epic 53); re-emitted when no staged source. Non-object or null sections are NOT captured (dropped, not round-tripped)
-	pluginRaw       json.RawMessage  // existing "plugin" string-array from loadExisting (user-staged plugins); re-emitted verbatim. Non-array shapes are NOT captured
-	allowedDirs     []string         // glob patterns, merged as external_directory allow-rules
-	injectedDirs    []string         // external_directory keys the writer last injected (or recovered from a prior render); stripped from modeRaw when the AllowedDirs source changes so replace/clear are authoritative over prior renders
-	adminPromptPath string           // path to admin-prompt file; "" = skip
-	allowedDirsPath string           // path to allowed-dirs JSON; "" = skip
+	providerRaw     json.RawMessage               // raw "provider" map JSON from FormatOpenCodeConfig; nil = no providers
+	model           string                        // fully-qualified "providerID/modelID" form; "" = no model
+	relay           *relaySource                  // nil = relay not yet injected / skipped
+	mcpServers      []MCPServerEntry              // staged MCP servers from SetMCPServers; nil = none
+	adminPrompt     string                        // admin-configured system prompt; "" = none
+	agentRoles      []types.MaterializedAgentRole // roles materialized as named agents; nil = none
+	agentRaw        json.RawMessage               // existing "agent" config from loadExisting, preserved across rebuilds
+	modeRaw         json.RawMessage               // existing "mode" config from loadExisting, preserved across rebuilds
+	permissionRaw   json.RawMessage               // existing top-level "permission" config from loadExisting; the LIVE permission key on pinned opencode (tier-ruling wire finding: mode.permissions is inert)
+	mcpRaw          json.RawMessage               // existing "mcp" object from loadExisting (e.g. user-staged servers written by materialize, Epic 53); re-emitted when no staged source. Non-object or null sections are NOT captured (dropped, not round-tripped)
+	pluginRaw       json.RawMessage               // existing "plugin" string-array from loadExisting (user-staged plugins); re-emitted verbatim. Non-array shapes are NOT captured
+	allowedDirs     []string                      // glob patterns, merged as external_directory allow-rules
+	injectedDirs    []string                      // external_directory keys the writer last injected (or recovered from a prior render); stripped from modeRaw when the AllowedDirs source changes so replace/clear are authoritative over prior renders
+	adminPromptPath string                        // path to admin-prompt file; "" = skip
+	allowedDirsPath string                        // path to allowed-dirs JSON; "" = skip
+	agentRolesPath  string                        // path to agent-roles JSON; "" = skip
 	preMarshalHook  func(map[string]json.RawMessage)
 }
 
@@ -136,6 +151,7 @@ func NewConfigWriter(path string, opts ...ConfigWriterOption) *ConfigWriter {
 	w.loadExisting()
 	w.loadAdminPrompt()
 	w.loadAllowedDirs()
+	w.loadAgentRoles()
 	return w
 }
 
@@ -277,6 +293,52 @@ func (w *ConfigWriter) loadAdminPrompt() {
 		return
 	}
 	w.adminPrompt = string(data)
+}
+
+// loadAgentRoles reads the workspace's addressable agent-role
+// vocabulary (written by the bootstrap subcommand as a JSON array of
+// types.MaterializedAgentRole). Loaded once at init; persists across
+// all rebuilds — role changes take effect on the next pod boot (the
+// same freshness contract as the admin prompt). Silent on error: a
+// missing or corrupt file means no named agents are materialized, and
+// a stage-persona dispatch for a role then fails the A8 pre-validation
+// loudly (agent_not_found) instead of silently running the build
+// agent. Entries with a blank ID are skipped (the ID is the opencode
+// agent name — the dispatch key).
+func (w *ConfigWriter) loadAgentRoles() {
+	if w.agentRolesPath == "" {
+		return
+	}
+	data, err := os.ReadFile(w.agentRolesPath)
+	if err != nil || len(data) == 0 {
+		return
+	}
+	var roles []types.MaterializedAgentRole
+	if json.Unmarshal(data, &roles) != nil {
+		return
+	}
+	w.agentRoles = sanitizeAgentRoles(roles)
+}
+
+// sanitizeAgentRoles drops entries that cannot name an opencode agent
+// (blank/whitespace ID) and de-duplicates by ID (first entry wins —
+// platform scope is delivered before org scope by the bootstrap).
+func sanitizeAgentRoles(roles []types.MaterializedAgentRole) []types.MaterializedAgentRole {
+	out := make([]types.MaterializedAgentRole, 0, len(roles))
+	seen := make(map[string]struct{}, len(roles))
+	for _, r := range roles {
+		id := strings.TrimSpace(r.ID)
+		if id == "" {
+			continue
+		}
+		if _, dup := seen[id]; dup {
+			continue
+		}
+		seen[id] = struct{}{}
+		r.ID = id
+		out = append(out, r)
+	}
+	return out
 }
 
 // setAllowedDirsPath overrides the allowed-dirs file path. Test seam so
@@ -508,7 +570,7 @@ func (w *ConfigWriter) rebuildLocked() error {
 	// is `agent` (singular) and the AgentConfig field is `prompt`, not
 	// `system`. Every non-empty adminPrompt made opencode reject the
 	// config with ConfigInvalidError → all session endpoints 500'd.
-	if w.adminPrompt != "" || len(w.agentRaw) > 0 {
+	if w.adminPrompt != "" || len(w.agentRaw) > 0 || len(w.agentRoles) > 0 {
 		agent := make(map[string]json.RawMessage)
 		if len(w.agentRaw) > 0 {
 			_ = json.Unmarshal(w.agentRaw, &agent)
@@ -536,6 +598,48 @@ func (w *ConfigWriter) rebuildLocked() error {
 				return fmt.Errorf("agent-config writer: marshal build agent: %w", err)
 			}
 			agent["build"] = buildJSON
+		}
+		// Materialize the agent-role vocabulary as NAMED opencode agents
+		// (agent.<roleID>): the board stage-persona dispatch carries the
+		// role ID as the opencode agentID (NODE-EXECUTE-CONTRACT §A8),
+		// and opencode resolves agentID against exactly this map — an
+		// absent name silently falls back to the build agent, so the
+		// role MUST be materialized here for its system prompt (and
+		// model/mode/tools) to reach the spawned worker. Role-provided
+		// fields override (the role IS the definition), any sibling
+		// fields of a pre-existing entry are preserved.
+		for _, role := range w.agentRoles {
+			var existing map[string]json.RawMessage
+			if raw, ok := agent[role.ID]; ok {
+				_ = json.Unmarshal(raw, &existing)
+			}
+			if existing == nil {
+				existing = map[string]json.RawMessage{}
+			}
+			if role.System != "" {
+				promptJSON, _ := json.Marshal(role.System)
+				existing["prompt"] = promptJSON
+			}
+			if role.Description != "" {
+				descJSON, _ := json.Marshal(role.Description)
+				existing["description"] = descJSON
+			}
+			if role.Model != "" {
+				modelJSON, _ := json.Marshal(role.Model)
+				existing["model"] = modelJSON
+			}
+			if role.Mode != "" {
+				modeJSON, _ := json.Marshal(role.Mode)
+				existing["mode"] = modeJSON
+			}
+			if len(role.Tools) > 0 {
+				existing["tools"] = role.Tools
+			}
+			entryJSON, err := json.Marshal(existing)
+			if err != nil {
+				return fmt.Errorf("agent-config writer: marshal agent role %s: %w", role.ID, err)
+			}
+			agent[role.ID] = entryJSON
 		}
 		agentJSON, err := json.Marshal(agent)
 		if err != nil {

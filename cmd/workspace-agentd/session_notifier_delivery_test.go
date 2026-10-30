@@ -455,7 +455,7 @@ func TestOutboxWriteBeforeSendClearOnSuccess(t *testing.T) {
 		Deliver:  seamDeliverer(s),
 		Logger:   zap.NewNop(),
 	})
-	t.Cleanup(func() { quiesceNotifier(n, 25*time.Millisecond) })
+	t.Cleanup(func() { quiesceNotifier(n) })
 	_, err := n.Subscribe("ses_w", "ses_m", nil)
 	require.NoError(t, err)
 
@@ -566,7 +566,7 @@ func TestRateRefusalDropsIntent(t *testing.T) {
 		Deliver:  d,
 		Logger:   zap.NewNop(),
 	})
-	t.Cleanup(func() { quiesceNotifier(n, 25*time.Millisecond) })
+	t.Cleanup(func() { quiesceNotifier(n) })
 	_, err := n.Subscribe("ses_w", "ses_m", nil)
 	require.NoError(t, err)
 
