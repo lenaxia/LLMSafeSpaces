@@ -7,16 +7,19 @@ interface SelectProps {
   options: string[];
   disabled?: boolean;
   id?: string;
+  /** Rendered inside the trigger when no option is selected (value
+   * ""/undefined — Radix's own placeholder seam). */
+  placeholder?: string;
 }
 
-export function Select({ value, onValueChange, options, disabled, id }: SelectProps) {
+export function Select({ value, onValueChange, options, disabled, id, placeholder }: SelectProps) {
   return (
     <RadixSelect.Root value={value} onValueChange={onValueChange} disabled={disabled}>
       <RadixSelect.Trigger
         id={id}
         className="inline-flex h-8 items-center gap-1 rounded-md border border-border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring disabled:opacity-50 disabled:cursor-not-allowed"
       >
-        <RadixSelect.Value />
+        <RadixSelect.Value placeholder={placeholder} />
         <RadixSelect.Icon>
           <ChevronDown className="h-3.5 w-3.5 opacity-50" />
         </RadixSelect.Icon>
