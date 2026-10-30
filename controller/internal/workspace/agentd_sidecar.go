@@ -94,17 +94,21 @@ func validateAgentdSidecarConfig(sidecarEnabled bool, agentdImage string) error 
 // predates the #933 upsert): the readiness probe must carry it because
 // the sidecar's /v1/readyz is bearer-gated whenever the token exists.
 // Called only when AgentdSidecarEnabled (validated at startup).
-// eventbusEnv renders the design-0072 bus env for whichever container
-// runs agentd's server surface — the MAIN container (single-container
-// mode: the notifier + bus consumers run in the main agentd process)
-// and the SIDECAR (sidecar mode: they run in the sidecar process) both
-// append this (#1332 convention: deployment-wide agentd env wired
-// explicitly per mode; the env is inert for a process that never reads
-// it). AGENTD_EVENTBUS_ADDR is the credentialess plain value (pod
-// specs are readable — the controller refuses userinfo at boot);
-// AGENTD_EVENTBUS_PASSWORD rides a secretKeyRef to the platform
-// credentials secret. Nil when the bus is unconfigured — no eventbus
-// env at all, the dormant pre-0072 posture.
+// eventbusEnv renders the design-0072 bus env for the agentd process
+// that consumes it. The MAIN container append (pod_builder.go) serves
+// SINGLE-CONTAINER mode — the main agentd server runs the notifier +
+// bus consumers there. In SIDECAR mode that container is re-pointed to
+// the uid-1000 supervise-opencode supervisor, which must NEVER carry
+// these: applyAgentdSidecar strips both vars (the #887 D5.1 /
+// admin-token precedent — the supervisor seeds opencode's spawn env
+// from os.Environ(), and every tool child could printenv the
+// DEPLOYMENT-WIDE bus password); the sidecar container gets them
+// instead via buildAgentdSidecarContainer below. AGENTD_EVENTBUS_ADDR
+// is the credentialess plain value (pod specs are readable — the
+// controller refuses userinfo at boot); AGENTD_EVENTBUS_PASSWORD rides
+// a secretKeyRef to the platform credentials secret. Nil when the bus
+// is unconfigured — no eventbus env at all, the dormant pre-0072
+// posture.
 func (r *WorkspaceReconciler) eventbusEnv() []corev1.EnvVar {
 	if r.EventbusAddr == "" {
 		return nil
@@ -355,7 +359,17 @@ func (r *WorkspaceReconciler) applyAgentdSidecar(pod *corev1.Pod, workspace *v1.
 	// runs there). In sidecar mode this container is the uid-1000
 	// supervisor + opencode, and design 0051 D1 keeps that bearer out of
 	// uid-1000 space (the sidecar gets it via env instead) — strip it.
-	main.Env = stripEnvVars(main.Env, "AGENTD_ADMIN_TOKEN", "AGENTD_ADMIN_TOKEN_FILE")
+	// Design 0072 (review round 3): the bus env gets the SAME treatment,
+	// both vars. The sidecar process consumes the bus (uid-2000 space);
+	// the supervisor never reads it — but the supervisor seeds
+	// opencode's spawn env from os.Environ() and every tool child could
+	// printenv, and AGENTD_EVENTBUS_PASSWORD is the DEPLOYMENT-WIDE bus
+	// Redis credential (cross-workspace reach, not a workspace secret).
+	// The address strips alongside it: no function in uid-1000 space,
+	// and internal topology is not workspace-visible by convention.
+	main.Env = stripEnvVars(main.Env,
+		"AGENTD_ADMIN_TOKEN", "AGENTD_ADMIN_TOKEN_FILE",
+		"AGENTD_EVENTBUS_ADDR", "AGENTD_EVENTBUS_PASSWORD")
 	// Step-2 migration: the main container runs the overlay supervisor
 	// DIRECTLY — the baked entrypoint (runtime-image platform logic; the
 	// 2026-08-25 stale-base supply chain) is bypassed. Its env work

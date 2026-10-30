@@ -175,21 +175,73 @@ sharing a test logger buffer in a shape CI never executes (every
 envtest step is `-run`-filtered; both filtered runs green here with
 -race).
 
+### Round 3 — CHANGES_REQUESTED (head a5d0b3dc1, the first verdict on the correct head)
+
+Rounds 2's verdicts were #1844 artifacts (see the History note below);
+round 3 landed on the right head, re-verified every round-1 fix, and
+found the real blocker my round-1 fix INTRODUCED — a cross-tenant
+credential exposure in sidecar mode, concretely demonstrated by a
+scratch probe on the tree:
+
+- **Finding (blocking): the sidecar-mode supervisor inherited the
+  deployment-wide bus password.** My pod_builder append was
+  unconditional (the #1332 convention, misapplied to a CREDENTIAL):
+  in sidecar mode the main container becomes the uid-1000
+  supervise-opencode supervisor, which seeds opencode's spawn env from
+  os.Environ() scrubbed only of the two admin-token keys → the bus
+  password (ONE deployment-wide Redis credential — read/write reach
+  over EVERY workspace's stream) flowed to every untrusted tool child
+  ("any bash tool could printenv" — the exact class #887 D5.1 / design
+  0051 D1 moved the admin bearer out of uid-1000 space for). FIXED on
+  both legs: (a) applyAgentdSidecar strips AGENTD_EVENTBUS_ADDR +
+  AGENTD_EVENTBUS_PASSWORD from the supervisor container (the
+  admin-token precedent, same strip call); (b) the spawn seam —
+  adminOnlyEnvKeys gains AGENTD_EVENTBUS_PASSWORD — because
+  SINGLE-CONTAINER mode (the helm default) necessarily carries the
+  password in agentd's own env (the main boot path consumes it), and
+  the same printenv doctrine applies to the opencode child env there.
+  The credentialess ADDR strips from the supervisor (no function, and
+  internal topology stays workspace-invisible) but may pass the spawn
+  seam (a coordinate, not a credential). Pinned:
+  `TestAgentdSidecar_Enabled_EventbusEnvStrippedFromSupervisor` (the
+  reviewer's scratch probe made permanent — main carries NEITHER var,
+  the sidecar carries BOTH in the same shapes) and
+  `TestScrubAdminEnv_RemovesEventbusPassword` (both buildEnvFrom
+  paths scrub the password, surgically).
+- **Robustness (carried)**: my two comments lied — "the env is inert
+  for a process that never reads it" (false where env inheritance
+  matters) and the mode-conditional description of an unconditional
+  append. Both rewritten to the true posture.
+
+#### The #1844 interlude (why round 2 reviewed the wrong head)
+
+Push/synchronize webhooks to this branch were being dropped: the
+round-1 fix head b6bb96b89 never got check-runs, CI legs had to be
+dispatched manually (green), and the /review handler delivered a
+verdict byte-identical to round 1 — pinned to the OLD head while its
+own prompt carried the correct headRefOid (its contract forbids
+exactly that; documented in PR comment 6515489794). An empty retrigger
+commit (a5d0b3dc1) proved suppression still active; the dispatched
+legs + fresh /review on that head produced the round-3 verdict — on
+the right head, carried finding intact. The retrigger commit is
+honest about being one.
+
 ## Verification (2026-10-30, this worktree; CI on the PR head)
 
 - `go build ./...` → exit 0.
 - `go test -count=1 ./controller/...` → all ok (workspace 68s incl.
-  the sidecar + main-container env pins; the main-package
-  flag/boot pins green incl. the credentialess-refusal arms).
-- `go test -count=1 -race ./cmd/workspace-agentd/` → ok 423.6s (the
-  full agentd suite with the sidecar wiring + both-set warn pins; the
-  handoff's 377s baseline was without -race).
+  the sidecar + main-container env pins AND the sidecar-mode
+  supervisor-exclusion pin; the main-package flag/boot pins green
+  incl. the credentialess-refusal arms).
+- `go test -count=1 -race ./cmd/workspace-agentd/` → ok 433.9s (the
+  full agentd suite incl. the spawn-seam scrub pin, sidecar wiring,
+  and both-set warn pins).
 - `go test -count=1 ./helm/...` → ok 37.4s (helm v3.16.4 on PATH; the
   eventbus render pins incl. the credentialed-addr refusals PASS, no
   skips).
 - envtest (CI shapes, KUBEBUILDER_ASSETS 1.35.0, -race):
   `./controller/internal/controller/ -run TestEnvtestSetupWiring` →
-  ok 7.4s; `./controller/internal/controller/eventbuswiring/` → ok
-  8.4s (the armed-posture pin).
+  ok; `./controller/internal/controller/eventbuswiring/` → ok (the
+  armed-posture pin).
 - `golangci-lint run ./controller/... ./cmd/workspace-agentd/...
   ./helm/...` → 0 issues; `make fmt-check` → clean.

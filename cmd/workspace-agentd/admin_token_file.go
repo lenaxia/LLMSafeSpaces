@@ -34,8 +34,13 @@ const (
 
 // adminOnlyEnvKeys are removed from the environment agentd hands to the
 // opencode child (and thereby to every tool process). agentd-only
-// credentials have no business in workspace-visible env.
-var adminOnlyEnvKeys = []string{adminTokenEnv, adminTokenFileEnv}
+// credentials have no business in workspace-visible env. Design 0072:
+// AGENTD_EVENTBUS_PASSWORD joins the class — in single-container mode
+// the bus password necessarily rides agentd's own env (the main boot
+// path consumes it), but it is the DEPLOYMENT-WIDE bus Redis
+// credential (cross-workspace reach): printenv from any tool child
+// must never surface it.
+var adminOnlyEnvKeys = []string{adminTokenEnv, adminTokenFileEnv, "AGENTD_EVENTBUS_PASSWORD"}
 
 // adminToken resolves the admin-mux bearer token: file first, then env
 // (legacy), then empty (dev mode — gate disabled; design 0051 D5.2 makes

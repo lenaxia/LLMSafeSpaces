@@ -132,3 +132,45 @@ func TestPodMainContainerEventbusEnv_AbsentWhenUnconfigured(t *testing.T) {
 		}
 	}
 }
+
+// TestAgentdSidecar_Enabled_EventbusEnvStrippedFromSupervisor is the
+// round-3 exclusion pin (the reviewer's scratch probe, made permanent):
+// in SIDECAR mode the main container is re-pointed to the uid-1000
+// supervise-opencode supervisor, which seeds opencode's spawn env from
+// os.Environ() — every tool child could printenv. The bus env (the
+// password especially: the DEPLOYMENT-WIDE bus Redis credential,
+// cross-workspace reach) must therefore NEVER ride that container; the
+// sidecar process gets it instead (the #887 D5.1 / admin-token
+// precedent). Red on: the unconditional pod_builder append without the
+// applyAgentdSidecar strip — the round-3 cross-tenant exposure.
+func TestAgentdSidecar_Enabled_EventbusEnvStrippedFromSupervisor(t *testing.T) {
+	ws := newWorkspaceForSecurity(t)
+	r := reconcilerWithAgentdSidecar(t)
+	r.EventbusAddr = "llmsafespaces-valkey.llmsafespaces.svc.cluster.local:6379"
+	r.EventbusPasswordSecretName = "llmsafespaces-credentials"
+	r.EventbusPasswordSecretKey = "redis-password"
+
+	pod, err := r.buildPod(context.Background(), ws)
+	require.NoError(t, err)
+
+	main := &pod.Spec.Containers[0]
+	require.Nil(t, sidecarEnvVar(main, "AGENTD_EVENTBUS_ADDR"),
+		"the uid-1000 supervisor must NEVER carry the bus address (no function there; internal topology stays workspace-invisible)")
+	require.Nil(t, sidecarEnvVar(main, "AGENTD_EVENTBUS_PASSWORD"),
+		"the uid-1000 supervisor must NEVER carry the deployment-wide bus password — printenv from any tool child would surface a cross-workspace credential")
+
+	// The sidecar (uid-2000 space) is the bus consumer in this topology:
+	// it still gets BOTH vars, in the same shapes as single-container
+	// mode's main container.
+	sc := sidecarInitContainer(pod, "agentd")
+	require.NotNil(t, sc, "the agentd native sidecar must exist")
+	addr := sidecarEnvVar(sc, "AGENTD_EVENTBUS_ADDR")
+	require.NotNil(t, addr, "the sidecar process consumes the bus — it must carry the address")
+	assert.Equal(t, r.EventbusAddr, addr.Value)
+	pw := sidecarEnvVar(sc, "AGENTD_EVENTBUS_PASSWORD")
+	require.NotNil(t, pw, "the sidecar process consumes the bus — it must carry the password")
+	require.NotNil(t, pw.ValueFrom, "the password stays a secretKeyRef on the sidecar too")
+	require.NotNil(t, pw.ValueFrom.SecretKeyRef)
+	assert.Equal(t, "llmsafespaces-credentials", pw.ValueFrom.SecretKeyRef.Name)
+	assert.Equal(t, "redis-password", pw.ValueFrom.SecretKeyRef.Key)
+}

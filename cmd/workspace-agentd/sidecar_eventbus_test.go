@@ -12,6 +12,8 @@ package main
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -90,4 +92,41 @@ func TestEventbusPasswordBothSetWarnsAndURLWins(t *testing.T) {
 		}
 	}
 	assert.True(t, warned, "both-set must warn — the URL's credentials win, loudly, not silently")
+}
+
+// TestScrubAdminEnv_RemovesEventbusPassword pins the single-container
+// leg of the round-3 exposure fix: in that topology the bus password
+// necessarily rides agentd's own env (the main boot path consumes it),
+// but it must NEVER ride the opencode spawn env — every tool child
+// could printenv, and the password is the DEPLOYMENT-WIDE bus Redis
+// credential (cross-workspace reach). scrubAdminEnv (the #887 D5.1
+// seam, applied on every buildEnvFrom path) now removes it; the
+// credentialess ADDRESS stays (it is a coordinate, not a credential —
+// and single-container mode's opencode never reads it via env anyway).
+func TestScrubAdminEnv_RemovesEventbusPassword(t *testing.T) {
+	dir := t.TempDir()
+	secretsEnv := filepath.Join(dir, "secrets-env")
+	require.NoError(t, os.WriteFile(secretsEnv, []byte("export UNITTEST_BUS_PROBE_7e1=probe-ok\n"), 0o600))
+	t.Setenv("AGENTD_EVENTBUS_PASSWORD", "deployment-wide-bus-credential")
+	t.Setenv("AGENTD_EVENTBUS_ADDR", "llmsafespaces-valkey.llmsafespaces.svc.cluster.local:6379")
+
+	for name, env := range map[string][]string{
+		"no-file path":      buildEnvFrom("/nonexistent/secrets-env"),
+		"secrets-file path": buildEnvFrom(secretsEnv),
+	} {
+		var sawPW, sawAddr, sawProbe bool
+		for _, e := range env {
+			switch {
+			case e == "AGENTD_EVENTBUS_PASSWORD=deployment-wide-bus-credential":
+				sawPW = true
+			case strings.HasPrefix(e, "AGENTD_EVENTBUS_ADDR="):
+				sawAddr = true
+			case e == "UNITTEST_BUS_PROBE_7e1=probe-ok":
+				sawProbe = true
+			}
+		}
+		assert.False(t, sawPW, "%s: the bus password must never ride the opencode spawn env", name)
+		assert.True(t, sawProbe || name == "no-file path", "%s: the scrub must stay surgical", name)
+		_ = sawAddr // the credentialess address may pass through (not a credential)
+	}
 }
