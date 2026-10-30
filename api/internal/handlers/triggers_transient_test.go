@@ -44,17 +44,21 @@ var errConnDown = &pgconn.PgError{Code: "08006", Message: "connection to server 
 // NOT happen.
 var errUniqueViolation = &pgconn.PgError{Code: "23505", Message: "duplicate key"}
 
-// triggerFaultLogger records Error/Warn calls (kv stringified) for
+// triggerFaultLogger records Error/Warn/Info calls (kv stringified) for
 // assertions.
 type triggerFaultLogger struct {
 	mu    sync.Mutex
 	errs  []string
 	warns []string
+	infos []string
 }
 
 func (l *triggerFaultLogger) Debug(msg string, kv ...interface{}) {
 }
 func (l *triggerFaultLogger) Info(msg string, kv ...interface{}) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.infos = append(l.infos, msg+" "+kvString(kv))
 }
 func (l *triggerFaultLogger) Warn(msg string, kv ...interface{}) {
 	l.mu.Lock()
@@ -78,6 +82,12 @@ func (l *triggerFaultLogger) errorCount() int {
 	return len(l.errs)
 }
 
+func (l *triggerFaultLogger) infoCount() int {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return len(l.infos)
+}
+
 func kvString(kv []interface{}) string {
 	parts := make([]string, 0, len(kv))
 	for i := 0; i+1 < len(kv); i += 2 {
@@ -93,10 +103,18 @@ type flakyTriggerStore struct {
 	getErrs    []error
 	updateErrs []error
 	deleteErrs []error
+	// getWorkflowErrs scripts the 0059 mapping-validation fetch
+	// (reachable from the UPDATE verb via every mapping-touching patch).
+	getWorkflowErrs []error
+	// createErrs scripts CreateTrigger (NOT retried — the insert is not
+	// idempotent; only the arm's logging is under test).
+	createErrs []error
 
-	getCalls    int
-	updateCalls int
-	deleteCalls int
+	getCalls         int
+	updateCalls      int
+	deleteCalls      int
+	getWorkflowCalls int
+	createCalls      int
 }
 
 func newFlakyTriggerStore() *flakyTriggerStore {
@@ -109,6 +127,22 @@ func (f *flakyTriggerStore) GetTrigger(ctx context.Context, ownerType, ownerID, 
 		return nil, f.getErrs[f.getCalls-1]
 	}
 	return f.mockTriggerStore.GetTrigger(ctx, ownerType, ownerID, triggerID)
+}
+
+func (f *flakyTriggerStore) GetWorkflow(ctx context.Context, ownerType, ownerID, workflowID string) (*wf.WorkflowRow, error) {
+	f.getWorkflowCalls++
+	if f.getWorkflowCalls <= len(f.getWorkflowErrs) && f.getWorkflowErrs[f.getWorkflowCalls-1] != nil {
+		return nil, f.getWorkflowErrs[f.getWorkflowCalls-1]
+	}
+	return f.mockTriggerStore.GetWorkflow(ctx, ownerType, ownerID, workflowID)
+}
+
+func (f *flakyTriggerStore) CreateTrigger(ctx context.Context, row *wf.TriggerRow) error {
+	f.createCalls++
+	if f.createCalls <= len(f.createErrs) && f.createErrs[f.createCalls-1] != nil {
+		return f.createErrs[f.createCalls-1]
+	}
+	return f.mockTriggerStore.CreateTrigger(ctx, row)
 }
 
 func (f *flakyTriggerStore) UpdateTrigger(ctx context.Context, ownerType, ownerID, triggerID string, upd *wf.TriggerUpdate) (*wf.TriggerRow, error) {
@@ -166,6 +200,24 @@ func seedCronTrigger(t *testing.T, store *flakyTriggerStore) string {
 
 func wsPtrTransient(s string) *string { return &s }
 
+// seedWorkflowTrigger inserts one enabled cron trigger targeting a
+// workflow in mapped mode — every input/inputFrom patch on it walks the
+// 0059 mapping validation and its GetWorkflow fetch (UPDATE-reachable).
+func seedWorkflowTrigger(t *testing.T, store *flakyTriggerStore) string {
+	t.Helper()
+	wfID := "wf-transient-1"
+	store.workflows[wfID] = &wf.WorkflowRow{ID: wfID, OwnerType: "user", OwnerID: "test-user"}
+	row := &wf.TriggerRow{
+		ID: "trg-transient-wf", OwnerType: "user", OwnerID: "test-user",
+		Name: "seed-wf", Enabled: true, SourceType: "cron",
+		SourceConfig: json.RawMessage(`{"expr":"*/3 * * * *","tz":"UTC"}`),
+		WorkflowID:   wsPtrTransient(wfID), InputFrom: "mapped",
+		MemoryMode: "none", CaptureMode: "errors_only", PreserveSession: "never",
+	}
+	store.triggers[row.ID] = row
+	return row.ID
+}
+
 // --- isTransientStoreErr classification -------------------------------------
 
 func TestIsTransientStoreErr(t *testing.T) {
@@ -184,6 +236,10 @@ func TestIsTransientStoreErr(t *testing.T) {
 		{"net op error", netErr, true},
 		{"pg unique violation 23505", errUniqueViolation, false},
 		{"pg syntax 42601", &pgconn.PgError{Code: "42601"}, false},
+		// Structural guard: a PgError with a sub-2-byte code must
+		// classify false, not panic (no server sends one; the type does
+		// not forbid it).
+		{"pg short code", &pgconn.PgError{Code: "X"}, false},
 		{"context canceled", context.Canceled, false},
 		{"plain error", errors.New("boom"), false},
 		{"nil", nil, false},
@@ -231,7 +287,7 @@ func TestTriggerUpdate_TransientFetchFault_Persists_500WithLoggedCause(t *testin
 	// error with the identifying fields (pre-fix: silence).
 	require.Equal(t, 1, logger.errorCount())
 	entry := logger.errs[0]
-	assert.Contains(t, entry, "triggers: store fault behind a 5xx")
+	assert.Contains(t, entry, "triggers: fault behind a 5xx")
 	assert.Contains(t, entry, "08006")
 	assert.Contains(t, entry, "trg-transient-1")
 }
@@ -330,6 +386,97 @@ func TestTriggerUpdate_ClientCanceled_Classified499(t *testing.T) {
 	require.Equal(t, 499, w.Code)
 	// A client-driven cancel is not retried and not a server fault.
 	assert.Equal(t, 1, store.getCalls)
+}
+
+func TestTriggerUpdate_ClientCanceled_LogsClientEventNotFault(t *testing.T) {
+	store := newFlakyTriggerStore()
+	id := seedCronTrigger(t, store)
+	store.getErrs = []error{context.Canceled}
+	logger := &triggerFaultLogger{}
+	r := setupTransientTriggerRouter(t, store, logger)
+
+	req := httptest.NewRequest(http.MethodPut, "/api/v1/me/triggers/"+id, strings.NewReader(`{"enabled":false}`))
+	req.Header.Set("Content-Type", "application/json")
+	ctx, cancel := context.WithCancel(req.Context())
+	req = req.WithContext(ctx)
+	cancel() // the client is gone before the store call returns
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	require.Equal(t, 499, w.Code)
+	// Review r1 pin: the 499 path logs an Info-level CLIENT event —
+	// never an Error-level "fault behind a 5xx" (the mislabel).
+	assert.Equal(t, 1, logger.infoCount())
+	assert.Contains(t, logger.infos[0], "triggers: client canceled mid-request")
+	assert.Equal(t, 0, logger.errorCount())
+}
+
+// --- the wired arms the review called out: fetch workflow (UPDATE-
+// reachable via mapping patches) and create trigger --------------------------
+
+func TestTriggerUpdate_MappingPatch_TransientWorkflowFetch_RetriedTo200(t *testing.T) {
+	store := newFlakyTriggerStore()
+	id := seedWorkflowTrigger(t, store)
+	// The mapping-validation GetWorkflow dies once with the
+	// connection-class fault; the retry reaches the schema and the
+	// mapping patch lands — the UPDATE verb no longer 500s here.
+	store.getWorkflowErrs = []error{errConnDown}
+	r := setupTransientTriggerRouter(t, store, &triggerFaultLogger{})
+
+	w := doTriggerRequest(t, r, "PUT", "/api/v1/me/triggers/"+id, map[string]any{"input": map[string]any{"k": "v"}})
+	require.Equal(t, http.StatusOK, w.Code)
+	// mapping fetch (fault) + retry + the #1519 merged-view existence
+	// check that follows validation — the retried fetch is calls 1–2.
+	assert.Equal(t, 3, store.getWorkflowCalls)
+}
+
+func TestTriggerUpdate_MappingPatch_PersistentWorkflowFetch_500WithLoggedCause(t *testing.T) {
+	store := newFlakyTriggerStore()
+	id := seedWorkflowTrigger(t, store)
+	store.getWorkflowErrs = []error{errConnDown, errConnDown}
+	logger := &triggerFaultLogger{}
+	r := setupTransientTriggerRouter(t, store, logger)
+
+	w := doTriggerRequest(t, r, "PUT", "/api/v1/me/triggers/"+id, map[string]any{"input": map[string]any{"k": "v"}})
+	require.Equal(t, http.StatusInternalServerError, w.Code)
+	var body map[string]any
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &body))
+	assert.Equal(t, "failed to fetch workflow", body["error"])
+
+	// The previously-silent arm now logs the underlying error with the
+	// workflow and owner fields.
+	require.Equal(t, 1, logger.errorCount())
+	assert.Contains(t, logger.errs[0], "fetch_workflow")
+	assert.Contains(t, logger.errs[0], "wf-transient-1")
+	assert.Contains(t, logger.errs[0], "08006")
+}
+
+func TestTriggerCreate_PersistentFault_500WithLoggedCause(t *testing.T) {
+	store := newFlakyTriggerStore()
+	// CreateTrigger is deliberately NOT retried (the insert is not
+	// idempotent — a retry after an uncertain commit would surface the
+	// duplicate-key 23505, not the original fault); the arm's job is to
+	// LOG the cause it used to swallow.
+	store.createErrs = []error{errConnDown}
+	logger := &triggerFaultLogger{}
+	r := setupTransientTriggerRouter(t, store, logger)
+
+	w := doTriggerRequest(t, r, "POST", "/api/v1/me/triggers", map[string]any{
+		"name":         "watch",
+		"sourceType":   "cron",
+		"sourceConfig": map[string]any{"expr": "*/3 * * * *", "tz": "UTC"},
+		"workspaceId":  "ws-1",
+		"prompt":       "routine",
+	})
+	require.Equal(t, http.StatusInternalServerError, w.Code)
+	assert.Equal(t, 1, store.createCalls) // no retry on the insert
+	var body map[string]any
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &body))
+	assert.Equal(t, "failed to create trigger", body["error"])
+
+	require.Equal(t, 1, logger.errorCount())
+	assert.Contains(t, logger.errs[0], "triggers: fault behind a 5xx")
+	assert.Contains(t, logger.errs[0], "08006")
 }
 
 // --- get + listFires share the retry ------------------------------------------

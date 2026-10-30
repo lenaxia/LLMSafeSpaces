@@ -242,9 +242,14 @@ const transientStoreRetryDelay = 200 * time.Millisecond
 func isTransientStoreErr(err error) bool {
 	var pgErr *pgconn.PgError
 	if errors.As(err, &pgErr) {
-		switch pgErr.Code[:2] {
-		case "08", "53", "57", "58":
-			return true
+		// Structural safety (review r1): a PgError with a sub-2-byte
+		// code (no server sends one, but nothing in the type forbids
+		// it) must classify, not panic.
+		if len(pgErr.Code) >= 2 {
+			switch pgErr.Code[:2] {
+			case "08", "53", "57", "58":
+				return true
+			}
 		}
 		return false
 	}
@@ -260,28 +265,35 @@ func clientClosedRequest(c *gin.Context, err error) bool {
 	return errors.Is(err, context.Canceled) && c.Request != nil && c.Request.Context().Err() != nil
 }
 
-// logStoreFault surfaces the underlying store error the generic 500
-// arms would otherwise swallow, with the identifying fields the
-// live-fire triage needed (owner, trigger id, verb).
-func (h *TriggersHandler) logStoreFault(err error, verb string, kv ...any) {
+// logFault5xx surfaces the underlying error the generic 500 arms would
+// otherwise swallow, with the identifying fields the live-fire triage
+// needed (owner, trigger id, verb). Not only store faults: encrypt and
+// workspace-resolution failures ride the same arms, so the message
+// names the arm class, not the error class.
+func (h *TriggersHandler) logFault5xx(err error, verb string, kv ...any) {
 	if h.logger == nil {
 		return
 	}
 	args := append([]any{"verb", verb}, kv...)
 	args = append(args, "error_type", fmt.Sprintf("%T", err))
-	h.logger.Error("triggers: store fault behind a 5xx", err, args...)
+	h.logger.Error("triggers: fault behind a 5xx", err, args...)
 }
 
 // respondStoreFault writes the failure response for a non-NotFound
-// store error and logs the underlying cause: 499 when the client went
-// away mid-request, the arm's own 500 message otherwise (wire-compat
-// with every existing caller).
+// fault on a 5xx arm and logs the underlying cause: 499 when the client
+// went away mid-request (logged as an Info-level CLIENT event — a
+// cancel is not a server fault, the review r1 mislabel fix), the arm's
+// own 500 message otherwise (wire-compat with every existing caller).
 func (h *TriggersHandler) respondStoreFault(c *gin.Context, err error, message, verb string, kv ...any) {
-	h.logStoreFault(err, verb, kv...)
 	if clientClosedRequest(c, err) {
+		if h.logger != nil {
+			args := append([]any{"verb", verb}, kv...)
+			h.logger.Info("triggers: client canceled mid-request", args...)
+		}
 		c.JSON(statusClientClosedRequest, gin.H{"error": "request canceled by client"})
 		return
 	}
+	h.logFault5xx(err, verb, kv...)
 	c.JSON(http.StatusInternalServerError, gin.H{"error": message})
 }
 
@@ -317,6 +329,18 @@ func retryTransientStoreCall[T any](c *gin.Context, fn func() (T, error)) (v T, 
 func (h *TriggersHandler) fetchTrigger(c *gin.Context, ownerType, ownerID, triggerID string) (*wf.TriggerRow, error) {
 	row, err, _ := retryTransientStoreCall(c, func() (*wf.TriggerRow, error) {
 		return h.store.GetTrigger(c.Request.Context(), ownerType, ownerID, triggerID)
+	})
+	return row, err
+}
+
+// fetchWorkflow is the store.GetWorkflow read behind the 0059 input-
+// mapping validation — reachable from BOTH the create path and the
+// UPDATE verb (every mapping-touching patch), so it gets the same one
+// transient retry: a connection-class blip during a mapping patch is
+// the same "UPDATE 500s" shape as the 2026-10-30 live-fire.
+func (h *TriggersHandler) fetchWorkflow(c *gin.Context, ownerType, ownerID, workflowID string) (*wf.WorkflowRow, error) {
+	row, err, _ := retryTransientStoreCall(c, func() (*wf.WorkflowRow, error) {
+		return h.store.GetWorkflow(c.Request.Context(), ownerType, ownerID, workflowID)
 	})
 	return row, err
 }
@@ -580,7 +604,7 @@ func (h *TriggersHandler) create(c *gin.Context, ownerType, ownerID string) {
 				c.JSON(http.StatusNotFound, gin.H{"error": "target workspace not found"})
 				return
 			}
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to check target workspace"})
+			h.respondStoreFault(c, rerr, "failed to check target workspace", "resolve_target_workspace", "ownerType", ownerType, "ownerId", ownerID)
 			return
 		}
 		actor := c.GetString("userID")
@@ -604,7 +628,7 @@ func (h *TriggersHandler) create(c *gin.Context, ownerType, ownerID string) {
 			}
 			// A wrapped org-store fault is infrastructure, not a denial —
 			// 500, and never a create.
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to authorize target workspace"})
+			h.respondStoreFault(c, oerr, "failed to authorize target workspace", "authorize_target_workspace", "ownerType", ownerType, "ownerId", ownerID)
 			return
 		}
 		// targetWorkspaceID stays the RESOLVED UUID — the stored key is
@@ -713,7 +737,7 @@ func (h *TriggersHandler) create(c *gin.Context, ownerType, ownerID string) {
 	if req.WorkspaceID != "" && h.wsExistencer != nil {
 		exists, err := h.wsExistencer.WorkspaceExistsByID(c.Request.Context(), req.WorkspaceID)
 		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to check target workspace"})
+			h.respondStoreFault(c, err, "failed to check target workspace", "check_target_workspace", "ownerType", ownerType, "ownerId", ownerID)
 			return
 		}
 		if !exists {
@@ -723,7 +747,7 @@ func (h *TriggersHandler) create(c *gin.Context, ownerType, ownerID string) {
 	}
 
 	if err := h.store.CreateTrigger(c.Request.Context(), row); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to create trigger"})
+		h.respondStoreFault(c, err, "failed to create trigger", "create", "triggerId", triggerID, "ownerType", ownerType, "ownerId", ownerID)
 		return
 	}
 
@@ -737,7 +761,7 @@ func (h *TriggersHandler) create(c *gin.Context, ownerType, ownerID string) {
 		ciphertext, err := h.encrypt.Encrypt(c.Request.Context(), []byte(secret))
 		if err != nil {
 			_ = h.store.DeleteTrigger(c.Request.Context(), ownerType, ownerID, triggerID)
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to encrypt webhook secret"})
+			h.respondStoreFault(c, err, "failed to encrypt webhook secret", "encrypt_webhook_secret", "triggerId", triggerID, "ownerType", ownerType, "ownerId", ownerID)
 			return
 		}
 		keyVersion := 1
@@ -765,7 +789,7 @@ func (h *TriggersHandler) create(c *gin.Context, ownerType, ownerID string) {
 		}
 		if err := h.store.CreateWebhook(c.Request.Context(), hookRow); err != nil {
 			_ = h.store.DeleteTrigger(c.Request.Context(), ownerType, ownerID, triggerID)
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to create webhook config"})
+			h.respondStoreFault(c, err, "failed to create webhook config", "create_webhook", "triggerId", triggerID, "ownerType", ownerType, "ownerId", ownerID)
 			return
 		}
 	}
@@ -832,7 +856,7 @@ func (h *TriggersHandler) validateUpdateScriptConflict(c *gin.Context, existing 
 // untouched (a legacy row with a cross-owner workflowId remains
 // patchable for mitigation — the #1440 loud-fire zombie tolerates
 // enabled:false).
-func (h *TriggersHandler) validateUpdateTargets(c *gin.Context, req *types.UpdateTriggerRequest, targetlessAfterPatch bool) bool {
+func (h *TriggersHandler) validateUpdateTargets(c *gin.Context, ownerType, ownerID string, req *types.UpdateTriggerRequest, targetlessAfterPatch bool) bool {
 	if targetlessAfterPatch {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "update would leave the trigger without an execution target — set workflowId or workspaceId"})
 		return false
@@ -840,7 +864,7 @@ func (h *TriggersHandler) validateUpdateTargets(c *gin.Context, req *types.Updat
 	if req.WorkspaceID != nil && *req.WorkspaceID != "" && h.wsExistencer != nil {
 		exists, err := h.wsExistencer.WorkspaceExistsByID(c.Request.Context(), *req.WorkspaceID)
 		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to check target workspace"})
+			h.respondStoreFault(c, err, "failed to check target workspace", "check_target_workspace", "ownerType", ownerType, "ownerId", ownerID)
 			return false
 		}
 		if !exists {
@@ -1078,7 +1102,7 @@ func (h *TriggersHandler) update(c *gin.Context, ownerType, ownerID, triggerID s
 		}
 	}
 
-	if !h.validateUpdateTargets(c, &req, targetlessAfterPatch) {
+	if !h.validateUpdateTargets(c, ownerType, ownerID, &req, targetlessAfterPatch) {
 		return
 	}
 
@@ -1173,15 +1197,17 @@ func (h *TriggersHandler) validateTriggerInputMapping(c *gin.Context, ownerType,
 	// V3/V6: owner-scoped fetch, exactly as pod automation's
 	// gateWorkflowTarget does. Opted-in wiring must reach its schema;
 	// un-opted wiring only consults it for the V6 guard, so a missing
-	// (ghost) workflow skips the guard.
-	wfRow, err := h.store.GetWorkflow(c.Request.Context(), ownerType, ownerID, workflowID)
+	// (ghost) workflow skips the guard. fetchWorkflow carries the same
+	// one-transient-retry as the trigger fetch (this arm is reachable
+	// from the UPDATE verb via every mapping-touching patch).
+	wfRow, err := h.fetchWorkflow(c, ownerType, ownerID, workflowID)
 	if err != nil {
 		if optedIn {
 			if errors.Is(err, wf.ErrNotFound) {
 				c.JSON(http.StatusBadRequest, gin.H{"error": "target workflow not found"})
 				return false
 			}
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to fetch workflow"})
+			h.respondStoreFault(c, err, "failed to fetch workflow", "fetch_workflow", "workflowId", workflowID, "ownerType", ownerType, "ownerId", ownerID)
 			return false
 		}
 		if errors.Is(err, wf.ErrNotFound) {
@@ -1192,7 +1218,7 @@ func (h *TriggersHandler) validateTriggerInputMapping(c *gin.Context, ownerType,
 			// target 400s there before the store write.
 			return true
 		}
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to fetch workflow"})
+		h.respondStoreFault(c, err, "failed to fetch workflow", "fetch_workflow", "workflowId", workflowID, "ownerType", ownerType, "ownerId", ownerID)
 		return false
 	}
 
@@ -1243,7 +1269,7 @@ func (h *TriggersHandler) checkQuota(c *gin.Context, ownerType, ownerID string) 
 	}
 	maxCount, err := h.quota.GetInt(c.Request.Context(), settingKey)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to check trigger quota"})
+		h.respondStoreFault(c, err, "failed to check trigger quota", "quota_setting", "ownerType", ownerType, "ownerId", ownerID)
 		return err
 	}
 	if maxCount == 0 {
@@ -1251,7 +1277,7 @@ func (h *TriggersHandler) checkQuota(c *gin.Context, ownerType, ownerID string) 
 	}
 	count, err := h.store.CountTriggersByOwner(c.Request.Context(), ownerType, ownerID)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to count triggers"})
+		h.respondStoreFault(c, err, "failed to count triggers", "count_triggers", "ownerType", ownerType, "ownerId", ownerID)
 		return err
 	}
 	if count >= maxCount {
@@ -1447,7 +1473,7 @@ func (h *TriggersHandler) rotateWebhookSecret(c *gin.Context, ownerType, ownerID
 	secret := generateWebhookSecret()
 	ciphertext, err := h.encrypt.Encrypt(c.Request.Context(), []byte(secret))
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to encrypt webhook secret"})
+		h.respondStoreFault(c, err, "failed to encrypt webhook secret", "encrypt_webhook_secret", "triggerId", triggerID, "ownerType", ownerType, "ownerId", ownerID)
 		return
 	}
 	keyVersion := 1
@@ -1456,7 +1482,7 @@ func (h *TriggersHandler) rotateWebhookSecret(c *gin.Context, ownerType, ownerID
 	}
 
 	if err := h.store.UpdateWebhookSecret(c.Request.Context(), triggerID, ciphertext, keyVersion); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to update webhook secret"})
+		h.respondStoreFault(c, err, "failed to update webhook secret", "update_webhook_secret", "triggerId", triggerID, "ownerType", ownerType, "ownerId", ownerID)
 		return
 	}
 
