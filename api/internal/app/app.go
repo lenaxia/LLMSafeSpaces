@@ -640,6 +640,13 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 		orgWorkflowsHandler = handlers.NewOrgWorkflowsHandler(wfStore, instanceSettings)
 		userTriggersHandler = handlers.NewUserTriggersHandler(wfStore, instanceSettings, providerCredsProv)
 		orgTriggersHandler = handlers.NewOrgTriggersHandler(wfStore, instanceSettings, providerCredsProv)
+		// 2026-10-30 live-fire (trigger 7df2f7d4): without a logger the
+		// generic 500 arms (fetch/update/delete) discard the underlying
+		// store error — five 500s over 8 minutes left zero diagnostic
+		// trace. SetLogger is REQUIRED for diagnosability, same
+		// discipline as podBootstrapHandler above.
+		userTriggersHandler.SetLogger(log)
+		orgTriggersHandler.SetLogger(log)
 		// Parent-id contract checks (the opaque-500 class audit): the
 		// same pool owns workspaces — the store's unscoped existence
 		// primitive backs the target-workspace 400s on workflow create
