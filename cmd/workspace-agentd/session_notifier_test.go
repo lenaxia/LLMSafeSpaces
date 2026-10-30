@@ -95,26 +95,26 @@ func newNotifierFixture(t *testing.T, facts sessionFacts) *notifierFixture {
 		Deliver:  deliver,
 		Logger:   zap.NewNop(),
 	})
-	t.Cleanup(func() { quiesceNotifier(n, debounce) })
+	t.Cleanup(func() { quiesceNotifier(n) })
 	return &notifierFixture{n: n, store: store, deliver: deliver, debounce: debounce}
 }
 
 // quiesceNotifier settles one engine at test end: cancel every ARMED
-// debounce, then out-wait an ALREADY-FIRED timer leg (its trailing
-// work is a local store persist — the chan deliverer never blocks, so
-// the persist is microseconds; 2× debounce is the settle bound).
-// Without this, a leg in flight when the test returns races
-// t.TempDir's RemoveAll with its write and fails the test on slow
-// runners ("directory not empty" — the CI -short+coverage class).
-func quiesceNotifier(n *sessionNotifier, debounce time.Duration) {
+// debounce, then JOIN every in-flight timer leg — the leg's trailing
+// store writes (outbox enqueue before delivery, dismiss persist after)
+// land inside the test's t.TempDir and must complete before RemoveAll.
+// The 2× debounce sleep this replaced was a heuristic, not a join: a
+// descheduled leg outlived it once in 13 full-suite runs ("TempDir
+// RemoveAll cleanup: unlinkat ... directory not empty" — PR #1986
+// round-2 evidence) because the atomic-rename persist re-creates files
+// inside the directory being removed. The join is deterministic: legs
+// are reserved at arm time and released by the leg body or by a
+// winning timer Stop (sessionNotifier.quiesce).
+func quiesceNotifier(n *sessionNotifier) {
 	if n == nil {
 		return
 	}
-	n.cancelAllDebounces()
-	if debounce <= 0 {
-		debounce = notifyDebounceDefault
-	}
-	time.Sleep(2 * debounce)
+	n.quiesce()
 }
 
 // evtFrame wraps one contract event as a sequenced stream frame. The
@@ -539,7 +539,7 @@ func TestOutboxPersistsOnFailedDelivery(t *testing.T) {
 		Store: store, Facts: mapSessionFacts{subtasks: map[string]bool{}, gone: map[string]bool{}},
 		Debounce: 25 * time.Millisecond, Deliver: deliver, Logger: zap.NewNop(),
 	})
-	t.Cleanup(func() { quiesceNotifier(n, 25*time.Millisecond) })
+	t.Cleanup(func() { quiesceNotifier(n) })
 	_, err := n.Subscribe("ses_w", "ses_m", nil)
 	require.NoError(t, err)
 
@@ -733,7 +733,7 @@ func runNotifierOnAuthority(t *testing.T, a *sessionstate.Authority, store *sess
 	})
 	ctx, cancel := context.WithCancel(context.Background())
 	go n.Run(ctx)
-	t.Cleanup(func() { quiesceNotifier(n, 25*time.Millisecond) })
+	t.Cleanup(func() { quiesceNotifier(n) })
 	t.Cleanup(cancel)
 	return cancel
 }
@@ -870,5 +870,5 @@ func TestRunResubscribesAfterDrop(t *testing.T) {
 	// Quiesce before returning: Run's own cancel arrives with the
 	// deferred ctx cancel, too late for an in-flight timer leg's
 	// trailing persist (the TempDir race).
-	quiesceNotifier(n, 25*time.Millisecond)
+	quiesceNotifier(n)
 }

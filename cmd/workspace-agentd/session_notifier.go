@@ -339,6 +339,14 @@ type sessionNotifier struct {
 	tracker     map[string]*notifierSession // canonical id → derived state
 	debounces   map[string]*armedDebounce   // canonical broadcaster id → timer
 	suppression suppressionTracker          // §4.4 already-notified ledger (mu-guarded)
+	// legWG counts IN-FLIGHT debounce timer legs: reserved at arm time
+	// (armDebounceLocked, before the timer exists), released either by
+	// the leg body itself or — when a winning timer Stop proves the leg
+	// will never run — by cancelDebounceLocked. Pure bookkeeping:
+	// nothing in production waits on it; quiesce() joins it so a fired
+	// leg's trailing store persist cannot outlive a test's t.TempDir
+	// (the RemoveAll race PR #1986's round-2 review evidenced).
+	legWG sync.WaitGroup
 	// deliverCtx is the Run loop's context (the delivery leg's
 	// cancellation parent); nil until Run starts — timer legs fired
 	// before/without Run fall back to a fresh background ctx.
@@ -800,16 +808,29 @@ func (n *sessionNotifier) settleGatesPassLocked(sid string, st *notifierSession)
 // Caller holds mu.
 func (n *sessionNotifier) armDebounceLocked(sid, kind string) {
 	n.cancelDebounceLocked(sid)
+	// Reserve the leg BEFORE the timer exists: a leg fired the instant
+	// AfterFunc returns must find its reservation already made (Add
+	// concurrent with Wait at counter zero is the one forbidden shape).
+	n.legWG.Add(1)
 	a := &armedDebounce{kind: kind}
-	a.timer = time.AfterFunc(n.debounce, func() { n.debounceFired(sid, kind) })
+	a.timer = time.AfterFunc(n.debounce, func() {
+		defer n.legWG.Done()
+		n.debounceFired(sid, kind)
+	})
 	n.debounces[sid] = a
 }
 
 // cancelDebounceLocked stops + forgets an armed timer (return-to-busy
 // within the window — the idle→busy flutter — cancels the notify).
+// Caller holds mu.
 func (n *sessionNotifier) cancelDebounceLocked(sid string) {
 	if a, ok := n.debounces[sid]; ok {
-		a.timer.Stop()
+		if a.timer.Stop() {
+			// Stop won: the leg will never run — retract its
+			// reservation. The Stop-false shapes (fired, running,
+			// finished) balance through the leg's own defer.
+			n.legWG.Done()
+		}
 		delete(n.debounces, sid)
 	}
 }
@@ -819,6 +840,32 @@ func (n *sessionNotifier) cancelAllDebounces() {
 	defer n.mu.Unlock()
 	for sid := range n.debounces {
 		n.cancelDebounceLocked(sid)
+	}
+}
+
+// quiesce deterministically stills the debounce machinery: cancels
+// every ARMED timer, then JOINS every in-flight timer leg. Test
+// support (the fixture cleanup's backstop): a fired leg keeps writing
+// the store document after its deliverer returned — the outbox enqueue
+// before delivery and the dismiss persist after it, both inside the
+// test's t.TempDir — and t.TempDir's RemoveAll races those trailing
+// writes ("unlinkat ... directory not empty"). A timed sleep cannot
+// join a descheduled goroutine; this does. The loop re-cancels while
+// any entry survives: an entry whose timer already fired stays mapped
+// until its leg takes the lock, and a fold racing a canceled Run can
+// re-arm one — each pass shrinks the set, terminating at quiet.
+func (n *sessionNotifier) quiesce() {
+	for {
+		n.mu.Lock()
+		for sid := range n.debounces {
+			n.cancelDebounceLocked(sid)
+		}
+		quiet := len(n.debounces) == 0
+		n.mu.Unlock()
+		n.legWG.Wait()
+		if quiet {
+			return
+		}
 	}
 }
 
