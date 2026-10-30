@@ -17,7 +17,6 @@ import { agentRolesApi, type AgentRole } from "../../api/agentRoles";
 import { Select } from "../ui/Select";
 import { NumberInput } from "../ui/NumberInput";
 import { Button } from "../ui/Button";
-import { Input } from "../ui/Input";
 import {
   DEFAULT_REVIEWER_PERSONA,
   PERSONA_ELIGIBLE_STAGES,
@@ -61,18 +60,37 @@ function personaDraftDirty(draft: PersonaDraft, stored: PersonaDraft): boolean {
   return draft.explicit !== stored.explicit || JSON.stringify(draft.map) !== JSON.stringify(stored.map);
 }
 
-// --- Role-first persona editing (owner ruling 2026-10-29) ----------------------
+// --- Role-ONLY persona editing (owner ruling 2026-10-29, round 2) --------------
 //
-// Personas REFERENCE the platform's agent roles instead of redefining
-// model/tools/system-prompt per persona: the per-stage base behavior
-// is a role DROPDOWN (the member-readable GET /me/agent-roles
-// vocabulary), and the only free-form text left is the OPTIONAL
-// instructions override layered on the role's system prompt. The
-// legacy name-only shape still renders (a role-less lane with the
-// name input kept for backward compat — existing stored personas
-// must stay editable), but NEW composition is role-first.
+// "We can remove any editor feature for the DX. It's not role-first,
+// it's role-ONLY." A persona IS a reference to a platform agent role
+// (the member-readable GET /me/agent-roles vocabulary) — the role's
+// model/tools/system-prompt are the single source of truth. The
+// editor offers exactly ONE authoring surface per stage: the role
+// select (+ Remove). The legacy name input and the instructions
+// override textarea are GONE from the DOM — instructions are not an
+// editor surface anymore (the backend's default-reviewer composition
+// and the stored-shape decode are the only writers/readers of them;
+// the editor never shows them). There is no "no role" option: a
+// picker row with no role chosen is not persisted (dropped on save).
 
-const PERSONA_NO_ROLE = "No role (legacy name + instructions)";
+/** The role picker's placeholder — what an unpicked row's select
+ * shows (NOT an option; nothing role-less can be authored). */
+const PERSONA_PICK_ROLE = "Pick a role…";
+
+/** The role-only persistence rule (applied at BOTH tiers' save
+ * bodies): an entry with no role reference is not a persona — an
+ * added-but-unpicked row, or a stored legacy {name, instructions}
+ * entry, is dropped from the outgoing map. Entries carrying a roleId
+ * ride verbatim (name/instructions included — the stored shape is
+ * untouched; only the editor stopped authoring them). */
+function persistablePersonaMap(map: Record<string, BoardPersonaConfig>): Record<string, BoardPersonaConfig> {
+  const out: Record<string, BoardPersonaConfig> = {};
+  for (const [stage, p] of Object.entries(map)) {
+    if (p.roleId) out[stage] = p;
+  }
+  return out;
+}
 
 /** One role's dropdown label — the display the editor and the status
  * lines render (name, disambiguated by scope). */
@@ -99,8 +117,11 @@ function personaLabel(p: BoardPersonaConfig | undefined, roles: AgentRole[]): st
 /** The one-click reviewer import (the suppression warning's button):
  * the reviewer AGENT ROLE when the vocabulary carries one (the
  * default-reviewer composition points at it — ruling 2026-10-29),
- * with the mirrored charter prose as the override layer; the legacy
- * name+instructions shape when no reviewer role exists. */
+ * with the mirrored charter prose riding the stored shape (the
+ * editor never shows it — role-ONLY). When no reviewer role exists
+ * the legacy name+instructions shape is returned for display
+ * continuity, but it carries no roleId and therefore does not
+ * persist (the role-only drop-on-save rule). */
 function reviewerImport(roles: AgentRole[]): BoardPersonaConfig {
   const role = roles.find((r) => r.slug === "reviewer" || r.name === "reviewer");
   if (role) {
@@ -157,16 +178,17 @@ function PersonaSuppressWarning(props: {
   );
 }
 
-/** The stage → persona editor, both tiers. Per persona-eligible stage:
- * a ROLE dropdown (the base behavior — the referenced agent role's
- * model/tools/system-prompt) + an optional instructions override when
- * the stage is listed; the legacy name+instructions lane renders only
- * for personas stored without a role (backward compat — no free-form
- * composition for the base behavior); an explicit "no persona" row
- * when the map does not list the stage (the
- * explicit-key-owns-all-stages semantics made visible); what the stage
- * runs on TODAY (inherited persona, default reviewer via the legacy
- * composition, or nothing) renders as context while editing. */
+/** The stage → persona editor, both tiers. ROLE-ONLY (owner ruling
+ * 2026-10-29, round 2): a persona IS a referenced agent role, and the
+ * editor's single authoring surface per listed stage is the role
+ * select + Remove — no name input, no instructions textarea, no
+ * role-less option anywhere. "Add persona" opens the role picker
+ * directly; a row with no role chosen is not persisted (dropped on
+ * save). An explicit "no persona" row renders when the map does not
+ * list the stage (the explicit-key-owns-all-stages semantics made
+ * visible); what the stage runs on TODAY (inherited persona, default
+ * reviewer via the composition, or nothing) renders as context while
+ * editing. */
 export function PersonaEditor(props: {
   tier: "user" | "project";
   testPrefix: string;
@@ -196,24 +218,23 @@ export function PersonaEditor(props: {
   const suppressWarning =
     draft.explicit && !draft.map["in_review"] && (props.compositionActive || inheritedReviewer !== undefined);
 
-  // The dropdown's option list: the no-role lane + every available
-  // role, labeled for display. An unresolvable stored reference rides
-  // as its own option so the value stays visible and preserved.
+  // The picker's option list: every available role, labeled for
+  // display. There is NO role-less option (role-ONLY). An
+  // unresolvable stored reference rides as its own option so the
+  // value stays visible and preserved.
   const roleOptions = (current?: string): string[] => {
-    const opts = [PERSONA_NO_ROLE, ...roles.map(roleLabel)];
+    const opts = roles.map(roleLabel);
     if (current && !opts.includes(current)) opts.push(current);
     return opts;
   };
+  // "" = unpicked (the placeholder renders; the entry will not
+  // persist until a role is chosen).
   const roleSelectValue = (p: BoardPersonaConfig): string => {
     const r = personaRole(p, roles);
     if (r) return roleLabel(r);
-    return p.roleId || PERSONA_NO_ROLE;
+    return p.roleId ?? "";
   };
   const onRoleSelect = (stage: string, p: BoardPersonaConfig, label: string) => {
-    if (label === PERSONA_NO_ROLE) {
-      setMap({ ...draft.map, [stage]: { ...p, roleId: undefined } });
-      return;
-    }
     const r = roles.find((role) => roleLabel(role) === label);
     if (r) setMap({ ...draft.map, [stage]: { ...p, roleId: r.id, name: r.name } });
   };
@@ -275,9 +296,14 @@ export function PersonaEditor(props: {
 
       {roles.length === 0 && (
         <p className="text-xs text-muted-foreground" data-testid={`${props.testPrefix}-no-roles`}>
-          No agent roles are available to select — personas fall back to the legacy name + instructions shape.
+          No agent roles are available to select — personas reference agent roles, so define the roles first.
         </p>
       )}
+
+      <p className="text-xs text-muted-foreground" data-testid={`${props.testPrefix}-role-only-note`}>
+        Each configured stage runs a referenced agent role — the role's model, tools, and system prompt are the single
+        source of truth. A row with no role picked is not saved.
+      </p>
 
       <div className="space-y-2">
         {PERSONA_ELIGIBLE_STAGES.map((stage) => {
@@ -321,60 +347,38 @@ export function PersonaEditor(props: {
                   variant="outline"
                   size="sm"
                   data-testid={`${props.testPrefix}-${stage}-add`}
-                  onClick={() => setMap({ ...draft.map, [stage]: { instructions: "" } })}
+                  onClick={() => setMap({ ...draft.map, [stage]: {} })}
                 >
                   Add persona
                 </Button>
               </div>
             );
           }
-          const role = personaRole(persona, roles);
           return (
-            <div key={stage} className="rounded-md border border-border p-2.5 space-y-2" data-testid={`${props.testPrefix}-${stage}-row`}>
-              <div className="flex flex-wrap items-center gap-2">
+            <div key={stage} className="flex flex-wrap items-center gap-2 rounded-md border border-border p-2.5" data-testid={`${props.testPrefix}-${stage}-row`}>
+              <label className="flex flex-wrap items-center gap-2">
                 <span className="text-sm font-medium">{STAGE_LABELS[stage]}</span>
                 <span data-testid={`${props.testPrefix}-${stage}-role`}>
                   <Select
                     value={roleSelectValue(persona)}
                     onValueChange={(v) => onRoleSelect(stage, persona, v)}
                     options={roleOptions(roleSelectValue(persona))}
+                    placeholder={PERSONA_PICK_ROLE}
                   />
                 </span>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  data-testid={`${props.testPrefix}-${stage}-remove`}
-                  onClick={() => {
-                    const next = { ...draft.map };
-                    delete next[stage];
-                    setMap(next);
-                  }}
-                >
-                  Remove
-                </Button>
-              </div>
-              {!persona.roleId && (
-                <Input
-                  className="h-8 w-full"
-                  placeholder="Persona name (legacy shape — pick a role instead)"
-                  value={persona.name ?? ""}
-                  data-testid={`${props.testPrefix}-${stage}-name`}
-                  onChange={(e) => setMap({ ...draft.map, [stage]: { ...persona, name: e.target.value } })}
-                />
-              )}
-              {role && (
-                <p className="text-xs text-muted-foreground" data-testid={`${props.testPrefix}-${stage}-role-note`}>
-                  {role.name}'s model, tools, and system prompt come from the referenced agent role — the role is the
-                  single source of truth.
-                </p>
-              )}
-              <textarea
-                className="min-h-20 w-full rounded-md border border-input bg-background px-3 py-2 text-sm shadow-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                placeholder="Optional instructions override (layered on the role's system prompt)"
-                value={persona.instructions ?? ""}
-                data-testid={`${props.testPrefix}-${stage}-instructions`}
-                onChange={(e) => setMap({ ...draft.map, [stage]: { ...persona, instructions: e.target.value } })}
-              />
+              </label>
+              <Button
+                variant="outline"
+                size="sm"
+                data-testid={`${props.testPrefix}-${stage}-remove`}
+                onClick={() => {
+                  const next = { ...draft.map };
+                  delete next[stage];
+                  setMap(next);
+                }}
+              >
+                Remove
+              </Button>
             </div>
           );
         })}
@@ -455,8 +459,10 @@ export function BoardDefaultsDialog(props: { open: boolean; onOpenChange: (open:
         // every inheriting project; sending nothing when something WAS
         // stored would delete it — the round-1 wipe) or deliberately
         // made explicit in the persona editor (including {} — the
-        // visible, labeled opt-out).
-        ...(body.personas.explicit ? { stagePersonas: body.personas.map } : {}),
+        // visible, labeled opt-out). Role-ONLY: the outgoing map drops
+        // every entry with no role reference (unpicked rows and legacy
+        // stored shapes — owner ruling 2026-10-29 round 2).
+        ...(body.personas.explicit ? { stagePersonas: persistablePersonaMap(body.personas.map) } : {}),
       }),
     onSuccess: () => {
       setError(null);
@@ -639,11 +645,14 @@ export function ProjectConfigDialog(props: {
   // the project's stored stagePersonas override back verbatim or
   // saving reviewColumn would silently wipe configured personas (the
   // blocking round-1 review finding). Absent stays absent (inherit) —
-  // until the persona editor makes an override explicit.
+  // until the persona editor makes an override explicit. Role-ONLY:
+  // the outgoing map drops every entry with no role reference
+  // (unpicked rows and legacy stored shapes — owner ruling
+  // 2026-10-29 round 2).
   const body: ProjectBoardConfigOverrideInput = {
     ...(dReview !== "" ? { reviewColumn: dReview } : {}),
     ...(dAuto !== "" ? { autoAssignReviewer: dAuto === "on" } : {}),
-    ...(dPersonas.explicit ? { stagePersonas: dPersonas.map } : {}),
+    ...(dPersonas.explicit ? { stagePersonas: persistablePersonaMap(dPersonas.map) } : {}),
   };
 
   const save = useMutation({
