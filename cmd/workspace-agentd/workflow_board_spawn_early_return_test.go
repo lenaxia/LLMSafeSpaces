@@ -50,13 +50,6 @@ func newFakeOpencodeHarness(t *testing.T) *fakeOpencodeHarness {
 		messageDone:    make(chan struct{}),
 		status:         http.StatusOK,
 	}
-	// Deadlock guard (review round 1): ANY failure path that Fatal()s
-	// before the test drains the leg (including the regression tripwire
-	// itself) must not leave the parked handler holding the connection
-	// into srv.Close — release idempotently BEFORE the server closes, so
-	// a future regression presents as a crisp assertion failure, not a
-	// CI hang.
-	t.Cleanup(h.releaseLeg)
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /session", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -82,7 +75,16 @@ func newFakeOpencodeHarness(t *testing.T) *fakeOpencodeHarness {
 		fmt.Fprint(w, `{"info":{"id":"msg_1","sessionID":"ses_worker_1"},"parts":[{"type":"text","text":"ok"}]}`)
 	})
 	h.srv = httptest.NewServer(mux)
+	// Deadlock guard (review round 1; registration order fixed round 2):
+	// ANY failure path that Fatal()s before the test drains the leg
+	// (including the regression tripwire itself) must not leave the
+	// parked handler holding the connection into srv.Close. t.Cleanup is
+	// LIFO — registering releaseLeg AFTER srv.Close makes it RUN BEFORE
+	// srv.Close, so the leg unparks first and the server closes cleanly;
+	// a future regression presents as a crisp assertion failure, not a
+	// CI hang.
 	t.Cleanup(h.srv.Close)
+	t.Cleanup(h.releaseLeg)
 
 	orig := agentAddrAtomic.Load()
 	t.Cleanup(func() { agentAddrAtomic.Store(orig) })
