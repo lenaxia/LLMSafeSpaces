@@ -21,11 +21,19 @@ import { agentRolesApi } from "../../api/agentRoles";
 
 // BoardConfigPanels — the relocated board config surfaces (owner
 // ruling 2026-10-28: config ON the board, alongside the projects).
-// These tests pin the persona editor at BOTH tiers: the set-ness
-// round-trip (never materialize {}, never silently wipe a stored
-// map), the {} opt-out, the legacy-reviewer-suppression warning with
-// its one-click default-reviewer import, the effective merged view
-// with inherited/override badges, and the worker-slots PATCH seam.
+// These tests pin the ROLE-ONLY persona editor (owner ruling
+// 2026-10-29, round 2: "It's not role-first, it's role-ONLY") at BOTH
+// tiers: the set-ness round-trip (never materialize {}, never
+// silently wipe a stored map), the {} opt-out, the drop-on-save rule
+// for role-less entries, the legacy-reviewer-suppression warning with
+// its one-click reviewer-role import, the effective merged view with
+// inherited/override badges, and the worker-slots PATCH seam. The
+// editor's ONLY per-stage authoring surface is the role select +
+// Remove — no name input, no instructions textarea, no "no role"
+// option anywhere. The suppression warning, its import's dismissal,
+// and the empty-map note all read the PERSISTABLE map (the
+// role-filtered map a save actually sends — review F1–F3 on
+// PR #1988): a role-less entry can never mask the suppression.
 
 vi.mock("../../api/board", () => ({
   boardApi: {
@@ -40,7 +48,7 @@ vi.mock("../../api/board", () => ({
 }));
 
 // The persona editor's role vocabulary (owner ruling 2026-10-29:
-// personas REFERENCE the platform's agent roles — the dropdown's
+// personas REFERENCE the platform's agent roles — the picker's
 // source).
 vi.mock("../../api/agentRoles", () => ({
   agentRolesApi: {
@@ -48,8 +56,8 @@ vi.mock("../../api/agentRoles", () => ({
   },
 }));
 
-/** The wire shape the save-body assertions read (roleId-first). */
-type BoardPersonaConfigShape = BoardPersonaConfig;
+/** The persona map the save-body assertions read (bare role refs). */
+type PersonaMapShape = Record<string, BoardPersonaConfig>;
 
 const REVIEWER_ROLE = {
   id: "11111111-1111-1111-1111-111111111111",
@@ -85,13 +93,19 @@ const PC_B: ProjectBoardConfig = {
   overrides: {},
   effective: USER,
 };
-// Round-1 review finding: a project carrying a STORED stagePersonas
-// override — a save of the OTHER keys must carry it back verbatim
-// (the server PUT is REPLACE: absent keys are deletes).
+// A project carrying a STORED stagePersonas override (bare role
+// references — the canonical wire form) — a save of the OTHER keys
+// must carry it back verbatim (the server PUT is REPLACE: absent keys
+// are deletes).
 const PC_PERSONAS: ProjectBoardConfig = {
   project_id: "prj-cccc3333",
-  overrides: { stagePersonas: { in_review: { name: "auditor", instructions: "Verify." } } },
-  effective: { ...USER, stagePersonas: { in_review: { name: "auditor", instructions: "Verify." } } },
+  overrides: {
+    stagePersonas: { in_review: REVIEWER_ROLE.id },
+  },
+  effective: {
+    ...USER,
+    stagePersonas: { in_review: REVIEWER_ROLE.id },
+  },
 };
 const PROJECT: BoardProject = {
   id: "proj-uuid-b",
@@ -105,6 +119,12 @@ const PROJECT: BoardProject = {
   created_at: "",
   updated_at: "",
 };
+
+/** The persona section must carry NO text inputs of any kind — the
+ * role select + Remove is the whole authoring surface (role-ONLY). */
+function expectNoTextInputs(section: HTMLElement) {
+  expect(section.querySelectorAll("input, textarea")).toHaveLength(0);
+}
 
 function renderDefaults() {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -160,11 +180,14 @@ describe("BoardDefaultsDialog — the user tier, ON the board", () => {
     expect(body).toEqual({ reviewColumn: "manual", autoAssignReviewer: false, defaultWorkerSlots: 3 });
   });
 
-  it("round-2 pin: an explicitly-SET stagePersonas map is carried back verbatim (REPLACE never wipes it)", async () => {
+  it("round-2 pin: an explicitly-SET stagePersonas map of role references is carried back verbatim (REPLACE never wipes it)", async () => {
     const user = userEvent.setup();
     vi.mocked(boardApi.getUserBoardConfig).mockResolvedValue({
       ...USER,
-      stagePersonas: { in_review: { name: "auditor", instructions: "Verify." } },
+      stagePersonas: {
+        in_review: REVIEWER_ROLE.id,
+        in_progress: { roleId: BUILD_ROLE.id },
+      },
       stagePersonasSet: true,
     });
     renderDefaults();
@@ -173,8 +196,12 @@ describe("BoardDefaultsDialog — the user tier, ON the board", () => {
     await user.click(screen.getByTestId("cfg-save-global"));
     await waitFor(() => expect(boardApi.setUserBoardConfig).toHaveBeenCalled());
     const body = vi.mocked(boardApi.setUserBoardConfig).mock.calls[0]![0];
+    // Every stored role reference rides the save — canonicalized to
+    // the bare-string form (the {roleId} object decodes to the same
+    // reference; the canonical form is what the editor writes).
     expect((body as { stagePersonas?: unknown }).stagePersonas).toEqual({
-      in_review: { name: "auditor", instructions: "Verify." },
+      in_review: REVIEWER_ROLE.id,
+      in_progress: BUILD_ROLE.id,
     });
   });
 
@@ -204,28 +231,31 @@ describe("BoardDefaultsDialog — the user tier, ON the board", () => {
     expect(screen.queryByTestId("cfg-personas-user-empty-note")).not.toBeInTheDocument();
   });
 
-  it("a STORED explicit map renders editable name+instructions rows (both stages listed)", async () => {
+  it("role-only pin: a STORED explicit map renders role selects ONLY — no name input, no instructions textarea, no no-role option", async () => {
     vi.mocked(boardApi.getUserBoardConfig).mockResolvedValue({
       ...USER,
       stagePersonas: {
-        in_review: { name: "auditor", instructions: "Verify." },
-        in_progress: { name: "implementer" },
+        in_review: REVIEWER_ROLE.id,
+        in_progress: BUILD_ROLE.id,
       },
       stagePersonasSet: true,
     });
     renderDefaults();
-    const name = await screen.findByTestId("cfg-personas-user-in_review-name");
-    expect((name as HTMLInputElement).value).toBe("auditor");
-    expect((screen.getByTestId("cfg-personas-user-in_review-instructions") as HTMLTextAreaElement).value).toBe(
-      "Verify.",
-    );
-    expect((screen.getByTestId("cfg-personas-user-in_progress-name") as HTMLInputElement).value).toBe("implementer");
+    await screen.findByTestId("cfg-personas-user-in_review-row");
+    expect(screen.getByTestId("cfg-personas-user-in_review-role").textContent).toContain("Code Reviewer");
+    expect(screen.getByTestId("cfg-personas-user-in_progress-role").textContent).toContain("Builder");
+    // ROLE-ONLY (owner ruling 2026-10-29 round 2): no text authoring
+    // surface of any kind in the persona section.
+    expectNoTextInputs(screen.getByTestId("cfg-personas-user"));
+    expect(screen.queryByTestId("cfg-personas-user-in_review-name")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("cfg-personas-user-in_review-instructions")).not.toBeInTheDocument();
+    expect(screen.getByTestId("cfg-personas-user-role-only-note")).toHaveTextContent(/single source of truth/);
   });
 
   it("unlisted stages render explicitly as no persona while the map is explicit", async () => {
     vi.mocked(boardApi.getUserBoardConfig).mockResolvedValue({
       ...USER,
-      stagePersonas: { in_progress: { name: "implementer" } },
+      stagePersonas: { in_progress: BUILD_ROLE.id },
       stagePersonasSet: true,
     });
     renderDefaults();
@@ -235,19 +265,110 @@ describe("BoardDefaultsDialog — the user tier, ON the board", () => {
     expect(none).toHaveTextContent(/owns every stage it does not list/);
   });
 
-  it("add-stage → edit name+instructions → save carries the explicit map", async () => {
+  it("Add persona opens the role picker directly; picking a role and saving carries the role reference only", async () => {
     const user = userEvent.setup();
     renderDefaults();
     await screen.findByTestId("cfg-personas-user");
     await user.click(screen.getByTestId("cfg-personas-user-manage"));
     await user.click(screen.getByTestId("cfg-personas-user-in_progress-add"));
-    await user.type(screen.getByTestId("cfg-personas-user-in_progress-name"), "builder");
-    await user.type(screen.getByTestId("cfg-personas-user-in_progress-instructions"), "Build the thing.");
+    // The added row IS a picker (placeholder, no picked value) — no
+    // name/instructions inputs ever render.
+    const row = screen.getByTestId("cfg-personas-user-in_progress-row");
+    expect(row.textContent).toContain("Pick a role…");
+    expectNoTextInputs(screen.getByTestId("cfg-personas-user"));
+    await user.click(screen.getByTestId("cfg-personas-user-in_progress-role"));
+    await user.click(await screen.findByRole("option", { name: "Builder (org)" }));
     await user.click(screen.getByTestId("cfg-save-global"));
     await waitFor(() => expect(boardApi.setUserBoardConfig).toHaveBeenCalled());
     const body = vi.mocked(boardApi.setUserBoardConfig).mock.calls[0]![0];
     expect((body as { stagePersonas?: Record<string, unknown> }).stagePersonas).toEqual({
-      in_progress: { name: "builder", instructions: "Build the thing." },
+      in_progress: BUILD_ROLE.id,
+    });
+  });
+
+  it("role-only drop rule: an added row left unpicked is NOT persisted (save drops it)", async () => {
+    const user = userEvent.setup();
+    renderDefaults();
+    await screen.findByTestId("cfg-personas-user");
+    await user.click(screen.getByTestId("cfg-personas-user-manage"));
+    await user.click(screen.getByTestId("cfg-personas-user-in_progress-add"));
+    await user.click(screen.getByTestId("cfg-save-global"));
+    await waitFor(() => expect(boardApi.setUserBoardConfig).toHaveBeenCalled());
+    const body = vi.mocked(boardApi.setUserBoardConfig).mock.calls[0]![0];
+    expect((body as { stagePersonas?: unknown }).stagePersonas).toEqual({});
+  });
+
+  it("a STALE stored reference (role deleted post-storage) rides as its own option and saves verbatim — the drift stays visible", async () => {
+    const user = userEvent.setup();
+    vi.mocked(boardApi.getUserBoardConfig).mockResolvedValue({
+      ...USER,
+      stagePersonas: { in_review: "gone-role-id" },
+      stagePersonasSet: true,
+    });
+    renderDefaults();
+    const row = await screen.findByTestId("cfg-personas-user-in_review-row");
+    // The unresolvable reference renders as its own option — visible
+    // and preserved, never silently re-pointed or dropped.
+    expect(row.textContent).toContain("gone-role-id");
+    expectNoTextInputs(screen.getByTestId("cfg-personas-user"));
+    const slots = screen.getByTestId("cfg-defaultWorkerSlots");
+    await user.type(slots.querySelector("input")!, "4");
+    await user.click(screen.getByTestId("cfg-save-global"));
+    await waitFor(() => expect(boardApi.setUserBoardConfig).toHaveBeenCalled());
+    const body = vi.mocked(boardApi.setUserBoardConfig).mock.calls[0]![0];
+    expect((body as { stagePersonas?: unknown }).stagePersonas).toEqual({ in_review: "gone-role-id" });
+  });
+
+  it("F3 pin: an explicit draft whose every entry is UNPICKED renders the empty-map note (the save materializes {})", async () => {
+    const user = userEvent.setup();
+    vi.mocked(boardApi.getUserBoardConfig).mockResolvedValue({
+      ...USER,
+      reviewColumn: "auto",
+      autoAssignReviewer: false,
+    });
+    renderDefaults();
+    await screen.findByTestId("cfg-personas-user");
+    await user.click(screen.getByTestId("cfg-personas-user-manage"));
+    // One added-but-unpicked row: the raw draft carries a key, but
+    // the note keys on the PERSISTABLE map (role-less entries drop) —
+    // under role-only this draft shape is the ONLY role-less form
+    // left (a stored one cannot exist on the wire).
+    await user.click(screen.getByTestId("cfg-personas-user-in_progress-add"));
+    expect(screen.getByTestId("cfg-personas-user-in_progress-row").textContent).toContain("Pick a role…");
+    expect(screen.queryByTestId("cfg-personas-user-warning")).not.toBeInTheDocument();
+    expect(screen.getByTestId("cfg-personas-user-empty-note")).toHaveTextContent(/no personas/);
+    // And the note is honest: the save really materializes the
+    // explicit {} opt-out (the unpicked row never rides).
+    const slots = screen.getByTestId("cfg-defaultWorkerSlots");
+    await user.type(slots.querySelector("input")!, "4");
+    await user.click(screen.getByTestId("cfg-save-global"));
+    await waitFor(() => expect(boardApi.setUserBoardConfig).toHaveBeenCalled());
+    const body = vi.mocked(boardApi.setUserBoardConfig).mock.calls[0]![0];
+    expect((body as { stagePersonas?: unknown }).stagePersonas).toEqual({});
+  });
+
+  it("an unresolvable stored roleId rides as its own select option and persists verbatim (never stripped, never lost)", async () => {
+    const user = userEvent.setup();
+    vi.mocked(boardApi.getUserBoardConfig).mockResolvedValue({
+      ...USER,
+      stagePersonas: { in_review: { roleId: "ghost-role-id" } },
+      stagePersonasSet: true,
+    });
+    renderDefaults();
+    const row = await screen.findByTestId("cfg-personas-user-in_review-row");
+    // Not in the vocabulary → the raw reference stays visible as the
+    // select's own option (no phantom, no wipe)…
+    expect(row.textContent).toContain("ghost-role-id");
+    const slots = screen.getByTestId("cfg-defaultWorkerSlots");
+    await user.type(slots.querySelector("input")!, "4");
+    await user.click(screen.getByTestId("cfg-save-global"));
+    await waitFor(() => expect(boardApi.setUserBoardConfig).toHaveBeenCalled());
+    const body = vi.mocked(boardApi.setUserBoardConfig).mock.calls[0]![0];
+    // …and a role-BEARING entry rides verbatim even when the role
+    // cannot be resolved client-side (the platform validates) — as
+    // the canonical BARE-STRING reference (role-only wire).
+    expect((body as { stagePersonas?: unknown }).stagePersonas).toEqual({
+      in_review: "ghost-role-id",
     });
   });
 
@@ -277,20 +398,20 @@ describe("BoardDefaultsDialog — the user tier, ON the board", () => {
     expect(warning).toHaveTextContent(/suppresses the built-in auto-reviewer persona/);
     await user.click(screen.getByTestId("cfg-personas-user-add-reviewer"));
     expect(screen.queryByTestId("cfg-personas-user-warning")).not.toBeInTheDocument();
-    // The vocabulary carries a reviewer role → the import is ROLE-FIRST
-    // (owner ruling 2026-10-29): the dropdown shows the role, the prose
-    // rides as the override layer, and the save carries the role id.
+    // ROLE-ONLY (owner ruling 2026-10-29 round 2): the import is the
+    // reviewer ROLE — the select shows it, NO name input and NO
+    // instructions textarea render (the mirrored charter prose rides
+    // the STORED shape unseen; the save carries the role id).
     expect(screen.getByTestId("cfg-personas-user-in_review-role").textContent).toContain("Code Reviewer");
-    expect(screen.queryByTestId("cfg-personas-user-in_review-name")).not.toBeInTheDocument();
-    expect(
-      (screen.getByTestId("cfg-personas-user-in_review-instructions") as HTMLTextAreaElement).value,
-    ).toContain("board_record_verdict");
+    expectNoTextInputs(screen.getByTestId("cfg-personas-user"));
     await user.click(screen.getByTestId("cfg-save-global"));
     await waitFor(() => expect(boardApi.setUserBoardConfig).toHaveBeenCalled());
     const body = vi.mocked(boardApi.setUserBoardConfig).mock.calls[0]![0];
-    const sent = (body as { stagePersonas?: Record<string, BoardPersonaConfigShape> }).stagePersonas!;
-    expect(sent.in_review?.roleId).toBe(REVIEWER_ROLE.id);
-    expect(sent.in_review?.instructions).toContain("board_record_verdict");
+    // The import saves the reviewer ROLE reference (its canonical id)
+    // — the verdict-channel charter is the role's system prompt, never
+    // a persona payload.
+    const sent = (body as { stagePersonas?: PersonaMapShape }).stagePersonas!;
+    expect(sent.in_review).toBe(REVIEWER_ROLE.id);
   });
 
   it("no suppression warning when the composition is off (autoAssignReviewer=false)", async () => {
@@ -306,11 +427,71 @@ describe("BoardDefaultsDialog — the user tier, ON the board", () => {
     expect(screen.queryByTestId("cfg-personas-user-warning")).not.toBeInTheDocument();
   });
 
+  it("F1 pin: an added-but-UNPICKED in_review row with the composition LIVE fires the warning — the raw draft cannot mask what the save drops to {}", async () => {
+    const user = userEvent.setup();
+    vi.mocked(boardApi.getUserBoardConfig).mockResolvedValue({
+      ...USER,
+      reviewColumn: "auto",
+      autoAssignReviewer: true,
+    });
+    renderDefaults();
+    // The draft's in_review entry is "" (added, no role picked): it is
+    // NOT an in_review persona for warning purposes (the save drops
+    // it) — the warning must fire, not be masked by the raw draft's
+    // truthy key. Under role-only this draft shape is the ONLY
+    // role-less form left (a stored one cannot exist on the wire).
+    await screen.findByTestId("cfg-personas-user");
+    await user.click(screen.getByTestId("cfg-personas-user-manage"));
+    expect(screen.getByTestId("cfg-personas-user-warning")).toBeInTheDocument();
+    await user.click(screen.getByTestId("cfg-personas-user-in_review-add"));
+    expect(screen.getByTestId("cfg-personas-user-in_review-row").textContent).toContain("Pick a role…");
+    expect(screen.getByTestId("cfg-personas-user-warning")).toBeInTheDocument();
+    // And the warning is honest: saving (dirtied via slots) really
+    // does send the explicit {} opt-out.
+    const slots = screen.getByTestId("cfg-defaultWorkerSlots");
+    await user.type(slots.querySelector("input")!, "4");
+    await user.click(screen.getByTestId("cfg-save-global"));
+    await waitFor(() => expect(boardApi.setUserBoardConfig).toHaveBeenCalled());
+    const body = vi.mocked(boardApi.setUserBoardConfig).mock.calls[0]![0];
+    expect((body as { stagePersonas?: unknown }).stagePersonas).toEqual({});
+  });
+
+  it("F2 pin: importing with NO reviewer role in the client vocabulary lands the SEEDED reviewer slug — a role-bearing ref, the platform validates it", async () => {
+    const user = userEvent.setup();
+    vi.mocked(agentRolesApi.listForMe).mockResolvedValue([BUILD_ROLE]);
+    vi.mocked(boardApi.getUserBoardConfig).mockResolvedValue({
+      ...USER,
+      reviewColumn: "auto",
+      autoAssignReviewer: true,
+    });
+    renderDefaults();
+    await screen.findByTestId("cfg-personas-user");
+    await user.click(screen.getByTestId("cfg-personas-user-manage"));
+    expect(screen.getByTestId("cfg-personas-user-warning")).toBeInTheDocument();
+    await user.click(screen.getByTestId("cfg-personas-user-add-reviewer"));
+    // The import landed the built-in reviewer role's SLUG (the
+    // platform seeds the role at startup, so the slug always
+    // addresses it) — a role-BEARING entry: the row shows the raw
+    // slug as its own option (the client vocabulary is stale, not
+    // the entry), the warning legitimately dismisses, and the save
+    // persists the reference (the server validates against the real
+    // vocabulary — never a silent suppression).
+    expect(screen.getByTestId("cfg-personas-user-in_review-row").textContent).toContain("reviewer");
+    expect(screen.queryByTestId("cfg-personas-user-warning")).not.toBeInTheDocument();
+    await user.click(screen.getByTestId("cfg-save-global"));
+    await waitFor(() => expect(boardApi.setUserBoardConfig).toHaveBeenCalled());
+    const body = vi.mocked(boardApi.setUserBoardConfig).mock.calls[0]![0];
+    const sent = (body as { stagePersonas?: PersonaMapShape }).stagePersonas!;
+    expect(sent.in_review).toBe("reviewer");
+    // The re-pick flow (a vocabulary role replacing the raw reference)
+    // is pinned by the project-tier "saves a RE-PICKED role" test.
+  });
+
   it("removing the last stage keeps the map explicit ({}), and Revert un-sets it", async () => {
     const user = userEvent.setup();
     vi.mocked(boardApi.getUserBoardConfig).mockResolvedValue({
       ...USER,
-      stagePersonas: { in_review: { name: "auditor", instructions: "Verify." } },
+      stagePersonas: { in_review: REVIEWER_ROLE.id },
       stagePersonasSet: true,
     });
     renderDefaults();
@@ -362,7 +543,7 @@ describe("ProjectConfigDialog — the project tier, alongside the projects", () 
     expect((body as { autoAssignReviewer?: boolean }).autoAssignReviewer).toBe(true);
   });
 
-  it("round-1 pin: saving the project's OTHER keys carries the stored stagePersonas back verbatim (REPLACE never wipes personas)", async () => {
+  it("round-1 pin: saving the project's OTHER keys carries the stored role-bearing stagePersonas back verbatim (REPLACE never wipes personas)", async () => {
     const user = userEvent.setup();
     const project = { ...PROJECT, short_id: "prj-cccc3333" };
     renderProject(project);
@@ -375,7 +556,7 @@ describe("ProjectConfigDialog — the project tier, alongside the projects", () 
     expect(id).toBe("prj-cccc3333");
     expect((body as { reviewColumn?: string }).reviewColumn).toBe("manual");
     expect((body as { stagePersonas?: unknown }).stagePersonas).toEqual({
-      in_review: { name: "auditor", instructions: "Verify." },
+      in_review: REVIEWER_ROLE.id,
     });
     expect(Object.keys(body).sort()).toEqual(["reviewColumn", "stagePersonas"]);
   });
@@ -420,25 +601,25 @@ describe("ProjectConfigDialog — the project tier, alongside the projects", () 
     expect((body as { stagePersonas?: unknown }).stagePersonas).toEqual({});
   });
 
-  it("effective merged view — an inherited user-tier persona renders with the inherited badge", async () => {
+  it("effective merged view — an inherited user-tier role persona renders with the inherited badge", async () => {
     vi.mocked(boardApi.getUserBoardConfig).mockResolvedValue({
       ...USER,
-      stagePersonas: { in_review: { name: "auditor", instructions: "Verify." } },
+      stagePersonas: { in_review: REVIEWER_ROLE.id },
       stagePersonasSet: true,
     });
     renderProject();
     const status = await screen.findByTestId("cfg-personas-prj-bbbb2222-in_review-status");
-    expect(status).toHaveTextContent(/inherited: “auditor”/);
+    expect(status).toHaveTextContent(/inherited: “Code Reviewer”/);
     // in_progress is not listed in the inherited explicit map → the
     // explicit-key-owns-all-stages semantics applies one tier up.
     expect(screen.getByTestId("cfg-personas-prj-bbbb2222-in_progress-status")).toHaveTextContent(/no persona/);
   });
 
-  it("inherited-kind suppression warning when overriding a user-tier in_review persona", async () => {
+  it("inherited-kind suppression warning when overriding a user-tier in_review role persona; the import restores the ROLE", async () => {
     const user = userEvent.setup();
     vi.mocked(boardApi.getUserBoardConfig).mockResolvedValue({
       ...USER,
-      stagePersonas: { in_review: { name: "auditor", instructions: "Verify." } },
+      stagePersonas: { in_review: REVIEWER_ROLE.id },
       stagePersonasSet: true,
     });
     renderProject();
@@ -446,29 +627,54 @@ describe("ProjectConfigDialog — the project tier, alongside the projects", () 
     await user.click(screen.getByTestId("cfg-personas-prj-bbbb2222-manage"));
     const warning = screen.getByTestId("cfg-personas-prj-bbbb2222-warning");
     expect(warning).toHaveTextContent(/suppresses the inherited in_review persona/);
-    expect(warning).toHaveTextContent(/auditor/);
-    // The one-click import restores the INHERITED persona, not the
-    // default reviewer.
+    expect(warning).toHaveTextContent(/Code Reviewer/);
+    // The one-click import restores the INHERITED role persona (the
+    // select shows it; nothing else renders in the row).
     await user.click(screen.getByTestId("cfg-personas-prj-bbbb2222-add-reviewer"));
-    expect((screen.getByTestId("cfg-personas-prj-bbbb2222-in_review-name") as HTMLInputElement).value).toBe(
-      "auditor",
-    );
+    expect(screen.getByTestId("cfg-personas-prj-bbbb2222-in_review-role").textContent).toContain("Code Reviewer");
+    expectNoTextInputs(screen.getByTestId("cfg-personas-prj-bbbb2222"));
   });
 
-  it("a stored override map renders editable and saves edited personas", async () => {
+  it("F2 project-tier pin: importing an inherited UNRESOLVABLE reviewer ref copies the reference verbatim — it rides, never stripped", async () => {
+    const user = userEvent.setup();
+    vi.mocked(boardApi.getUserBoardConfig).mockResolvedValue({
+      ...USER,
+      stagePersonas: { in_review: "auditor-role-id" },
+      stagePersonasSet: true,
+    });
+    renderProject();
+    await screen.findByTestId("cfg-personas-prj-bbbb2222");
+    await user.click(screen.getByTestId("cfg-personas-prj-bbbb2222-manage"));
+    const warning = screen.getByTestId("cfg-personas-prj-bbbb2222-warning");
+    expect(warning).toHaveTextContent(/suppresses the inherited in_review persona/);
+    // The inherited ref is a role reference the client vocabulary
+    // cannot resolve — under role-only that is the closest live shape
+    // to the old role-less entry: the warning names the raw ref.
+    expect(warning).toHaveTextContent(/auditor-role-id/);
+    await user.click(screen.getByTestId("cfg-personas-prj-bbbb2222-add-reviewer"));
+    // The import copies the REFERENCE into the draft (a role-bearing
+    // entry): the row shows the raw ref as its own option, the
+    // warning legitimately dismisses, and the save persists the ref
+    // verbatim — the server validates against the real vocabulary.
+    expect(screen.getByTestId("cfg-personas-prj-bbbb2222-in_review-row").textContent).toContain(
+      "auditor-role-id",
+    );
+    expect(screen.queryByTestId("cfg-personas-prj-bbbb2222-warning")).not.toBeInTheDocument();
+  });
+
+  it("a stored override map renders as role selects and saves a RE-PICKED role", async () => {
     const user = userEvent.setup();
     const project = { ...PROJECT, short_id: "prj-cccc3333" };
     renderProject(project);
-    const name = await screen.findByTestId("cfg-personas-prj-cccc3333-in_review-name");
-    expect((name as HTMLInputElement).value).toBe("auditor");
-    await user.clear(name);
-    await user.type(name, "auditor-2");
+    const role = await screen.findByTestId("cfg-personas-prj-cccc3333-in_review-role");
+    expect(role.textContent).toContain("Code Reviewer");
+    expectNoTextInputs(screen.getByTestId("cfg-personas-prj-cccc3333"));
+    await user.click(role);
+    await user.click(await screen.findByRole("option", { name: "Builder (org)" }));
     await user.click(screen.getByTestId("cfg-save-prj-cccc3333"));
     await waitFor(() => expect(boardApi.setProjectBoardConfig).toHaveBeenCalled());
     const body = vi.mocked(boardApi.setProjectBoardConfig).mock.calls[0]![1];
-    expect((body as { stagePersonas?: Record<string, { name: string }> }).stagePersonas?.in_review?.name).toBe(
-      "auditor-2",
-    );
+    expect((body as { stagePersonas?: PersonaMapShape }).stagePersonas?.in_review).toBe(BUILD_ROLE.id);
   });
 
   it("Inherit drops the explicit override — the save sends no stagePersonas key", async () => {
@@ -491,46 +697,70 @@ describe("ProjectConfigDialog — the project tier, alongside the projects", () 
     expect(boardApi.setProjectBoardConfig).not.toHaveBeenCalled();
     expect(boardApi.updateProject).not.toHaveBeenCalled();
   });
-  it("role-first editing — a persona carrying roleId renders the role dropdown + override, no free-form name input; the save carries the reference", async () => {
+
+  it("role-only editing — a slug-referenced persona renders the role select ONLY (no textareas, no per-row note); re-picking saves the new reference", async () => {
     const user = userEvent.setup();
-    // A stored role-bearing persona (slug reference — the platform
-    // accepts id or slug).
+    // A stored persona as the bare SLUG reference (the platform
+    // accepts id or slug — both address the same role).
     vi.mocked(boardApi.getProjectBoardConfig).mockImplementation(async () => ({
       project_id: "prj-dddd4444",
       overrides: {
-        stagePersonas: {
-          in_review: { roleId: "reviewer", name: "Code Reviewer", instructions: "Verify adversarially." },
-        },
+        stagePersonas: { in_review: "reviewer" },
       },
       effective: {
         ...USER,
         stagePersonasSet: true,
-        stagePersonas: { in_review: { roleId: "reviewer", instructions: "Verify adversarially." } },
+        stagePersonas: { in_review: "reviewer" },
       },
     }));
     renderProject();
     const row = await screen.findByTestId("cfg-personas-prj-bbbb2222-in_review-row");
-    // (the dropdown renders the referenced role's label)
+    // (the select renders the referenced role's label)
     expect(row.textContent).toContain("Code Reviewer (platform)");
     expect(screen.queryByTestId("cfg-personas-prj-bbbb2222-in_review-name")).not.toBeInTheDocument();
-    expect(screen.getByTestId("cfg-personas-prj-bbbb2222-in_review-role-note").textContent).toContain(
-      "single source of truth",
-    );
-    // Dirty the override → save carries the persona verbatim (the
-    // reference is never stripped).
-    const ta = screen.getByTestId("cfg-personas-prj-bbbb2222-in_review-instructions") as HTMLTextAreaElement;
-    await user.type(ta, " More.");
+    expect(screen.queryByTestId("cfg-personas-prj-bbbb2222-in_review-instructions")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("cfg-personas-prj-bbbb2222-in_review-role-note")).not.toBeInTheDocument();
+    expectNoTextInputs(screen.getByTestId("cfg-personas-prj-bbbb2222"));
+    // Re-pick a different role → save carries the new reference (a
+    // role-bearing entry is never stripped).
+    await user.click(screen.getByTestId("cfg-personas-prj-bbbb2222-in_review-role"));
+    await user.click(await screen.findByRole("option", { name: "Builder (org)" }));
     await user.click(screen.getByTestId("cfg-save-prj-bbbb2222"));
     await waitFor(() => expect(boardApi.setProjectBoardConfig).toHaveBeenCalled());
     const body = vi.mocked(boardApi.setProjectBoardConfig).mock.calls[0]![1];
-    const sent = (body as { stagePersonas?: Record<string, BoardPersonaConfigShape> }).stagePersonas!;
-    expect(sent.in_review?.roleId).toBe("reviewer");
-    expect(sent.in_review?.instructions).toBe("Verify adversarially. More.");
+    const sent = (body as { stagePersonas?: PersonaMapShape }).stagePersonas!;
+    expect(sent.in_review).toBe(BUILD_ROLE.id);
   });
 
-  it("a legacy name-only persona stays editable in the role-less lane (name input renders)", async () => {
-    renderProject({ ...PROJECT, short_id: "prj-cccc3333" });
-    const name = await screen.findByTestId("cfg-personas-prj-cccc3333-in_review-name");
-    expect((name as HTMLInputElement).value).toBe("auditor");
+  it("a stale project-tier reference rides as its own option (the drift stays visible) and carries back verbatim", async () => {
+    const user = userEvent.setup();
+    vi.mocked(boardApi.getProjectBoardConfig).mockImplementation(async () => ({
+      project_id: "prj-eeee5555",
+      overrides: {
+        stagePersonas: { in_review: "deleted-role" },
+      },
+      effective: {
+        ...USER,
+        stagePersonasSet: true,
+        stagePersonas: { in_review: "deleted-role" },
+      },
+    }));
+    renderProject();
+    const row = await screen.findByTestId("cfg-personas-prj-bbbb2222-in_review-row");
+    // The unresolvable reference renders as its own option — visible
+    // and preserved (the config view renders the drift; the owner
+    // fixes it by re-picking or removing).
+    expect(row.textContent).toContain("deleted-role");
+    expectNoTextInputs(screen.getByTestId("cfg-personas-prj-bbbb2222"));
+    // Dirty an unrelated key so the save fires; the stored reference
+    // carries back verbatim (REPLACE never silently wipes personas).
+    await user.click(screen.getByTestId("cfg-ov-prj-bbbb2222-reviewColumn"));
+    await user.click(await screen.findByRole("option", { name: "manual" }));
+    await user.click(screen.getByTestId("cfg-save-prj-bbbb2222"));
+    await waitFor(() => expect(boardApi.setProjectBoardConfig).toHaveBeenCalled());
+    const [id, body] = vi.mocked(boardApi.setProjectBoardConfig).mock.calls[0]!;
+    expect(id).toBe("prj-bbbb2222");
+    expect((body as { reviewColumn?: string }).reviewColumn).toBe("manual");
+    expect((body as { stagePersonas?: unknown }).stagePersonas).toEqual({ in_review: "deleted-role" });
   });
 });

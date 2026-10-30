@@ -78,8 +78,9 @@ func (s *BoardSuite) TestBounce1959Phrase_EvidenceAndDeliveryReceiveRawID() {
 		board.WithWorkerSpawner(spawner.Spawn),
 		board.WithBounceRedispatcher(redispatch.Deliver),
 		board.WithTurnEvidenceSource(evidence),
+		board.WithRoleDirectory(personaRoleDirectory()),
 	)
-	s.setStagePersonas(svc, p, map[string]board.PersonaConfig{"in_review": {Name: "reviewer"}})
+	s.setStagePersonas(svc, p, map[string]board.PersonaConfig{"in_review": {RoleID: "reviewer"}})
 
 	_, reviewerToken := s.armRearmWindow1959(svc, spawner, task, ws)
 	spawnsBefore := len(spawner.claims)
@@ -125,8 +126,9 @@ func (s *BoardSuite) TestBounce1959Phrase_UnresolvablePhraseFallsBack() {
 		board.WithWorkerSpawner(spawner.Spawn),
 		board.WithBounceRedispatcher(redispatch.Deliver),
 		board.WithTurnEvidenceSource(evidence),
+		board.WithRoleDirectory(personaRoleDirectory()),
 	)
-	s.setStagePersonas(svc, p, map[string]board.PersonaConfig{"in_review": {Name: "reviewer"}})
+	s.setStagePersonas(svc, p, map[string]board.PersonaConfig{"in_review": {RoleID: "reviewer"}})
 
 	_, reviewerToken := s.armRearmWindow1959(svc, spawner, task, ws)
 	spawnsBefore := len(spawner.claims)

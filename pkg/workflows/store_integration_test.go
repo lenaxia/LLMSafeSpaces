@@ -1374,6 +1374,64 @@ func (s *StoreIntegrationSuite) TestTriggerFireResultRoundTrip() {
 	assert.Contains(s.T(), string(fires[0].Result), "deadline exceeded")
 }
 
+// TestTriggerDelete_WithFireHistory_CascadeRoundTrip pins the
+// 2026-10-30 live-fire question at the schema level: trigger 7df2f7d4
+// (cron */3 + inline gate script, every fire skipped) refused DELETE
+// and UPDATE with 500s while LIST read it fine. This proves fire
+// history can never be the blocker — trigger_fires.trigger_id is ON
+// DELETE CASCADE, so delete-with-history is a plain round-trip: the
+// fires go with the row, and a subsequent fire listing reads empty,
+// not a dangling-FK error.
+func (s *StoreIntegrationSuite) TestTriggerDelete_WithFireHistory_CascadeRoundTrip() {
+	ctx := context.Background()
+	now := time.Now()
+
+	trigID := uuid.New().String()
+	require.NoError(s.T(), s.store.CreateTrigger(ctx, &TriggerRow{
+		ID: trigID, OwnerType: "user", OwnerID: "u1",
+		Name: "release-watch-repro", Enabled: true, SourceType: "cron",
+		SourceConfig: json.RawMessage(`{"expr":"*/3 * * * *","tz":"UTC"}`),
+		// The repro shape: an inline gate script whose handler never
+		// proceeds — every fire lands status=skipped.
+		ScriptLanguage:   "python",
+		ScriptHandler:    "def handler(input):\n    return {'proceed': False, 'vars': {}}",
+		AutoDisableAfter: 10, NextFireAt: &now,
+		CreatedAt: now, UpdatedAt: now,
+	}))
+	for i := 0; i < 3; i++ {
+		fired := now.Add(-time.Duration(i+1) * 3 * time.Minute)
+		completed := fired.Add(500 * time.Millisecond)
+		require.NoError(s.T(), s.store.CreateTriggerFire(ctx, &TriggerFireRow{
+			ID: uuid.New().String(), TriggerID: trigID, SourceType: "cron",
+			ActionType:   "routine",
+			ActionResult: json.RawMessage(`{"gate":{"proceed":false}}`),
+			Status:       "skipped", FiredAt: fired, CompletedAt: &completed,
+		}))
+	}
+
+	// History is visible pre-delete.
+	fires, err := s.store.ListTriggerFires(ctx, trigID, 50, 0)
+	require.NoError(s.T(), err)
+	require.Len(s.T(), fires, 3)
+
+	// Disable (the verb that 500ed live): plain success.
+	enabledFalse := false
+	_, err = s.store.UpdateTrigger(ctx, "user", "u1", trigID, &TriggerUpdate{Enabled: &enabledFalse})
+	require.NoError(s.T(), err)
+
+	// Delete (the other verb that 500ed live): plain success — the
+	// fires cascade, no FK violation surfaces.
+	require.NoError(s.T(), s.store.DeleteTrigger(ctx, "user", "u1", trigID))
+
+	_, err = s.store.GetTrigger(ctx, "user", "u1", trigID)
+	assert.ErrorIs(s.T(), err, ErrNotFound)
+
+	// The cascade removed the audit rows with the trigger.
+	fires, err = s.store.ListTriggerFires(ctx, trigID, 50, 0)
+	require.NoError(s.T(), err)
+	assert.Empty(s.T(), fires)
+}
+
 // TestUpdateTrigger_WorkflowFK_NonexistentTargetRejected pins the real-DB
 // face of issue #1519 half (a): UpdateTrigger targeting a nonexistent
 // workflow UUID fails at the triggers.workflow_id FK, and the violation

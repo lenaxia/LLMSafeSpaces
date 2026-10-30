@@ -617,3 +617,47 @@ func (f *fakeActiveWorkspaceLister) ListActiveWorkspaces(context.Context) ([]sec
 type fakeReconcileNotifier struct{}
 
 func (f *fakeReconcileNotifier) Notify(context.Context, string, string) error { return nil }
+
+// TestPodBootstrapHandler_AgentRoleReaderWired is the regression guard
+// for the SetAgentRoleReader wiring in app.go (review round 2 of the
+// role-only model, PR #1990 F1). Without it, the bootstrap response
+// carries no agent-role vocabulary, the pod materializes no named
+// opencode agents, and every persona'd spawn (the default reviewer
+// included) silently runs the build agent — the exact §A8 trap. Mirrors
+// the SettingsReaderWired approach: mirror app.go's construction+wire
+// sequence so deleting the call regresses loudly.
+func TestPodBootstrapHandler_AgentRoleReaderWired(t *testing.T) {
+	keyStore := &dbKeyStoreAdapter{}
+	dekCache := &memDEKCache{store: make(map[string][]byte)}
+	keyService := secrets.NewKeyService(keyStore, dekCache)
+	testProv, _ := secrets.NewStaticKeyProvider(make([]byte, 32))
+	keyService.SetAPIKeyStore(nil, testProv)
+	secretStore := &dbSecretStoreAdapter{}
+	secretService := secrets.NewSecretService(keyService, secretStore)
+
+	fakeClientset := k8sfake.NewSimpleClientset()
+	dbSvc := &fakeAppDBLookup{}
+	h := handlers.NewPodBootstrapHandlerFromClientset(
+		fakeClientset, secretService, dbSvc, nil, "test-namespace",
+	)
+	if h.HasAgentRoleReader() {
+		t.Fatalf("freshly-constructed PodBootstrapHandler must not have an agent-role reader before SetAgentRoleReader is called")
+	}
+
+	// Mirror the exact call app.go makes — production passes the
+	// *database.PgOrgStore; here a minimal fake satisfies the seam.
+	h.SetAgentRoleReader(&fakeBootstrapAgentRoleReader{})
+
+	if !h.HasAgentRoleReader() {
+		t.Fatalf("SetAgentRoleReader must populate the handler so the workspace's agent-role vocabulary reaches the pod; " +
+			"otherwise stage-persona dispatches silently run the build agent (the §A8 fallback) on every pod")
+	}
+}
+
+// fakeBootstrapAgentRoleReader satisfies handlers.bootstrapAgentRoleReader
+// for the wiring test — behavior only exercises ListAgentRoles shape.
+type fakeBootstrapAgentRoleReader struct{}
+
+func (f *fakeBootstrapAgentRoleReader) ListAgentRoles(_ context.Context, _, _ string) ([]*types.AgentRole, error) {
+	return nil, nil
+}

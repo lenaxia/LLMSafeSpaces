@@ -95,26 +95,24 @@ func newNotifierFixture(t *testing.T, facts sessionFacts) *notifierFixture {
 		Deliver:  deliver,
 		Logger:   zap.NewNop(),
 	})
-	t.Cleanup(func() { quiesceNotifier(n, debounce) })
+	t.Cleanup(func() { quiesceNotifier(n) })
 	return &notifierFixture{n: n, store: store, deliver: deliver, debounce: debounce}
 }
 
 // quiesceNotifier settles one engine at test end: cancel every ARMED
-// debounce, then out-wait an ALREADY-FIRED timer leg (its trailing
-// work is a local store persist — the chan deliverer never blocks, so
-// the persist is microseconds; 2× debounce is the settle bound).
-// Without this, a leg in flight when the test returns races
-// t.TempDir's RemoveAll with its write and fails the test on slow
-// runners ("directory not empty" — the CI -short+coverage class).
-func quiesceNotifier(n *sessionNotifier, debounce time.Duration) {
+// debounce, then JOIN any leg already in flight. A fired timer's work
+// does not end at the deliverer — the outbox dismiss persist (marshal +
+// file fsync + rename + dir fsync) trails it, and on a loaded runner
+// that trail outlives the 2× debounce sleep this helper used to guess
+// (the #1986 round-2 flake: t.TempDir's RemoveAll raced the trailing
+// write — "unlinkat: directory not empty"). The join is exact, so no
+// sleep is needed and none is bounded.
+func quiesceNotifier(n *sessionNotifier) {
 	if n == nil {
 		return
 	}
 	n.cancelAllDebounces()
-	if debounce <= 0 {
-		debounce = notifyDebounceDefault
-	}
-	time.Sleep(2 * debounce)
+	n.waitDebounceLegs()
 }
 
 // evtFrame wraps one contract event as a sequenced stream frame. The
@@ -539,7 +537,7 @@ func TestOutboxPersistsOnFailedDelivery(t *testing.T) {
 		Store: store, Facts: mapSessionFacts{subtasks: map[string]bool{}, gone: map[string]bool{}},
 		Debounce: 25 * time.Millisecond, Deliver: deliver, Logger: zap.NewNop(),
 	})
-	t.Cleanup(func() { quiesceNotifier(n, 25*time.Millisecond) })
+	t.Cleanup(func() { quiesceNotifier(n) })
 	_, err := n.Subscribe("ses_w", "ses_m", nil)
 	require.NoError(t, err)
 
@@ -732,9 +730,21 @@ func runNotifierOnAuthority(t *testing.T, a *sessionstate.Authority, store *sess
 		Logger:   zap.NewNop(),
 	})
 	ctx, cancel := context.WithCancel(context.Background())
-	go n.Run(ctx)
-	t.Cleanup(func() { quiesceNotifier(n, 25*time.Millisecond) })
-	t.Cleanup(cancel)
+	// Cleanups run LIFO: the drain (cancel + join) executes FIRST, so
+	// no frame fold can arm a debounce past that point (arm-while-
+	// waiting is the WaitGroup reuse hazard); quiesce then joins any
+	// timer leg the last frames left in flight.
+	t.Cleanup(func() { quiesceNotifier(n) })
+	runDone := make(chan struct{})
+	go func() { defer close(runDone); n.Run(ctx) }()
+	t.Cleanup(func() {
+		cancel()
+		select {
+		case <-runDone:
+		case <-time.After(5 * time.Second):
+			t.Error("session notifier Run loop did not drain within 5s of cancel — lifecycle is not clean")
+		}
+	})
 	return cancel
 }
 
@@ -857,7 +867,8 @@ func TestRunResubscribesAfterDrop(t *testing.T) {
 	})
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	go n.Run(ctx)
+	runDone := make(chan struct{})
+	go func() { defer close(runDone); n.Run(ctx) }()
 
 	select {
 	case <-closed:
@@ -867,8 +878,12 @@ func TestRunResubscribesAfterDrop(t *testing.T) {
 	notice := waitForNotice(t, deliver.ch)
 	assert.Equal(t, subscriptionEventIdle, notice.Event,
 		"the resubscribe's snapshot reconciled the dropped episode (latched busy + snapshot idle)")
-	// Quiesce before returning: Run's own cancel arrives with the
-	// deferred ctx cancel, too late for an in-flight timer leg's
-	// trailing persist (the TempDir race).
-	quiesceNotifier(n, 25*time.Millisecond)
+	// Quiesce in shutdown order BEFORE returning: cancel stops the
+	// loop, the join waits out any in-flight frame fold (a fold arming
+	// a debounce past the quiesce would race the TempDir teardown it
+	// exists to protect), and quiesceNotifier joins the fired leg's
+	// trailing persist — deterministic, no sleep.
+	cancel()
+	<-runDone
+	quiesceNotifier(n)
 }

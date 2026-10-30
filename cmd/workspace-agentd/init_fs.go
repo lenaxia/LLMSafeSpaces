@@ -223,6 +223,18 @@ func runInitFSCommand(args []string, stderr io.Writer) int {
 		}
 	}
 
+	// 7. Gate-script patterns doc (2026-10-29 owner ruling): the
+	// canonical #1812 worked patterns, embedded in this binary,
+	// materialized to the pod-shared tmpfs at
+	// $runtimeDir/docs/gate-script-patterns.md — the stable pod path
+	// trigger_create's description points agents at. Best-effort by
+	// design (advisory content, the bytes live in the binary): a failed
+	// copy logs loudly but never blocks boot — unlike the credentials
+	// above, a missing doc degrades to the tool description alone.
+	if err := ensureGateScriptPatternsDoc(filepath.Join(*runtimeDir, "docs")); err != nil {
+		_, _ = fmt.Fprintf(stderr, "init-fs: gate-docs copy failed (non-fatal): %v\n", err)
+	}
+
 	_, _ = fmt.Fprintln(stderr, "init-fs: ok")
 	return 0
 }

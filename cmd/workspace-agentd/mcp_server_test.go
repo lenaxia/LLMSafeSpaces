@@ -1224,10 +1224,23 @@ func TestMCPHandler_ToolDescriptionGuidance(t *testing.T) {
 			"must catch its own exceptions",                                     // the author rule: posture is a choice, self-caught
 			"rejected (400) alongside workflowId",                               // routine-only rule surfaced
 			"never calls the LLM at all",                                        // script-only triggers have no LLM leg
-			"Worked example",                                                    // the doc mandate: a worked example in the description
+			// 2026-10-29 owner ruling — the worked patterns (external polling,
+			// conditional requests, state dedup, failure postures, self-
+			// contained prompts) moved OUT of the description (prompt bloat)
+			// into the pod-side doc materialized by init-fs; this pointer
+			// REPLACED the trivial worked example, net-smaller.
+			"/sandbox-runtime/docs/gate-script-patterns.md", // the doc pointer — worked patterns live there
 		} {
 			assert.Contains(t, d, want)
 		}
+		// The in-description worked example is gone for good (the
+		// pointer carries the depth; the example was pure context cost).
+		assert.NotContains(t, d, "count_open_items")
+		// The trigger-body schema blurb carries the same doc pointer —
+		// schema text is agent-visible contract (PR #1379 class) and
+		// must not regress silently.
+		require.Contains(t, schemaDescs, "trigger_create/trigger")
+		assert.Contains(t, schemaDescs["trigger_create/trigger"], "/sandbox-runtime/docs/gate-script-patterns.md")
 		// The input-mapping fields keep the camelCase DTO spelling —
 		// snake_case is silently dropped (the workflowId lesson).
 		assert.NotContains(t, d, "input_from")

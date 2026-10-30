@@ -640,6 +640,13 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 		orgWorkflowsHandler = handlers.NewOrgWorkflowsHandler(wfStore, instanceSettings)
 		userTriggersHandler = handlers.NewUserTriggersHandler(wfStore, instanceSettings, providerCredsProv)
 		orgTriggersHandler = handlers.NewOrgTriggersHandler(wfStore, instanceSettings, providerCredsProv)
+		// 2026-10-30 live-fire (trigger 7df2f7d4): without a logger the
+		// generic 500 arms (fetch/update/delete) discard the underlying
+		// store error — five 500s over 8 minutes left zero diagnostic
+		// trace. SetLogger is REQUIRED for diagnosability, same
+		// discipline as podBootstrapHandler above.
+		userTriggersHandler.SetLogger(log)
+		orgTriggersHandler.SetLogger(log)
 		// Parent-id contract checks (the opaque-500 class audit): the
 		// same pool owns workspaces — the store's unscoped existence
 		// primitive backs the target-workspace 400s on workflow create
@@ -1123,6 +1130,15 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 		// permission.external_directory (the LIVE key on pinned opencode)
 		// so agents stop prompting for /tmp/* on every session.
 		podBootstrapHandler.SetSettingsReader(instanceSettings)
+		// Wire the agent-role vocabulary reader so the bootstrap response
+		// carries the workspace's addressable roles (platform + the
+		// workspace's org): agentd stages them to
+		// /sandbox-runtime/agent-roles.json and the ConfigWriter
+		// materializes each as a NAMED opencode agent (agent.<roleID>) —
+		// without them a stage-persona dispatch (spec["agent"] = <roleId>)
+		// silently runs the build agent (the A8 fallback). Enforced by
+		// TestPodBootstrapHandler_AgentRoleReaderWired.
+		podBootstrapHandler.SetAgentRoleReader(pgOrgStore)
 		// User provider-credential bind/unbind routes are NOT under
 		// /api/v1/workspaces/:id (they live under /api/v1/provider-credentials/:id/bind/:workspaceId),
 		// so WorkspaceAccessMiddleware does not cover them. Wire the
@@ -1624,6 +1640,25 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 			boardLivenessHub.SetBusySource(func(workspaceID, harnessSessionID string) (bool, bool) {
 				return proxyHandler.UsageStream().DerivedBusy(workspaceID, harnessSessionID)
 			})
+			// Role-only personas (owner ruling 2026-10-29, round 2):
+			// the default reviewer's verdict-channel charter lives in
+			// the SEEDED built-in reviewer agent role (its system
+			// prompt — board.DefaultReviewerRoleSystemPrompt), so the
+			// default reviewer resolves to a role deterministically.
+			// Best-effort at startup: a transient DB outage must not
+			// kill the api boot, and an unseeded vocabulary merely
+			// leaves the default reviewer degrading to persona-less
+			// (warn-logged at spawn resolution) until the next boot
+			// seeds it.
+			if pgOrgStore != nil {
+				seedCtx, seedCancel := context.WithTimeout(context.Background(), 15*time.Second)
+				if err := seedBuiltinReviewerRole(seedCtx, pgOrgStore); err != nil {
+					log.Warn("board: built-in reviewer role seeding skipped", "error", err.Error())
+				} else {
+					log.Info("board: built-in reviewer agent role ensured (slug reviewer, verdict-channel charter as system prompt)")
+				}
+				seedCancel()
+			}
 			spawnOpts := []board.Option{
 				board.WithLivenessSource(boardLivenessHub),
 				board.WithNudgeSender(newBoardNudger(boardScopeFor(boardPool), boardSender, boardLivenessHub)),
@@ -1689,13 +1724,13 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 				// the session index's message_count (positive-zero
 				// refuses heartbeat extension; errors fail open).
 				board.WithTurnEvidenceSource(&boardTurnEvidence{pool: boardPool}),
-				// Owner ruling 2026-10-29: stage personas REFERENCE the
-				// platform's agent roles (single source of truth for
-				// model/tools/system-prompt) — the directory backs
-				// set-config role validation, the read-path name→role
-				// migration, and the default reviewer's pointer at the
-				// reviewer role. Shared by the service AND the
-				// reconciler (spawnOpts feeds both).
+				// Owner ruling 2026-10-29 (role-only): stage personas
+				// are ROLE REFERENCES (the referenced role is the
+				// single source of truth for model/tools/system-prompt)
+				// — the directory backs set-config role validation and
+				// the spawn-time canonicalization/degradation. Shared
+				// by the service AND the reconciler (spawnOpts feeds
+				// both).
 				board.WithRoleDirectory(newBoardRoleDirectory(pgOrgStore)),
 			}
 			// Event-driven drive half (§4.4): work-becoming-ready actions

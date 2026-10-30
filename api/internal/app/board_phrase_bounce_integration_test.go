@@ -42,6 +42,21 @@ const (
 	integRawID    = "ses_phrase_bounce_raw_1959c"
 )
 
+// bounceRoleDirectory is the persona vocabulary fixture (the seeded
+// platform reviewer's shape — role-only personas reference it).
+var bounceRoleDirectory = &appRoleDirectory{roles: []board.AgentRoleRef{
+	{ID: "11111111-1111-1111-1111-111111111111", Slug: "reviewer", Name: "Code Reviewer", Scope: "platform"},
+}}
+
+// appRoleDirectory is board.RoleDirectory's inline test double.
+type appRoleDirectory struct {
+	roles []board.AgentRoleRef
+}
+
+func (d *appRoleDirectory) AgentRolesForUser(context.Context, string) ([]board.AgentRoleRef, error) {
+	return d.roles, nil
+}
+
 func phraseBouncePool(t *testing.T) *pgxpool.Pool {
 	t.Helper()
 	dsn := os.Getenv("TEST_DATABASE_URL")
@@ -127,13 +142,17 @@ func TestIntegrationBoardPhraseBounceProductionWiring(t *testing.T) {
 		board.WithWorkerSpawner(spawner.Spawn),
 		board.WithBounceRedispatcher(newBoardRedispatcher(boardScopeFor(pool), sender)),
 		board.WithTurnEvidenceSource(&boardTurnEvidence{pool}),
+		// Role-only personas: the reviewer persona must resolve through
+		// the vocabulary (the seeded reviewer's shape) for the test's
+		// persona claim to mint.
+		board.WithRoleDirectory(bounceRoleDirectory),
 	)
 
 	p, err := svc.CreateProject(ctx, owner, board.ProjectInput{
 		Name: "proj-phrase-bounce", TargetWorkspaceID: wsID, WorkerSlots: 2, Tags: []string{},
 	}, "")
 	require.NoError(t, err)
-	personas := map[string]board.PersonaConfig{"in_review": {Name: "reviewer"}}
+	personas := map[string]board.PersonaConfig{"in_review": {RoleID: "reviewer"}}
 	_, err = svc.SetProjectBoardConfig(ctx, owner, p.ID, "", &board.BoardConfigOverride{StagePersonas: &personas})
 	require.NoError(t, err)
 	e, err := svc.CreateEpic(ctx, owner, p.ID, "", board.EpicInput{Title: "epic-phrase-bounce", Outcome: "ship it"}, "")

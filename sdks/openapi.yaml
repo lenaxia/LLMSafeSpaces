@@ -12850,38 +12850,38 @@ components:
             in_review:
               $ref: "#/components/schemas/BoardPersonaConfig"
     BoardPersonaConfig:
-      type: object
       description: |
-        One stage's configured agent persona — ROLE-FIRST (owner ruling
-        2026-10-29: personas REFERENCE the platform's agent roles
-        instead of redefining model/tools/system-prompt per persona):
-        roleId names the referenced role (id or slug — the role is the
-        single source of truth for the spawned worker's model, tool
-        surface, and system prompt; board_set_config validates the
-        reference against the available set, GET /api/v1/auth/me/agent-roles).
-        instructions is the OPTIONAL override layered on the role's
-        system prompt. The legacy name+instructions shape still decodes
-        (name is the display label; a stored name-only persona
-        migrates to a role reference at read time where the name
-        matches an available role — unresolvable names keep the
-        instructions as a role-less override). A persona object must
-        carry roleId or name; unknown stages and unknown fields reject
-        (400); a persona is configurable only on stages a live claim
+        One stage's configured agent persona — a ROLE REFERENCE ONLY
+        (owner ruling 2026-10-29, round 2: "Board stages should ONLY
+        ever have roles configured, there is no custom definition in
+        the board itself. ROLES are the way to define behavior for
+        board stages."). The value is the referenced platform agent
+        role's id or slug — canonically the BARE STRING
+        ("in_review": "reviewer"); the {roleId} object form decodes
+        but carries nothing else. The referenced role is the single
+        source of truth for the spawned worker's model, tool surface,
+        and system prompt (board_set_config validates the reference
+        against the available set, GET /api/v1/auth/me/agent-roles;
+        the platform seeds a built-in `reviewer` role whose system
+        prompt carries the default reviewer's verdict-channel
+        charter). name and instructions do not exist in this layer —
+        a stored non-role shape fails set loud and never decodes
+        (400). A persona is configurable only on stages a live claim
         can exist in (in_progress, in_review).
-      properties:
-        roleId:
-          type: string
+      oneOf:
+        - type: string
+          minLength: 1
           maxLength: 128
-          description: The referenced agent role (id or slug — validated against the available set on writes; resolved to the canonical id on reads)
-        name:
-          type: string
-          maxLength: 64
-          description: The persona's display label (legacy shape; rendered in the spawned charter and audit events)
-        instructions:
-          type: string
-          maxLength: 4096
-          description: Optional charter preamble layered over the referenced role's system prompt
-      additionalProperties: false
+          description: The canonical form — the referenced agent role's id or slug
+        - type: object
+          additionalProperties: false
+          required: [roleId]
+          properties:
+            roleId:
+              type: string
+              minLength: 1
+              maxLength: 128
+              description: The referenced agent role (id or slug — validated against the available set on writes; resolved to the canonical id on the spawn dispatch)
     BoardConfigOverride:
       type: object
       description: |
