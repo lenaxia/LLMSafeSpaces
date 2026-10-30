@@ -227,7 +227,35 @@ func TestRunWatchdogNoSilentProbeSwallows(t *testing.T) {
 	}
 }
 
-// TestRunWatchdogDecisionOutputContract pins the OUTPUT half of the
+// TestRunWatchdogTriggerSurfacePinned holds the sweep's trigger
+// surface and detection threshold — the two 2026-10-29-window upgrades
+// (docs/automation/ci-event-delivery.md). (a) The issue_comment
+// trigger is the out-of-band redundancy: during the 19:28–21:25Z
+// synchronize-drop window, issue_comment events DELIVERED while
+// synchronize was lost — losing this trigger returns detection to the
+// schedule lane alone, which GitHub delivered only 5–15/144 times a
+// day (measured 2026-10-23→30). (b) The 10-minute threshold (was 15)
+// is the task's dead-man latency: healthy synchronize→check-run
+// latency measured 5–50s, and #1983's final head sat dark 42 min —
+// the original 15 would have caught it only on a delivered sweep
+// inside the window; 10 widens that catch by a third. Drift in either
+// reddens this pin consciously.
+func TestRunWatchdogTriggerSurfacePinned(t *testing.T) {
+	body := runWatchdogBody(t)
+	if !strings.Contains(body, "issue_comment:") {
+		t.Error("run-watchdog.yml lost the issue_comment trigger — the out-of-band sweep lane that demonstrably delivered during the 2026-10-29 synchronize-drop window")
+	}
+	if !strings.Contains(body, "types: [created]") {
+		t.Error("run-watchdog.yml issue_comment trigger must be created-only")
+	}
+	if !strings.Contains(body, `WATCHDOG_MIN_AGE_MINUTES: "10"`) {
+		t.Error("run-watchdog.yml min-age env is not 10 — the dead-man latency was deliberately lowered from 15 on 2026-10-30 (see the env's rationale comment)")
+	}
+	if !strings.Contains(body, "cron: '*/10 * * * *'") {
+		t.Error("run-watchdog.yml lost the */10 schedule — the nominal cadence the issue_comment trigger supplements")
+	}
+}
+
 // workflow↔binary seam — the r2 review proved the input pin alone is
 // half-built: renaming a Decision json tag (should_comment →
 // shouldComment) kept every gate green while production `jq -r

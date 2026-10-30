@@ -5,14 +5,16 @@ name: Run Watchdog
 # — a pushed PR head gets ZERO workflow runs of ANY workflow while
 # sibling branches run instantly. Documented instances: #1841 (2/2
 # pushes), #1839, #1843 (PR-scoped), feat/board-review-settle 2026-10-23
-# ~01:44Z+ (branch-scoped, actor-independent, 40+ min persistent).
-# Silent impact: a lane looks "awaiting review" while GitHub never
-# dispatched anything — without an external poller, PRs stall
-# indefinitely.
+# ~01:44Z+ (branch-scoped, actor-independent, 40+ min persistent), and
+# the 2026-10-29 19:28–21:25Z WINDOW (5 dark heads across #1983/#1984,
+# event-type-scoped: synchronize lost while issue_comment / schedule /
+# workflow_dispatch / pull_request.opened delivered — evidence register
+# in docs/automation/ci-event-delivery.md). Silent impact: a lane looks
+# "awaiting review" while GitHub never dispatched anything — without an
+# external poller, PRs stall indefinitely.
 #
-# WHAT THIS DOES (every 10 minutes): for each open PR, if the head SHA
-# is older than WATCHDOG_MIN_AGE_MINUTES (15) and carries ZERO total
-# check-runs (pr-review.yml is the universal check-runs producer: it
+# WHAT THIS DOES: for each open PR, if the head SHA is older than
+# WATCHDOG_MIN_AGE_MINUTES (10) and carries ZERO total check-runs (pr-review.yml is the universal check-runs producer: it
 # triggers on every pull_request — opened/synchronize — with no branch
 # and no paths filter, so ANY delivered synchronize produces at least
 # its review-round runs; ci.yml also fires for this repo's PRs but
@@ -60,11 +62,24 @@ name: Run Watchdog
 
 on:
   schedule:
-    # Every 10 minutes. A fault is detected on the first sweep after
-    # the head crosses the 15-minute threshold (detection latency
-    # 15–25 min from push), well inside the documented 40+ min
-    # persistent-suppression windows.
+    # Every 10 minutes NOMINAL — measured 2026-10-23→30, GitHub
+    # delivers only 5–15 of the 144 daily ticks (scheduled-event
+    # scarcity under load, documented in
+    # docs/automation/ci-event-delivery.md; on the support-ticket
+    # ask). Detection latency is therefore bounded by DELIVERED
+    # cadence, which is why the issue_comment trigger below exists.
     - cron: '*/10 * * * *'
+  # Out-of-band redundancy (2026-10-29 window lesson): during the
+  # synchronize-drop window, issue_comment events DELIVERED normally
+  # (AI Commands ran at 19:31/20:30×2/21:24 inside the window) while
+  # synchronize was lost — a different delivery lane. Every PR (or
+  # issue) comment now buys a full sweep, so the moments a human is
+  # most likely to be staring at a dark PR are exactly the moments the
+  # watchdog looks. Recursion-safe: fault comments posted with
+  # GITHUB_TOKEN do not re-trigger issue_comment workflows (the
+  # documented recursion exemption) — no self-loop.
+  issue_comment:
+    types: [created]
   workflow_dispatch:
 
 # Newest-wins: a newer sweep supersedes the previous one (numbering-
@@ -107,7 +122,19 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPO: ${{ github.repository }}
-          WATCHDOG_MIN_AGE_MINUTES: "15"
+          # 10 min (was 15, 2026-10-30): healthy synchronize→check-run
+          # latency measured 5–50s (the 2026-10-30 probe + tonight's
+          # healthy controls), so 10 min is ~12× the observed tail —
+          # false faults need a head that queued runs for 10+ minutes
+          # without registering a single check-run, which runner
+          # queuing does not produce (runs register check-runs at
+          # CREATION, queued included). 15→10 pulls first-tick
+          # detection inside the 42-min dark window #1983's final head
+          # actually sat through (20:30:07→21:12:44Z, manually
+          # recovered). The Go DefaultMinAge stays 15m as the
+          # zero-input fallback (pinned by TestEvaluate_MinAgeDefault);
+          # this env is the operative value.
+          WATCHDOG_MIN_AGE_MINUTES: "10"
         run: |
           set -uo pipefail
           NOW=$(date -u +%Y-%m-%dT%H:%M:%SZ)
