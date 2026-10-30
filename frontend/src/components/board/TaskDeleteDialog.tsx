@@ -66,7 +66,7 @@ export function TaskDeleteDialog({ open, onOpenChange, task, projectTasks, onDel
           <Dialog.Title className="text-sm font-semibold" data-testid="task-delete-title">
             {/* 2026-10-28 ruling 4: the TITLE leads; the id is the
              * secondary mono ref (click-through popup — ids allowed). */}
-            Delete task <span className="font-medium">{task?.title}</span>{" "}
+            Delete story <span className="font-medium">{task?.title}</span>{" "}
             <span className="font-mono text-xs text-muted-foreground">{task?.short_id}</span>
           </Dialog.Title>
           <Dialog.Description className="text-xs text-muted-foreground">
@@ -77,11 +77,11 @@ export function TaskDeleteDialog({ open, onOpenChange, task, projectTasks, onDel
 
           <div className="flex flex-col gap-1.5 rounded-md bg-muted/50 p-2 text-xs" data-testid="task-delete-dependents">
             {dependents.length === 0 ? (
-              <span className="text-muted-foreground">No dependents — this task blocks nothing else.</span>
+              <span className="text-muted-foreground">No dependents — this story blocks nothing else.</span>
             ) : (
               <>
                 <span className="font-medium">
-                  {dependents.length} dependent{dependents.length > 1 ? "s" : ""} lose their edge on this task:
+                  {dependents.length} dependent{dependents.length > 1 ? "s" : ""} lose their edge on this story:
                 </span>
                 <ul className="ml-3 list-disc">
                   {dependents.map((d) => (
@@ -106,7 +106,7 @@ export function TaskDeleteDialog({ open, onOpenChange, task, projectTasks, onDel
             <span>
               <span className="font-medium">Reconnect dependents to upstream</span>
               <span className="block text-muted-foreground">
-                Checked: each dependent inherits this task’s direct upstream edges (deduplicated,
+                Checked: each dependent inherits this story’s direct upstream edges (deduplicated,
                 cycle-guarded). Unchecked: dependents are simply unblocked — each gets an
                 unblocked_by_delete audit event.
               </span>
@@ -124,7 +124,7 @@ export function TaskDeleteDialog({ open, onOpenChange, task, projectTasks, onDel
                 if (task) void onDelete(task, reconnect);
               }}
             >
-              Delete task
+              Delete story
             </Button>
           </div>
         </Dialog.Content>

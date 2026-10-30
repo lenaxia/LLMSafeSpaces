@@ -376,7 +376,7 @@ async function setupBoardMocks(page: Page, state: BoardState) {
       (projectId === PROJECT_A ? "Apollo" : "Borealis");
     const row = task({
       short_id: `tsk-new${String(state.tasks.length + 1).padStart(4, "0")}`,
-      title: body.title ?? "New task",
+      title: body.title ?? "New story",
       stage: "backlog",
       project_id: projectId,
       epic_id: epicId,
@@ -484,7 +484,7 @@ async function openBoard(page: Page, init?: Partial<BoardState>) {
 
 // --- rows -------------------------------------------------------------------------
 
-test.describe("Task Board UI (#1702)", () => {
+test.describe("Sprint Board UI (#1702)", () => {
   test("renders swimlanes per project, stage columns, and cards (§4.8)", async ({ page }) => {
     await openBoard(page);
 
@@ -749,7 +749,7 @@ test.describe("Task Board UI (#1702)", () => {
 });
 
 test.describe("#1832 items 1-2 — swimlane creation buttons + collapsible epic bands", () => {
-  test("every swimlane header carries enabled New epic / New task buttons (contextual, no dropdown)", async ({ page }) => {
+  test("every swimlane header carries enabled New epic / New story buttons (contextual, no dropdown)", async ({ page }) => {
     await openBoard(page);
 
     for (const pid of [PROJECT_A, PROJECT_B]) {
@@ -817,14 +817,14 @@ test.describe("#1832 items 1-2 — swimlane creation buttons + collapsible epic 
     await expect(page.getByTestId("task-card-tsk-eeee0005")).not.toHaveAttribute("data-highlighted");
   });
 
-  test("the selected epic scopes New task (POST lands on that epic's route)", async ({ page }) => {
+  test("the selected epic scopes New story (POST lands on that epic's route)", async ({ page }) => {
     const state = await openBoard(page);
 
     await page.getByTestId("epic-band-epic-2").click();
     await page.getByTestId(`new-task-${PROJECT_A}`).click();
 
     // The dialog names the selected epic as the landing zone.
-    await expect(page.getByText("New task in E2", { exact: true })).toBeVisible();
+    await expect(page.getByText("New story in E2", { exact: true })).toBeVisible();
     await page.getByTestId("task-title").fill("Scoped follow-up");
     await page.getByTestId("task-description").fill("seeded charter (#1849: required at create)");
     await page.getByTestId("new-criterion").fill("c1");
@@ -841,14 +841,14 @@ test.describe("#1832 items 1-2 — swimlane creation buttons + collapsible epic 
     expect(state.tasks.some((t) => t.title === "Scoped follow-up")).toBe(true);
   });
 
-  test("New task with no selection opens the epic picker; a pick scopes the dialog", async ({ page }) => {
+  test("New story with no selection opens the epic picker; a pick scopes the dialog", async ({ page }) => {
     await openBoard(page);
 
     await page.getByTestId(`new-task-${PROJECT_A}`).click();
     await expect(page.getByTestId("epic-picker")).toBeVisible();
     await page.getByTestId("epic-picker-option-epic-2").click();
 
-    await expect(page.getByText("New task in E2", { exact: true })).toBeVisible();
+    await expect(page.getByText("New story in E2", { exact: true })).toBeVisible();
     await page.getByTestId("task-title").fill("Picked task");
     await page.getByTestId("task-description").fill("seeded charter");
     await page.getByTestId("new-criterion").fill("c1");
@@ -886,7 +886,7 @@ test.describe("#1832 r2 — server-listed epics, unhappy paths, picker escape ha
     await expect(page.getByTestId("epic-picker-option-epic-created-prj-bbbb2222")).toBeVisible();
     await page.getByTestId("epic-picker-option-epic-created-prj-bbbb2222").click();
 
-    await expect(page.getByText("New task in Reload survivor", { exact: true })).toBeVisible();
+    await expect(page.getByText("New story in Reload survivor", { exact: true })).toBeVisible();
     await page.getByTestId("task-title").fill("First of its name");
     await page.getByTestId("task-description").fill("seeded charter");
     await page.getByTestId("new-criterion").fill("c1");
@@ -953,7 +953,7 @@ test.describe("#1832 r2 — server-listed epics, unhappy paths, picker escape ha
 
     await page.getByTestId("epic-band-epic-2").click();
     await page.getByTestId(`new-task-${PROJECT_A}`).click();
-    await expect(page.getByText("New task in E2", { exact: true })).toBeVisible();
+    await expect(page.getByText("New story in E2", { exact: true })).toBeVisible();
     await page.getByTestId("task-title").fill("Doomed task");
     await page.getByTestId("task-description").fill("seeded charter");
     await page.getByTestId("new-criterion").fill("c1");
@@ -961,7 +961,7 @@ test.describe("#1832 r2 — server-listed epics, unhappy paths, picker escape ha
     await page.getByTestId("task-save").click();
 
     await expect(page.locator("[data-board-error]").first()).toBeVisible({ timeout: 8000 });
-    await expect(page.getByText("New task in E2", { exact: true })).toBeVisible();
+    await expect(page.getByText("New story in E2", { exact: true })).toBeVisible();
     await expect(page.getByTestId("task-title")).toHaveValue("Doomed task");
   });
 
@@ -1061,7 +1061,7 @@ test.describe("#1832 item 3 — kebab menus + delete flows", () => {
     const state = await openBoard(page);
 
     await page.getByTestId("task-kebab-tsk-cccc0003").click();
-    await page.getByRole("menuitem", { name: "Delete task…" }).click();
+    await page.getByRole("menuitem", { name: "Delete story…" }).click();
 
     const modal = page.getByTestId("task-delete-modal");
     await expect(modal).toBeVisible();
@@ -1084,7 +1084,7 @@ test.describe("#1832 item 3 — kebab menus + delete flows", () => {
     const state = await openBoard(page);
 
     await page.getByTestId("task-kebab-tsk-cccc0003").click();
-    await page.getByRole("menuitem", { name: "Delete task…" }).click();
+    await page.getByRole("menuitem", { name: "Delete story…" }).click();
     const modal = page.getByTestId("task-delete-modal");
     await modal.getByTestId("reconnect-dependents").check();
 

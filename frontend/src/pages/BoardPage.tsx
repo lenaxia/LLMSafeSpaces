@@ -685,7 +685,7 @@ export function BoardPage() {
         const cascade = result.cascade_tasks ?? [];
         const orphans = result.orphaned_dependents ?? [];
         setPageNotice(
-          `${epic.title} deleted — ${cascade.length} task${cascade.length === 1 ? "" : "s"} cascaded` +
+          `${epic.title} deleted — ${cascade.length} stor${cascade.length === 1 ? "y" : "ies"} cascaded` +
             (orphans.length > 0 ? `; ${orphans.length} cross-epic dependent${orphans.length === 1 ? "" : "s"} orphaned (audited)` : ""),
         );
         return true;
@@ -819,9 +819,9 @@ export function BoardPage() {
               className="h-6 px-2 text-[11px]"
               onClick={() => openSwimlaneNewTask(project)}
               data-testid={`new-task-${project.short_id}`}
-              title={selectedEpic ? `New task in ${selectedEpic.title}` : `New task in ${project.name} — pick an epic`}
+              title={selectedEpic ? `New story in ${selectedEpic.title}` : `New story in ${project.name} — pick an epic`}
             >
-              New task
+              New story
             </Button>
             {/* #1832 item 3: project kebab — archive/unarchive
              * ONLY (#1747: project delete is eliminated; this
@@ -879,7 +879,7 @@ export function BoardPage() {
                     )}
                     onClick={() => toggleEpicSelection(project.id, epic.id)}
                     onDoubleClick={() => void openEpicDrawer(epic.id)}
-                    title={`${epic.title} — click to highlight its tasks; double-click for the epic drawer`}
+                    title={`${epic.title} — click to highlight its stories; double-click for the epic drawer`}
                   >
                     {/* Ruling 4: the TITLE is the label — the epc- id
                      * never renders here (it lives in the click-through
@@ -1009,7 +1009,7 @@ export function BoardPage() {
       <div className="flex flex-col gap-2 border-b border-border px-4 py-2" data-testid="board-toolbar">
         <div className="flex flex-wrap items-center gap-2">
           <KanbanSquare className="h-4 w-4 text-muted-foreground" aria-hidden />
-          <h1 className="text-sm font-semibold">Board</h1>
+          <h1 className="text-sm font-semibold">Sprint Board</h1>
           <select
             aria-label="Project focus"
             value={focusProject}
@@ -1035,7 +1035,7 @@ export function BoardPage() {
             onChange={(e) => setSearch(e.target.value)}
             placeholder="Search title, tag or id…"
             className="h-8 w-56"
-            aria-label="Search tasks"
+            aria-label="Search stories"
             data-testid="board-search"
           />
           <div className="ml-auto flex items-center gap-2">
@@ -1134,7 +1134,7 @@ export function BoardPage() {
                 failedOnly ? "bg-destructive/15 text-destructive" : "bg-muted text-muted-foreground hover:bg-accent",
               )}
               data-testid="failed-filter-toggle"
-              title="#1813: show only tasks whose last worker attempt failed (the overlay — never a stage)"
+              title="#1813: show only stories whose last worker attempt failed (the overlay — never a stage)"
             >
               FAILED
             </button>
@@ -1442,7 +1442,7 @@ export function BoardPage() {
           <Dialog.Overlay className="fixed inset-0 bg-black/40 z-50" />
           <Dialog.Content className="fixed left-1/2 top-1/2 z-50 flex w-[24rem] max-w-[calc(100vw-2rem)] -translate-x-1/2 -translate-y-1/2 flex-col gap-3 rounded-md border border-border bg-background p-4 shadow-xl">
             <Dialog.Title className="text-sm font-semibold">
-              New task in {taskPickerProject?.name} — pick an epic
+              New story in {taskPickerProject?.name} — pick an epic
             </Dialog.Title>
             <div className="flex flex-col gap-1" data-testid="epic-picker">
               {(taskPickerProject ? epicsByProject.get(taskPickerProject.id) ?? [] : []).map((epic) => (
@@ -1466,7 +1466,7 @@ export function BoardPage() {
               {taskPickerProject && (epicsByProject.get(taskPickerProject.id) ?? []).length === 0 && (
                 <div className="flex flex-col gap-2" data-testid="epic-picker-empty">
                   <span className="text-xs text-muted-foreground">
-                    No epics in {taskPickerProject.name} yet — a task needs its epic.
+                    No epics in {taskPickerProject.name} yet — a story needs its epic.
                   </span>
                   <Button
                     variant="outline"
@@ -1814,7 +1814,7 @@ function StageCell({
           onDetails={onCardDetails}
           kebabItems={[
             {
-              label: "Delete task…",
+              label: "Delete story…",
               destructive: true,
               onClick: () => onCardDelete(t),
             },

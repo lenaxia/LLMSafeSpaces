@@ -19,9 +19,9 @@ const TASK_EVENTS_LIMIT = 200;
  * engine.go's recordEventTx calls; the reconciler's system rows ride the
  * same vocabulary with deterministic ids). */
 const ACTION_LABELS: Record<string, string> = {
-  create_task: "task created",
-  update_task: "task updated",
-  delete_task: "task deleted",
+  create_task: "story created",
+  update_task: "story updated",
+  delete_task: "story deleted",
   move_stage: "stage moved",
   task_start: "manual dispatch (task_start)",
   claim: "claim granted",
@@ -41,8 +41,8 @@ const ACTION_LABELS: Record<string, string> = {
   unblocked_by_delete: "unblocked by delete",
   heartbeat: "lease heartbeat",
   report_throttle: "throttled (429 requeue)",
-  pause_task: "task paused",
-  resume_task: "task resumed",
+  pause_task: "story paused",
+  resume_task: "story resumed",
   import_plan: "plan imported",
 };
 
@@ -223,7 +223,7 @@ export function TaskDrawer({ open, onOpenChange, task, projectTasks = [], onEdit
         <Dialog.Overlay className="fixed inset-0 bg-black/40 z-50" />
         <Dialog.Content
           className="fixed right-0 top-0 z-50 flex h-full w-[26rem] max-w-[90vw] flex-col overflow-y-auto border-l border-border bg-background shadow-xl"
-          aria-label={`Task ${task.short_id}`}
+          aria-label={`Story ${task.short_id}`}
         >
           <div className="flex items-start justify-between gap-2 border-b border-border px-4 py-3">
             <Dialog.Title className="flex flex-col gap-0.5 text-sm font-semibold" data-testid="drawer-title">
@@ -391,7 +391,7 @@ export function TaskDrawer({ open, onOpenChange, task, projectTasks = [], onEdit
           {onEdit && (
             <div className="flex justify-end border-t border-border px-4 py-3">
               <Button variant="outline" size="sm" onClick={() => onEdit(task)} data-testid="drawer-edit">
-                <Pencil className="mr-1 h-3.5 w-3.5" /> Edit task
+                <Pencil className="mr-1 h-3.5 w-3.5" /> Edit story
               </Button>
             </div>
           )}

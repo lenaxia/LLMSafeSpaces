@@ -139,8 +139,8 @@ export function TaskCard({ task, projectTasks, pending, refused, dimmed, highlig
                 e.stopPropagation();
                 onDetails(task);
               }}
-              title="Task details — charter, criteria, full audit timeline"
-              aria-label={`Task details ${task.short_id}`}
+              title="Story details — charter, criteria, full audit timeline"
+              aria-label={`Story details ${task.short_id}`}
               className="rounded p-0.5 text-muted-foreground hover:bg-accent hover:text-foreground"
             >
               <Info className="h-3 w-3" />
@@ -155,8 +155,8 @@ export function TaskCard({ task, projectTasks, pending, refused, dimmed, highlig
                 onStart(task);
               }}
               disabled={starting}
-              title="task_start — manual one-off dispatch (claim + fresh worker, R9)"
-              aria-label={`Start task ${task.short_id}`}
+              title="Story start (task_start) — manual one-off dispatch (claim + fresh worker, R9)"
+              aria-label={`Start story ${task.short_id}`}
               className="rounded p-0.5 text-muted-foreground hover:bg-accent hover:text-foreground disabled:opacity-50"
             >
               <Play className="h-3 w-3" />
@@ -165,7 +165,7 @@ export function TaskCard({ task, projectTasks, pending, refused, dimmed, highlig
           {kebabItems && kebabItems.length > 0 && (
             <KebabMenu
               items={kebabItems}
-              ariaLabel={`Task actions for ${task.short_id}`}
+              ariaLabel={`Story actions for ${task.short_id}`}
               testId={`task-kebab-${task.short_id}`}
             />
           )}

@@ -53,6 +53,22 @@ describe("BoardPage — kanban/swimlanes render (§4.8)", () => {
     expect(screen.getByTestId("cfg-personas-prj-aaaa1111")).toBeInTheDocument();
   });
 
+  it("renders the page title as Sprint Board and the story vocabulary on the chrome (owner ruling 2026-10-30)", async () => {
+    // The rename pins: the h1 says Sprint Board, the swimlane creation
+    // buttons say New story (testids keep their task- prefixes — the
+    // wire contract is untouched, only the rendered labels moved).
+    renderBoard();
+    await screen.findByTestId("swimlane-prj-aaaa1111");
+    expect(screen.getByRole("heading", { name: "Sprint Board" })).toBeInTheDocument();
+    const btn = screen.getByTestId("new-task-prj-aaaa1111") as HTMLButtonElement;
+    expect(btn.textContent).toBe("New story");
+    expect(btn.getAttribute("title")).toBe("New story in Apollo — pick an epic");
+    // The search input's accessible name carries the vocabulary too.
+    expect(screen.getByLabelText("Search stories")).toBeInTheDocument();
+    // And the old label never renders anywhere on the page.
+    expect(screen.queryByText("New task")).not.toBeInTheDocument();
+  });
+
   it("renders one swimlane per project, named by title (ruling 4: no raw ids)", async () => {
     renderBoard();
     await screen.findByTestId("swimlane-prj-aaaa1111");

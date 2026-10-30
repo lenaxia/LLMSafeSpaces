@@ -23,7 +23,7 @@ import {
 import type { BoardEpic, BoardProject } from "../api/board";
 
 // #1832 items 1-2: contextual creation in each project swimlane header
-// (New epic / New task — no greyed-only global path) + collapsible epic
+// (New epic / New story — no greyed-only global path) + collapsible epic
 // bands inside the swimlane with tasks grouped beneath; clicking a band
 // highlights its tasks and dims others; the selected epic scopes task
 // creation.
@@ -36,7 +36,7 @@ describe("BoardPage #1832 — swimlane creation buttons + epic bands", () => {
 
   // --- Item 1: contextual header buttons -----------------------------------
 
-  it("renders enabled New epic / New task buttons in EVERY swimlane header (All-projects scope)", async () => {
+  it("renders enabled New epic / New story buttons in EVERY swimlane header (All-projects scope)", async () => {
     renderBoard();
     await screen.findByTestId("swimlane-prj-aaaa1111");
     for (const sid of ["prj-aaaa1111", "prj-bbbb2222"]) {
@@ -129,7 +129,7 @@ describe("BoardPage #1832 — swimlane creation buttons + epic bands", () => {
 
   // --- Item 2b: the selected epic scopes task creation ------------------------
 
-  it("New task from the swimlane header lands inside the SELECTED epic", async () => {
+  it("New story from the swimlane header lands inside the SELECTED epic", async () => {
     mockCreateTask.mockResolvedValue({});
     renderBoard();
     await screen.findByTestId("epic-band-epic-uuid-2");
@@ -150,7 +150,7 @@ describe("BoardPage #1832 — swimlane creation buttons + epic bands", () => {
     await waitFor(() => expect(mockCreateTask).toHaveBeenCalledWith("epic-uuid-2", expect.objectContaining({ title: "Scoped task" })));
   });
 
-  it("New task with NO selection opens the epic picker; choosing an epic scopes the dialog", async () => {
+  it("New story with NO selection opens the epic picker; choosing an epic scopes the dialog", async () => {
     mockCreateTask.mockResolvedValue({});
     renderBoard();
     await screen.findByTestId("swimlane-prj-aaaa1111");
@@ -278,7 +278,7 @@ describe("BoardPage #1832 r2 — server epics, unhappy paths, reversion guards",
     dragCardTo("tsk-aaaa0001", "in_progress");
     await waitFor(() => expect(screen.queryByTestId("epic-band-epic-uuid-2")).toBeNull());
 
-    // New task must open the PICKER (no selection), never a create
+    // New story must open the PICKER (no selection), never a create
     // dialog scoped to the vanished epic.
     fireEvent.click(screen.getByTestId("new-task-prj-aaaa1111"));
     expect(await screen.findByTestId("epic-picker")).toBeInTheDocument();

@@ -925,7 +925,8 @@ class WorkflowsAPI {
 }
 
 
-/** Task Board (design 0067, #1699): user-level manager surface. */
+/** Sprint Board, formerly Task Board (design 0067, #1699): user-level manager surface.
+ * Prose says "story" (owner ruling 2026-10-30); the wire/API term stays "task". */
 class BoardAPI {
   constructor(private readonly client: LLMSafeSpaces) {}
 
