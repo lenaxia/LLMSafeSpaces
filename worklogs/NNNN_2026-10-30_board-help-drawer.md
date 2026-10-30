@@ -1,6 +1,6 @@
-# 1236 — "How the sprint board works": the board help drawer (owner ruling 2026-10-30, tsk-glassy-shovel-feels)
+# "How the sprint board works": the board help drawer (owner ruling 2026-10-30, tsk-glassy-shovel-feels)
 
-Branch: `board-help-drawer` (checkout `/workspace/LLMSafeSpaces`, off `origin/main` @ `acb8d3981`).
+Branch: `board-help-drawer` (worktree `/tmp/opencode/help-drawer-wt`, off `origin/main` @ `acb8d3981`).
 
 ## 1. The owner ruling (verbatim intent, 2026-10-30)
 
@@ -61,3 +61,40 @@ The drawer speaks in *stories* / *the sprint board* — never "task board" — s
 ## 6. Process
 
 Conventional commits; this worklog; CHANGELOG `[Unreleased]` entry; COORDINATE.md active-claim row (files claimed: the new component + test + BoardPage wiring + bookkeeping). AI reviewer until APPROVED; orchestrator merges; never self-merge.
+
+## 7. Review round 1 (attempt recovery — this session)
+
+Round 1 of this lane committed at `7ab64ee3a`, opened PR #1996, and the
+worker's lease lapsed before the review landed (attempt failed on
+liveness, not on the work). This session recovered the lane off the
+pushed branch. The AI reviewer's round-1 verdict: CHANGES_REQUESTED with
+two blocking findings and one minor — remediation:
+
+1. **Worklog sentinel (blocking)** — the hand-numbered
+   `worklogs/1236_…` claimed a number (repolint open-claims semantics)
+   and re-created the exact collision race main had just repaired at
+   base `acb8d3981`. Fixed: `git mv` to the `NNNN_` sentinel; the
+   post-merge bot assigns the real number.
+2. **Missing e2e tier (blocking)** — "the affected user-facing workflow
+   lacks the mandatory e2e tier (happy + unhappy)". Added
+   `2026-10-30 help drawer` describe to `frontend/tests/e2e/board.spec.ts`
+   (4 tests, all through the real `openBoard` mock harness):
+   - happy — the toolbar affordance is VISIBLE in real toolbar layout
+     with the exact aria-label, opens the drawer visibly (title +
+     spot-checked section/example render), Close restores the board;
+   - unhappy — Escape closes and RELEASES the board: the search input
+     takes a click+type and actually filters (a lingering overlay or
+     pointer-events trap fails here, not in jsdom);
+   - first-run — the empty board's learn-more entry (plus the toolbar
+     affordance) opens the same drawer with zero project data; the exit
+     leaves the empty state intact;
+   - mobile 375px — the icon affordance stays reachable and the drawer
+     clamps to the real viewport (w-[26rem] → 90vw = 337.5px > 300
+     asserted) — jsdom cannot see either geometry fact.
+3. **Minor** — the six example cards were pinned by testid existence
+   only; now each card's use-case LABEL is text-pinned (a garbled label
+   can no longer pass), same as the section headings.
+
+Gates re-run post-remediation in the worktree: full vitest green, tsc
+clean, eslint 0 errors, `make fmt-check` green, the four new e2e green
+under `npx playwright test board.spec.ts`.

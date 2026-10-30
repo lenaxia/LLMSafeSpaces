@@ -34,6 +34,18 @@ const ALL_EXAMPLES = [
   "board-help-example-batch",
 ] as const;
 
+// The six cards' use-case LABELS, pinned by text the way the section
+// headings are — a garbled label would otherwise pass a
+// testid-existence-only pin (review round 1, minor finding).
+const EXAMPLE_LABELS: Record<(typeof ALL_EXAMPLES)[number], string> = {
+  "board-help-example-code": "Writing code",
+  "board-help-example-research": "Research",
+  "board-help-example-creative": "Creative writing",
+  "board-help-example-analytics": "Data analytics",
+  "board-help-example-post-processing": "Data post-processing",
+  "board-help-example-batch": "Batch content operations",
+};
+
 describe("BoardPage — help drawer (owner ruling 2026-10-30)", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -81,6 +93,9 @@ describe("BoardPage — help drawer (owner ruling 2026-10-30)", () => {
     }
     for (const example of ALL_EXAMPLES) {
       expect(screen.getByTestId(example)).toBeInTheDocument();
+      // The label pin: each card SAYS its use case (text, not just a
+      // node with the right testid).
+      expect(screen.getByTestId(example).textContent).toContain(EXAMPLE_LABELS[example]);
     }
     // The section headings say what they say (the pin is the TEXT, not
     // just the node).
