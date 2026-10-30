@@ -33,22 +33,30 @@ import (
 type fakeOpencodeHarness struct {
 	srv *httptest.Server
 
-	mu            sync.Mutex
-	messageCalls  int
+	mu             sync.Mutex
+	messageCalls   int
 	messageStarted chan struct{} // signaled (once) when the message POST arrives
-	release       chan struct{}  // closed by the test to let the message leg finish
-	messageDone   chan struct{}  // closed when the message handler returns
-	status        int            // the message leg's response status (200 or 500)
+	releaseOnce    sync.Once
+	release        chan struct{} // closed (idempotently) to let the message leg finish
+	messageDone    chan struct{} // closed when the message handler returns
+	status         int           // the message leg's response status (200 or 500)
 }
 
 func newFakeOpencodeHarness(t *testing.T) *fakeOpencodeHarness {
 	t.Helper()
 	h := &fakeOpencodeHarness{
 		messageStarted: make(chan struct{}),
-		release:       make(chan struct{}),
-		messageDone:   make(chan struct{}),
-		status:        http.StatusOK,
+		release:        make(chan struct{}),
+		messageDone:    make(chan struct{}),
+		status:         http.StatusOK,
 	}
+	// Deadlock guard (review round 1): ANY failure path that Fatal()s
+	// before the test drains the leg (including the regression tripwire
+	// itself) must not leave the parked handler holding the connection
+	// into srv.Close — release idempotently BEFORE the server closes, so
+	// a future regression presents as a crisp assertion failure, not a
+	// CI hang.
+	t.Cleanup(h.releaseLeg)
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /session", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -82,9 +90,15 @@ func newFakeOpencodeHarness(t *testing.T) *fakeOpencodeHarness {
 	return h
 }
 
+// releaseLeg unblocks the parked message leg exactly once — safe from
+// the harness cleanup AND any test's explicit drain.
+func (h *fakeOpencodeHarness) releaseLeg() {
+	h.releaseOnce.Do(func() { close(h.release) })
+}
+
 func (h *fakeOpencodeHarness) drainMessageLeg(t *testing.T) {
 	t.Helper()
-	close(h.release)
+	h.releaseLeg()
 	select {
 	case <-h.messageDone:
 	case <-time.After(5 * time.Second):
@@ -203,13 +217,29 @@ func TestBoardWorker_DeliveryFailureKeepsIdentity(t *testing.T) {
 		t.Fatalf("the spawn envelope must succeed on identity alone, got %d: %s", w.Code, w.Body.String())
 	}
 	var resp struct {
-		SessionID string `json:"sessionId"`
+		SessionID string          `json:"sessionId"`
+		Output    json.RawMessage `json:"output"`
+		ErrorCode string          `json:"errorCode"`
 	}
 	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("parse envelope: %v", err)
 	}
+	// The discriminating assertions (review round 1): the pre-fix
+	// blocking path ALSO answers 200 + sessionId on this failure shape
+	// (the #1470 error envelope) — dispatched + empty errorCode are
+	// what pin the EARLY arm specifically.
 	if resp.SessionID != "ses_worker_1" {
 		t.Fatalf("expected sessionId ses_worker_1, got %q", resp.SessionID)
+	}
+	if resp.ErrorCode != "" {
+		t.Fatalf("expected empty errorCode (identity precedes delivery outcome by design), got %q", resp.ErrorCode)
+	}
+	var out map[string]any
+	if err := json.Unmarshal(resp.Output, &out); err != nil {
+		t.Fatalf("parse output: %v", err)
+	}
+	if out["dispatched"] != true {
+		t.Fatalf("expected dispatched=true, got %v", out)
 	}
 	// Drain the failing leg — no panic, no hang.
 	h.drainMessageLeg(t)

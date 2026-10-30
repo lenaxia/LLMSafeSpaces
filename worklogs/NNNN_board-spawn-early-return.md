@@ -47,9 +47,12 @@ boardWorkerSessions provenance record), the charter message is
 dispatched in a DETACHED goroutine (`dispatchAgentMessageDetached`:
 WithoutCancel-of-request — context.Background with a 2h bound that
 outlives any real first turn; the same #1327 dedupe key as the blocking
-path so a re-drive upserts the same transcript message; failures log
-and the lease-lapse contract heals — identical failure semantics to
-today) and the endpoint answers IMMEDIATELY with the session id.
+path so a re-drive upserts the same transcript message; failures log;
+identity precedes delivery outcome BY DESIGN — a delivery failure now
+leaves the stamps landed and the lease re-armed to its window before
+the lapse heal, where the old blocking shape answered with a
+session-less error envelope) and the endpoint answers IMMEDIATELY
+with the session id.
 
 Real DAG agent nodes keep the blocking contract untouched — their
 results feed the graph.
@@ -75,7 +78,11 @@ a fake opencode whose message leg PARKS until released (the
 ## §5 Verification
 
 `go build ./...`; the new pins under `-race`; the FULL agentd suite
-(377s, green); golangci-lint 0. pkg/board untouched (its integration
+(green); golangci-lint 0 LOCALLY — but review round 1 caught what my
+local run missed: `make fmt-check` (gofmt ordering) was RED on the
+first push (the log/slog import position, a stray blank line, comment
+alignment). Fixed; lesson: fmt-check is part of the pre-push gate,
+golangci alone is not the whole of it. pkg/board untouched (its integration
 suite re-run green on clean main during triage — the engine was never
 at fault).
 

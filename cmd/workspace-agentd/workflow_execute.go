@@ -14,12 +14,12 @@ package main
 import (
 	"context"
 	"crypto/sha256"
-	"log/slog"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"os"
 	"regexp"
@@ -567,10 +567,19 @@ func execAgentNode(ctx context.Context, password string, w http.ResponseWriter, 
 	// ONLY: dispatch the charter message DETACHED (WithoutCancel — the
 	// request context dies with the response; the goroutine ends when
 	// the turn does, one per spawn) and answer with the session id the
-	// moment it exists. A delivery failure logs and the lease-lapse
-	// contract heals it — identical to today's failure semantics, minus
-	// the completion hostage. Real DAG agent nodes keep the blocking
-	// contract: their results feed the graph.
+	// moment it exists. IDENTITY PRECEDES DELIVERY OUTCOME BY DESIGN
+	// (review round 1's wording): a delivery failure now differs from
+	// the old blocking shape — the stamps land and the lease sits
+	// re-armed up to its window before the lapse heal, rather than the
+	// old session-less error envelope. The detached leg is unreachable
+	// by /v1/workflow/node/cancel (the registry unregisters the node
+	// ~1s in); no production caller today — worker abort rides
+	// /session/<id>/abort. NOTE: the NodeID literal "board-worker" is a
+	// RESERVED dispatch id shared with the provenance gate below — a
+	// user DAG agent node must never carry it (it would take this early
+	// arm and, in ephemeral mode, leak its session past the skipped
+	// teardown); the production spawner is the only issuer
+	// (session: "new").
 	if req.NodeID == "board-worker" {
 		//nolint:gosec,contextcheck // G118: deliberate — the charter delivery outlives the spawn request BY DESIGN (the request context dies with the early envelope; the bound lives in the helper); a delivery failure is the lease-lapse heal's case
 		go dispatchAgentMessageDetached(password, sessionID, data.Agent, prompt, req.WorkflowID, req.NodeID, req.RunID)
@@ -898,7 +907,6 @@ func dispatchAgentMessageDetached(password, sessionID, agent, prompt, workflowID
 			"session", sessionID, "status", resp.StatusCode)
 	}
 }
-
 
 // createOpencodeSession creates a session via the opencode HTTP API.
 // Every failure mode returns a non-empty (code, detail) pair — NEVER
