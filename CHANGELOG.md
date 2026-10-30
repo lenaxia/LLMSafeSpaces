@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.44.9] - 2026-10-30
+
 ### Added — gate-script worked patterns: a source doc shipped in the agentd image, materialized at boot, pointed at by the tool description (owner ruling 2026-10-29, tsk-arctic-wardrobe-verifies)
 
 - **The first real inline-gate trigger took four attempts, and every failure was the script's EXTERNAL contract, not the #1812 machinery**: the anon GitHub API returns `review_decision: null` unauthenticated (the truth is `GET /pulls/{n}/reviews`, last element's `state` + `submitted_at`), states are lowercase, `urlopen` THROWS `HTTPError` on 304 when ETags are opted into, and a saved ETag can pin stale CDN content permanently (a verdict becomes invisible). The settled delivery: agents need worked patterns, LAZILY, without prompt bloat.
