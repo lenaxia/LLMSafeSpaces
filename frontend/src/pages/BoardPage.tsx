@@ -18,7 +18,8 @@ import { TaskDialog } from "../components/board/TaskDialog";
 import { TaskDrawer } from "../components/board/TaskDrawer";
 import { BoardDefaultsDialog, ProjectConfigTrigger } from "../components/board/BoardConfigPanels";
 import { EpicDrawer } from "../components/board/EpicDrawer";
-import { Archive, KanbanSquare, ChevronRight, ListFilter, Settings2 } from "lucide-react";
+import { BoardHelpDrawer } from "../components/board/BoardHelpDrawer";
+import { Archive, HelpCircle, KanbanSquare, ChevronRight, ListFilter, Settings2 } from "lucide-react";
 import { useSearchParams } from "react-router-dom";
 import { cn } from "../lib/utils";
 import { boardApi, type BoardEpic, type BoardProject, type BoardTask, type BoardEventPayload } from "../api/board";
@@ -98,6 +99,10 @@ export function BoardPage() {
   // toolbar. Closed = not rendered = zero height (mobile: the swim
   // lanes start immediately below the toolbar, nothing overlaps).
   const [filterDrawerOpen, setFilterDrawerOpen] = useState(false);
+  // The "How the sprint board works" help drawer (owner ruling
+  // 2026-10-30): opened from the toolbar's HelpCircle affordance AND
+  // the empty-board first-run state — static prose, no data dependency.
+  const [helpOpen, setHelpOpen] = useState(false);
   const [sideCollapsed, setSideCollapsed] = useState(true);
   // #1964: archived projects' two-level drawer — the #1627
   // Archived-group deliberate-friction posture: BOTH levels are
@@ -1088,6 +1093,21 @@ export function BoardPage() {
             <Button variant="outline" size="sm" onClick={() => { setShowCreateProject(true); setCreateError(null); }} data-testid="new-project-button">
               New project
             </Button>
+            {/* Owner ruling 2026-10-30: a help affordance on the board —
+             * opens the "How the sprint board works" drawer (what it is,
+             * the recommended workflow, worked examples). Icon-only, so
+             * the accessible name carries the full intent. */}
+            <Button
+              variant="outline"
+              size="sm"
+              className="h-8 w-8 px-0"
+              onClick={() => setHelpOpen(true)}
+              aria-label="Learn more: how the sprint board works"
+              title="Learn more: how the sprint board works"
+              data-testid="board-help-button"
+            >
+              <HelpCircle className="h-4 w-4" aria-hidden />
+            </Button>
           </div>
         </div>
         {/* Owner ruling 2026-10-29: the filter pills live in this
@@ -1211,6 +1231,20 @@ export function BoardPage() {
           <div className="flex h-full flex-col items-center justify-center gap-2 text-sm text-muted-foreground" data-testid="board-empty">
             <span>No boards yet.</span>
             <Button size="sm" onClick={() => setShowCreateProject(true)}>Create your first project</Button>
+            {/* Owner ruling 2026-10-30: the first-run moment carries the
+             * help entry point — same drawer, discoverable before any
+             * project exists. */}
+            <Button
+              variant="ghost"
+              size="sm"
+              className="text-muted-foreground"
+              onClick={() => setHelpOpen(true)}
+              aria-label="Learn more: how the sprint board works"
+              data-testid="board-empty-learn-more"
+            >
+              <HelpCircle className="mr-1 h-3.5 w-3.5" aria-hidden />
+              How the sprint board works
+            </Button>
           </div>
         ) : projectsQuery.isSuccess && activeProjects.length === 0 ? (
           // #1964: every project archived — the active surface is empty
@@ -1651,6 +1685,9 @@ export function BoardPage() {
        * 2026-10-28 — config ON the board) --------------------------------- */}
       <BoardDefaultsDialog open={defaultsOpen} onOpenChange={setDefaultsOpen} />
 
+      {/* --- Help drawer ("How the sprint board works", owner ruling
+       * 2026-10-30) -------------------------------------------------------- */}
+      <BoardHelpDrawer open={helpOpen} onOpenChange={setHelpOpen} />
     </div>
   );
 }
