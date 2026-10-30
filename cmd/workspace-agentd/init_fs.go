@@ -235,6 +235,23 @@ func runInitFSCommand(args []string, stderr io.Writer) int {
 		_, _ = fmt.Fprintf(stderr, "init-fs: gate-docs copy failed (non-fatal): %v\n", err)
 	}
 
+	// 8. Worked-pattern example directories (2026-10-30 owner ruling):
+	// the Sprint Board story patterns and the workflow DAG patterns —
+	// one file per example, embedded in this binary, materialized to
+	// $runtimeDir/docs/sprint-board-patterns/ and .../workflow-patterns/
+	// — the stable pod paths the board_create_task/board_import_plan and
+	// workflow_create descriptions point agents at. Same best-effort
+	// posture as the gate doc above: a failed copy logs loudly but never
+	// blocks boot.
+	if err := ensureEmbeddedPatternDir(sprintBoardPatternsFS, "sprint_board_patterns",
+		filepath.Join(*runtimeDir, "docs", "sprint-board-patterns")); err != nil {
+		_, _ = fmt.Fprintf(stderr, "init-fs: sprint-pattern-docs copy failed (non-fatal): %v\n", err)
+	}
+	if err := ensureEmbeddedPatternDir(workflowPatternsFS, "workflow_patterns",
+		filepath.Join(*runtimeDir, "docs", "workflow-patterns")); err != nil {
+		_, _ = fmt.Fprintf(stderr, "init-fs: workflow-pattern-docs copy failed (non-fatal): %v\n", err)
+	}
+
 	_, _ = fmt.Fprintln(stderr, "init-fs: ok")
 	return 0
 }

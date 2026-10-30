@@ -88,6 +88,18 @@ func TestBoardTools_Registration(t *testing.T) {
 	}
 }
 
+// TestBoardTools_PatternDocPointerPins: the 2026-10-30 owner ruling's
+// worked story patterns live at the pod-side doc directory materialized
+// by the agentd image; the create/plan tool descriptions point at it.
+// Drift-pinned (the #1415/0059 class — description text has been lost
+// silently before).
+func TestBoardTools_PatternDocPointerPins(t *testing.T) {
+	for _, d := range []string{boardCreateTaskTool.Description, boardImportPlanTool.Description} {
+		assert.Contains(t, d, "/sandbox-runtime/docs/sprint-board-patterns/", "the worked-story-patterns doc pointer must stay")
+		assert.Contains(t, d, "grep '^Description:'", "the catalog is grepped, never hand-maintained")
+	}
+}
+
 // TestBoardTools_NoClaimTokenParams: the design withholds claim tokens
 // from external actors (§4.3b — "no claim/heartbeat here"; §4.7: "no
 // owner surface delivers these"). No board_* tool schema may carry a
