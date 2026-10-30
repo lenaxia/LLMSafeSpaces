@@ -223,8 +223,8 @@ func main() {
 	// US-4b: all three store coordinates honor the LLMSAFESPACES_*_PATH
 	// env overrides (sidecar-mode relocations); unset → the consts,
 	// byte-identical single-container behavior.
-	bootCfgPath, bootPromptPath, bootDirsPath := bootAgentConfigPathsWithEnv()
-	agentConfigWriter := ensureBootAgentConfig(bootCfgPath, bootPromptPath, bootDirsPath, password)
+	bootCfgPath, bootPromptPath, bootDirsPath, bootRolesPath := bootAgentConfigPathsWithEnv()
+	agentConfigWriter := ensureBootAgentConfig(bootCfgPath, bootPromptPath, bootDirsPath, bootRolesPath, password)
 
 	// The tracker must exist before the supervisor starts: its
 	// generation-change hook (design 0050 D2) clears orphaned busy flags

@@ -246,16 +246,14 @@ export function newBoardRequestId(): string {
 // --- #1832 item 6: board config shapes (mirror pkg/board/config.go) ------------
 
 /** One stage's configured agent persona (stage-persona
- * claim-then-spawn). Role-first (owner ruling 2026-10-29): roleId
- * references a platform agent role (id or slug — the spawned worker's
- * model/tools/system-prompt come from the role); instructions are the
- * optional override layered on the role's system prompt. The legacy
- * name+instructions shape still decodes (name is the display label). */
-export type BoardPersonaConfig = {
-  roleId?: string;
-  name?: string;
-  instructions?: string;
-};
+ * claim-then-spawn) — a ROLE REFERENCE, nothing else (owner ruling
+ * 2026-10-29, round 2: "Board stages should ONLY ever have roles
+ * configured"). The bare string is the canonical wire form (the
+ * referenced agent role's id or slug — the spawned worker's
+ * model/tools/system-prompt come from the role); the {roleId} object
+ * decodes on the wire but carries nothing else. name/instructions do
+ * not exist in this layer. */
+export type BoardPersonaConfig = string | { roleId: string };
 
 export type BoardConfig = {
   reviewColumn: string; // "off" | "manual" | "auto"

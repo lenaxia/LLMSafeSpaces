@@ -30,6 +30,13 @@ func allowedDirsPathFromEnv() string {
 	return envOrDefault("LLMSAFESPACES_ALLOWED_DIRS_PATH", agentd.AllowedDirsPath)
 }
 
+// agentRolesPathFromEnv is the agent-role-vocabulary coordinate (the
+// bootstrap subcommand's agent-roles.json staging target — the same
+// env-overridable relocation discipline as its siblings).
+func agentRolesPathFromEnv() string {
+	return envOrDefault("LLMSAFESPACES_AGENT_ROLES_PATH", agentd.AgentRolesPath)
+}
+
 // secretsEnvPathFromEnv is the secrets-env coordinate (the spawn_env
 // consumer, the resync apply path, the materializer, and the workflow
 // http-node reader share it — one coordinate, so US-4b's relocation is
@@ -46,8 +53,8 @@ func modelWarnPathFromEnv() string {
 	return filepath.Join(filepath.Dir(agentConfigPathFromEnv()), filepath.Base(agentd.ModelResolutionWarningPath))
 }
 
-// bootAgentConfigPathsWithEnv is the (config, prompt, dirs) triple the
-// boot stamp consumes in BOTH agentd modes (main and --sidecar).
-func bootAgentConfigPathsWithEnv() (string, string, string) {
-	return agentConfigPathFromEnv(), adminPromptPathFromEnv(), allowedDirsPathFromEnv()
+// bootAgentConfigPathsWithEnv is the (config, prompt, dirs, roles)
+// quad the boot stamp consumes in BOTH agentd modes (main and --sidecar).
+func bootAgentConfigPathsWithEnv() (string, string, string, string) {
+	return agentConfigPathFromEnv(), adminPromptPathFromEnv(), allowedDirsPathFromEnv(), agentRolesPathFromEnv()
 }

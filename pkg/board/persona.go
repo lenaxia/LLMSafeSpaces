@@ -23,18 +23,26 @@ import (
 // — and spawns a fresh session whose charter envelope carries the
 // configured persona. Nothing is hardwired to in_review or to
 // "reviewer": any persona-eligible stage (a stage a live claim can
-// exist in — in_progress, in_review), any persona name, config-driven
-// through the stagePersonas config key (user defaults overlaid with
-// per-project overrides, the #1832 item 6 merge).
+// exist in — in_progress, in_review), any referenced agent role,
+// config-driven through the stagePersonas config key (user defaults
+// overlaid with per-project overrides, the #1832 item 6 merge).
+//
+// ROLE-ONLY (owner ruling 2026-10-29): a persona IS a reference to a
+// platform agent role — the board layer defines no behavior of its
+// own (no name, no instructions; the referenced role's model/tools/
+// system-prompt are the single source of truth, and the default
+// reviewer's verdict-channel prose is the SEEDED reviewer role's
+// system prompt, DefaultReviewerRoleSystemPrompt).
 //
 // This ONE mechanism absorbs the dormant parallel auto-review
 // assignment path (#1832 item 5's ReviewAssigner — a token-less
 // manager-surface direct dispatch that raced no lease): the legacy
 // reviewColumn=auto + autoAssignReviewer=true composition now renders
-// the default reviewer PERSONA for in_review and rides the same
-// claim-then-spawn as every other persona (one lease, one token,
-// movement-observed liveness, reconciler re-arm on lapse — the
-// sub-orchestrator board test's design recommendation, generalized).
+// the default reviewer PERSONA (the built-in reviewer role reference)
+// for in_review and rides the same claim-then-spawn as every other
+// persona (one lease, one token, movement-observed liveness,
+// reconciler re-arm on lapse — the sub-orchestrator board test's
+// design recommendation, generalized).
 //
 // Semantics preserved exactly: claim-before-spawn (never a spawn
 // without a lease); token-gated forward writes (the stage machine's
@@ -51,44 +59,52 @@ import (
 // →in_review clears token+lease and spawns nothing (the dormant path
 // never fired under the shipped defaults either).
 
+// DefaultReviewerRoleSlug is the built-in reviewer agent role's slug:
+// the role the platform SEEDS at startup (see
+// seedBuiltinReviewerRole) carrying DefaultReviewerRoleSystemPrompt as
+// its system prompt. The default reviewer always resolves to a role —
+// the verdict-channel contract (board_record_verdict, the criteria
+// walk, the Done guard) rides the role's system prompt, deterministic
+// by construction; an org/user overriding the reviewer points
+// in_review at their own role.
+const DefaultReviewerRoleSlug = "reviewer"
+
+// DefaultReviewerRoleSystemPrompt is the built-in reviewer role's
+// system prompt — the default-reviewer verdict-channel prose VERBATIM
+// (it lived in this package as the persona's instructions before the
+// role-only ruling; the prose IS behavior, so it lives in the role
+// definition the platform seeds, and this constant is its single
+// source). pkg/board pins it; the app layer seeds it into the agent
+// roles table at startup.
+const DefaultReviewerRoleSystemPrompt = "Verify EACH acceptance criterion adversarially, with evidence. Record ONE structured verdict: " +
+	"board_record_verdict with verdict=approve (requires the task's evidence URL and ALL criteria met — the Done guard applies regardless) " +
+	"or verdict=fail with findings [{severity blocker|major|minor, pointer, criterionIndex}]. A fail bounces the task to its next claimant " +
+	"with your findings embedded. Never merge, never push. " +
+	"Recording criteria flags: as the reviewer persona you hold this row's claim — record each verified criterion with " +
+	"board_update_task {taskId, claimToken, setCriteriaMet:{index, met}} (#1946: your OWN claimed row only); " +
+	"with every criterion flagged and the evidence URL in hand, board_move_stage→done completes the review."
+
 // DefaultReviewerPersona is the persona the LEGACY config composition
 // (reviewColumn=auto AND autoAssignReviewer=true, no explicit
-// stagePersonas.in_review) renders — the carried-over semantics of
-// #1832 item 5's reviewer charter, now riding the generic mechanism.
-// It exists ONLY as the legacy-composition default; an explicit
-// stagePersonas entry (any role reference, any instructions) replaces
-// it.
-//
-// Role-first (owner ruling 2026-10-29): when a reviewer agent role
-// exists in the available vocabulary (slug or name "reviewer"), the
-// composition POINTS AT IT — stagePersona stamps the role reference
-// and the spawned reviewer runs on the role's model/tools/system
-// prompt, with the charter prose below layered on as the override
-// (the board's verdict-channel mechanics are exactly the edge-case
-// layer a generic reviewer role cannot know). No reviewer role: the
-// legacy composition stands verbatim — the instructions field carries
-// the prose and the persona runs role-less.
-var DefaultReviewerPersona = PersonaConfig{
-	Name: "reviewer",
-	Instructions: "Verify EACH acceptance criterion adversarially, with evidence. Record ONE structured verdict: " +
-		"board_record_verdict with verdict=approve (requires the task's evidence URL and ALL criteria met — the Done guard applies regardless) " +
-		"or verdict=fail with findings [{severity blocker|major|minor, pointer, criterionIndex}]. A fail bounces the task to its next claimant " +
-		"with your findings embedded. Never merge, never push. " +
-		"Recording criteria flags: as the reviewer persona you hold this row's claim — record each verified criterion with " +
-		"board_update_task {taskId, claimToken, setCriteriaMet:{index, met}} (#1946: your OWN claimed row only); " +
-		"with every criterion flagged and the evidence URL in hand, board_move_stage→done completes the review.",
-}
+// stagePersonas.in_review) renders — a ROLE REFERENCE to the built-in
+// reviewer agent role (slug form; applyPersonaRole canonicalizes to
+// the seeded role's id at spawn resolution). It exists ONLY as the
+// legacy-composition default; an explicit stagePersonas entry (any
+// available role) replaces it. The verdict-channel charter itself is
+// the role's system prompt (DefaultReviewerRoleSystemPrompt) — the
+// board layer composes nothing onto it (owner ruling 2026-10-29:
+// behavior definition lives in the agent-roles system, nowhere else).
+var DefaultReviewerPersona = PersonaConfig{RoleID: DefaultReviewerRoleSlug}
 
-// Label is the persona's display/stamp identity: the name when set
-// (the legacy vocabulary), else the role reference. The sites that
-// require a NON-EMPTY persona identity (the claim_persona provenance
-// stamp, event payloads) render this — a role-first persona may carry
-// no name at all.
+// Label is the persona's display/stamp identity: the role reference
+// (the only authored value). personaUnresolvedLabel covers the empty
+// shape applyPersonaRole's degradation never mints but the exported
+// surface must still render for.
 func (p PersonaConfig) Label() string {
-	if p.Name != "" {
-		return p.Name
+	if p.RoleID != "" {
+		return p.RoleID
 	}
-	return p.RoleID
+	return personaUnresolvedLabel
 }
 
 // personaForStage resolves the effective persona for one stage: an
@@ -96,10 +112,10 @@ func (p PersonaConfig) Label() string {
 // {}, the opt-out) OWNS the stage mapping and suppresses the legacy
 // fallthrough entirely; only with NO explicit key anywhere does the
 // legacy auto-review composition render the default reviewer persona
-// for in_review (existing stored configs keep their meaning —
-// auto-review on IS in_review having a reviewer persona via the
-// generic config). Every other shape returns nil (today's behavior,
-// byte-identical).
+// (the built-in reviewer role reference) for in_review (existing
+// stored configs keep their meaning — auto-review on IS in_review
+// having a reviewer persona via the generic config). Every other
+// shape returns nil (today's behavior, byte-identical).
 func personaForStage(eff BoardConfig, stage string) *PersonaConfig {
 	if eff.StagePersonasSet {
 		if p, ok := eff.StagePersonas[stage]; ok {
@@ -171,9 +187,9 @@ func PersonaProvenanceForStage(user, project *BoardConfigOverride, eff BoardConf
 // line (the observability parity the absorbed maybeAutoAssignReview
 // had) — the transition still lands; the reconciler's re-arm
 // re-reads and heals. The resolved persona is ROLE-CANONICALIZED
-// through the installed directory (applyPersonaRole): the default
-// reviewer composition points at the reviewer agent role when one
-// exists, and slug references resolve to canonical role ids.
+// through the installed directory (applyPersonaRole): slug references
+// resolve to canonical role ids, and an unresolvable reference
+// degrades to persona-less (nil) — never a role-less spawn.
 func (s *Service) stagePersona(ctx context.Context, p *Project, stage string) *PersonaConfig {
 	eff, err := s.effectiveConfigForProject(ctx, p)
 	if err != nil {
@@ -189,68 +205,46 @@ func (s *Service) stagePersona(ctx context.Context, p *Project, stage string) *P
 }
 
 // applyPersonaRole resolves one resolved persona's role reference
-// against the project owner's available vocabulary at spawn time: a
-// role-bearing persona canonicalizes (a slug reference stamps the
-// role's id); a name-only persona — most importantly the DEFAULT
-// REVIEWER composition's prose persona — resolves by slug/name to the
-// reviewer agent role (owner ruling 2026-10-29: the default reviewer
-// points at the built-in reviewer agent role, not its own hardcoded
-// definition; the prose survives as the override layer). Resolution
-// outcomes, in order of severity:
+// against the project owner's available vocabulary at spawn time and
+// canonicalizes it (a slug reference stamps the role's canonical id —
+// the id is what rides the dispatch; see boardSpawnRequest).
+// Resolution outcomes:
 //
 //   - resolved → the canonical role id stamps the persona (the
-//     reference rides the dispatch; see boardSpawnRequest).
-//   - name-only unresolvable → the persona runs in its legacy shape
-//     verbatim (role-less override).
-//   - EXPLICIT reference unresolvable (the role was deleted after
-//     storage — the delete path has no stagePersonas cleanup) → the
-//     persona DEGRADES to the role-less shape: the stale reference is
-//     dropped so a dead agentID never rides the dispatch, with the
-//     reference preserved as the display name (Label) so the charter
-//     and audit stamps stay non-empty. The config VIEW still renders
-//     the stored reference (the owner sees and can fix the drift);
-//     only the spawn degrades. Never a failed spawn over vocabulary
-//     drift.
+//     reference rides the dispatch).
+//   - unresolvable — the role was deleted after storage (the delete
+//     path has no stagePersonas cleanup), the directory is blind
+//     (nil), or the directory read FAILED — the persona DEGRADES to
+//     NIL: the transition lands exactly like a persona-less stage
+//     (no claim mint, no spawn — byte-identical to pre-persona), the
+//     stale reference never rides the dispatch, and the reconciler's
+//     re-arm pass re-reads and heals once the vocabulary carries the
+//     role again (the seeded built-in reviewer makes the default
+//     composition self-healing the same way). The config VIEW still
+//     renders the stored reference (the owner sees and can fix the
+//     drift). Never a failed spawn, never a role-less reviewer with
+//     no verdict-channel prose — under the role-only ruling the ROLE
+//     is the behavior, so an unresolvable role means there is no
+//     behavior to spawn.
 func (s *Service) applyPersonaRole(ctx context.Context, p *Project, persona *PersonaConfig) *PersonaConfig {
-	if persona == nil || (persona.RoleID == "" && persona.Name == "") {
-		return persona
+	if persona == nil || persona.RoleID == "" {
+		return nil
 	}
-	roles := s.rolesForUser(ctx, p.UserID)
-	if len(roles) == 0 {
-		return persona // role-blind deployment: the legacy shape runs
+	roles, err := s.rolesForUserErr(ctx, p.UserID)
+	if err != nil {
+		slog.WarnContext(ctx, "board: agent-role directory read failed — persona degrades to persona-less (the re-arm heals it)",
+			"task_project", p.ShortID, "role_ref", persona.RoleID, "err", err.Error())
+		return nil
 	}
-	r := ResolveAgentRoleRef(*persona, roles)
+	r := ResolveAgentRoleRef(persona.RoleID, roles)
 	if r == nil {
-		if persona.RoleID == "" {
-			return persona // name-only, unresolvable: the legacy shape verbatim
-		}
-		// An explicit stale reference degrades to role-less — the
-		// degradation is observable here (the spawn's provenance stamp
-		// renders the preserved reference, not a live role).
-		slog.WarnContext(ctx, "board: persona role reference no longer resolves — degrading to the role-less shape",
+		slog.WarnContext(ctx, "board: persona role reference no longer resolves — persona degrades to persona-less (the re-arm heals it)",
 			"task_project", p.ShortID, "role_ref", persona.RoleID)
-		out := *persona
-		out.RoleID = ""
-		out.Name = staleRoleRefLabel(persona.RoleID, persona.Name)
-		return &out
+		return nil
 	}
 	out := *persona
 	out.RoleID = r.ID
 	return &out
-}
-
-// staleRoleRefLabel renders a degraded persona's display name: the
-// persona's own name when it carries one, else the stale reference
-// itself (rune-truncated to PersonaNameMax — the reference rides log
-// lines and event payloads, never storage).
-func staleRoleRefLabel(ref, name string) string {
-	if name != "" {
-		return name
-	}
-	if runes := []rune(ref); len(runes) > PersonaNameMax {
-		return string(runes[:PersonaNameMax])
-	}
-	return ref
 }
 
 // personaClaimSQL is the re-claim-class persona mint: fresh token +
@@ -337,9 +331,7 @@ const personaRearmCandidatesSQL = `
 	  AND (t.cooldown_until IS NULL OR t.cooldown_until < now())`
 
 // effectiveConfigForProject merges the owner's user-level defaults
-// with the project's overrides (A1 semantics, read time). Both tiers'
-// legacy name-only personas migrate to role references in the decoded
-// shape (the lazy migration — see migratePersonaRoleRefs).
+// with the project's overrides (A1 semantics, read time).
 func (s *Service) effectiveConfigForProject(ctx context.Context, p *Project) (BoardConfig, error) {
 	eff := DefaultBoardConfig()
 	if p.UserID != "" {
@@ -349,7 +341,7 @@ func (s *Service) effectiveConfigForProject(ctx context.Context, p *Project) (Bo
 		}
 		eff = MergeBoardConfig(eff, u)
 	}
-	ov, err := s.decodeProjectOverrides(ctx, p.UserID, p.ID)
+	ov, err := s.decodeProjectOverrides(ctx, p.ID)
 	if err != nil {
 		return eff, err
 	}
