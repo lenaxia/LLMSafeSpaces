@@ -120,7 +120,10 @@ func TestEnsureGateScriptPatternsDoc_ModeIsPublicData(t *testing.T) {
 // return wrapped errors carrying the step's identity (never panic,
 // never strand a temp file); init-fs turns these into the non-fatal
 // boot log pinned by TestInitFS_GateDocCopyBlocked_NeverBlocksBoot.
-// These are the only error branches reachable without root.
+// The structural legs (a blocker at the dir and at the dst); the
+// CreateTemp/write/chmod legs behind them are reachable only via
+// permission faults (e.g. an unwritable dstDir) and ride the same
+// wrap-and-return shape.
 func TestEnsureGateScriptPatternsDoc_ErrorPaths(t *testing.T) {
 	t.Run("dst dir path is an existing file", func(t *testing.T) {
 		dir := t.TempDir()
