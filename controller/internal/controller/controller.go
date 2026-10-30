@@ -47,7 +47,7 @@ type AgentdDelivery = workspace.AgentdDeliveryConfig
 // contract at startup.
 type OpencodeDelivery = workspace.OpencodeDeliveryConfig
 
-func SetupControllers(mgr ctrl.Manager, inferenceRelayURL, apiServiceURL, apiPublicURL, apiInternalToken, defaultRuntimeClass, previewOriginBaseDomain string, uploadStaging workspace.UploadStagingConfig, agentdDelivery AgentdDelivery, opencodeDelivery OpencodeDelivery, agentdSidecarEnabled bool, maxConcurrentReconciles int, relayStaging *workspace.RelayStagingConfig, workspaceTerminationGrace int64) error {
+func SetupControllers(mgr ctrl.Manager, inferenceRelayURL, apiServiceURL, apiPublicURL, apiInternalToken, defaultRuntimeClass, previewOriginBaseDomain, workspaceEventbusAddr, eventbusPasswordSecretName, eventbusPasswordSecretKey string, uploadStaging workspace.UploadStagingConfig, agentdDelivery AgentdDelivery, opencodeDelivery OpencodeDelivery, agentdSidecarEnabled bool, maxConcurrentReconciles int, relayStaging *workspace.RelayStagingConfig, workspaceTerminationGrace int64) error {
 	logger := log.Log.WithName("controller")
 	logger.Info("Setting up controllers")
 
@@ -70,23 +70,26 @@ func SetupControllers(mgr ctrl.Manager, inferenceRelayURL, apiServiceURL, apiPub
 		// StorageClass) ride the DIRECT reader — a cached Get of an
 		// unwatched cluster-scoped type blocks forever on a never-syncing
 		// informer (#1551). SetupWithManager refuses nil.
-		APIReader:                 mgr.GetAPIReader(),
-		InferenceRelayURL:         inferenceRelayURL,
-		OrgStatusClient:           orgStatusClient,
-		DefaultRuntimeClass:       defaultRuntimeClass,
-		APIServiceURL:             apiServiceURL,
-		APIPublicURL:              apiPublicURL,
-		PreviewOriginBaseDomain:   previewOriginBaseDomain,
-		AgentdImage:               agentdDelivery.Image,
-		AgentdBinarySHA256AMD64:   agentdDelivery.BinarySHA256AMD64,
-		AgentdBinarySHA256ARM64:   agentdDelivery.BinarySHA256ARM64,
-		AgentdUpdatePolicyDefault: agentdDelivery.UpdatePolicyDefault,
-		OpencodeImage:             opencodeDelivery.Image,
-		OpencodeBinarySHA256AMD64: opencodeDelivery.BinarySHA256AMD64,
-		OpencodeBinarySHA256ARM64: opencodeDelivery.BinarySHA256ARM64,
-		AgentdSidecarEnabled:      agentdSidecarEnabled,
-		UploadStaging:             uploadStaging,
-		Recorder:                  mgr.GetEventRecorderFor("workspace-controller"),
+		APIReader:                  mgr.GetAPIReader(),
+		InferenceRelayURL:          inferenceRelayURL,
+		OrgStatusClient:            orgStatusClient,
+		DefaultRuntimeClass:        defaultRuntimeClass,
+		APIServiceURL:              apiServiceURL,
+		APIPublicURL:               apiPublicURL,
+		PreviewOriginBaseDomain:    previewOriginBaseDomain,
+		EventbusAddr:               workspaceEventbusAddr,
+		EventbusPasswordSecretName: eventbusPasswordSecretName,
+		EventbusPasswordSecretKey:  eventbusPasswordSecretKey,
+		AgentdImage:                agentdDelivery.Image,
+		AgentdBinarySHA256AMD64:    agentdDelivery.BinarySHA256AMD64,
+		AgentdBinarySHA256ARM64:    agentdDelivery.BinarySHA256ARM64,
+		AgentdUpdatePolicyDefault:  agentdDelivery.UpdatePolicyDefault,
+		OpencodeImage:              opencodeDelivery.Image,
+		OpencodeBinarySHA256AMD64:  opencodeDelivery.BinarySHA256AMD64,
+		OpencodeBinarySHA256ARM64:  opencodeDelivery.BinarySHA256ARM64,
+		AgentdSidecarEnabled:       agentdSidecarEnabled,
+		UploadStaging:              uploadStaging,
+		Recorder:                   mgr.GetEventRecorderFor("workspace-controller"),
 		// Clamped upstream (main.go, 1..64); <=0 keeps controller-runtime's
 		// fully-serial default so unit tests that don't set it are unchanged.
 		MaxConcurrentReconciles: maxConcurrentReconciles,

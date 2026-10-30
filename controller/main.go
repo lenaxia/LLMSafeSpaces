@@ -9,8 +9,10 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
+	"github.com/go-logr/logr"
 	"k8s.io/apimachinery/pkg/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	_ "k8s.io/client-go/plugin/pkg/client/auth/gcp"
@@ -101,6 +103,93 @@ func registerFreeModelsFlagsInto(fs *flag.FlagSet) *freeModelsFlags {
 	return &f
 }
 
+var errInvalidEventbusSecretRef = fmt.Errorf("malformed workspace eventbus secret reference")
+
+// eventbusFlags carries the design-0072 workspace-bus flags (the
+// relayFlags wrapper pattern: keeps main() under funlen and gives the
+// flag surface one name).
+type eventbusFlags struct {
+	addr           string
+	passwordSecret string
+}
+
+func registerEventbusFlags() *eventbusFlags {
+	return registerEventbusFlagsInto(flag.CommandLine)
+}
+
+// registerEventbusFlagsInto is the Into seam (the relayFlags pattern):
+// registration bound into a FRESH FlagSet is what the #1548 orphaning
+// regression pin parses against — a value return or field copy here
+// would strand the parsed flags in a dead struct exactly like the
+// relay incident.
+func registerEventbusFlagsInto(fs *flag.FlagSet) *eventbusFlags {
+	var f eventbusFlags
+	fs.StringVar(&f.addr, "workspace-eventbus-addr", "",
+		"Design 0072 (the workspace event bus): when set (host:port or a credentialess redis:// URL), "+
+			"every agentd sidecar receives AGENTD_EVENTBUS_ADDR with this value and the bus goes live "+
+			"(the notifier's delivery rides the per-workspace Redis Stream with the v1 point-to-point "+
+			"fallback). Credentials ride --workspace-eventbus-password-secret, never this flag. "+
+			"Empty (the default) keeps the bus dormant in every pod.")
+	fs.StringVar(&f.passwordSecret, "workspace-eventbus-password-secret", "",
+		"The bus Redis credentials as NAME:KEY of an existing secret (e.g. "+
+			"llmsafespaces-credentials:redis-password); delivered to sidecars as a secretKeyRef "+
+			"(AGENTD_EVENTBUS_PASSWORD) so the password never appears in a pod spec. "+
+			"Required when --workspace-eventbus-addr is set and the Redis requires auth; the controller "+
+			"refuses to boot on a set address with a malformed secret reference (missing name/key).")
+	return &f
+}
+
+// mustEventbusWiring validates the design-0072 bus wiring at boot,
+// exiting on a malformed configuration and logging the authless-Redis
+// arm; the NAME:KEY split is the return. The authless log line prints
+// the address safely — parseEventbusWiring has already refused any
+// userinfo-bearing form, so the logged value is credentialess by
+// construction.
+func mustEventbusWiring(setupLog logr.Logger, f *eventbusFlags) (string, string) {
+	name, key, err := parseEventbusWiring(f.addr, f.passwordSecret)
+	if err != nil {
+		setupLog.Error(errInvalidEventbusSecretRef, err.Error())
+		os.Exit(1)
+	}
+	if f.addr != "" && name == "" {
+		setupLog.Info("workspace event bus armed WITHOUT a password secret (authless Redis?)", "addr", f.addr)
+	}
+	return name, key
+}
+
+// parseEventbusWiring validates the design-0072 bus flags at boot.
+// Three refusals: a secret reference with no address, a malformed
+// NAME:KEY, and — the credentialess invariant, ENFORCED rather than
+// documented — an address carrying userinfo (an operator reflexively
+// passing redis://:password@host would otherwise put that string
+// verbatim into every pod spec and the controller's own log lines).
+// A set address with no secret is legal (an authless Redis) and logged
+// by the caller.
+func parseEventbusWiring(addr, secretRef string) (name, key string, err error) {
+	if secretRef != "" && addr == "" {
+		return "", "", errors.New("--workspace-eventbus-password-secret set without --workspace-eventbus-addr")
+	}
+	if addr == "" {
+		return "", "", nil // the dormant default
+	}
+	// Userinfo requires "@" in every spelling (redis://user:pass@host
+	// and the bare user:pass@host form alike) and no legitimate Redis
+	// coordinate — host, host:port, redis:// URL, IPv6 literal —
+	// contains one, so one substring check refuses every
+	// password-bearing address.
+	if strings.Contains(addr, "@") {
+		return "", "", errors.New("--workspace-eventbus-addr must be credentialess (host:port or redis:// URL) — pass the password via --workspace-eventbus-password-secret instead")
+	}
+	if secretRef == "" {
+		return "", "", nil // armed, authless: legal
+	}
+	parts := strings.SplitN(secretRef, ":", 2)
+	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+		return "", "", errors.New("--workspace-eventbus-password-secret must be NAME:KEY")
+	}
+	return parts[0], parts[1], nil
+}
+
 func main() {
 	var metricsAddr string
 	var enableLeaderElection bool
@@ -173,6 +262,7 @@ func main() {
 		"Registrable domain for per-workspace dev-preview origins (Epic 66 Phase 1), e.g. safespaces.dev. "+
 			"When set, workspace pods receive PREVIEW_ORIGIN_BASE_DOMAIN and agentd's dev_preview_url "+
 			"tool emits the per-workspace-origin bootstrap URL. Empty keeps the path-based dev preview.")
+	eventbusFlags := registerEventbusFlags()
 	var apiPublicURL string
 	flag.StringVar(&apiPublicURL, "api-public-url", "",
 		"Externally reachable API origin (e.g. https://api.safespaces.dev) wired into workspace pods as "+
@@ -275,6 +365,8 @@ func main() {
 		setupLog.Error(err, "invalid agentd update policy")
 		os.Exit(1)
 	}
+	// Design 0072: validate the workspace-bus wiring at boot.
+	evbusPwName, evbusPwKey := mustEventbusWiring(setupLog, eventbusFlags)
 	if agentdImage != "" && (*agentdHashAMD64 == "" || *agentdHashARM64 == "") {
 		// Resolve the missing pins from the digest's index annotations
 		// (with the ConfigMap cache for registry outages). This happens
@@ -443,7 +535,7 @@ func main() {
 
 	// Set up controllers
 	uploadStaging := mustParseUploadStagingFlag(*uploadStagingFlag)
-	if err := controller.SetupControllers(mgr, inferenceRelayURL, apiServiceURL, apiPublicURL, apiInternalToken, defaultRuntimeClass, previewOriginBaseDomain, uploadStaging, controller.AgentdDelivery{
+	if err := controller.SetupControllers(mgr, inferenceRelayURL, apiServiceURL, apiPublicURL, apiInternalToken, defaultRuntimeClass, previewOriginBaseDomain, eventbusFlags.addr, evbusPwName, evbusPwKey, uploadStaging, controller.AgentdDelivery{
 		Image:               agentdImage,
 		BinarySHA256AMD64:   *agentdHashAMD64,
 		BinarySHA256ARM64:   *agentdHashARM64,

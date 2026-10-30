@@ -234,6 +234,14 @@ func runSidecarCommand(_ []string) int {
 		// no L4/L5 cadence. Same loop, same cadence as single-container.
 		go runSessionStateWatchdog(bgCtx, os.Getenv("WORKSPACE_ID"), sidecarAuthority, sessionstate.ReconcileCadence)
 	}
+	// Design 0071/0072, sidecar edition (the #1332 both-modes
+	// convention): the sidecar's muxes serve the MCP subscription
+	// surface, so THIS process runs the notifier's delivery engine and
+	// the eventbus consumer groups when AGENTD_EVENTBUS_ADDR (wired by
+	// agentd_sidecar.go's eventbusEnv) arms a bus. Unset/unreachable →
+	// nil bus → the v1 point-to-point leg, same as single-container
+	// mode. runShutdown's bgCancel joins the consumers + loops.
+	wireSidecarNotifierBus(bgCtx, &bgWg, sidecarAuthority, os.Getenv, password, log)
 	startBackgroundLoops(bgCtx, &bgWg, deps)
 	// #1576 layer 1's signal: the sidecar learns generation boundaries
 	// from the supervisor's ChildPID (boot observation + every respawn)

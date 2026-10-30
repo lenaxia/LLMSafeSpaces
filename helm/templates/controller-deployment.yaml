@@ -191,6 +191,30 @@ spec:
             {{- if .Values.previewOrigin.enabled }}
             - --preview-origin-base-domain={{ .Values.previewOrigin.baseDomain }}
             {{- end }}
+            {{- /* Design 0072 (the workspace event bus): arm the bus in
+                    every agentd sidecar. The ADDRESS is credentialess
+                    (host:port — pod specs are readable); the PASSWORD
+                    rides a secretKeyRef resolved from the named
+                    credentials secret. Rendering refuses a password
+                    secret without an address (the controller also
+                    refuses it at boot — belt and braces, surfacing the
+                    misconfiguration at install time) and refuses a
+                    userinfo-bearing address outright ("@" appears in
+                    no legitimate Redis coordinate — the controller's
+                    boot guard is the same check). */}}
+            {{- with .Values.controller.workspaceEventbusAddr }}
+            {{- if contains "@" . }}
+            {{- fail "controller.workspaceEventbusAddr must be credentialess (host:port or redis:// URL) — pass the password via controller.workspaceEventbusPasswordSecret instead" }}
+            {{- end }}
+            - --workspace-eventbus-addr={{ . }}
+            {{- with $.Values.controller.workspaceEventbusPasswordSecret }}
+            - --workspace-eventbus-password-secret={{ . }}
+            {{- end }}
+            {{- else }}
+            {{- if .Values.controller.workspaceEventbusPasswordSecret }}
+            {{- fail "controller.workspaceEventbusPasswordSecret requires controller.workspaceEventbusAddr" }}
+            {{- end }}
+            {{- end }}
             {{- /* #1332: the PUBLIC API origin for user-facing dev-preview
                     URLs (LLMSAFESPACE_API_PUBLIC_URL on workspace pods).
                     Optional — when previewOrigin is enabled the controller
