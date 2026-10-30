@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.44.11] - 2026-10-30
+
 ### Added — "How the sprint board works": a help drawer on the board (owner ruling 2026-10-30, tsk-glassy-shovel-feels)
 
 - **Two entry points, one drawer**: the board toolbar carries a HelpCircle icon affordance (accessible name "Learn more: how the sprint board works") and the empty-board first-run state ("No boards yet.") carries a text entry point beside *Create your first project* — both open `BoardHelpDrawer`, a right-side static-prose drawer (the app's existing Radix side-drawer pattern: Escape closes, title/description wired, close button). Static TSX copy, no data dependency — the learn-more moment exists before the first project does.
