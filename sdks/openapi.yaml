@@ -40,7 +40,7 @@ tags:
   - name: triggers
     description: Workflow/routine triggers — cron and webhook sources (Epic 64)
   - name: board
-    description: Task Board — projects, epics, tasks, structural dependencies (design 0067; user-level only, ruling R7)
+    description: Sprint Board (formerly task board) — projects, epics, stories (the wire/API term is 'task'), structural dependencies (design 0067; user-level only, ruling R7)
   - name: passkeys
     description: WebAuthn passkey ceremonies and account credential management (Epic 59)
   - name: usage
@@ -4408,7 +4408,7 @@ paths:
           $ref: "#/components/responses/Unauthorized"
         "404":
           $ref: "#/components/responses/NotFound"
-  # --- Task Board (design 0067 §4.3a, #1699): user-level only (ruling R7) ---
+  # --- Sprint Board, formerly Task Board (design 0067 §4.3a, #1699): user-level only (ruling R7). UI prose says stories; the wire term stays 'task'. ---
   /me/projects:
     get:
       tags: [board]
@@ -4578,7 +4578,7 @@ paths:
       tags: [board]
       summary: Pause a project (#1747 — the scheduling lever)
       description: |
-        Blocks claiming for every task under the project (query
+        Blocks claiming for every story under the project (query
         scoping), cascades HALT directives to its in-flight workers;
         never interrupts leases.
       operationId: pauseBoardProject
@@ -4688,10 +4688,10 @@ paths:
       tags: [board]
       summary: Import a plan atomically (#1747)
       description: |
-        One epic + its tasks + dependency edges from a single payload,
+        One epic + its stories (wire rows: tasks) + dependency edges from a single payload,
         all-or-nothing. `dryRun` validates WITHOUT writing — the render
         (graph, warnings, initial ready set) is the user's
-        plan-approval moment. Tasks address each other by payload key.
+        plan-approval moment. Stories address each other by payload key.
       operationId: importBoardPlan
       parameters:
         - $ref: "#/components/parameters/BoardProjectId"
@@ -4724,7 +4724,7 @@ paths:
       summary: List a project's epics with derived progress
       description: |
         Epic progress is DERIVED at read time (never stored; Done over
-        ALL live tasks per the #1747 ruling — deleted rows leave the
+        ALL live stories per the #1747 ruling — deleted rows leave the
         board entirely). A zero denominator renders no-progress.
         Ordered by creation.
       operationId: listBoardEpics
@@ -4773,11 +4773,11 @@ paths:
   /me/projects/{id}/tasks:
     get:
       tags: [board]
-      summary: List a project's tasks
+      summary: "List a project's stories (wire rows: tasks)"
       description: |
         Ordered by (creation order — FIFO, the #1747 claim rule). `stage` filters by one of the
         five stages (ruling R2's binding set as amended by #1747); any other value is a 400.
-        `failed` filters by the #1813 failed-state overlay (true: only tasks whose last attempt
+        `failed` filters by the #1813 failed-state overlay (true: only stories whose last attempt
         failed — crash loop, lease-lapse reclaims, exhaustion; false: only clean rows).
       operationId: listBoardProjectTasks
       parameters:
@@ -4796,7 +4796,7 @@ paths:
             type: boolean
       responses:
         "200":
-          description: Task list
+          description: Story list
           content:
             application/json:
               schema:
@@ -4840,7 +4840,7 @@ paths:
       summary: Update an epic (partial — omitted fields keep existing values)
       description: |
         `outcome` is the human's steering wheel (ruling R2). A title
-        rename cascades tasks.epic_name in one transaction. NOTE: `tags`
+        rename cascades the stories' epic_name (wire column tasks.epic_name) in one transaction. NOTE: `tags`
         REPLACE the set when provided — send the full set.
       operationId: updateBoardEpic
       parameters:
@@ -4868,9 +4868,9 @@ paths:
           $ref: "#/components/responses/BoardNotFound"
     delete:
       tags: [board]
-      summary: Delete an epic and its tasks (#1747 — cancel is eliminated)
+      summary: Delete an epic and its stories (#1747 — cancel is eliminated)
       description: |
-        Destructive: every task under the epic is removed with its own
+        Destructive: every story under the epic is removed with its own
         full-snapshot audit event (delete removes the object, not the
         history). REFUSES with 409 epic_state while any claim under the
         epic is in-flight unless `force=true` (the delete commits, then
@@ -5024,16 +5024,16 @@ paths:
   /me/epics/{id}/tasks:
     post:
       tags: [board]
-      summary: Create a backlog task in an epic
+      summary: "Create a backlog story in an epic (wire rows: tasks)"
       description: |
         `description` (markdown) seeds the fresh worker's charter; the
         `acceptanceCriteria` list defines Done (ALL met + evidence,
-        ruling R2) and never blocks. Task `tags` may carry the explicit
+        ruling R2) and never blocks. Story `tags` may carry the explicit
         PR-drift anchor `pr:N` (owner ruling OR4 — the ONLY anchor form;
         pattern `^pr:[1-9][0-9]*$`, e.g. `pr:1234`; the reconciler never
         free-text-guesses or scrapes URLs) and the delegated-review
         anchor `review-of:<subject-short-id>` (#1832 — when the subject
-        task reaches done, the engine settles this task: done when its
+        story reaches done, the engine settles this story: done when its
         criteria are ALL met, pending_input/drift_review when unmet;
         malformed anchors are inert, never guessed).
       operationId: createBoardTask
@@ -5047,7 +5047,7 @@ paths:
               $ref: "#/components/schemas/BoardTaskCreateRequest"
       responses:
         "201":
-          description: Task created (backlog)
+          description: Story created (backlog)
           content:
             application/json:
               schema:
@@ -5063,13 +5063,13 @@ paths:
   /me/tasks/{id}:
     get:
       tags: [board]
-      summary: Get a task (with blocked-by derivation)
+      summary: Get a story (with blocked-by derivation)
       operationId: getBoardTask
       parameters:
         - $ref: "#/components/parameters/BoardTaskId"
       responses:
         "200":
-          description: Task
+          description: Story
           content:
             application/json:
               schema:
@@ -5080,7 +5080,7 @@ paths:
           $ref: "#/components/responses/BoardNotFound"
     patch:
       tags: [board]
-      summary: Update a task (partial — omitted fields keep existing values)
+      summary: Update a story (partial — omitted fields keep existing values)
       description: |
         Criteria check-off rides here via `setCriteriaMet` (0-based
         index; the reviewer's Done preparation). NOTE: `tags` and
@@ -5097,7 +5097,7 @@ paths:
               $ref: "#/components/schemas/BoardTaskUpdateRequest"
       responses:
         "200":
-          description: Updated task
+          description: Updated story
           content:
             application/json:
               schema:
@@ -5112,11 +5112,11 @@ paths:
           $ref: "#/components/responses/BoardNotFound"
     delete:
       tags: [board]
-      summary: Delete a task (#1747 — cancel is eliminated)
+      summary: Delete a story (#1747 — cancel is eliminated)
       description: |
         Destructive: an idle row goes straight; an in-flight row's
         worker is aborted AFTER the delete commits (post-commit — the
-        row's removal is the authority). The audit event embeds the task's full
+        row's removal is the authority). The audit event embeds the story's full
         final-state snapshot. Dependent edges cascade away — orphaned
         dependents are listed in the response and each carries an
         unblocked_by_delete audit event (visible, never a refusal). NO
@@ -5152,9 +5152,9 @@ paths:
   /me/tasks/{id}/move-stage:
     post:
       tags: [board]
-      summary: Move a task's stage (server-arbitrated)
+      summary: "Move a story's stage (server-arbitrated; wire rows: tasks)"
       description: |
-        The optimistic-UI write: a drag that loses a race (task claimed,
+        The optimistic-UI write: a drag that loses a race (story claimed,
         lease-held, or paused) returns the guard error (409) and the
         UI snaps back. Stages: backlog → in_progress → in_review → done,
         plus `failed` (the failure terminus, 000050) and the
@@ -5176,7 +5176,7 @@ paths:
               $ref: "#/components/schemas/BoardMoveStageRequest"
       responses:
         "200":
-          description: Resulting task row
+          description: Resulting story row
           content:
             application/json:
               schema:
@@ -5194,11 +5194,11 @@ paths:
   /me/tasks/{id}/verdict:
     post:
       tags: [board]
-      summary: Record a structured review verdict on a task
+      summary: Record a structured review verdict on a story
       description: |
         #1832 item 5 — the forge-agnostic verdict core. Validates the
         payload (severity enum blocker|major|minor, pointer required,
-        criterionIndex bounds-checked against the task's criteria), then
+        criterionIndex bounds-checked against the story's criteria), then
         applies the transition through the EXISTING guarded stage
         machine: `approve` → done STILL passes the Done guard (ALL
         criteria met + evidenceUrl); a refused transition is a RECORDED
@@ -5218,7 +5218,7 @@ paths:
               $ref: "#/components/schemas/BoardVerdictRequest"
       responses:
         "200":
-          description: The task row plus the recorded verdict (a refused transition included — applied=false)
+          description: The story row plus the recorded verdict (a refused transition included — applied=false)
           content:
             application/json:
               schema:
@@ -5236,7 +5236,7 @@ paths:
   /me/tasks/{id}/verdicts:
     get:
       tags: [board]
-      summary: A task's ordered verdict chain
+      summary: A story's ordered verdict chain
       description: |
         Every recorded verdict with findings, reviewer, and whether its
         transition applied — the record the next claimant's charter
@@ -5261,9 +5261,9 @@ paths:
   /me/tasks/{id}/rearm:
     post:
       tags: [board]
-      summary: Re-pool an attempts-exhausted task (re-arm)
+      summary: Re-pool an attempts-exhausted story (re-arm)
       description: |
-        The attempts-exhaustion re-pool (#1832 WS3, 000050): a task at
+        The attempts-exhaustion re-pool (#1832 WS3, 000050): a story at
         `failed` with origin `escalated` (attempts at the cap — the
         engine withheld the grant, or the lease wedge verdict landed
         there) returns to `backlog` with attempts reset to 0 — a
@@ -5282,7 +5282,7 @@ paths:
               $ref: "#/components/schemas/BoardRequestIdOnly"
       responses:
         "200":
-          description: The re-armed task row
+          description: The re-armed story row
           content:
             application/json:
               schema:
@@ -5300,16 +5300,16 @@ paths:
   /me/tasks/{id}/start:
     post:
       tags: [board]
-      summary: Start a task manually (task_start — claim + fresh spawn)
+      summary: Start a story manually (task_start — claim + fresh spawn)
       description: |
-        The manual one-off dispatch: the engine claims the task (the
+        The manual one-off dispatch: the engine claims the story (the
         attempts increment + claim token) and spawns a fresh-charter
         worker into the project's target workspace (ruling R9 — no
         caller-supplied worker identity exists on any surface).
         Explicitly allowed in draft epics (that is the point of the
         manual path); paused/completed/archived epics and archived
         projects refuse it. `escalated: true` in the response means the
-        attempts cap withheld the grant and the task landed `failed`
+        attempts cap withheld the grant and the story landed `failed`
         (origin escalated) instead.
       operationId: startBoardTask
       parameters:
@@ -5343,7 +5343,7 @@ paths:
       description: |
         The bulk form of task_start: each item is ONE full manual
         dispatch (claim + fresh-charter worker spawn, ruling R9), with
-        every single-task guard identical (draft∪active epics; paused/
+        every single-story guard identical (draft∪active epics; paused/
         archived refusals; concurrency caps). The response is a
         per-item result array — partial failures are reported per item,
         never all-or-nothing. Idempotent retry: re-submitting the batch
@@ -5382,7 +5382,7 @@ paths:
       summary: Bulk stage move (#1836) — one target stage across a batch
       description: |
         The bulk form of move-stage: one shared target stage + evidence
-        across up to 50 tasks. Each item is ONE full server-arbitrated
+        across up to 50 stories. Each item is ONE full server-arbitrated
         stage move — the Done guard (ALL criteria met + evidenceUrl),
         pause guards, the claim-token rule, auto-review dispatch on
         `in_review`, and the `done` settle cascade all apply per item.
@@ -5417,11 +5417,11 @@ paths:
   /me/tasks/bulk-delete:
     post:
       tags: [board]
-      summary: "Bulk delete (#1836) - the delete_task(s) batch, per-item results"
+      summary: "Bulk delete (#1836) - the story-delete batch (wire: delete_task), per-item results"
       description: |
-        The bulk form of delete-task: up to 50 destructive removals in
+        The bulk form of story delete: up to 50 destructive removals in
         one call with ONE shared reconnect flag. Each item is ONE
-        full single-task delete - its own transaction, its own
+        full single-story delete - its own transaction, its own
         delete_task audit event (with the full final-state snapshot),
         its own orphan events + is_blocked rederive, and its own
         post-commit worker abort for an in-flight row. The response is
@@ -5460,7 +5460,7 @@ paths:
   /me/tasks/{id}/pause:
     post:
       tags: [board]
-      summary: Pause a task (#1747 — the scheduling lever)
+      summary: Pause a story (#1747 — the scheduling lever)
       description: |
         Parks the row: claim candidacy off, forward stage-writes refused
         (409 task_paused), a HALT directive lands on the in-flight
@@ -5472,7 +5472,7 @@ paths:
         - $ref: "#/components/parameters/BoardTaskId"
       responses:
         "200":
-          description: Paused task
+          description: Paused story
           content:
             application/json:
               schema:
@@ -5488,7 +5488,7 @@ paths:
   /me/tasks/{id}/resume:
     post:
       tags: [board]
-      summary: Resume a paused task
+      summary: Resume a paused story
       description: |
         Clears the flag and delivers the RESUME directive — the held
         session continues if its lease survived; a lapsed one re-enters
@@ -5498,7 +5498,7 @@ paths:
         - $ref: "#/components/parameters/BoardTaskId"
       responses:
         "200":
-          description: Resumed task
+          description: Resumed story
           content:
             application/json:
               schema:
@@ -5515,9 +5515,9 @@ paths:
   /me/tasks/{id}/events:
     get:
       tags: [board]
-      summary: The task's full audit timeline (board_events rows)
+      summary: The story's full audit timeline (board_events rows)
       description: |
-        #1832 item 4: every board_events row scoped to the task,
+        #1832 item 4: every board_events row scoped to the story,
         chronological (oldest→newest) — stage transitions (move_stage
         payloads carry from_stage/requested_to/resulting_stage), claims
         (who claimed — the payload's worker + attempts — and when),
@@ -5546,7 +5546,7 @@ paths:
             default: 200
       responses:
         "200":
-          description: The task's audit timeline (chronological ascending)
+          description: The story's audit timeline (chronological ascending)
           content:
             application/json:
               schema:
@@ -5562,11 +5562,11 @@ paths:
       tags: [board]
       summary: Add a dependency edge (the only blocking mechanism)
       description: |
-        Structural N-ary task→task edge within one project (cross-epic
+        Structural N-ary story→story edge within one project (cross-epic
         allowed, cross-project rejected; rulings R3/R4). Cycle, self,
         and cross-project violations render 409 with did-you-mean
-        suggestions (R4a). Renders the re-derived task — `is_blocked`
-        and `blocked_by` converge in the same read; a task is ready iff
+        suggestions (R4a). Renders the re-derived story — `is_blocked`
+        and `blocked_by` converge in the same read; a story is ready iff
         backlog AND every dependency target is done.
       operationId: addBoardDependency
       parameters:
@@ -5579,7 +5579,7 @@ paths:
               $ref: "#/components/schemas/BoardDependencyRequest"
       responses:
         "200":
-          description: The re-derived task row
+          description: The re-derived story row
           content:
             application/json:
               schema:
@@ -5609,7 +5609,7 @@ paths:
         - $ref: "#/components/parameters/BoardRequestIdQuery"
       responses:
         "200":
-          description: The re-derived task row
+          description: The re-derived story row
           content:
             application/json:
               schema:
@@ -5639,12 +5639,12 @@ paths:
         - $ref: "#/components/parameters/BoardStageFilter"
         - name: tag
           in: query
-          description: Tag filter (repeatable — tasks must carry ALL)
+          description: Tag filter (repeatable — stories must carry ALL)
           schema:
             type: string
       responses:
         "200":
-          description: Matching tasks plus zero-hit suggestions
+          description: Matching stories plus zero-hit suggestions
           content:
             application/json:
               schema:
@@ -5663,7 +5663,7 @@ paths:
       summary: The caller's board health snapshot
       description: |
         The §4.8 health panel feed: active leases with expiry, recent
-        reclaims (last 20), task and project-slot cooldowns,
+        reclaims (last 20), story and project-slot cooldowns,
         pending_input counts by origin, per-project worker slots in use.
       operationId: getBoardHealth
       responses:
@@ -9820,7 +9820,7 @@ components:
       name: id
       in: path
       required: true
-      description: Board task ID — UUID or short id (word phrase `tsk-crimson-finch-blooms` since #1831, or legacy `tsk-` + 8 chars; case-insensitive)
+      description: "Board story ID (wire: task) — UUID or short id (word phrase `tsk-crimson-finch-blooms` since #1831, or legacy `tsk-` + 8 chars; case-insensitive)"
       schema:
         type: string
         pattern: "^(tsk-([0-9a-z]{8}|[a-z]+-[a-z]+-[a-z]+(-([2-9]|[1-9][0-9]+))?)|[0-9a-fA-F-]{36})$"
@@ -9829,7 +9829,7 @@ components:
       name: dependsOnId
       in: path
       required: true
-      description: The dependency target task — UUID or short id (`tsk-…`)
+      description: The dependency target story — UUID or short id (`tsk-…`)
       schema:
         type: string
         pattern: "^(tsk-([0-9a-z]{8}|[a-z]+-[a-z]+-[a-z]+(-([2-9]|[1-9][0-9]+))?)|[0-9a-fA-F-]{36})$"
@@ -12797,7 +12797,7 @@ components:
         orgId:
           type: string
           nullable: true
-    # --- Task Board (design 0067, #1699). Row encoding is the engine's
+    # --- Sprint Board, formerly Task Board (design 0067, #1699). Row encoding is the engine's
     # canonical JSON (snake_case short_id — identical to the internal
     # automation seam's rendering; the parity matrix pins it). ---
     BoardConfig:
@@ -12991,7 +12991,7 @@ components:
           nullable: true
         paused:
           type: boolean
-          description: "#1747 — the scheduling lever: blocks claiming for every task under the project"
+          description: "#1747 — the scheduling lever: blocks claiming for every story under the project"
         backpressure:
           type: string
           description: 'Informational — e.g. "backpressure: disk 92%" (#1747)'
@@ -13056,14 +13056,14 @@ components:
           format: date-time
         progress_done:
           type: integer
-          description: DERIVED at read time (ruling R2 — never stored); done tasks
+          description: DERIVED at read time (ruling R2 — never stored); done stories
         progress_total:
           type: integer
-          description: DERIVED; total tasks (zero denominator renders no-progress)
+          description: DERIVED; total stories (zero denominator renders no-progress)
         progress_derived:
           type: boolean
           example: false
-          description: false = no-progress ("—") — a task-less or all-done epic, never 0/0
+          description: false = no-progress ("—") — a story-less or all-done epic, never 0/0
         content_echo_diff:
           type: array
           items:
@@ -13265,7 +13265,7 @@ components:
         The PR-drift anchor tag (owner ruling OR4): the EXPLICIT `pr:N`
         tag form ONLY — v1 is normative on the conservative subset the
         engine implements. The reconciler's RC2 pass polls anchored PRs
-        for tasks in in_review (merged → Done guard applies; closed-
+        for stories in in_review (merged → Done guard applies; closed-
         unmerged → the bounce re-claim). No free-text guessing, no URL
         scraping; the structured-field anchor form is deferred
         (additive, non-breaking) until a consuming lane demands it.
@@ -13298,7 +13298,7 @@ components:
           format: date-time
         escalated:
           type: boolean
-          description: true = attempts cap reached; the task waits in pending_input (origin escalated) instead
+          description: true = attempts cap reached; the story waits in pending_input (origin escalated) instead
         task:
           $ref: "#/components/schemas/BoardTask"
     BoardDependencyMutation:
@@ -13313,7 +13313,7 @@ components:
       properties:
         events:
           type: array
-          description: The task's board_events rows, chronological ascending (oldest→newest); the newest-N window per the limit parameter
+          description: The story's board_events rows, chronological ascending (oldest→newest); the newest-N window per the limit parameter
           items:
             $ref: "#/components/schemas/BoardEvent"
     BoardEvent:
@@ -13328,10 +13328,10 @@ components:
           format: uuid
         item_kind:
           type: string
-          description: 'The row''s item kind — "task" on task-scoped rows (epic/project rows exist for their own items)'
+          description: 'The row''s item kind — "task" on story-scoped rows (the wire kind literal; epic/project rows exist for their own items)'
         item_id:
           type: string
-          description: The row's item uuid (the TASK's uuid on a task timeline — note unblocked_by_delete carries the ORPHAN's id, which is what scopes it to this timeline)
+          description: The row's item uuid (the story's uuid on a story timeline — note unblocked_by_delete carries the ORPHAN's id, which is what scopes it to this timeline)
         action:
           type: string
           description: |
@@ -13390,7 +13390,7 @@ components:
       properties:
         results:
           type: array
-          description: Matching task rows (bounded to the first 50)
+          description: Matching story rows (bounded to the first 50)
           items:
             $ref: "#/components/schemas/BoardTask"
         suggestions:

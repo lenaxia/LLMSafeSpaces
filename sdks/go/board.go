@@ -3,8 +3,11 @@
 
 package llmsafespaces
 
-// board.go — Task Board service (#1699, design 0067 §4.3a): the owner's
-// manager surface at /me/projects, /me/epics, /me/tasks. Row encoding is
+// board.go — Sprint Board service, formerly Task Board (#1699, design
+// 0067 §4.3a): the owner's manager surface at /me/projects, /me/epics,
+// /me/tasks. UI and doc prose say "story" (owner ruling 2026-10-30);
+// the wire/API term stays "task" — every route, field, and type below
+// keeps its task spelling. Row encoding is
 // the engine's canonical JSON (snake_case short_id etc.), identical to
 // the internal automation seam's rendering.
 
@@ -80,8 +83,9 @@ type BoardAcceptanceCriterion struct {
 	Met  bool   `json:"met"`
 }
 
-// BoardTask is a task row, including the dispatch state the health
-// panel surfaces (attempts, lease, blocked-by).
+// BoardTask is a story row (wire/API term: "task"), including the
+// dispatch state the health panel surfaces (attempts, lease,
+// blocked-by).
 type BoardTask struct {
 	ID          string `json:"id"`
 	ProjectID   string `json:"project_id"`
@@ -216,7 +220,7 @@ type BoardDependencyInput struct {
 	RequestID string `json:"requestId,omitempty"`
 }
 
-// BoardDependencyMutation renders the re-derived task after an edge
+// BoardDependencyMutation renders the re-derived story after an edge
 // add/remove (is_blocked converges in the same read).
 type BoardDependencyMutation struct {
 	Task *BoardTask `json:"task"`
@@ -282,7 +286,7 @@ type BoardListOptions struct {
 	Failed string // "true" | "false" | "" (no filter)
 }
 
-// ListProjectTasks lists a project's tasks; stage and the optional
+// ListProjectTasks lists a project's stories; stage and the optional
 // failed-state overlay filter (#1813) ride the query.
 func (s *BoardService) ListProjectTasks(ctx context.Context, projectID, stage string, opts ...BoardListOptions) ([]BoardTask, error) {
 	var failed string
@@ -401,7 +405,7 @@ func (s *BoardService) EpicUnarchive(ctx context.Context, id string, opts ...Boa
 	return s.epicLifecycle(ctx, id, "unarchive", opts)
 }
 
-// DeleteEpic destructively removes the epic and its tasks (#1747: cancel
+// DeleteEpic destructively removes the epic and its stories (#1747: cancel
 // is eliminated); force is required while claims are in-flight.
 func (s *BoardService) DeleteEpic(ctx context.Context, id string, force bool) (*BoardDeleteResult, error) {
 	path := fmt.Sprintf("/me/epics/%s", id)
@@ -455,7 +459,7 @@ func (s *BoardService) StartTask(ctx context.Context, id string, req BoardLifecy
 	return &cl, nil
 }
 
-// DeleteTask destructively removes a task (#1747); reconnect lets
+// DeleteTask destructively removes a story (#1747); reconnect lets
 // orphaned dependents inherit the deleted node's upstream edges.
 func (s *BoardService) DeleteTask(ctx context.Context, id string, reconnect bool) (*BoardDeleteResult, error) {
 	path := fmt.Sprintf("/me/tasks/%s", id)
@@ -469,7 +473,7 @@ func (s *BoardService) DeleteTask(ctx context.Context, id string, reconnect bool
 	return &out, nil
 }
 
-// PauseTask parks a task (#1747): claims off, forward writes refused,
+// PauseTask parks a story (#1747): claims off, forward writes refused,
 // HALT to the in-flight worker; the lease keeps running.
 func (s *BoardService) PauseTask(ctx context.Context, id string) (*BoardTask, error) {
 	var t BoardTask
