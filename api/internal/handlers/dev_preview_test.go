@@ -882,17 +882,51 @@ func TestDevPreviewHandler_WSBackendRejectsUpgrade_Propagates(t *testing.T) {
 }
 
 func TestDevPreviewHandler_WSUnreachablePort_502(t *testing.T) {
-	// P0-2 unhappy path: nothing listening behind the agentd hop → the
-	// proxy's ErrorHandler must answer 502 promptly (no hang), including
-	// for upgrade requests.
-	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
-	backendAddr := backend.Listener.Addr().String()
-	backend.Close() // free the port; nothing listens now
+	// P0-2 unhappy path: the agentd hop is unreachable → the proxy's
+	// ErrorHandler must answer 502 promptly (no hang), including for
+	// upgrade requests.
+	//
+	// v0.44.9 CI flake (run 41001929062): this test used to close an
+	// httptest server and dial the FREED port, relying on "nothing
+	// listens there now". But a freed ephemeral port can be re-bound by
+	// any listener in the same netns before the proxy dials — the
+	// parallel package binaries of `go test ./...` churn httptest ports
+	// continuously (and this test's own ts is created right after the
+	// Close; measured ~0.1% re-bind on an idle box, worse under CI
+	// load). A stolen port makes the dial SUCCEED against a foreign
+	// server, whose 404-for-unknown-route is proxied back verbatim: the
+	// WS client saw 404, not 502.
+	//
+	// Deterministic shape — a port that RSTs: we OWN the port for the
+	// whole test via a listener that accepts and immediately slams
+	// every connection closed. No valid response can ever appear on it:
+	// the proxy's request write/read fails on a real socket (RST/EOF),
+	// the transport surfaces the error before any response byte exists,
+	// and ReverseProxy routes it to the ErrorHandler (strict ordering:
+	// RoundTrip error → ErrorHandler; body-copy errors only occur after
+	// response headers are already sent). A listener that never
+	// accepts would NOT work: the kernel completes the handshake from
+	// the accept backlog, the dial succeeds, and the request hangs
+	// until timeout rather than failing promptly.
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer ln.Close()
+	go func() {
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return // listener closed; test over
+			}
+			conn.Close() // slam: never read, never respond
+		}
+	}()
+	backendAddr := ln.Addr().String()
 
-	backendHost := backendAddr
-	backendIP := backendHost
-	if idx := strings.LastIndex(backendHost, ":"); idx >= 0 {
-		backendIP = backendHost[:idx]
+	backendIP := backendAddr
+	if idx := strings.LastIndex(backendAddr, ":"); idx >= 0 {
+		backendIP = backendAddr[:idx]
 	}
 	wsGetter := &devPreviewMockWorkspaceGetter{
 		workspaces: map[string]*v1.Workspace{
@@ -910,7 +944,7 @@ func TestDevPreviewHandler_WSUnreachablePort_502(t *testing.T) {
 	wsURL := "ws" + strings.TrimPrefix(ts.URL, "http") + "/api/v1/workspaces/ws-1/dev-preview/5173/ws"
 	_, resp, err := websocket.DefaultDialer.Dial(wsURL, nil)
 	if err == nil {
-		t.Fatal("dial should fail when nothing is listening")
+		t.Fatal("dial should fail when the agentd hop is unreachable")
 	}
 	if resp == nil || resp.StatusCode != http.StatusBadGateway {
 		t.Fatalf("expected 502 from ErrorHandler, got resp=%v", resp)
