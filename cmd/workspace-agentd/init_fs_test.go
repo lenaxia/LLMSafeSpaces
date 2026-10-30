@@ -33,6 +33,7 @@ package main
 
 import (
 	"bytes"
+	"embed"
 	"fmt"
 	"os"
 	"os/exec"
@@ -177,6 +178,32 @@ func TestInitFS_HappyPath_FreshPVC(t *testing.T) {
 	docBytes, err := os.ReadFile(filepath.Join(tr.rt, "docs", gateScriptPatternsDocName))
 	require.NoError(t, err, "gate-script patterns doc must materialize at $runtimeDir/docs/")
 	assert.Equal(t, string(gateScriptPatternsDoc), string(docBytes))
+
+	// Worked-pattern example directories (2026-10-30 owner ruling): the
+	// Sprint Board story patterns and the workflow DAG patterns
+	// materialize one-file-per-example under $runtimeDir/docs/ — the
+	// stable pod paths the board_create_task/board_import_plan and
+	// workflow_create descriptions point agents at.
+	patternDirs := []struct {
+		fsys     embed.FS
+		embedded string
+		pod      string
+	}{
+		{sprintBoardPatternsFS, "sprint_board_patterns", "sprint-board-patterns"},
+		{workflowPatternsFS, "workflow_patterns", "workflow-patterns"},
+	}
+	for _, d := range patternDirs {
+		entries, err := d.fsys.ReadDir(d.embedded)
+		require.NoError(t, err)
+		require.NotEmpty(t, entries, "%s must embed at least one example", d.embedded)
+		for _, e := range entries {
+			want, err := d.fsys.ReadFile(filepath.Join(d.embedded, e.Name()))
+			require.NoError(t, err)
+			got, err := os.ReadFile(filepath.Join(tr.rt, "docs", d.pod, e.Name()))
+			require.NoError(t, err, "%s/%s must materialize at $runtimeDir/docs/%s/", d.embedded, e.Name(), d.pod)
+			assert.Equal(t, string(want), string(got))
+		}
+	}
 }
 
 // TestInitFS_PrePlantedSymlink_ReplacedWithoutFollowing is the attack
