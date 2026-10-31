@@ -20,8 +20,10 @@ package main
 //	                  schemas, empty defaults — never a reimplementation)
 //	gate-script    → interpreter syntax check: python → py_compile,
 //	                  node → node --check (structural checks always run;
-//	                  the interpreter leg skips LOUD when the binary is
-//	                  absent — the us70 harness precedent)
+//	                  a missing interpreter FAILS LOUD while the
+//	                  catalogs ship gate-script fences — the fence
+//	                  contract promises the check, so absence of the
+//	                  binary is a broken pin, not a passed one)
 //	shell, output  → not machine-validated (rendered for the human
 //	                  reader; the format pin still checks the fence's
 //	                  infostring)
@@ -49,12 +51,13 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// fenceBlock is one extracted fenced code block.
+// fenceBlock is one extracted fenced code block: its file, slug (the
+// canonical header's slug == filename stem), infostring, and body.
+// location() is what every failure message names — file AND slug.
 type fenceBlock struct {
 	file, slug, info, body string
 }
 
-// fenceKind is the kind= token; fenceOp the op= token.
 func (f fenceBlock) location() string {
 	return fmt.Sprintf("%s:%s", f.file, f.slug)
 }
@@ -171,6 +174,8 @@ func TestPatternDocs_EveryFence_PassesItsKindValidator(t *testing.T) {
 		kind, _ := parseFenceInfo(t, f)
 		checked[kind]++
 		switch kind {
+		case "":
+			t.Fatalf("%s: bare fence — every code fence carries kind= (the format pin names it too)", f.location())
 		case "board-payload":
 			validateBoardPayloadFence(t, f)
 		case "workflow-spec":
@@ -220,10 +225,13 @@ func validateWorkflowSpecFence(t *testing.T, f fenceBlock) {
 
 // validateGateScriptFence: kind=gate-script → the interpreter's own
 // syntax check for the fence's language token (python → py_compile,
-// node → node --check). Structural checks run even without the
-// interpreter; the syntax leg skips LOUD when the binary is absent
-// (the us70 harness-script precedent: structural extraction always
-// enforced, the interpreter leg best-effort on PATH).
+// node → node --check). The structural non-empty check always runs.
+// The interpreter leg FAILS LOUD when the binary is absent while the
+// catalogs ship gate-script fences — unlike the us70 harness precedent
+// (where the python lint was optional tooling), here the fence contract
+// PROMISES the syntax check for every shipped fence, so a missing
+// interpreter means the pin cannot run, not that it passes; the failure
+// names the binary to install.
 func validateGateScriptFence(t *testing.T, f fenceBlock) {
 	t.Helper()
 	lang := strings.Fields(f.info)[0]
@@ -241,7 +249,9 @@ func validateGateScriptFence(t *testing.T, f fenceBlock) {
 		t.Fatalf("%s: gate-script language %q has no syntax checker in the dispatch table", f.location(), lang)
 	}
 	if _, lookErr := exec.LookPath(bin); lookErr != nil {
-		t.Skipf("%s: %s unavailable — structural extraction was still enforced above", f.location(), bin)
+		t.Errorf("%s: %s is not on PATH — the gate-script fence contract requires the interpreter's syntax check; install %s or drop the fence",
+			f.location(), bin, bin)
+		return
 	}
 	dir := t.TempDir()
 	file := filepath.Join(dir, "fence"+scriptExt(lang))
