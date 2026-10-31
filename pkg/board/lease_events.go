@@ -79,8 +79,9 @@ type LeaseEvent struct {
 	Evidence string
 	// Reason is the reclaim's reason (LeaseEventReclaimed).
 	Reason string
-	// FailureCount is the row's consecutive-failure count AFTER the
-	// reclaim's increment (0 for renewals).
+	// FailureCount is the row's consecutive-failure count as of the
+	// decision: AFTER the increment for reclaims and wedge verdicts,
+	// unchanged for renewals (the ladder's renew writes never touch it).
 	FailureCount int32
 }
 
