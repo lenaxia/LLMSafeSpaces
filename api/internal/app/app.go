@@ -1661,12 +1661,6 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 			}
 			spawnOpts := []board.Option{
 				board.WithLivenessSource(boardLivenessHub),
-				// RC-C S2 (badge honesty + busy TTL): the read edge's
-				// busy seam — the SAME hub, pure (no cursors): a
-				// claimed row renders busy only while its assignee is
-				// observed MID-TURN under a live lease; idle, unknown,
-				// and lapsed claims render claimed-but-quiet.
-				board.WithBusySource(boardLivenessHub),
 				board.WithNudgeSender(newBoardNudger(boardScopeFor(boardPool), boardSender, boardLivenessHub)),
 				board.WithWorkerSpawner(newBoardSpawner(
 					&apiwf.K8sWorkspaceActivator{K8sClient: k8sClient, Namespace: cfg.Kubernetes.Namespace},
