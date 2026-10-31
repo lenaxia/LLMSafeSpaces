@@ -79,6 +79,12 @@ type ConsumeOptions struct {
 	// the reclaim is the retry; this hook is the visibility, not the
 	// mechanism: a silently redelivering consumer is undebuggable).
 	OnError func(msg Message, err error)
+	// OnDelivery observes EVERY dispatch outcome (S3's consume
+	// counter seam): delivered / filtered / poison / handler_error /
+	// ack_error, once per outcome per entry pass. Called after the
+	// outcome is settled, on the consumer loop's goroutine — observers
+	// must be cheap and never block (tick a counter, not a network).
+	OnDelivery func(ev DeliveryEvent)
 }
 
 func (o *ConsumeOptions) normalize() error {
@@ -121,6 +127,20 @@ type RedisBus struct {
 	client *redis.Client
 	key    string
 	maxLen int64
+	// onPublish observes every Publish outcome (S3's publish counter
+	// seam). Set once via SetPublishObserver BEFORE the bus goes live;
+	// the field is deliberately unsynchronized (publishes are
+	// concurrent, the registration is a wiring-time step).
+	onPublish func(ev Event, id string, err error)
+}
+
+// SetPublishObserver registers fn to observe every Publish outcome —
+// success carries the stream entry id; failure carries the error
+// (validation and transport alike). The bus itself stays
+// metrics-agnostic: the observer is the seam agentd's counters hang
+// off. Call once at wiring time, before the first Publish.
+func (b *RedisBus) SetPublishObserver(fn func(ev Event, id string, err error)) {
+	b.onPublish = fn
 }
 
 // NewRedisBus wires the transport: client is a LIVE client (the
@@ -156,6 +176,9 @@ func (b *RedisBus) Publish(ctx context.Context, ev Event) (string, error) {
 		return "", errors.New("eventbus: bus unwired")
 	}
 	if err := ev.Validate(); err != nil {
+		if b.onPublish != nil {
+			b.onPublish(ev, "", err)
+		}
 		return "", err
 	}
 	at := ev.At
@@ -175,7 +198,13 @@ func (b *RedisBus) Publish(ctx context.Context, ev Event) (string, error) {
 		Values: fields,
 	}).Result()
 	if err != nil {
+		if b.onPublish != nil {
+			b.onPublish(ev, "", fmt.Errorf("eventbus: XADD %s: %w", b.key, err))
+		}
 		return "", fmt.Errorf("eventbus: XADD %s: %w", b.key, err)
+	}
+	if b.onPublish != nil {
+		b.onPublish(ev, id, nil)
 	}
 	return id, nil
 }
@@ -555,10 +584,24 @@ func nextStreamID(id string) (string, error) {
 // advance past them). A handler error leaves the entry pending — the
 // reclaim sweep is the retry. An ACK failure is surfaced through
 // OnError (an unacked delivered entry redelivers — a duplicate, but
-// an invisible one is undebuggable).
+// an invisible one is undebuggable). Every outcome lands OnDelivery —
+// the consume-counter seam (S3).
 func (b *RedisBus) dispatch(ctx context.Context, opts *ConsumeOptions, h Handler, msg Message) {
+	observe := func(outcome DeliveryOutcome) {
+		if opts.OnDelivery != nil {
+			opts.OnDelivery(DeliveryEvent{
+				Group:    opts.Group,
+				Consumer: opts.Consumer,
+				Topic:    msg.Event.Topic,
+				Attempts: msg.Attempts,
+				Outcome:  outcome,
+			})
+		}
+	}
 	if !MatchAny(opts.Topics, msg.Event.Topic) {
-		if err := b.client.XAck(ctx, b.key, opts.Group, msg.ID).Err(); err != nil && opts.OnError != nil {
+		err := b.client.XAck(ctx, b.key, opts.Group, msg.ID).Err()
+		observe(DeliveryFiltered)
+		if err != nil && opts.OnError != nil {
 			opts.OnError(msg, fmt.Errorf("ack(filtered): %w", err))
 		}
 		return
@@ -567,20 +610,28 @@ func (b *RedisBus) dispatch(ctx context.Context, opts *ConsumeOptions, h Handler
 		if opts.OnPoison != nil {
 			opts.OnPoison(msg)
 		}
-		if err := b.client.XAck(ctx, b.key, opts.Group, msg.ID).Err(); err != nil && opts.OnError != nil {
+		observe(DeliveryPoison)
+		err := b.client.XAck(ctx, b.key, opts.Group, msg.ID).Err()
+		if err != nil && opts.OnError != nil {
 			opts.OnError(msg, fmt.Errorf("ack(poison): %w", err))
 		}
 		return
 	}
 	if err := h(ctx, msg); err != nil {
+		observe(DeliveryHandlerError)
 		if opts.OnError != nil {
 			opts.OnError(msg, err)
 		}
 		return // pending: at-least-once redelivery after MinIdle
 	}
-	if err := b.client.XAck(ctx, b.key, opts.Group, msg.ID).Err(); err != nil && opts.OnError != nil {
-		opts.OnError(msg, fmt.Errorf("ack: %w", err))
+	if err := b.client.XAck(ctx, b.key, opts.Group, msg.ID).Err(); err != nil {
+		observe(DeliveryAckError)
+		if opts.OnError != nil {
+			opts.OnError(msg, fmt.Errorf("ack: %w", err))
+		}
+		return
 	}
+	observe(DeliveryDelivered)
 }
 
 // messageOf rebuilds an Event from a raw stream entry.
