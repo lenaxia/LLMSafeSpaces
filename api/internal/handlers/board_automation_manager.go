@@ -401,7 +401,7 @@ func (h *PodAutomationHandler) BoardManagerMoveStageBulk(c *gin.Context) {
 }
 
 // BoardManagerDeleteTasksBulk is #1836's sibling bulk delete on the
-// pod seam (board_delete_task's batch twin — delete IS a manager
+// pod seam (board_delete_story's batch twin — delete IS a manager
 // action; only task_start/task_create carry the owner-only boundary,
 // so unlike the bulk claim this form legitimately lives here): up to
 // 50 destructive removals, one call, ONE shared reconnect flag.

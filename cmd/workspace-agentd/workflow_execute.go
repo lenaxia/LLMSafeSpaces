@@ -574,9 +574,9 @@ func execAgentNode(ctx context.Context, password string, w http.ResponseWriter, 
 		// 2026-10-27 / tsk-copper-refectory-generates); the record now
 		// feeds exactly one refusal, the task-worker self-certification
 		// pin — every met-flag-writing manager shape refuses for a
-		// spawned worker (board_update_task's inline setCriteriaMet
+		// spawned worker (board_update_story's inline setCriteriaMet
 		// check-off and patchFile criteria replace, plus pre-met
-		// criteria on board_create_task/board_import_plan; #1946's
+		// criteria on board_create_story/board_import_plan; #1946's
 		// grant stays reviewer-persona-only).
 		if req.NodeID == "board-worker" {
 			boardWorkerSessions.record(sessionID)

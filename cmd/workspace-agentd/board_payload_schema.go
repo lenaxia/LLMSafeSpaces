@@ -54,9 +54,9 @@ import (
 // boardValidateOps maps the validator's op vocabulary to the manager
 // tool whose DTO the op mirrors (both entry points share it).
 var boardValidateOps = map[string]string{
-	"create_task":       "board_create_task",
+	"create_task":       "board_create_story",
 	"create_epic":       "board_create_epic",
-	"update_task_patch": "board_update_task",
+	"update_task_patch": "board_update_story",
 	"update_epic_patch": "board_update_epic",
 	"import_plan":       "board_import_plan",
 	"set_config":        "board_set_config",
@@ -740,7 +740,7 @@ func boardSemanticFindings(op string, payload map[string]any) []boardPayloadFind
 			out = append(out, boardPayloadFinding{
 				Path: "", Rule: "exactly-one-of", Severity: "error",
 				Problem:  "the plan carries NO epic arm — tasks need a target",
-				Fix:      "add the epic object (create a new epic with these tasks) or epicId (attach these tasks to an existing epic); a single task may instead ride board_create_task's flat bodyFile",
+				Fix:      "add the epic object (create a new epic with these tasks) or epicId (attach these tasks to an existing epic); a single task may instead ride board_create_story's flat bodyFile",
 				Expected: "exactly one of epic | epicId",
 			})
 		}
