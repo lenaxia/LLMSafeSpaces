@@ -1640,6 +1640,18 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 			boardLivenessHub.SetBusySource(func(workspaceID, harnessSessionID string) (bool, bool) {
 				return proxyHandler.UsageStream().DerivedBusy(workspaceID, harnessSessionID)
 			})
+			// S4 (design 0072): the nudge ladder's decisions publish
+			// onto the per-workspace event bus — the API's FIRST bus
+			// producer. The knob is ONE POSTURE with the controller's
+			// agentd arming (--workspace-eventbus-addr, same Redis):
+			// arm both or neither. Unarmed (nil — the default) or
+			// unreachable-at-boot ⇒ nudges keep the v1 direct leg
+			// verbatim and the lease-event sink is inert; a mid-flight
+			// publish failure falls back per-event (the phantom-nudge
+			// contract is preserved).
+			boardLeaseBus := newBoardLeaseEventbus(
+				cfg.Board.LeaseEventbus.Addr, cfg.Board.LeaseEventbus.Password,
+				boardScopeFor(boardPool))
 			// Role-only personas (owner ruling 2026-10-29, round 2):
 			// the default reviewer's verdict-channel charter lives in
 			// the SEEDED built-in reviewer agent role (its system
@@ -1661,7 +1673,11 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 			}
 			spawnOpts := []board.Option{
 				board.WithLivenessSource(boardLivenessHub),
-				board.WithNudgeSender(newBoardNudger(boardScopeFor(boardPool), boardSender, boardLivenessHub)),
+				board.WithNudgeSender(newBoardNudger(boardScopeFor(boardPool), boardSender, boardLivenessHub, boardLeaseBus)),
+				// S4: the ladder's renew/wedge/reclaim decisions project
+				// onto the workspace streams post-commit (nil-receiver
+				// safe: unarmed = inert, the ladder unchanged).
+				board.WithLeaseEventSink(boardLeaseBus.LeaseEventSink),
 				board.WithWorkerSpawner(newBoardSpawner(
 					&apiwf.K8sWorkspaceActivator{K8sClient: k8sClient, Namespace: cfg.Kubernetes.Namespace},
 					&apiwf.HTTPAgentExecutor{Port: 4097, PasswordProvider: proxyHandler},
