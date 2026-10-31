@@ -16,6 +16,7 @@ import (
 	"github.com/lenaxia/llmsafespaces/controller/internal/workspace"
 	"github.com/lenaxia/llmsafespaces/pkg/redact"
 	"github.com/lenaxia/llmsafespaces/pkg/secrets"
+	versionpkg "github.com/lenaxia/llmsafespaces/pkg/version"
 	// opencode import removed; registration happens in controller main.
 )
 
@@ -84,12 +85,19 @@ func SetupControllers(mgr ctrl.Manager, inferenceRelayURL, apiServiceURL, apiPub
 		AgentdBinarySHA256AMD64:    agentdDelivery.BinarySHA256AMD64,
 		AgentdBinarySHA256ARM64:    agentdDelivery.BinarySHA256ARM64,
 		AgentdUpdatePolicyDefault:  agentdDelivery.UpdatePolicyDefault,
-		OpencodeImage:              opencodeDelivery.Image,
-		OpencodeBinarySHA256AMD64:  opencodeDelivery.BinarySHA256AMD64,
-		OpencodeBinarySHA256ARM64:  opencodeDelivery.BinarySHA256ARM64,
-		AgentdSidecarEnabled:       agentdSidecarEnabled,
-		UploadStaging:              uploadStaging,
-		Recorder:                   mgr.GetEventRecorderFor("workspace-controller"),
+		// RC-A (2026-10-30): the fleet release this controller was
+		// deployed with — the agentd version-skew comparison source.
+		// The release pipeline stamps the controller and every agentd
+		// with the same version, so this equals the chart appVersion
+		// the fleet was rolled to ("unknown" on unstamped dev builds →
+		// skew comparison honestly disabled).
+		FleetVersion:              versionpkg.Version,
+		OpencodeImage:             opencodeDelivery.Image,
+		OpencodeBinarySHA256AMD64: opencodeDelivery.BinarySHA256AMD64,
+		OpencodeBinarySHA256ARM64: opencodeDelivery.BinarySHA256ARM64,
+		AgentdSidecarEnabled:      agentdSidecarEnabled,
+		UploadStaging:             uploadStaging,
+		Recorder:                  mgr.GetEventRecorderFor("workspace-controller"),
 		// Clamped upstream (main.go, 1..64); <=0 keeps controller-runtime's
 		// fully-serial default so unit tests that don't set it are unchanged.
 		MaxConcurrentReconciles: maxConcurrentReconciles,

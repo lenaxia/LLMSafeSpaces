@@ -389,6 +389,15 @@ spec:
                 agentdPendingDigest:
                   type: string
                   description: "Desired agentd digest recorded while it differs from agentdEffectiveDigest (updatePolicy OnRefresh, or a roll still deferred) — applies on the next pod recreation. Empty when converged (#1746)."
+                agentdVersion:
+                  type: string
+                  description: "RUNNING agentd's self-reported build version from /v1/healthz (RC-A, 2026-10-30) — e.g. \"0.44.7\". Empty while the pod is unreachable; the AgentdVersionStale condition flags a version older than the fleet release."
+                agentdCommit:
+                  type: string
+                  description: "RUNNING agentd's self-reported git commit (commit_sha on /v1/healthz; RC-A, 2026-10-30). \"unknown\" when the build was not stamped."
+                agentdBuildTime:
+                  type: string
+                  description: "RUNNING agentd's self-reported UTC build timestamp (build_time on /v1/healthz; RC-A, 2026-10-30)."
                 # Agent-reported fields (populated from agentd /v1/statusz scrape).
                 sessions:
                   type: array

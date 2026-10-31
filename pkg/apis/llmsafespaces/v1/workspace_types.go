@@ -405,6 +405,17 @@ const (
 	// status.agentSupervisor. A historical fact: once set for a restart
 	// it is replaced (not removed) by the next restart's record.
 	WorkspaceConditionAgentRestarted WorkspaceConditionType = "AgentRestarted"
+	// WorkspaceConditionAgentdVersionStale (RC-A, 2026-10-30 incident)
+	// reports that the workspace pod's RUNNING agentd self-reported a
+	// build version OLDER than the fleet release the controller was
+	// deployed with — the silent multi-hour skew class (the incident's
+	// pod ran v0.44.7 for ~15h after v0.44.9 shipped, discoverable only
+	// by curling the pod's admin healthz). True = stale; False with
+	// ReasonAgentdVersionCurrent = current; False with
+	// ReasonAgentdVersionUnknown = the version could not be compared
+	// (unstamped build or dev controller). Never gates health or
+	// restarts — the roll decision stays with the #1746 updatePolicy.
+	WorkspaceConditionAgentdVersionStale WorkspaceConditionType = "AgentdVersionStale"
 )
 
 const (
@@ -494,6 +505,15 @@ const (
 	// (init-fs / bootstrap / materialize in the platform containers).
 	ReasonPlatformBootFailed = "PlatformBootFailed"
 	ReasonBootReady          = "BootReady"
+	// RC-A (2026-10-30 incident) agentd version-skew outcomes: the
+	// running agentd's self-reported version vs the fleet release the
+	// controller was deployed with. Stale is the flag the incident
+	// killed; Current is the converged state; Unknown is "not
+	// comparable" (an unstamped/dev build on either side) — surfaced
+	// honestly instead of silently reading as current.
+	ReasonAgentdVersionStale   = "AgentdVersionStale"
+	ReasonAgentdVersionCurrent = "AgentdVersionCurrent"
+	ReasonAgentdVersionUnknown = "AgentdVersionUnknown"
 	// ReasonPVCCleanupDelegated is the warning-event reason for #772: the
 	// explicit PVC delete during termination failed (transient or
 	// persistent — RBAC denial, stuck CSI finalizer conflicts) and the
@@ -662,6 +682,20 @@ type WorkspaceStatus struct {
 	// the API as "agentd X pending — applies on next refresh". Cleared
 	// when a pod built with the desired digest is observed (converged).
 	AgentdPendingDigest string `json:"agentdPendingDigest,omitempty"`
+
+	// AgentdVersion / AgentdCommit / AgentdBuildTime (RC-A, 2026-10-30
+	// incident): the RUNNING agentd's self-reported build identity,
+	// scraped from /v1/healthz (version / commit_sha / build_time — the
+	// same fields the incident required a manual `curl
+	// localhost:4098/v1/healthz` to see). Mirrored on every healthy
+	// liveness scrape; cleared to empty when the pod is unreachable (a
+	// dead pod's build identity is unknown, not carried forward). An
+	// older runtime omitting a field keeps the previously mirrored
+	// value (mixed-fleet policy). Surfaced by the API's workspace
+	// status read so operators see fleet currency without shell access.
+	AgentdVersion   string `json:"agentdVersion,omitempty"`
+	AgentdCommit    string `json:"agentdCommit,omitempty"`
+	AgentdBuildTime string `json:"agentdBuildTime,omitempty"`
 
 	// LastActivityAt is DEPRECATED (US-23.3). The authoritative value is
 	// now the metadata annotation llmsafespaces.dev/last-activity-at,

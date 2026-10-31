@@ -147,6 +147,18 @@ type WorkspaceReconciler struct {
 	// A per-workspace spec.agentdDelivery.updatePolicy overrides this.
 	AgentdUpdatePolicyDefault v1.AgentdUpdatePolicy
 
+	// FleetVersion (RC-A, 2026-10-30 incident) is the platform release
+	// THIS controller was deployed with — the chart appVersion, stamped
+	// into the binary by the same release pipeline that stamps every
+	// workspace agentd (wired from pkg/version.Version at Setup time;
+	// injectable in tests). The health poll compares each workspace
+	// agentd's self-reported healthz version against it
+	// (agentd_version_visibility.go): older ⇒ AgentdVersionStale
+	// condition + event + gauge. Empty/"unknown" (an unstamped dev
+	// build) disables the comparison — incomparable is reported, not
+	// guessed.
+	FleetVersion string
+
 	// Design 0053 §4.2 opencode overlay delivery. When OpencodeImage is
 	// set, buildPod pins a digest-addressed image volume into every
 	// workspace pod (RO mount at /opencode on the workspace container
