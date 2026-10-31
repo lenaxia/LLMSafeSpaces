@@ -1,4 +1,4 @@
-# Worklog 1241 — Liveness events publish onto the bus: nudge, renewal, wedge, reclaim (design 0072 S4)
+# Worklog 1243 — Liveness events publish onto the bus: nudge, renewal, wedge, reclaim (design 0072 S4)
 
 - **Story**: tsk-redolent-hawthorn-leaves ("S4 — Liveness events publish onto the bus … first API-side producer", epic "Liveness and observation", the 2026-10-30 incident remediation S0–S7)
 - **Branch/worktree**: `lease-events-publisher` at the isolated worktree `/tmp/opencode/lease-events-wt` (forked at `9c17803b9`, the sprint-board-story-machinery integration line). The shared checkout moved mid-flight to the S2 lane's uncommitted edits (`pkg/board/busy.go` referencing a `busySrc` field not yet landed — build-breaking for every other lane); per the repo's lane convention (S3's precedent, COORDINATE.md) this lane extracted to its own worktree and restored the shared tree to exactly the S2 lane's files (`rows.go`, `reads.go` modified, `busy.go` untracked). One early service.go copy carried the S2 lane's in-flight `busySrc` hunk; it was removed from THIS lane's tree before the first commit (their work is untouched in the shared checkout).

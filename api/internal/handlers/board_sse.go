@@ -113,12 +113,17 @@ func (h *ProxyHandler) boardEventEnqueuer(events chan<- board.Event, log warnLog
 const boardPublishQueue = 256
 
 func (h *ProxyHandler) boardEventDeliver(pool *pgxpool.Pool, log warnLogger, evt board.Event) {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	// The lookup and the translate each get their OWN bounded context:
+	// the translate derives from Background, never from a canceled
+	// parent (a timeout child of a canceled ctx is born canceled — the
+	// r1 review's regression: every v1 frame degraded raw when the
+	// lookup's cancel ran first).
+	lookupCtx, lookupCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	var owner, workspaceID string
-	err := pool.QueryRow(ctx,
+	err := pool.QueryRow(lookupCtx,
 		`SELECT user_id, target_workspace_id::text FROM projects WHERE id=$1`,
 		evt.ProjectID).Scan(&owner, &workspaceID)
-	cancel()
+	lookupCancel()
 	if err != nil {
 		log.Warn("board: SSE projection skipped — project lookup failed (reseed belt covers)",
 			"projectID", evt.ProjectID, "error", err.Error())
@@ -132,7 +137,7 @@ func (h *ProxyHandler) boardEventDeliver(pool *pgxpool.Pool, log warnLogger, evt
 	// is never rewritten; the degraded shapes are markDeprecatedSession-
 	// ID's (raw + session_id_deprecated) and its task-field twin
 	// (raw + assignee_session_deprecated).
-	evt.Actor, evt.Payload = translateBoardEventIDs(ctx, pool, workspaceID, evt.Actor, evt.Payload)
+	evt.Actor, evt.Payload = translateBoardEventIDs(context.Background(), pool, workspaceID, evt.Actor, evt.Payload)
 	h.publishBoardFanout(owner, workspaceID, evt)
 }
 

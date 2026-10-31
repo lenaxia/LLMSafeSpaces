@@ -26,8 +26,8 @@
 //	board.{project_id}.event     one committed board_events row (SSE join)
 //	lease.{task_id}.nudged       the nudge ladder sent its sentinel
 //	lease.{task_id}.wedge_verdict the ladder ruled a claim wedged
-//	lease.{task_id}.renewed      a ladder rung answered alive (S4)
-//	lease.{task_id}.reclaimed    a lapsed claim was reclaimed (S4)
+//	lease.{task_id}.renewed      a ladder rung answered alive
+//	lease.{task_id}.reclaimed    a lapsed claim was reclaimed
 //	lease.{task_id}.renewed      the ladder renewed a lease (design
 //	                             0072 S4: the observation plane's
 //	                             renewal decisions, source-tagged)
@@ -312,6 +312,9 @@ func BoardEventPayload(id, itemKind, itemID, action, actorJSON, payloadJSON, cre
 // design's §2 vocabulary shape (task, from, to) plus the carrying
 // context (project, short id, the acting session, the actor class,
 // the board_events id for correlation with board.{project}.event).
+// source is the row's ACTOR kind (user | system) — server-derived,
+// never the caller-supplied event id (a requestId is client-chosen;
+// classifying on its prefix would let a client forge the field).
 func TaskStagePayload(task, taskShortID, projectID, from, to, actorSession, source, eventID string) map[string]string {
 	return map[string]string{
 		"task": task, FieldBoardShortID: taskShortID, "project_id": projectID,

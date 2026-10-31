@@ -46,3 +46,17 @@ Private test DB `llmsafespaces_test_s6` (template copy of the shared `llmsafespa
 - The union-merge commits (S3+S4) are the dependencies, not this lane's work; the four conflict resolutions are mechanical keeps-both.
 - S4's `board_lease_events_test.go` needed two mechanical line updates (fields moved into `boardBusClient`); behavior is pinned unchanged by that suite running green.
 - The parity family is the review's center of gravity: retirement (v1-not-called), fallback (four failure shapes), render parity (byte-equal frames), pattern exclusion (subscription/nudge untouched), StartLive, teardown.
+
+## AI review round 1 (CHANGES_REQUESTED) — findings and fixes
+
+All findings addressed on the review head:
+
+1. **BLOCKING — dead-ctx regression on the v1 leg**: the lint-round ctx threading made `translateBoardEventIDs` derive its 2s budget from `boardEventDeliver`'s lookup ctx — whose `cancel()` ran BEFORE the translate call, so every unarmed-posture frame degraded raw (proven by the repo's own phrase pins going base-green/head-red). FIXED: the v1 leg's translate derives from `context.Background()` (its drainer has no parent ctx — the pre-S6 shape), and the regression pins re-verified green. The parity gap that hid it is closed by `TestIntegrationBoardSSEBusJoinPhraseParity` — BOTH legs against a real pool with a WARM session, asserting identical phrase-translated actors.
+2. **BLOCKING — worklog numbering gate**: the S4 union-merge brought `1241_..._lease-events-bus-publisher-s4.md` colliding with the base's S2 `1241` — renumbered to **1243** (file + heading + the COORDINATE reference noting the rename). `repolint -numbering-only` green.
+3. **source classification was dead + client-forgeable** (event-id prefixes never occur for move_stage; a client could send `requestID: "engine:x"`): source is now the row's server-derived ACTOR kind (`user` | `system`) — pinned both ways (`TestBoardBusPublisher_StageChangedHonesty`: kind=system with a forged `engine:` id classifies `system`).
+4. **unparseable payload** now SKIPS the stage_changed entry (warn) instead of publishing empty from/to — pinned.
+5. **metrics honesty + breaker coupling**: stage_changed counts in its OWN `board_bus_stage_events_{published,failed}_total`, and its failures ride `publishSoft` — gated by the shared breaker (never stalls the drainer on a dead transport) but NEVER opening it (the row's board.event entry already succeeded; a nicety must not fail-fast the event/stamp/lease legs) — pinned via the separate-counter assertion.
+6. **Parked consumer**: a consumer whose `busFor` wire fails (or whose Consume exits on a precondition failure) RETIRES its live entry — the next 30s discovery sync re-arms it. Pinned (`TestBoardSSEJoin_ConsumerRetiresOnWireFailure`: dead-wire retires to empty live; the healthy contrast stays live).
+7. Style: deduped the union-merged vocabulary lines in the pkg/eventbus header; removed the dead `stop`/`closed` fields; `context.WithoutCancel` for the post-cancel group destroy (values preserved, cancellation stripped — the contextcheck-honest spelling).
+
+Re-verified after the round: full integration battery (app 33s, handlers 87s incl. the previously-red phrase pins, pkg/board 40s), unit suites, `golangci-lint` 0 issues, `make fmt-check`, `repolint -numbering-only`.

@@ -41,7 +41,7 @@ Topics are dot-separated segments; the launch set:
 | Topic | Producer | Payload fields |
 |---|---|---|
 | `session.{id}.idle` / `session.{id}.error` | agentd (the notifier's settle fold) | `session`, `settle`, `title` |
-| `task.{id}.stage_changed` | API board engine (**S6, landed 2026-10-31**) | `task`, `task_short_id`, `project_id`, `from`, `to`, `actor_session`, `source` (`user` \| `engine` \| `reconciler`), `id` (the board_events row) |
+| `task.{id}.stage_changed` | API board engine (**S6, landed 2026-10-31**) | `task`, `task_short_id`, `project_id`, `from`, `to`, `actor_session`, `source` (`user` \| `system` — the row's actor KIND, server-derived; never the client-chosen event id), `id` (the board_events row) |
 | `task.{id}.stamped` | API board engine (**S6, landed**) | `task`, `task_short_id`, `project_id`, `assignee`, `origin` (`spawn` \| `backfill`), `lag_seconds`, `owner`, `workspace` |
 | `board.{project_id}.event` | API board engine (**S6, landed**) | the committed `board_events` row (`id`, `item_kind`, `item_id`, `action`, `actor` JSON, `payload` JSON, `created_at`) + the SSE scope resolved at publish (`owner`, `workspace`, `task_short_id`) |
 | `lease.{task_id}.nudged` | API nudge ladder (**S4, landed 2026-10-31**) | `task`, `task_short_id`, `nudge_id`, `assignee` |

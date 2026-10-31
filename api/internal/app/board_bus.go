@@ -94,6 +94,8 @@ const (
 var (
 	boardBusEventsPublished expvar.Int
 	boardBusEventsFailed    expvar.Int
+	boardBusStagePublished  expvar.Int
+	boardBusStageFailed     expvar.Int
 	boardBusStampsPublished expvar.Int
 	boardBusStampsFailed    expvar.Int
 	boardBusSSEJoined       expvar.Int
@@ -103,6 +105,12 @@ var (
 func init() {
 	expvar.Publish("board_bus_events_published_total", &boardBusEventsPublished)
 	expvar.Publish("board_bus_events_failed_total", &boardBusEventsFailed)
+	// The vocabulary topic is counted SEPARATELY (r1 review: one
+	// committed move_stage row is ONE board.event entry plus one
+	// stage_changed entry — a shared counter would conflate rows with
+	// XADDs).
+	expvar.Publish("board_bus_stage_events_published_total", &boardBusStagePublished)
+	expvar.Publish("board_bus_stage_events_failed_total", &boardBusStageFailed)
 	expvar.Publish("board_bus_stamps_published_total", &boardBusStampsPublished)
 	expvar.Publish("board_bus_stamps_failed_total", &boardBusStampsFailed)
 	expvar.Publish("board_bus_sse_joined_total", &boardBusSSEJoined)
@@ -200,6 +208,38 @@ func (b *boardBusClient) publish(ctx context.Context, workspaceID, topic string,
 	if _, err := bus.Publish(pctx, eventbus.Event{Topic: topic, At: time.Now(), Payload: payload}); err != nil {
 		b.trip(failed)
 		b.evictBus(workspaceID)
+		return err
+	}
+	published.Add(1)
+	return nil
+}
+
+// publishSoft is the non-tripping twin for ADVISORY side-entries (the
+// stage_changed vocabulary topic): gated by the shared breaker (a
+// downed transport fail-fasts here too — a soft publish must never
+// stall the drainer behind a 2s budget per event) but a failure never
+// OPENS it — the SSE plane's board.event entry for the same row
+// already succeeded, and tripping the transport here would fail-fast
+// the event/stamp/lease legs over a nicety (r1 review finding 4).
+func (b *boardBusClient) publishSoft(ctx context.Context, workspaceID, topic string, payload map[string]string, published, failed *expvar.Int) error {
+	if b == nil || b.client == nil {
+		failed.Add(1)
+		return errors.New("board: event bus unwired")
+	}
+	if b.breakerOpen() {
+		failed.Add(1)
+		return errors.New("board: event bus paused after a failed publish")
+	}
+	bus, err := b.busFor(ctx, workspaceID)
+	if err != nil {
+		failed.Add(1)
+		return err
+	}
+	pctx, cancel := context.WithTimeout(ctx, boardBusPublishBudget)
+	defer cancel()
+	if _, err := bus.Publish(pctx, eventbus.Event{Topic: topic, At: time.Now(), Payload: payload}); err != nil {
+		b.evictBus(workspaceID)
+		failed.Add(1)
 		return err
 	}
 	published.Add(1)
@@ -437,27 +477,38 @@ func (p *boardBusPublisher) publishStageChanged(ctx context.Context, scope board
 		FromStage      string `json:"from_stage"`
 		ResultingStage string `json:"resulting_stage"`
 	}
-	_ = json.Unmarshal(evt.Payload, &row)
+	if err := json.Unmarshal(evt.Payload, &row); err != nil {
+		// r1 review finding 3: a row whose own payload does not parse
+		// is not a stage change we can attest — skip the vocabulary
+		// entry (the board.event entry already carries the SSE plane).
+		slog.WarnContext(ctx, "board: stage_changed skipped — committed payload unparseable",
+			"eventID", evt.ID, "err", err.Error())
+		return
+	}
 	taskID := row.TaskID
 	if taskID == "" {
 		taskID = evt.ItemID
 	}
+	// source is the row's actor kind (server-derived) — never the
+	// caller-supplied event id, which a client could prefix to forge
+	// the field (r1 review finding 2).
 	source := "user"
-	if strings.HasPrefix(evt.ID, "engine:") {
-		source = "engine"
-	} else if strings.HasPrefix(evt.ID, "reconciler:") {
-		source = "reconciler"
-	}
-	var actorSession string
+	actorSession := ""
 	if len(evt.Actor) > 0 {
-		var a map[string]any
+		var a struct {
+			Kind      string `json:"kind"`
+			SessionID string `json:"session_id"`
+		}
 		if json.Unmarshal(evt.Actor, &a) == nil {
-			actorSession, _ = a["session_id"].(string)
+			actorSession = a.SessionID
+			if a.Kind == "system" {
+				source = "system"
+			}
 		}
 	}
-	if err := p.tr.publish(ctx, scope.workspaceID, eventbus.TaskStageTopic(taskID),
+	if err := p.tr.publishSoft(ctx, scope.workspaceID, eventbus.TaskStageTopic(taskID),
 		eventbus.TaskStagePayload(taskID, shortID, evt.ProjectID, row.FromStage, row.ResultingStage, actorSession, source, evt.ID),
-		&boardBusEventsPublished, &boardBusEventsFailed); err != nil {
+		&boardBusStagePublished, &boardBusStageFailed); err != nil {
 		slog.WarnContext(ctx, "board: stage_changed vocabulary publish failed — dropped (the board.event entry carries the SSE plane)",
 			"task", shortID, "err", err.Error())
 	}
@@ -503,11 +554,9 @@ type boardSSEJoin struct {
 	handler  eventbus.Handler
 	discover func(context.Context) ([]string, error)
 
-	wg     sync.WaitGroup
-	mu     sync.Mutex
-	stop   context.CancelFunc
-	live   map[string]context.CancelFunc
-	closed bool
+	wg   sync.WaitGroup
+	mu   sync.Mutex
+	live map[string]context.CancelFunc
 }
 
 // newBoardSSEJoin wires the join; nil (unwired transport or handler)
@@ -533,7 +582,8 @@ func (j *boardSSEJoin) Start(ctx context.Context) {
 		return
 	}
 	baseCtx := ctx
-	ctx, j.stop = context.WithCancel(ctx)
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
 	defer j.teardown(baseCtx)
 	j.syncOnce(ctx)
 	ticker := time.NewTicker(boardSSEJoinInterval)
@@ -613,7 +663,6 @@ func (j *boardSSEJoin) teardown(ctx context.Context) {
 		cancel()
 	}
 	j.live = map[string]context.CancelFunc{}
-	j.closed = true
 	j.mu.Unlock()
 	j.wg.Wait()
 	// The caller's ctx is canceled by the time teardown runs (Start's

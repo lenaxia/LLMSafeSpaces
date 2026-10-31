@@ -473,3 +473,104 @@ func TestBoardSSEJoin_TeardownDestroysGroup(t *testing.T) {
 type busTestLogger struct{}
 
 func (busTestLogger) Warn(string, ...interface{}) {}
+
+// r1 review findings 2–4: the stage_changed vocabulary entry classifies
+// its source from the row's ACTOR kind (never the client-chosen event
+// id), skips on an unparseable committed payload, and counts in its OWN
+// counters (one committed row ≠ two "events published"; a soft failure
+// never opens the transport-wide breaker).
+func TestBoardBusPublisher_StageChangedHonesty(t *testing.T) {
+	mr := miniredis.RunT(t)
+	tr := newBoardBusClient(mr.Addr(), "", "board events")
+	pub := newBoardBusPublisher(tr, staticScope{}, func(board.Event) {})
+	publisher := pub.Publisher()
+
+	eventsBefore := boardBusEventsPublished.Value()
+	stageBefore := boardBusStagePublished.Value()
+
+	publisher(testEvent("move_stage")) // actor kind=user
+
+	require.Eventually(t, func() bool {
+		return boardBusStagePublished.Value() == stageBefore+1
+	}, 2*time.Second, 10*time.Millisecond)
+	assert.Equal(t, eventsBefore+1, boardBusEventsPublished.Value(),
+		"the board.event entry counts once in the events counter")
+	for _, e := range busStreamEntries(t, mr.Addr(), "ws-1") {
+		if e["topic"] == eventbus.TaskStageTopic("task-1") {
+			assert.Equal(t, "user", e[eventbus.FieldStageSource], "actor kind=user classifies user")
+		}
+	}
+
+	// A system actor classifies system — not a client-prefix forgery:
+	// the event id is caller-supplied and says nothing.
+	sysEvt := testEvent("move_stage")
+	sysEvt.ID = "engine:forged-by-client"
+	sysEvt.Actor = []byte(`{"kind":"system"}`)
+	publisher(sysEvt)
+	require.Eventually(t, func() bool {
+		return boardBusStagePublished.Value() == stageBefore+2
+	}, 2*time.Second, 10*time.Millisecond)
+	for _, e := range busStreamEntries(t, mr.Addr(), "ws-1") {
+		if e["topic"] == eventbus.TaskStageTopic("task-1") && e[eventbus.FieldBoardEventID] == "engine:forged-by-client" {
+			assert.Equal(t, "system", e[eventbus.FieldStageSource],
+				"the classification is the server-derived actor kind — a client-chosen event id cannot forge it")
+		}
+	}
+
+	// An unparseable committed payload skips the vocabulary entry (the
+	// board.event entry still lands — it IS the row).
+	stageNow := boardBusStagePublished.Value()
+	garbage := testEvent("move_stage")
+	garbage.ID = "evt-garbage"
+	garbage.Payload = []byte(`{not json`)
+	publisher(garbage)
+	require.Eventually(t, func() bool {
+		for _, e := range busStreamEntries(t, mr.Addr(), "ws-1") {
+			if e["topic"] == eventbus.BoardEventTopic("prj-1") && e[eventbus.FieldBoardEventID] == "evt-garbage" {
+				return true
+			}
+		}
+		return false
+	}, 2*time.Second, 10*time.Millisecond, "the board.event entry for the row lands")
+	assert.Equal(t, stageNow, boardBusStagePublished.Value(),
+		"an unparseable payload publishes NO stage_changed entry")
+}
+
+// r1 review robustness 1: a consumer that cannot start (busFor fails
+// at discovery time) RETIRES its live entry — the next sync retries.
+// A one-time Redis blip parks the consumer for one interval, never
+// for the process lifetime.
+func TestBoardSSEJoin_ConsumerRetiresOnWireFailure(t *testing.T) {
+	// Phase 1: the transport is dead at discovery time — the consumer
+	// must retire, leaving live empty (the retry precondition).
+	mr := miniredis.RunT(t)
+	tr := newBoardBusClient(mr.Addr(), "", "board events")
+	join := newBoardSSEJoin(tr, handlers.BoardEventBusHandler(eventbroker.NewUserEventBroker(), nil, busTestLogger{}),
+		func(context.Context) ([]string, error) { return []string{"ws-1"}, nil })
+	require.NotNil(t, join)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	mr.Close() // the wire dies BEFORE discovery
+	go join.Start(ctx)
+	require.Eventually(t, func() bool {
+		join.mu.Lock()
+		defer join.mu.Unlock()
+		return len(join.live) == 0
+	}, 3*time.Second, 20*time.Millisecond, "a failed wire retires the live entry — the next sync retries")
+
+	// Phase 2 (the healthy contrast): a live transport leaves the
+	// consumer registered — retire is failure-only, not churn.
+	mr2 := miniredis.RunT(t)
+	tr2 := newBoardBusClient(mr2.Addr(), "", "board events")
+	join2 := newBoardSSEJoin(tr2, handlers.BoardEventBusHandler(eventbroker.NewUserEventBroker(), nil, busTestLogger{}),
+		func(context.Context) ([]string, error) { return []string{"ws-1"}, nil })
+	ctx2, cancel2 := context.WithCancel(context.Background())
+	defer cancel2()
+	go join2.Start(ctx2)
+	require.Eventually(t, func() bool {
+		join2.mu.Lock()
+		defer join2.mu.Unlock()
+		return len(join2.live) == 1
+	}, 3*time.Second, 20*time.Millisecond, "a healthy consumer stays live")
+	assert.Equal(t, 1, joinGroupCount(t, mr2.Addr(), "ws-1"), "teardown has not run; the group persists")
+}
