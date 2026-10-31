@@ -13230,6 +13230,15 @@ components:
         assignee_session_deprecated:
           type: boolean
           description: Set when assignee_session could not be resolved to the phrase (#1922 cold window — the value is the raw harness id, still resolvable)
+        assignee_busy:
+          type: boolean
+          description: |
+            RC-C S2 (badge honesty): the assignee session is MID-TURN
+            right now (derived busy — streaming or an in-flight tool
+            call) on a LIVE lease. Absent/false = claimed-but-quiet:
+            idle, unknown, or past the lease without renewal (the busy
+            TTL — a lapsed claim never reports busy). Read-edge
+            derived per poll, never stored.
         implementer_session:
           type: string
           description: |
