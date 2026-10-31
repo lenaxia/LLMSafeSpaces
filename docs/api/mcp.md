@@ -273,6 +273,7 @@ the same window under every canonical name):
 | `board_start_tasks` | `task_ids` | DEPRECATED alias of `board_start_stories` — identical behavior |
 | `board_delete_tasks` | `task_ids` | DEPRECATED alias of `board_delete_stories` — identical behavior |
 | `board_rearm_task` | `task_id` | DEPRECATED alias of `board_rearm_story` — identical behavior |
+| `board_depose_task` | `task_id` | DEPRECATED alias of `board_depose_story` — identical behavior |
 | `board_pause_task` | `task_id` | DEPRECATED alias of `board_pause_story` — identical behavior |
 | `board_resume_task` | `task_id` | DEPRECATED alias of `board_resume_story` — identical behavior |
 

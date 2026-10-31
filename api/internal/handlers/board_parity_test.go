@@ -238,7 +238,7 @@ var boardParityMatrix = []parityRow{
 	// three live columns like pause/rearm (a manager action; only
 	// task_start/task_create carry the owner-only boundary).
 	{action: "depose_task", restMethods: []string{"DeposeTask"}, rest: liveCell,
-		externalMCP: liveCell, extTools: []string{"board_depose_story"}, agent: liveCell,
+		externalMCP: liveCell, extTools: []string{"board_depose_story", "board_depose_task"}, agent: liveCell,
 		agentTools: []string{"board_depose_story"},
 		denyErr:    &board.GuardError{Code: board.GuardClaimLive, Detail: "a live claim refuses deposition — the lease has not lapsed"}, denyCode: http.StatusConflict},
 	{action: "import_plan", restMethods: []string{"ImportPlan"}, rest: liveCell,

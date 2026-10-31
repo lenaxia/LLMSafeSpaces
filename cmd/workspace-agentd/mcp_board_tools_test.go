@@ -453,8 +453,8 @@ func TestMCPBoard_ManagerWireContract(t *testing.T) {
 		setupRenameWorkspaceEnv(t, api)
 
 		_, err := mcpAutomation(context.Background(), mcpTestPassword, "board_depose_story", map[string]any{
-			"storyId": "tsk-cccc3333",
-			"branch":  "feat/salvage", "pr": "1997", "head": "65e4d9dcd",
+			"taskId": "tsk-cccc3333",
+			"branch": "feat/salvage", "pr": "1997", "head": "65e4d9dcd",
 			"state": "pushed, CI green", "note": "verify then build on it",
 			"requestId": "req-depose-1", "lsp_injected_session": "ses-1"})
 		require.NoError(t, err)
