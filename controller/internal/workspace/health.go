@@ -115,6 +115,11 @@ func (r *WorkspaceReconciler) checkAgentHealth(ctx context.Context, ws *v1.Works
 		// Same evidence rule for the supervisor restart state (#1760):
 		// a dead pod's restart history is unknown, not carried forward.
 		ws.Status.AgentSupervisor = nil
+		// Same evidence rule for the agentd build identity (RC-A,
+		// 2026-10-30): a dead pod's running agentd is unknown.
+		ws.Status.AgentdVersion = ""
+		ws.Status.AgentdCommit = ""
+		ws.Status.AgentdBuildTime = ""
 		// Same evidence rule for the deferred-apply surface (#1342): a
 		// dead pod's deferral state is unknown, not pending.
 		removeCondition(ws, v1.WorkspaceConditionCredentialsApplyPending)
@@ -137,6 +142,9 @@ func (r *WorkspaceReconciler) checkAgentHealth(ctx context.Context, ws *v1.Works
 		// can't trust any prior value, clear to nil.
 		ws.Status.SecretsDelivery = nil
 		ws.Status.AgentSupervisor = nil
+		ws.Status.AgentdVersion = ""
+		ws.Status.AgentdCommit = ""
+		ws.Status.AgentdBuildTime = ""
 		removeCondition(ws, v1.WorkspaceConditionCredentialsApplyPending)
 		r.setCondition(ws, v1.WorkspaceConditionAgentHealthy, "Unknown",
 			v1.ReasonHealthCheckFailed, "failed to decode healthz response")
@@ -150,6 +158,12 @@ func (r *WorkspaceReconciler) checkAgentHealth(ctx context.Context, ws *v1.Works
 	// agent's claim about itself, so an unhealthy body still carries
 	// truthful restart history.
 	r.mirrorAgentSupervisor(ctx, ws, healthResp.Supervisor)
+
+	// RC-A (2026-10-30): mirror the running agentd's self-reported build
+	// identity (version/commit/build_time) and evaluate version skew vs
+	// the fleet release. Same ANY-decoded-response placement: build
+	// identity is a property of the binary that answered.
+	r.mirrorAgentdVersion(ctx, ws, &healthResp)
 
 	if !healthResp.Healthy {
 		ws.Status.ConsecutiveHealthFailures++

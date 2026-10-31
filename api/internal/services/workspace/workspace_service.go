@@ -1120,6 +1120,11 @@ func (s *Service) GetWorkspaceStatus(ctx context.Context, userID, workspaceID st
 		// applies on next refresh".
 		AgentdEffectiveDigest: crd.Status.AgentdEffectiveDigest,
 		AgentdPendingDigest:   crd.Status.AgentdPendingDigest,
+		// RC-A (2026-10-30): the RUNNING agentd's self-reported build
+		// identity — fleet currency without shell access.
+		AgentdVersion:   crd.Status.AgentdVersion,
+		AgentdCommit:    crd.Status.AgentdCommit,
+		AgentdBuildTime: crd.Status.AgentdBuildTime,
 	}
 
 	// Fallback: if controller hasn't set ImageTag yet (pre-upgrade pods), read from pod spec

@@ -535,6 +535,31 @@ spec:
               an observed digest matching a known opencode version indicates rollout
               drift, an unknown digest indicates tampering or corruption.
 
+        # RC-A (2026-10-30 incident): a workspace pod's RUNNING agentd is
+        # older than the fleet release. Under the #1746 OnRefresh policy
+        # an N-1 fleet is expected for hours-to-days (users own their
+        # session interruptions) — so this is a WARNING on persistence,
+        # not page-on-any: any workspace still stale after 2h means the
+        # runbook (docs/operator/agentd-delivery.md — Version visibility
+        # & skew detection) has not been run. The incident this kills:
+        # v0.44.7 pods for ~15h after v0.44.9 shipped, invisible without
+        # curling the pod's admin healthz.
+        - alert: LLMSafeSpacesAgentdVersionSkew
+          expr: |
+            max(llmsafespaces_workspace_agentd_version_skew{job=~"{{ $ctrlJob }}"}) > 0
+          for: 2h
+          labels:
+            severity: warning
+            component: controller
+          annotations:
+            summary: "Workspace agentd version skew persists"
+            description: >-
+              One or more workspace pods report an agentd older than the fleet release
+              for over 2h. Per-workspace detail: the AgentdVersionStale condition and
+              the workspace status fields agentdVersion/agentdCommit/agentdBuildTime.
+              Roll runbook: docs/operator/agentd-delivery.md — Version visibility &
+              skew detection (updatePolicy Rolling / forceRoll, or natural refresh).
+
         - alert: LLMSafeSpacesReconciliationErrors
           expr: |
             sum(rate(llmsafespaces_reconciliation_errors_total{job=~"{{ $ctrlJob }}"}[10m])) > 0.01
