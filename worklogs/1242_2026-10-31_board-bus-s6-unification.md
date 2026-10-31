@@ -60,3 +60,18 @@ All findings addressed on the review head:
 7. Style: deduped the union-merged vocabulary lines in the pkg/eventbus header; removed the dead `stop`/`closed` fields; `context.WithoutCancel` for the post-cancel group destroy (values preserved, cancellation stripped — the contextcheck-honest spelling).
 
 Re-verified after the round: full integration battery (app 33s, handlers 87s incl. the previously-red phrase pins, pkg/board 40s), unit suites, `golangci-lint` 0 issues, `make fmt-check`, `repolint -numbering-only`.
+
+## AI review round 2 (CHANGES_REQUESTED) — the false-claim lesson, owned
+
+Round 2 caught that TWO r1 remediation claims were FALSE — not because the fixes were wrong, but because they were never applied: scripted file edits whose match-targets had drifted SILENTLY failed to replace, and I verified build+tests instead of verifying the EDITS landed. Worse, the new pin passed vacuously (testify's Eventually evaluates once immediately — it raced the goroutine and saw the still-empty initial map) and flaked ~40% under -race. A claim of fixed that isn't fixed is worse than an open finding; the reviewer was right to block on exactly that.
+
+Round-2 fixes (each verified landed before the claim, this time):
+
+1. **The retire code ACTUALLY exists now** (grep `retire()` = 2 call sites): a consumer whose busFor wire fails, or whose Consume exits on a precondition failure, deletes its live entry — the next 30s sync re-arms it.
+2. **The pin is deterministic in both directions** (`TestBoardSSEJoin_ConsumerRetiresOnWireFailure`, rewritten): registration asserted SYNCHRONOUSLY inside syncOnce (no first-check race), the retire observed as the entry leaving live, and the healed-wire second sync observed re-creating the group. Mutation-checked: with `retire()` removed the pin FAILS at its "RED without the retire" message; restored, it passes; `-race -count=20` green (3.5s).
+3. **The eventbus header dedup landed for real** (one `renewed` line, one `reclaimed` line — verified by inspection after the edit).
+4. **source attests the actor kind with NO default**: an absent/unparseable actor publishes an empty source, never a defaulted `user`.
+5. **Doc drift repaired**: monitoring.md names the `board_bus_stage_events_*` family; the COORDINATE row says actor-kind (user|system), not the retired event-id-prefix text.
+6. **The phrase-parity pin joins the CI filter by name**: renamed to `TestIntegrationBoardSSELiveProjectionBusJoinPhraseParity` (the secrets-integration `-run` prefix).
+
+Process notes: the round-1 scripted-edit failure mode is now banished — every scripted edit asserts its match (or uses the edit tool, which fails loudly). Also: the shared PG at :5433 died mid-verification (sibling lane's portable server, OOM-shaped); restarted from the surviving cluster (`/tmp/opencode/pgdist` + `/tmp/opencode/pgdata`), the private DB intact, and the FULL integration battery re-ran serially (board 41s, handlers 87s, app 33s — real runs, not skips; the combined-package invocation is a truncation race, serial per package per the S2 lane's lesson).
