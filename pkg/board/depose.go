@@ -228,7 +228,6 @@ func (s *Service) DeposeTask(ctx context.Context, actor Actor, taskID, shortIDOr
 			},
 		})
 	}
-	_ = dup
 	if requeued {
 		// The DEPOSED directive to the stale session: best-effort,
 		// post-commit (the HALT/RESUME transport precedent — the

@@ -786,6 +786,21 @@ export interface BoardHealthProjectSlots {
   in_use: number;
 }
 
+export interface BoardHealthObservation {
+  task_id: string;
+  short_id: string;
+  kind: string;
+  session?: string;
+  session_deprecated?: boolean;
+  detail?: Record<string, unknown>;
+  at: string;
+}
+
+export interface BoardHealthObservationRetention {
+  per_task_events: number;
+  ttl: string;
+}
+
 export interface BoardHealth {
   active_leases: BoardHealthLease[];
   task_cooldowns: BoardHealthTaskCooldown[];
@@ -793,4 +808,6 @@ export interface BoardHealth {
   pending_input_by_origin: Record<string, number>;
   recent_reclaims: BoardHealthReclaim[];
   project_slots: BoardHealthProjectSlots[];
+  observation_events: BoardHealthObservation[];
+  observation_retention: BoardHealthObservationRetention;
 }
