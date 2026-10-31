@@ -1755,6 +1755,38 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 				// both).
 				board.WithRoleDirectory(newBoardRoleDirectory(pgOrgStore)),
 			}
+			// S6 (design 0072): when the board eventbus is armed the
+			// §4.6 SSE projection is BUS-FIRST — one
+			// board.{project}.event entry per committed row on the
+			// workspace stream (plus task.{id}.stage_changed for stage
+			// moves and task.{id}.stamped for landed assignee stamps),
+			// served to SSE consumers by the per-replica join group
+			// rendering the SAME frames through the SAME handler path.
+			// The v1 point-to-point leg (installed below when no bus
+			// arms) remains the verbatim fallback — unarmed default and
+			// per-event publish failure — and on bus success it is NOT
+			// also called: the retired leg stays retired (pinned).
+			boardV1Publisher := proxyHandler.BoardEventPublisher(boardPool, log)
+			var boardBusPub *boardBusPublisher
+			if boardV1Publisher != nil {
+				if boardBusClientS6 := newBoardBusClient(cfg.Board.Eventbus.Addr, cfg.Board.Eventbus.Password, "board events"); boardBusClientS6 != nil {
+					boardBusPub = newBoardBusPublisher(boardBusClientS6, newBoardScopeCache(boardPool), boardV1Publisher)
+					// The stamp projection rides the same producer (the
+					// stamp writes no board_events row — the bus entry
+					// is its only event surface) — appended to
+					// spawnOpts BEFORE the Service/Reconciler are
+					// constructed below.
+					spawnOpts = append(spawnOpts, board.WithStampSink(boardBusPub.StampEventSink))
+					// The SSE join runs on the app context — Shutdown's
+					// cancel releases the consumers and destroys this
+					// replica's groups.
+					join := newBoardSSEJoin(boardBusClientS6,
+						proxyHandler.BoardEventBusHandler(boardPool, log),
+						DiscoverBoardWorkspaces(boardPool))
+					go join.Start(ctx)
+					log.Info("board: event bus wired — board events and stamps publish onto the workspace streams; SSE served from the join (design 0072 S6)")
+				}
+			}
 			// Event-driven drive half (§4.4): work-becoming-ready actions
 			// poke the queue; this consumer drives the affected project
 			// immediately. The reconciler sweep is the backstop.
@@ -1780,7 +1812,18 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 			// Fail-open by construction — nil publisher (no broker)
 			// leaves writes unaffected; the UI's reseed belt covers a
 			// dropped projection.
-			if boardPub := proxyHandler.BoardEventPublisher(boardPool, log); boardPub != nil {
+			//
+			// S6 (design 0072): when the board eventbus is armed the
+			// projection is BUS-FIRST — one board.{project}.event
+			// entry per committed row on the workspace stream (plus
+			// task.{id}.stage_changed for stage moves and
+			// task.{id}.stamped for landed assignee stamps), served to
+			// SSE consumers by the per-replica join group rendering
+			// the SAME frames. The v1 point-to-point leg below remains
+			// the verbatim fallback (unarmed default, per-event publish
+			// failure) — and on bus success it is NOT also called: the
+			// retired leg stays retired (pinned).
+			if boardPub := boardBusPublisherOrV1(boardBusPub, boardV1Publisher); boardPub != nil {
 				boardSvc.SetEventPublisher(boardPub)
 				boardReconciler.SetEventPublisher(boardPub)
 			}
