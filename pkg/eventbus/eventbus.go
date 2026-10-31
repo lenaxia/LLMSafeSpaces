@@ -15,22 +15,24 @@
 // hand-rolled in subscriptions v1 (design 0071 §4.5), now free.
 //
 // Topic vocabulary — a CONVENTION, not an enum (design 0072 §2): the
-// five named shapes below are the launch set; new topics join by
+// named shapes below are the launch set; new topics join by
 // agreement between one producer and its consumers, never by editing
 // this package's switch statements. Topics are dot-separated segments:
 //
 //	session.{id}.idle            a session's turn settled idle
 //	session.{id}.error           a session's turn ended in error
 //	task.{id}.stage_changed      a board task changed stage
+//	task.{id}.stamped            the assignee stamp landed (spawn|backfill)
+//	board.{project_id}.event     one committed board_events row (SSE join)
 //	lease.{task_id}.nudged       the nudge ladder sent its sentinel
 //	lease.{task_id}.wedge_verdict the ladder ruled a claim wedged
-//	lease.{task_id}.renewed      the ladder renewed a lease (design
-//	                             0072 S4: the observation plane's
-//	                             renewal decisions, source-tagged)
+//	lease.{task_id}.renewed      a ladder rung answered alive (S4:
+//	                             the observation plane's renewal
+//	                             decisions, source-tagged)
 //	lease.{task_id}.reclaimed    the ladder reclaimed a lapsed claim
-//	                             (design 0072 S4: the lapse verdicts
-//	                             and reclaims the 2026-10-30 incident
-//	                             had to reconstruct by forensics)
+//	                             (S4: the lapse verdicts and reclaims
+//	                             the 2026-10-30 incident had to
+//	                             reconstruct by forensics)
 //
 // Subscriptions are topic PATTERNS with `*` (any ONE segment) and a
 // trailing `**` (one or more remaining segments): "session.*.idle"
@@ -113,6 +115,35 @@ func SessionSettleTopic(sessionID, kind string) string {
 func TaskStageTopic(taskID string) string {
 	return "task." + taskID + ".stage_changed"
 }
+
+// TaskStampedTopic is task.{id}.stamped — the assignee stamp landing
+// on the board row (design 0072 S6: the stamp is an event class of
+// its own; it writes no board_events row, so the bus entry IS its
+// only event surface).
+func TaskStampedTopic(taskID string) string {
+	return "task." + taskID + ".stamped"
+}
+
+// BoardEventTopic is board.{project_id}.event — the SSE-join carrier:
+// one entry per COMMITTED board_events row (design 0072 §9.2), with
+// the row and its scope (owner + workspace, resolved at publish) in
+// the payload so the SSE consumer fans out with no per-delivery
+// project lookup (the retired leg of S6).
+func BoardEventTopic(projectID string) string {
+	return "board." + projectID + ".event"
+}
+
+// GroupSSEPrefix is the API-side SSE consumer group's prefix (design
+// 0072 §9.2). The group name is PER-REPLICA (sse-<hostname>): every
+// API replica's group receives every entry, so each replica's
+// in-process broker is fed from the join — per-project order follows
+// stream order within each group (the v1 single-drainer parity), and
+// a subscriber on ANY replica sees the event, not just the
+// writer-replica's (strictly better than the point-to-point leg it
+// retires). Groups are destroyed on graceful shutdown; a crashed
+// replica's leftover group is exactly the stalled-group shape S3's
+// detector flags.
+const GroupSSEPrefix = "sse"
 
 // LeaseNudgeTopic is lease.{task_id}.nudged — payload: task (the
 // board task's raw id), task_short_id, nudge_id, assignee (the
@@ -205,6 +236,105 @@ func ParseLease(topic string) (taskID, arm string, ok bool) {
 	return parts[1], parts[2], true
 }
 
+// ParseTask extracts (task id, arm) from a task.{id}.{arm} topic —
+// the twin of ParseLease for the board-plane family
+// (stage_changed | stamped). ok is false for any other shape.
+func ParseTask(topic string) (taskID, arm string, ok bool) {
+	parts := strings.Split(topic, ".")
+	if len(parts) != 3 || parts[0] != "task" || parts[1] == "" || parts[2] == "" {
+		return "", "", false
+	}
+	return parts[1], parts[2], true
+}
+
+// ParseBoardEvent extracts the project id from a
+// board.{project_id}.event topic. ok is false for any other shape.
+func ParseBoardEvent(topic string) (projectID string, ok bool) {
+	parts := strings.Split(topic, ".")
+	if len(parts) != 3 || parts[0] != "board" || parts[1] == "" || parts[2] != "event" {
+		return "", false
+	}
+	return parts[1], true
+}
+
+// ---- Board payload builders (design 0072 S6) ----
+//
+// The same constructor discipline as the lease family: the API's
+// publisher, the API's own SSE consumer, and every future subscriber
+// (subscribe_events, the audit plane) share the payload contract as
+// code.
+
+// Board event payload field names (flat strings — the row's JSON
+// blobs ride as JSON-by-convention string fields).
+const (
+	FieldBoardEventID    = "id"
+	FieldBoardItemKind   = "item_kind"
+	FieldBoardItemID     = "item_id"
+	FieldBoardAction     = "action"
+	FieldBoardActor      = "actor"
+	FieldBoardPayload    = "payload"
+	FieldBoardCreatedAt  = "created_at"
+	FieldBoardOwner      = "owner"
+	FieldBoardWorkspace  = "workspace"
+	FieldBoardShortID    = "task_short_id"
+	FieldStageFrom       = "from"
+	FieldStageTo         = "to"
+	FieldStageActor      = "actor_session"
+	FieldStageSource     = "source"
+	FieldStampAssignee   = "assignee"
+	FieldStampOrigin     = "origin"
+	FieldStampLagSeconds = "lag_seconds"
+)
+
+// BoardEventPayload builds the board.{project}.event payload: the
+// committed board_events row (id/kind/item/action/actor/payload/
+// created_at — actor and payload are JSON blobs carried verbatim)
+// plus the SSE scope resolved at PUBLISH time (owner + workspace) so
+// the consumer fans out without a per-delivery project lookup.
+func BoardEventPayload(id, itemKind, itemID, action, actorJSON, payloadJSON, createdAt, owner, workspaceID, taskShortID string) map[string]string {
+	return map[string]string{
+		FieldBoardEventID:   id,
+		FieldBoardItemKind:  itemKind,
+		FieldBoardItemID:    itemID,
+		FieldBoardAction:    action,
+		FieldBoardActor:     actorJSON,
+		FieldBoardPayload:   payloadJSON,
+		FieldBoardCreatedAt: createdAt,
+		FieldBoardOwner:     owner,
+		FieldBoardWorkspace: workspaceID,
+		FieldBoardShortID:   taskShortID,
+	}
+}
+
+// TaskStagePayload builds the task.{id}.stage_changed payload — the
+// design's §2 vocabulary shape (task, from, to) plus the carrying
+// context (project, short id, the acting session, the actor class,
+// the board_events id for correlation with board.{project}.event).
+// source is the row's ACTOR kind (user | system) — server-derived,
+// never the caller-supplied event id (a requestId is client-chosen;
+// classifying on its prefix would let a client forge the field).
+func TaskStagePayload(task, taskShortID, projectID, from, to, actorSession, source, eventID string) map[string]string {
+	return map[string]string{
+		"task": task, FieldBoardShortID: taskShortID, "project_id": projectID,
+		FieldStageFrom: from, FieldStageTo: to,
+		FieldStageActor: actorSession, FieldStageSource: source,
+		FieldBoardEventID: eventID,
+	}
+}
+
+// TaskStampPayload builds the task.{id}.stamped payload (origin:
+// spawn | backfill; lag_seconds: claim mint → stamp landing, one
+// clock domain, server-side; owner + workspace: the SSE scope
+// resolved at publish, same as BoardEventPayload).
+func TaskStampPayload(task, taskShortID, projectID, assignee, origin string, lagSeconds float64, owner, workspaceID string) map[string]string {
+	return map[string]string{
+		"task": task, FieldBoardShortID: taskShortID, "project_id": projectID,
+		FieldStampAssignee: assignee, FieldStampOrigin: origin,
+		FieldStampLagSeconds: strconv.FormatFloat(lagSeconds, 'f', -1, 64),
+		FieldBoardOwner:      owner, FieldBoardWorkspace: workspaceID,
+	}
+}
+
 // Match answers whether a topic satisfies a pattern. Segments are
 // dot-separated; "*" matches exactly one segment; "**" as the FINAL
 // segment matches one or more remaining segments. A pattern must
@@ -253,6 +383,43 @@ type Message struct {
 	ID       string
 	Event    Event
 	Attempts int64
+}
+
+// DeliveryOutcome labels one dispatch outcome — the consume-side
+// health vocabulary (S3): every entry a group's loop touches resolves
+// to exactly one of these, and the observer seam turns them into
+// counters without the transport knowing Prometheus exists.
+type DeliveryOutcome string
+
+const (
+	// DeliveryDelivered: the handler ran and returned nil; the entry
+	// was acked — the healthy consume.
+	DeliveryDelivered DeliveryOutcome = "delivered"
+	// DeliveryFiltered: the entry matched no subscription pattern and
+	// was acked unread (the group cursor must still advance).
+	DeliveryFiltered DeliveryOutcome = "filtered"
+	// DeliveryPoison: the entry exceeded MaxAttempts and was
+	// acked-and-dropped (at-least-once must not mean forever).
+	DeliveryPoison DeliveryOutcome = "poison"
+	// DeliveryHandlerError: the handler failed; the entry stays
+	// pending for redelivery (the reclaim is the retry).
+	DeliveryHandlerError DeliveryOutcome = "handler_error"
+	// DeliveryAckError: the handler ran but the ACK failed — the entry
+	// will redeliver as a duplicate (benign by contract, visible here
+	// because an invisible one is undebuggable).
+	DeliveryAckError DeliveryOutcome = "ack_error"
+)
+
+// DeliveryEvent is one observed dispatch, handed to
+// ConsumeOptions.OnDelivery after the outcome is settled. Attempts is
+// the durable delivery count (1 = first delivery; >1 = a redelivery
+// — the at-least-once machinery working, or overworking).
+type DeliveryEvent struct {
+	Group    string
+	Consumer string
+	Topic    string
+	Attempts int64
+	Outcome  DeliveryOutcome
 }
 
 // Handler processes one message. Returning nil ACKS the entry (it is

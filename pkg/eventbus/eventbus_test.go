@@ -971,3 +971,103 @@ func TestNewRedisBusRefusesDeadClient(t *testing.T) {
 		t.Fatal("bus constructed over a nil client")
 	}
 }
+
+// --- S6: the board-plane vocabulary ------------------------------------------
+
+func TestBoardAndStampTopics(t *testing.T) {
+	assert.Equal(t, "board.prj-1.event", BoardEventTopic("prj-1"))
+	assert.Equal(t, "task.t1.stamped", TaskStampedTopic("t1"))
+	assert.Equal(t, "task.t1.stage_changed", TaskStageTopic("t1"))
+
+	p, ok := ParseBoardEvent("board.prj-1.event")
+	assert.True(t, ok)
+	assert.Equal(t, "prj-1", p)
+	_, ok = ParseBoardEvent("board.prj-1.other")
+	assert.False(t, ok, "only the .event arm parses")
+	_, ok = ParseBoardEvent("task.t1.stamped")
+	assert.False(t, ok)
+
+	id, arm, ok := ParseTask("task.t1.stamped")
+	assert.True(t, ok)
+	assert.Equal(t, "t1", id)
+	assert.Equal(t, "stamped", arm)
+	_, _, ok = ParseTask("lease.t1.nudged")
+	assert.False(t, ok, "ParseTask refuses the lease family")
+}
+
+func TestBoardPayloadBuilders(t *testing.T) {
+	assert.Equal(t, map[string]string{
+		"id": "evt-9", "item_kind": "task", "item_id": "t1", "action": "move_stage",
+		"actor": `{"kind":"user"}`, "payload": `{"from_stage":"backlog"}`,
+		"created_at": "2026-10-31T00:00:00Z", "owner": "user-1", "workspace": "ws-1",
+		"task_short_id": "tsk-x",
+	}, BoardEventPayload("evt-9", "task", "t1", "move_stage", `{"kind":"user"}`,
+		`{"from_stage":"backlog"}`, "2026-10-31T00:00:00Z", "user-1", "ws-1", "tsk-x"))
+
+	assert.Equal(t, map[string]string{
+		"task": "t1", "task_short_id": "tsk-x", "project_id": "prj-1",
+		"from": "backlog", "to": "in_progress", "actor_session": "ses_w",
+		"source": "user", "id": "evt-9",
+	}, TaskStagePayload("t1", "tsk-x", "prj-1", "backlog", "in_progress", "ses_w", "user", "evt-9"))
+
+	stamp := TaskStampPayload("t1", "tsk-x", "prj-1", "ses_w", "spawn", 0.019, "user-1", "ws-1")
+	assert.Equal(t, "ses_w", stamp[FieldStampAssignee])
+	assert.Equal(t, "spawn", stamp[FieldStampOrigin])
+	assert.Equal(t, "user-1", stamp[FieldBoardOwner])
+	assert.Equal(t, "ws-1", stamp[FieldBoardWorkspace])
+	assert.Equal(t, "0.019", stamp[FieldStampLagSeconds])
+
+	// No builder output may collide with the reserved field names.
+	for _, m := range []map[string]string{
+		BoardEventPayload("i", "task", "t", "a", "{}", "{}", "at", "u", "w", "s"),
+		TaskStagePayload("t", "s", "p", "f", "to", "a", "user", "e"),
+		TaskStampPayload("t", "s", "p", "a", "spawn", 1, "u", "w"),
+	} {
+		for k := range m {
+			if k == FieldTopic || k == FieldAt {
+				t.Fatalf("payload builder collides with reserved field %q", k)
+			}
+		}
+	}
+}
+
+// TestBoardEventBusRoundTrip: a board event published through the
+// transport is delivered whole to a matching consumer group (the SSE
+// join's pattern), and NOT to the pattern-excluded families (lease,
+// session) — patterns subscribe, they do not leave gaps.
+func TestBoardEventBusRoundTrip(t *testing.T) {
+	bus, _ := newTestBus(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	_, err := bus.Publish(ctx, Event{Topic: BoardEventTopic("prj-1"),
+		Payload: BoardEventPayload("evt-1", "task", "t1", "move_stage", "{}", "{}", "at", "u1", "ws-1", "tsk-x")})
+	require.NoError(t, err)
+	_, err = bus.Publish(ctx, Event{Topic: LeaseNudgeTopic("t1"), Payload: LeaseNudgePayload("t1", "s", "n", "a")})
+	require.NoError(t, err)
+
+	got := make(chan Message, 4)
+	go func() {
+		_ = bus.Consume(ctx, ConsumeOptions{
+			Group: "sse-test", Consumer: "c1",
+			Topics:  []string{"board.*.event", "task.*.stamped"},
+			StartAt: StartReplay, Block: time.Millisecond, MinIdle: time.Millisecond,
+		}, func(_ context.Context, msg Message) error {
+			got <- msg
+			return nil
+		})
+	}()
+
+	select {
+	case msg := <-got:
+		assert.Equal(t, BoardEventTopic("prj-1"), msg.Event.Topic)
+		assert.Equal(t, "move_stage", msg.Event.Payload[FieldBoardAction])
+		assert.Equal(t, "u1", msg.Event.Payload[FieldBoardOwner])
+	case <-time.After(2 * time.Second):
+		t.Fatal("board event not delivered to the sse-pattern group")
+	}
+	select {
+	case msg := <-got:
+		t.Fatalf("lease event crossed the sse pattern: %s", msg.Event.Topic)
+	case <-time.After(150 * time.Millisecond):
+	}
+}

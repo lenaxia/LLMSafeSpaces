@@ -364,7 +364,7 @@ var boardDeposeStoryTool = mcp.NewTool("board_depose_story",
 	mcp.WithString("branch", mcp.Description("The pushed branch name the deposed attempt left behind")),
 	mcp.WithString("pr", mcp.Description("The open pull request's number or URL")),
 	mcp.WithString("head", mcp.Description("The last known commit SHA on the branch")),
-	mcp.WithString("state", mcp.Description("Last known state, free text: what was done, what gates ran, what remains (at least one of branch/pr/head/state required)")),
+	mcp.WithString("state", mcp.Description("Last known state, free text: what was done, what gates ran, what remains (at least one of branch/pr/head/state/note required)")),
 	mcp.WithString("note", mcp.Description("Guidance for the inheriting worker (verify-first, what to build on)")),
 	mcp.WithString("request_id", mcp.Description("Idempotency key (one per logical operation)")),
 )

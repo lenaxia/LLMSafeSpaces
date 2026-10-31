@@ -55,6 +55,10 @@ const ACTION_LABELS: Record<string, string> = {
   resume_project: "project resumed",
   import_plan: "plan imported",
   unblocked_by_delete: "unblocked by delete",
+  // Design 0072 S6: landed assignee stamps ride SSE as synthesized
+  // board.event frames (they write no board_events row, so the feed's
+  // label map is their only display surface).
+  assignee_stamped: "worker stamped",
 };
 
 /**

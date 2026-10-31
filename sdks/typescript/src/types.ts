@@ -569,6 +569,12 @@ export interface BoardTask {
    * phrase (#1922 cold window — the value is the raw harness id, still
    * a resolvable session ref). */
   assignee_session_deprecated?: boolean;
+  /** RC-C S2 (badge honesty): the assignee session is MID-TURN right
+   * now (derived busy — streaming or an in-flight tool call) on a
+   * LIVE lease; absent/false = claimed-but-quiet: idle, unknown, or
+   * past the lease without renewal (the busy TTL — a lapsed claim
+   * never reports busy). Read-edge derived per poll, never stored. */
+  assignee_busy?: boolean;
   /** #1959 implementer identity (the session that moved the row to
    * in_review) — a resolvable session ref exactly like
    * assignee_session (owner ruling 2026-10-29). */

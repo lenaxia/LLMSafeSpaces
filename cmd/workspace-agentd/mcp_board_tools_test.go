@@ -449,6 +449,33 @@ func TestMCPBoard_ManagerWireContract(t *testing.T) {
 		assert.Contains(t, rec.query, "sessionId=ses-1", "DELETE carries the session on the query")
 	})
 
+	t.Run("board_depose_story wire (salvage fields verbatim)", func(t *testing.T) {
+		api, rec := newAutomationAPI(t, 200, `{"stage":"backlog"}`)
+		setupRenameWorkspaceEnv(t, api)
+
+		// The dispatch layer speaks the CANONICAL name + the wire's
+		// taskId key (board_depose_task/storyId resolve at tools/call,
+		// the alias window above this seam — pinned by the alias tests).
+		_, err := mcpAutomation(context.Background(), mcpTestPassword, "board_depose_story", map[string]any{
+			"taskId": "tsk-cccc3333",
+			"branch": "feat/salvage", "pr": "1997", "head": "65e4d9dcd",
+			"state": "pushed, CI green", "note": "verify then build on it",
+			"requestId": "req-depose-1", "lsp_injected_session": "ses-1"})
+		require.NoError(t, err)
+		assert.Equal(t, http.MethodPost, rec.method)
+		assert.Equal(t, "/internal/v1/automation/board/tasks/tsk-cccc3333/depose", rec.path)
+		var wire map[string]json.RawMessage
+		require.NoError(t, json.Unmarshal([]byte(rec.body), &wire))
+		assert.JSONEq(t, `"feat/salvage"`, string(wire["branch"]), "the salvage fields reach the wire verbatim (agentd re-models nothing)")
+		assert.JSONEq(t, `"1997"`, string(wire["pr"]))
+		assert.JSONEq(t, `"65e4d9dcd"`, string(wire["head"]))
+		assert.JSONEq(t, `"pushed, CI green"`, string(wire["state"]))
+		assert.JSONEq(t, `"verify then build on it"`, string(wire["note"]))
+		assert.JSONEq(t, `"req-depose-1"`, string(wire["requestId"]))
+		assert.JSONEq(t, `"ws-1"`, string(wire["workspaceID"]), "the workspace stamp")
+		assert.JSONEq(t, `"ses-1"`, string(wire["sessionId"]), "the injected session identity (audit attribution)")
+	})
+
 	t.Run("board_delete_epic wire (force query)", func(t *testing.T) {
 		api, rec := newAutomationAPI(t, 200, `{"item_kind":"epic"}`)
 		setupRenameWorkspaceEnv(t, api)

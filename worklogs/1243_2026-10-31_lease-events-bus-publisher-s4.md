@@ -1,4 +1,4 @@
-# Worklog 1242 — Liveness events publish onto the bus: nudge, renewal, wedge, reclaim (design 0072 S4)
+# Worklog 1243 — Liveness events publish onto the bus: nudge, renewal, wedge, reclaim (design 0072 S4)
 
 - **Story**: tsk-redolent-hawthorn-leaves ("S4 — Liveness events publish onto the bus … first API-side producer", epic "Liveness and observation", the 2026-10-30 incident remediation S0–S7)
 - **Branch/worktree**: `lease-events-publisher` at the isolated worktree `/tmp/opencode/lease-events-wt` (forked at `9c17803b9`, the sprint-board-story-machinery integration line). The shared checkout moved mid-flight to the S2 lane's uncommitted edits (`pkg/board/busy.go` referencing a `busySrc` field not yet landed — build-breaking for every other lane); per the repo's lane convention (S3's precedent, COORDINATE.md) this lane extracted to its own worktree and restored the shared tree to exactly the S2 lane's files (`rows.go`, `reads.go` modified, `busy.go` untracked). One early service.go copy carried the S2 lane's in-flight `busySrc` hunk; it was removed from THIS lane's tree before the first commit (their work is untouched in the shared checkout).
@@ -57,3 +57,33 @@ The API knob and the controller's `--workspace-eventbus-addr` are ONE posture: a
 4. **Lint contextcheck (board_lease_events.go)**: `busFor` now takes the caller's ctx and derives the wire timeout from it (no fresh Background window inside a request-bounded call path).
 5. **Worklog renumber**: main's rename lane had already taken 1241 — this lane's worklog is 1242 (repolint's duplicate check caught the collision; the gap list is the tolerated historical class).
 6. Gates rerun serially on the merged tree, all green: make lint (golangci-lint, contextcheck included) 0 issues; make repolint + pkg/repolint (both parity canaries); make fmt-check; pkg/eventbus, pkg/mcp, pkg/board -tags integration (40s), api/internal/{app,config,handlers} (handlers 84s full), cmd/workspace-agentd full (376s).
+
+## 9. Rework round 3 (PR #2007 r3 — the S6 unification landed under the lane)
+
+#2008 (S6: board events + stamps ride the bus, SSE joins the stream) merged into
+sprint-board-story-machinery at 16:25Z carrying THIS LANE'S r1 work (the S6 lane
+had forked off it), S3's health surface, and S6's own legs. The merge bounce was
+the overlap; the reconciliation:
+
+- **The transport belongs to S6's shared shape**: `board_bus.go`'s `boardBusClient`
+  (one transport, many legs — lease/board-events/stamps, per-leg expvar counters
+  injected at publish) supersedes this lane's private client/breaker/buses
+  machinery. Resolution: TAKE THEIRS for `board_lease_events.go`(+test) and
+  `pkg/eventbus/eventbus.go` — the r2 contextcheck fix is architecturally
+  subsumed (their `busFor(ctx, …)` takes the caller's ctx), and every r2 test
+  (breaker fail-fast, address spellings) rides their file.
+- **The unions**: service.go gains S2's `busySrc` + S6's `stampEvents` beside
+  this lane's `leaseEvents`; app.go gains S2's `WithBusySource` + S6's
+  boardBusPublisher/SSE-join wiring beside this lane's `boardLeaseBus`; config
+  gains S6's `board.eventbus.*` with field-by-field fallback to this lane's
+  `board.leaseEventbus.*` (one Redis, one posture); design 0072's §2 table
+  gains S6's landed rows; CHANGELOG/COORDINATE additive.
+- **This lane's r2 (depose story-form, docs canary) survives untouched** — S6's
+  merge never touched those files; the docs/api/mcp.md hunk resolves to the
+  story-form rows (main's rename + the depose row).
+- **Worklog number**: the S6 lane's review round had renumbered this worklog
+  1241→1243 on their branch; this lane's 1242 (the r2 rename) consolidated INTO
+  their 1243 — one file, the r1+r2+r3 record.
+- Gates rerun on the merged tree (serial): build, golangci-lint, fmt-check,
+  repolint, pkg/eventbus, pkg/board -tags integration, api/internal/{app,config,
+  handlers}, cmd/workspace-agentd full.
