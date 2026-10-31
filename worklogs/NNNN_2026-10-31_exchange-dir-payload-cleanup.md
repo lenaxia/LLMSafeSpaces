@@ -93,7 +93,61 @@ go build ./… ; full `cmd/workspace-agentd` suite (372s, includes the
 subprocess init-fs pins) ; full `controller/internal/workspace`
 package (68s) ; gofmt clean. (Remaining gates in CI.)
 
-## 6. Out of scope (kept)
+## 6. AI review round 1 (CHANGES_REQUESTED) — remediated in full
+
+- **F1 guard inverted**: the sidecar-mount guard's default branch
+  asserted the INVERSE (new RW subPaths passed silently). Rewritten as
+  an explicit allowlist {workspace: RO, exchange: RW, platform: RW} —
+  anything new fails; mutation M5 (a planted `future-rw` subPath) now
+  goes RED with the audit message.
+- **F2 nested paths**: the original report's own layout
+  (reports/charters/…) silently broke the dual-uid contract (write
+  tool creates subdirs 0755, unlink needs the parent's group-write →
+  EACCES). Now REFUSED at read time (`refuseNestedExchangePath`, the
+  choke point the resolver and board_validate_file share) with the
+  flat-contract message; all MCP descriptions + the design §3a state
+  the flat contract. Pins: nested relative + nested absolute +
+  validate-file finding + flat happy shape (M6 RED-verified).
+- **F3 version-skew note false**: rewritten truthfully — old agentd
+  image + new controller dies at init-fs flag parse (exit 2,
+  Init:Error) before any container start; a root-owned 0755 dir
+  cannot be repaired by a non-root init (EPERM, loud) — recovery is
+  operator repair.
+- **F4 mode-blind warning**: `agentdRunsAsSidecar` (set at
+  runSidecarCommand entry) selects the rationale — the sidecar form
+  asserts never-deletable read-only truth; the single-container form
+  calls the failure transient (no false read-only claim). Both
+  topology arms pinned.
+- **Missing-test 4 + robustness**: tolerant path now requires EXACTLY
+  0770-and-no-sticky (planted 0777/1777 repaired; M7b RED-verified
+  with the pre-r1 condition); Lstat (planted symlink refused);
+  --exchange-subpath value validation (exit 2 on unknown, no silent
+  skip).
+- **Rule-7 false comment + E2E gap**: the "validated at the kind
+  layer" claim is now TRUE — `local/exchange-dir-e2e.sh` (nightly,
+  sidecar topology) EXECUTES the real dual-uid mechanism: the runtime
+  container (uid 1000) writes a payload directly under /exchange, a
+  real board_create_task through the SIDECAR's user mux (port-forward
+  :4097) consumes it, the response carries NO cleanup_warning, and
+  the file is GONE from the runtime's own view; X4 executes the
+  nested-refusal; X2 pins mode 0770. Structure-pinned by
+  local/exchange_dir_script_test.go (syntax + assertion rows + the
+  4097 mux wiring).
+- Probe-oracle note added to §3a's threat model (pre-existing,
+  closes with the compat arm).
+
+## 7. Gates (post-r1)
+
+go build ./… ; full `cmd/workspace-agentd` suite ; full
+`controller/internal/workspace` (unit + envtest) ; `local/` script-test
+suite ; gofmt clean ; golangci-lint 0 issues. Mutation ledger (all
+RED-verified then restored): M1 sidecar exchange mount RO; M2
+unconditional chmod (ctime pin); M3 legacy predicate neutered; M4
+pre-§2.4a anchoring; M5 planted future-rw subPath (guard allowlist);
+M6 flat gate neutered; M7b pre-r1 tolerant mode check (sticky/world
+repair pin).
+
+## 8. Out of scope (kept)
 
 Payload-param renames (tsk-wayward-whistle-exhales owns them); any
 single-container behavior change (its delete always worked; only the

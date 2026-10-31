@@ -29,11 +29,13 @@ import (
 //	only   — the sidecar-mode platform-dirs init creates it alongside
 //	         platform/.
 //
-// Cross-uid behavior itself (gid 1000 group-write across uid 1000/2000)
-// is validated at the kind layer; these tests pin the script contract,
-// the mode, and the cross-uid TOLERANCE (no chmod when the group bits
-// are already right — the other mode's init owns the dir on a flipped
-// PVC and a chmod would EPERM).
+// Cross-uid behavior itself (gid 1000 group-write across uid 1000/2000,
+// the real uid-1000-create → uid-2000-unlink mechanism) is executed at
+// the kind layer by local/exchange-dir-e2e.sh (nightly, sidecar
+// topology); these tests pin the script contract, the mode, and the
+// cross-uid TOLERANCE (no chmod when the mode is already exact — the
+// other mode's init owns the dir on a flipped PVC and a chmod would
+// EPERM).
 
 func TestInitFS_ExchangeSubPath_Create(t *testing.T) {
 	bin := buildAgentdBinary(t)
@@ -143,4 +145,56 @@ func TestInitFS_ExchangeSubPath_RefusesPlantedFile(t *testing.T) {
 	exit, _ := runInitFSSubcommand(t, bin, tr.args()...)
 	require.Equal(t, 1, exit,
 		"a planted NON-DIRECTORY at exchange/ fails loudly into Init:Error (the payload contract must not boot on a broken tree)")
+}
+
+func TestInitFS_ExchangeSubPath_RefusesPlantedSymlink(t *testing.T) {
+	// Review r1 (Lstat discipline): a SYMLINK at exchange/ must be
+	// refused as not-a-directory — never followed, never silently
+	// accepted as its target's shape.
+	bin := buildAgentdBinary(t)
+	tr := newInitFSTree(t)
+	tr.writePasswordSource(t, "s3cret-pw\n", "")
+	target := filepath.Join(tr.pvc, "elsewhere")
+	require.NoError(t, os.MkdirAll(target, 0o750))
+	require.NoError(t, os.Symlink(target, filepath.Join(tr.pvc, "exchange")))
+
+	exit, _ := runInitFSSubcommand(t, bin, tr.args()...)
+	require.Equal(t, 1, exit, "a planted symlink at exchange/ is refused loudly (checks describe the LINK, not its target)")
+}
+
+func TestInitFS_ExchangeSubPath_RepairsPlantedSticky(t *testing.T) {
+	// Review r1 missing-test 4: a planted 0777/1777 dir must NOT ride
+	// the tolerant path — a sticky bit blocks exactly the cross-uid
+	// unlink the dir exists for; the repair chmod restores 0770.
+	bin := buildAgentdBinary(t)
+	tr := newInitFSTree(t)
+	tr.writePasswordSource(t, "s3cret-pw\n", "")
+	exch := filepath.Join(tr.pvc, "exchange")
+	require.NoError(t, os.Mkdir(exch, 0o777))
+	if err := os.Chmod(exch, 0o1777); err != nil {
+		t.Skipf("cannot plant sticky mode in this environment: %v", err)
+	}
+
+	exit, stderr := runInitFSSubcommand(t, bin, tr.args()...)
+	require.Equal(t, 0, exit, "stderr=%q", stderr)
+
+	info, err := os.Stat(exch)
+	require.NoError(t, err)
+	assert.Equal(t, os.FileMode(0o770), info.Mode().Perm(), "planted world-writable mode repaired to the contract mode")
+	assert.Zero(t, info.Mode()&os.ModeSticky, "the sticky bit is cleared — it would block the cross-uid unlink")
+}
+
+func TestInitFS_ExchangeSubPath_FlagValueValidation(t *testing.T) {
+	// Review r1 (flag-value asymmetry): an unknown value is a LOUD
+	// flag error (exit 2), never a silent skip.
+	bin := buildAgentdBinary(t)
+	tr := newInitFSTree(t)
+	tr.writePasswordSource(t, "s3cret-pw\n", "")
+
+	exit, stderr := runInitFSSubcommand(t, bin, append(tr.args(), "--exchange-subpath=creat")...)
+	require.Equal(t, 2, exit, "typo'd flag value exits 2 (flag error): stderr=%q", stderr)
+	assert.Contains(t, stderr, "create|skip|only")
+
+	_, err := os.Stat(filepath.Join(tr.pvc, "exchange"))
+	assert.True(t, os.IsNotExist(err), "the typo'd run created nothing")
 }

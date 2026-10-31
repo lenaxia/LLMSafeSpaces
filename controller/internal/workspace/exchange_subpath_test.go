@@ -128,29 +128,38 @@ func TestExchangeSubPath_SingleContainer(t *testing.T) {
 }
 
 func TestExchangeSubPath_SidecarWorkloadMountsReadOnlyGuard(t *testing.T) {
-	// The threat-model pin: the exchange mount must not silently become
-	// a workspace write surface. The sidecar's ONLY RW PVC mount is the
-	// exchange subPath (platform/ excepted — it is uid-2000-exclusive);
-	// every other workspace-volume mount in the sidecar is either RO
-	// (workspace/) or not a PVC subPath at all (sandbox-runtime is
-	// tmpfs).
+	// The threat-model pin: the exchange mount must not silently
+	// become a workspace write surface. The sidecar's workspace-PVC
+	// subPath mounts are EXACTLY the allowlist below — anything new
+	// (either RO or RW) fails this guard until deliberately added to
+	// the threat model here (review r1 finding 1: the first cut of
+	// this test asserted the INVERSE on the default branch, letting a
+	// new RW mount pass silently — the exact regression it existed
+	// for).
 	r := reconcilerWithAgentdSidecar(t)
 	pod, err := r.buildPod(context.Background(), newWorkspaceForPodBuilder(t))
 	require.NoError(t, err)
 
 	sc := findInitContainer(pod, "agentd")
 	require.NotNil(t, sc)
+	// allowlist: subPath -> required ReadOnly
+	want := map[string]bool{
+		"workspace": true,  // the user tree: RO to the sidecar (0055 M2)
+		"exchange":  false, // the §2.4a dual-rw carve-out
+		"platform":  false, // Epic 69: uid-2000-exclusive RW
+	}
+	got := map[string]bool{}
 	for _, m := range sc.VolumeMounts {
 		if m.Name != "workspace" {
 			continue
 		}
-		switch m.SubPath {
-		case "workspace":
-			assert.True(t, m.ReadOnly, "the workspace subPath stays RO in the sidecar")
-		case "exchange":
-			assert.False(t, m.ReadOnly, "the exchange subPath is the dual-rw carve-out")
-		default:
-			assert.False(t, m.ReadOnly, "unexpected RW workspace-PVC subPath %q in the sidecar — audit this against design 0055 M2", m.SubPath)
-		}
+		_, known := want[m.SubPath]
+		require.True(t, known,
+			"NEW workspace-PVC subPath %q mounted in the sidecar (RO=%v) — audit it against design 0055 M2 and add it to this guard's allowlist deliberately", m.SubPath, m.ReadOnly)
+		got[m.SubPath] = m.ReadOnly
+	}
+	require.Len(t, got, len(want), "every allowlisted sidecar workspace-PVC subPath must be present")
+	for subPath, ro := range want {
+		require.Equal(t, ro, got[subPath], "subPath %q ReadOnly", subPath)
 	}
 }

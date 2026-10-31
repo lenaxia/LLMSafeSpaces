@@ -141,3 +141,112 @@ func TestBoardFileParams_LegacyWorkspacePath_ReadAndPointedWarning(t *testing.T)
 		"the warning names the exchange dir — the fix for the failure, not a chore list")
 	assert.Contains(t, out, "legacy", "the warning says the location is legacy")
 }
+
+// TestBoardFileParams_FlatContract: nested payload paths under the
+// exchange root are REFUSED at read time (review r1 finding 2) — the
+// write tool creates intermediate dirs 0755 (umask, no group-write),
+// and an unlink's permission comes from the parent dir's write bit,
+// so a nested file could be read but never auto-deleted: the exact
+// silent-degradation shape the pre-fix bug report shipped with.
+func TestBoardFileParams_FlatContract(t *testing.T) {
+	exchange, _ := boardExchangeRootOverride(t)
+	payload := `{"title":"T-nested","description":"d","acceptanceCriteria":[{"text":"c"}]}`
+	require.NoError(t, os.MkdirAll(filepath.Join(exchange, "reports", "plans"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(exchange, "reports", "plans", "p1.json"), []byte(payload), 0o600))
+
+	t.Run("nested relative refused with the flat-contract message", func(t *testing.T) {
+		api, rec := newAutomationAPI(t, 200, `{}`)
+		setupRenameWorkspaceEnv(t, api)
+		_, err := mcpAutomation(context.Background(), mcpTestPassword, "board_create_task", map[string]any{
+			"epicId": "epc-bbbb2222", "bodyFile": "reports/plans/p1.json",
+			"lsp_injected_session": "ses-1",
+		})
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "DIRECTLY under "+exchange)
+		assert.Contains(t, err.Error(), "no subdirectories")
+		assert.Empty(t, rec.method, "no wire call for a refused nested path")
+	})
+
+	t.Run("nested ABSOLUTE exchange path refused too", func(t *testing.T) {
+		api, _ := newAutomationAPI(t, 200, `{}`)
+		setupRenameWorkspaceEnv(t, api)
+		_, err := mcpAutomation(context.Background(), mcpTestPassword, "board_create_task", map[string]any{
+			"epicId": "epc-bbbb2222", "bodyFile": filepath.Join(exchange, "reports", "plans", "p1.json"),
+			"lsp_injected_session": "ses-1",
+		})
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "no subdirectories")
+	})
+
+	t.Run("board_validate_file refuses nested through the same choke point", func(t *testing.T) {
+		// board_validate_file renders read failures as report FINDINGS
+		// (the report shape never varies by failure class) — the pin is
+		// the flat-contract message in the findings, valid=false.
+		out, err := validateBoardPayloadFile("create_task", filepath.Join(exchange, "reports", "plans", "p1.json"))
+		require.NoError(t, err)
+		assert.Contains(t, out, "no subdirectories")
+		assert.Contains(t, out, `"valid":false`)
+	})
+
+	t.Run("flat file at the exchange root passes (the contract's happy shape)", func(t *testing.T) {
+		flat := boardWritePayloadFile(t, exchange, "flat.json", payload)
+		api, _ := newAutomationAPI(t, 200, `{"short_id":"tsk-flat0001"}`)
+		setupRenameWorkspaceEnv(t, api)
+		_, err := mcpAutomation(context.Background(), mcpTestPassword, "board_create_task", map[string]any{
+			"epicId": "epc-bbbb2222", "bodyFile": "flat.json",
+			"lsp_injected_session": "ses-1",
+		})
+		require.NoError(t, err)
+		_, statErr := os.Stat(flat)
+		assert.True(t, os.IsNotExist(statErr), "the flat file still deletes on success")
+	})
+}
+
+// TestBoardFileParams_LegacyWarningIsModeHonest: the pointed warning's
+// RATIONALE matches the running topology (review r1 finding 4) — the
+// sidecar form asserts the never-deletable read-only truth; the
+// single-container form calls the failure transient instead of
+// asserting a read-only mount that does not exist there.
+func TestBoardFileParams_LegacyWarningIsModeHonest(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		sidecar     bool
+		want, forb1 string
+	}{
+		{
+			name:    "sidecar: never-deletable rationale + exchange pointer",
+			sidecar: true, want: "cannot auto-delete there, now or later",
+			forb1: "likely transient",
+		},
+		{
+			name:    "single-container: transient rationale, no false read-only claim",
+			sidecar: false, want: "likely transient",
+			forb1: "cannot auto-delete there, now or later",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, workspace := boardExchangeRootOverride(t)
+			origSidecar := agentdRunsAsSidecar
+			agentdRunsAsSidecar = tc.sidecar
+			t.Cleanup(func() { agentdRunsAsSidecar = origSidecar })
+
+			path := boardWritePayloadFile(t, workspace, "legacy.json",
+				`{"title":"T","description":"d","acceptanceCriteria":[{"text":"c"}]}`)
+			api, _ := newAutomationAPI(t, 200, `{"short_id":"tsk-mode001"}`)
+			api.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				_ = r.Body.Close()
+				_ = os.Remove(path)
+				_ = os.MkdirAll(filepath.Join(path, "child"), 0o755) // force the delete failure
+				w.WriteHeader(200)
+				_, _ = w.Write([]byte(`{"short_id":"tsk-mode001"}`))
+			})
+			setupRenameWorkspaceEnv(t, api)
+			out, err := mcpAutomation(context.Background(), mcpTestPassword, "board_create_task", map[string]any{
+				"epicId": "epc-bbbb2222", "bodyFile": path, "lsp_injected_session": "ses-1"})
+			require.NoError(t, err)
+			assert.Contains(t, out, "cleanup_warning")
+			assert.Contains(t, out, tc.want)
+			assert.NotContains(t, out, tc.forb1, "the rationale must match the running topology")
+		})
+	}
+}

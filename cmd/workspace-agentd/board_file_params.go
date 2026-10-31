@@ -118,6 +118,42 @@ func boardPathIsLegacyWorkspace(anchored string) bool {
 	return rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
 }
 
+// boardExchangeFlatContractFmt is the exchange dir's flatness rule:
+// the runtime's write tool creates intermediate directories WITHOUT
+// the cross-uid group-write bit (umask 022 → 0755), and an unlink's
+// permission comes from the parent directory's write bit — so a
+// payload file nested under /exchange subdirectories could be READ
+// but never auto-DELETED (the sidecar's unlink gets EACCES even on
+// the dual-rw mount). Review r1 finding 2: the motivating live
+// failure itself shipped a nested path (reports/charters/p1.md); the
+// anchoring must refuse that shape loudly instead of degrading back
+// to the warning status quo. Formatted with the LIVE exchange root
+// (the var) so overridden-root tests and production agree.
+const boardExchangeFlatContractFmt = "payload files must live DIRECTLY under %s (no subdirectories): " +
+	"the write tool creates subdirectories without the cross-uid group-write bit the platform's auto-delete needs — " +
+	"a nested payload file could be read but never auto-deleted. Write the file flat, directly under the exchange root"
+
+// refuseNestedExchangePath returns the flat-contract error message
+// when an anchored payload path sits NESTED under the exchange root
+// ("" when the path is fine: flat inside the exchange tree, outside
+// it entirely — legacy workspace compat or absolute passthrough).
+func refuseNestedExchangePath(anchored string) string {
+	if anchored == boardFileExchangeRoot {
+		return "" // the root itself is not a file param
+	}
+	rel, err := filepath.Rel(boardFileExchangeRoot, anchored)
+	if err != nil {
+		return ""
+	}
+	if rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return "" // outside the exchange tree — not this rule's business
+	}
+	if strings.ContainsRune(rel, filepath.Separator) {
+		return fmt.Sprintf(boardExchangeFlatContractFmt, boardFileExchangeRoot)
+	}
+	return ""
+}
+
 // isBoardFileParamKey reports whether an argument key is a
 // file-param spelling (camelCase "…File" or legacy snake "…_file")
 // — the stray-key guard's predicate. A file spelling on a tool that
@@ -135,6 +171,13 @@ func isBoardFileParamKey(k string) bool {
 // the cleanup hook — what was read is what gets deleted.
 func boardReadFileField(key, path string, maxBytes int64) (string, string, error) {
 	anchored := anchorBoardFilePath(path)
+	// The flat-contract gate (design 0070 §2.4a, review r1 finding 2):
+	// a NESTED exchange path can never auto-delete — refuse at read
+	// time, the same choke point every payload consumer (CRUD
+	// resolver + board_validate_file) passes through.
+	if msg := refuseNestedExchangePath(anchored); msg != "" {
+		return "", "", fmt.Errorf("%s: %s", key, msg)
+	}
 	f, err := os.OpenFile(anchored, os.O_RDONLY|syscall.O_NONBLOCK, 0) //nolint:gosec // agent-supplied workspace path, gated below
 	if err != nil {
 		return "", "", boardFileReadError(key, err)

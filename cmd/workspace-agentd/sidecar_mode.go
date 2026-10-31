@@ -51,6 +51,16 @@ const sidecarEnvPassword = "AGENTD_SIDECAR_PASSWORD"
 // state and the D5.2/D5.3 fail-closed doctrine applies.
 const sidecarEnvControlPlanePassword = "AGENTD_CONTROL_PLANE_PASSWORD"
 
+// agentdRunsAsSidecar is true only inside the `--sidecar` process (set
+// at runSidecarCommand entry, never reset). It is the runtime mode
+// predicate for user-facing prose that must stay mode-honest — e.g. the
+// board payload cleanup warning: a consumed file under the LEGACY
+// workspace root can NEVER be auto-deleted in this topology (the
+// sidecar's /workspace mount is read-only, design 0055 M2), while the
+// single-container process mounts /workspace RW and a delete failure
+// there is merely transient (review r1 finding 4).
+var agentdRunsAsSidecar bool
+
 // readSidecarControlPlanePasswordFromEnv resolves the §D1 control-plane
 // secret. Missing/empty is an error the caller treats as fatal.
 func readSidecarControlPlanePasswordFromEnv() (string, error) {
@@ -108,6 +118,10 @@ type sidecarConfig struct {
 // shutdown) minus every child-ownership duty. Exit code communicates
 // failure; it never returns normally.
 func runSidecarCommand(_ []string) int {
+	// The mode predicate (see agentdRunsAsSidecar): this process — and
+	// only this process, the one serving the user mux /v1/mcp — runs
+	// under the sidecar's read-only /workspace mount.
+	agentdRunsAsSidecar = true
 	log = newLogger()
 	defer func() { _ = log.Sync() }()
 

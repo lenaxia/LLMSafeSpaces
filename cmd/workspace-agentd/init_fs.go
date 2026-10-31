@@ -120,13 +120,20 @@ func replaceSymlink(path, target string) error {
 // sweep; nothing else in the user's tree is reachable through it.
 //
 // Cross-uid tolerance (a mode flip on an existing PVC re-creates the
-// pod under the OTHER uid's init): when the dir already exists with
-// the group bits right, chmod is SKIPPED — the other uid owns the dir
-// and a chmod would EPERM. Repair is attempted (and may fail loudly)
-// only when the group bits are actually wrong.
+// pod under the OTHER uid's init): when the dir already exists at
+// EXACTLY the contract mode (0770, no sticky), chmod is SKIPPED — the
+// other uid owns the dir and a chmod would EPERM. Anything else —
+// missing group bits, OR a planted 0777/1777 (world/sticky: a sticky
+// bit blocks exactly the cross-uid unlink this dir exists for, review
+// r1 finding) — is repaired when the running uid owns the dir and
+// fails loudly into Init:Error when it cannot (a root-owned
+// kubelet-fallback dir needs operator repair; the failure is bounded
+// and named). Lstat, never Stat: a planted SYMLINK at exchange/ is
+// refused as not-a-directory (the replaceSymlink discipline — checks
+// must describe the LINK, not its target).
 func ensureExchangeDir(pvcRoot string) error {
 	dir := filepath.Join(pvcRoot, "exchange")
-	info, err := os.Stat(dir)
+	info, err := os.Lstat(dir)
 	if os.IsNotExist(err) {
 		//nolint:gosec // G301: 0770 is the dual-uid contract (see above); parent is the PVC root this command owns
 		if err := os.Mkdir(dir, 0o770); err != nil {
@@ -138,15 +145,17 @@ func ensureExchangeDir(pvcRoot string) error {
 	if err != nil {
 		return err
 	}
-	if !info.IsDir() {
-		return fmt.Errorf("%s exists and is not a directory", dir)
+	if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("%s exists and is not a directory (planted symlinks are refused, never followed)", dir)
 	}
-	if info.Mode().Perm()&0o070 != 0o070 {
-		// Group rwx missing: repair. We may not own the dir (the other
-		// mode's init created it) — a failure here is loud by design.
+	if mode := info.Mode(); mode.Perm() != 0o770 || mode&os.ModeSticky != 0 {
+		// Off-contract mode (missing group bits, world-writable, or
+		// sticky): repair. We may not own the dir (the other mode's
+		// init — or the kubelet fallback — created it); a failure
+		// here is loud by design.
 		//nolint:gosec // G302: directory (not file) — the dual-uid contract mode
 		if err := os.Chmod(dir, 0o770); err != nil {
-			return fmt.Errorf("repair mode (currently %o): %w", info.Mode().Perm(), err)
+			return fmt.Errorf("repair mode (currently %v): %w", mode.Perm(), err)
 		}
 	}
 	return nil
@@ -206,6 +215,19 @@ func runInitFSCommand(args []string, stderr io.Writer) int {
 	exchangeSubpath := fs.String("exchange-subpath", "create", "exchange/ subPath handling: create | skip | only")
 
 	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+
+	// Review r1 (flag-value asymmetry): an unknown --exchange-subpath
+	// value must be a LOUD flag error (exit 2), never a silent skip —
+	// a typo'd value deferring creation falls straight into the
+	// root-owned-0755 kubelet-fallback failure class. (The older
+	// --platform-subpath keeps its historical behavior — pre-existing
+	// surface, out of scope here.)
+	switch *exchangeSubpath {
+	case "create", "skip", "only":
+	default:
+		_, _ = fmt.Fprintf(stderr, "init-fs: --exchange-subpath must be create|skip|only (got %q)\n", *exchangeSubpath)
 		return 2
 	}
 

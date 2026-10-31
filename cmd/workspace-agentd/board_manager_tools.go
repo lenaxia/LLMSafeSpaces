@@ -331,19 +331,25 @@ func resolveBoardToolFileArgs(name string, args map[string]any) (string, error) 
 // failure warns, it never fails the call (the CRUD already landed).
 //
 // Design 0070 §2.4a: a consumed path under the LEGACY workspace root
-// gets the pointed form — the sidecar's /workspace mount is read-only
-// (design 0055 M2), so that delete CANNOT succeed in sidecar mode;
-// the warning tells the agent where payload files belong (the
-// exchange dir) instead of issuing the pre-§2.4a forever-manual rm
-// chore. The absolute-/workspace compat arm is read+warn for one
-// release; the exchange-anchored delete itself never reaches here
-// with EROFS (the mount is dual-rw).
+// gets the pointed form, mode-honest (review r1 finding 4): in the
+// SIDECAR topology (agentdRunsAsSidecar) that location can NEVER be
+// auto-deleted (the /workspace mount is read-only, design 0055 M2) —
+// the warning says so and points at the exchange dir. In
+// single-container mode /workspace is RW, deletes there normally
+// succeed, and a failure is likely transient — the warning says that
+// instead of asserting a read-only that does not exist there.
 func boardInjectCleanupWarning(res *opencode.AutomationResponse, path string, rmErr error) {
 	warning := fmt.Sprintf("the call succeeded but its payload file could not be deleted: %v — remove %s yourself; the platform write has landed", rmErr, path)
 	if boardPathIsLegacyWorkspace(path) {
-		warning = fmt.Sprintf(
-			"the call succeeded but its payload file could not be deleted: %v — %s is under the LEGACY workspace root, which is read-only to the platform in sidecar mode (design 0055 M2): it cannot auto-delete there, now or later. Payload files live under %s (the payload exchange dir — relative paths resolve against it); write them there and the file deletes itself after a successful call. This legacy location stays readable for one release; the cleanup chore for %s is yours.",
-			rmErr, path, boardFileExchangeRoot, path)
+		if agentdRunsAsSidecar {
+			warning = fmt.Sprintf(
+				"the call succeeded but its payload file could not be deleted: %v — %s is under the LEGACY workspace root, which is read-only to this platform process (sidecar mode, design 0055 M2): it cannot auto-delete there, now or later. Payload files live DIRECTLY under %s (the payload exchange dir; relative paths resolve against it); write them there and the file deletes itself after a successful call. This legacy location stays readable for one release; the cleanup chore for %s is yours.",
+				rmErr, path, boardFileExchangeRoot, path)
+		} else {
+			warning = fmt.Sprintf(
+				"the call succeeded but its payload file could not be deleted: %v — %s is under the workspace root, where deletes normally succeed in this (single-container) workspace, so the failure is likely transient; remove it yourself if it lingers. New payload files belong DIRECTLY under %s (the payload exchange dir), where they delete themselves after a successful call.",
+				rmErr, path, boardFileExchangeRoot)
+		}
 	}
 	var obj map[string]any
 	if err := json.Unmarshal([]byte(res.Body), &obj); err == nil && obj != nil {
