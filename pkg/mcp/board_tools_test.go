@@ -39,6 +39,7 @@ import (
 	"testing"
 	"time"
 
+	mcpgoclient "github.com/mark3labs/mcp-go/client"
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
@@ -52,15 +53,15 @@ import (
 // claim/complete pair): 29 tools.
 var boardToolNames = []string{
 	"board_list_projects", "board_get", "board_read", "board_health",
-	"board_task_events",
-	"board_record_verdict", "board_task_verdicts",
-	"board_create_project", "board_create_epic", "board_create_task",
-	"board_update_item", "board_move_stage", "board_start_task",
-	"board_start_tasks", "board_move_stage_bulk", "board_delete_tasks",
+	"board_story_events",
+	"board_record_verdict", "board_story_verdicts",
+	"board_create_project", "board_create_epic", "board_create_story",
+	"board_update_item", "board_move_stage", "board_start_story",
+	"board_start_stories", "board_move_stage_bulk", "board_delete_stories",
 	"board_epic_activate", "board_epic_pause", "board_epic_archive", "board_epic_unarchive",
 	"board_project_archive", "board_project_unarchive",
 	"board_project_pause", "board_project_resume",
-	"board_pause_task", "board_resume_task",
+	"board_pause_story", "board_resume_story",
 	"board_delete", "board_import_plan",
 	"board_add_dependency", "board_remove_dependency",
 }
@@ -144,13 +145,13 @@ func boardAllowCases() []boardToolCase {
 		{
 			name: "board_get_task", tool: "board_get", args: map[string]any{"item_id": "tsk-cccc3333"},
 			mock: func(m *MockAPIClient) {
-				m.On("BoardGetTask", mock.Anything, "tsk-cccc3333").Return(`{"short_id":"tsk-cccc3333"}`, nil)
+				m.On("BoardGetStory", mock.Anything, "tsk-cccc3333").Return(`{"short_id":"tsk-cccc3333"}`, nil)
 			},
 		},
 		{
-			name: "board_task_events", tool: "board_task_events", args: map[string]any{"task_id": "tsk-cccc3333", "limit": 10},
+			name: "board_story_events", tool: "board_story_events", args: map[string]any{"task_id": "tsk-cccc3333", "limit": 10},
 			mock: func(m *MockAPIClient) {
-				m.On("BoardTaskEvents", mock.Anything, "tsk-cccc3333", 10).Return(`{"events":[]}`, nil)
+				m.On("BoardStoryEvents", mock.Anything, "tsk-cccc3333", 10).Return(`{"events":[]}`, nil)
 			},
 		},
 		{
@@ -171,9 +172,9 @@ func boardAllowCases() []boardToolCase {
 			},
 		},
 		{
-			name: "board_task_verdicts", tool: "board_task_verdicts", args: map[string]any{"task_id": "tsk-cccc3333"},
+			name: "board_story_verdicts", tool: "board_story_verdicts", args: map[string]any{"task_id": "tsk-cccc3333"},
 			mock: func(m *MockAPIClient) {
-				m.On("BoardTaskVerdicts", mock.Anything, "tsk-cccc3333").Return(`{"verdicts":[]}`, nil)
+				m.On("BoardStoryVerdicts", mock.Anything, "tsk-cccc3333").Return(`{"verdicts":[]}`, nil)
 			},
 		},
 		{
@@ -197,11 +198,11 @@ func boardAllowCases() []boardToolCase {
 			},
 		},
 		{
-			name: "board_create_task", tool: "board_create_task",
+			name: "board_create_story", tool: "board_create_story",
 			args: map[string]any{"epic_id": "epc-bbbb2222", "title": "T1", "description": "do it",
 				"tags": []any{"pr:123"}, "request_id": "req-t1"},
 			mock: func(m *MockAPIClient) {
-				m.On("BoardCreateTask", mock.Anything, "epc-bbbb2222", BoardTaskBody{
+				m.On("BoardCreateStory", mock.Anything, "epc-bbbb2222", BoardStoryBody{
 					Title: "T1", Description: "do it", Tags: strPtr([]string{"pr:123"}), RequestID: "req-t1",
 				}).Return(`{"short_id":"tsk-cccc3333"}`, nil)
 			},
@@ -224,10 +225,10 @@ func boardAllowCases() []boardToolCase {
 			},
 		},
 		{
-			name: "board_update_task", tool: "board_update_item",
+			name: "board_update_story", tool: "board_update_item",
 			args: map[string]any{"item_id": "tsk-cccc3333", "set_criteria_met": 0},
 			mock: func(m *MockAPIClient) {
-				m.On("BoardUpdateTask", mock.Anything, "tsk-cccc3333", BoardTaskBody{SetCriteriaMet: &board.CriteriaCheck{Index: 0, Met: true}}).
+				m.On("BoardUpdateStory", mock.Anything, "tsk-cccc3333", BoardStoryBody{SetCriteriaMet: &board.CriteriaCheck{Index: 0, Met: true}}).
 					Return(`{"short_id":"tsk-cccc3333"}`, nil)
 			},
 		},
@@ -240,10 +241,10 @@ func boardAllowCases() []boardToolCase {
 			},
 		},
 		{
-			name: "board_start_task", tool: "board_start_task",
+			name: "board_start_story", tool: "board_start_story",
 			args: map[string]any{"task_id": "tsk-cccc3333", "request_id": "req-s1"},
 			mock: func(m *MockAPIClient) {
-				m.On("BoardStartTask", mock.Anything, "tsk-cccc3333", "req-s1").
+				m.On("BoardStartStory", mock.Anything, "tsk-cccc3333", "req-s1").
 					Return(`{"short_id":"tsk-cccc3333","escalated":false}`, nil)
 			},
 		},
@@ -284,10 +285,10 @@ func boardAllowCases() []boardToolCase {
 			},
 		},
 		{
-			name: "board_delete_task", tool: "board_delete",
+			name: "board_delete_story", tool: "board_delete",
 			args: map[string]any{"item_id": "tsk-cccc3333", "reconnect": true},
 			mock: func(m *MockAPIClient) {
-				m.On("BoardDeleteTask", mock.Anything, "tsk-cccc3333", true).
+				m.On("BoardDeleteStory", mock.Anything, "tsk-cccc3333", true).
 					Return(`{"item_kind":"task","short_id":"tsk-cccc3333","reconnected":["tsk-eeee5555→tsk-aaaa1111"]}`, nil)
 			},
 		},
@@ -300,18 +301,18 @@ func boardAllowCases() []boardToolCase {
 			},
 		},
 		{
-			name: "board_pause_task", tool: "board_pause_task",
+			name: "board_pause_story", tool: "board_pause_story",
 			args: map[string]any{"task_id": "tsk-cccc3333", "request_id": "req-p1"},
 			mock: func(m *MockAPIClient) {
-				m.On("BoardPauseTask", mock.Anything, "tsk-cccc3333", "req-p1").
+				m.On("BoardPauseStory", mock.Anything, "tsk-cccc3333", "req-p1").
 					Return(`{"paused":true}`, nil)
 			},
 		},
 		{
-			name: "board_resume_task", tool: "board_resume_task",
+			name: "board_resume_story", tool: "board_resume_story",
 			args: map[string]any{"task_id": "tsk-cccc3333"},
 			mock: func(m *MockAPIClient) {
-				m.On("BoardResumeTask", mock.Anything, "tsk-cccc3333", "").
+				m.On("BoardResumeStory", mock.Anything, "tsk-cccc3333", "").
 					Return(`{"paused":false}`, nil)
 			},
 		},
@@ -336,7 +337,7 @@ func boardAllowCases() []boardToolCase {
 			mock: func(m *MockAPIClient) {
 				m.On("BoardImportPlan", mock.Anything, "prj-aaaa1111", BoardPlanBody{
 					EpicTitle: "E", DryRun: true,
-					Tasks: []BoardPlanTaskBody{{Key: "a", Title: "A", Description: "seeded charter", AcceptanceCriteria: []BoardCriterion{{Text: "c", Met: false}}}},
+					Tasks: []BoardPlanStoryBody{{Key: "a", Title: "A", Description: "seeded charter", AcceptanceCriteria: []BoardCriterion{{Text: "c", Met: false}}}},
 				}).Return(`{"dry_run":true}`, nil)
 			},
 		},
@@ -390,7 +391,7 @@ func TestBoardTools_RequiredArgs(t *testing.T) {
 		{"board_create_project_no_name", "board_create_project", map[string]any{"target_workspace_id": "ws-1"}},
 		{"board_create_project_no_workspace", "board_create_project", map[string]any{"name": "B"}},
 		{"board_create_epic_no_title", "board_create_epic", map[string]any{"project_id": "prj-aaaa1111"}},
-		{"board_create_task_no_title", "board_create_task", map[string]any{"epic_id": "epc-bbbb2222"}},
+		{"board_create_task_no_title", "board_create_story", map[string]any{"epic_id": "epc-bbbb2222"}},
 		{"board_update_item_no_id", "board_update_item", map[string]any{"name": "x"}},
 		{"board_update_item_bare_uuid", "board_update_item", map[string]any{"item_id": "3fa85f64"}},
 		{"board_move_stage_no_stage", "board_move_stage", map[string]any{"task_id": "tsk-cccc3333"}},
@@ -468,7 +469,7 @@ func TestBoardTools_GuardPassThrough(t *testing.T) {
 			tool: "board_get",
 			args: map[string]any{"item_id": "tsk-nope0000"},
 			mockFn: func(m *MockAPIClient) {
-				m.On("BoardGetTask", mock.Anything, "tsk-nope0000").
+				m.On("BoardGetStory", mock.Anything, "tsk-nope0000").
 					Return("", fmt__error("API error 404: {\"error\":\"board: task \\\"tsk-nope0000\\\" not found\",\"suggestions\":[\"tsk-cccc3333\"]}"))
 			},
 			contains: []string{"404", "tsk-cccc3333"},
@@ -542,7 +543,7 @@ func TestBoardTools_UpdateItemKindFields(t *testing.T) {
 				Return(`{"short_id":"prj-aaaa1111"}`, nil)
 			m.On("BoardUpdateEpic", mock.Anything, "epc-bbbb2222", mock.Anything).
 				Return(`{"short_id":"epc-bbbb2222"}`, nil)
-			m.On("BoardUpdateTask", mock.Anything, "tsk-cccc3333", mock.Anything).
+			m.On("BoardUpdateStory", mock.Anything, "tsk-cccc3333", mock.Anything).
 				Return(`{"short_id":"tsk-cccc3333"}`, nil)
 			h := &handlers{client: m, timeout: 30 * time.Second}
 			res, err := callBoardTool(t, h, "board_update_item", tc.args)
@@ -568,11 +569,11 @@ func TestBoardTools_OR4AnchorPassthrough(t *testing.T) {
 		{"plain"},
 	} {
 		m := &MockAPIClient{}
-		m.On("BoardCreateTask", mock.Anything, "epc-bbbb2222", BoardTaskBody{Title: "T", Tags: &tags}).
+		m.On("BoardCreateStory", mock.Anything, "epc-bbbb2222", BoardStoryBody{Title: "T", Tags: &tags}).
 			Return(`{"short_id":"tsk-cccc3333","tags":[]}`, nil).Once()
 		h := &handlers{client: m, timeout: 30 * time.Second}
 		args := map[string]any{"epic_id": "epc-bbbb2222", "title": "T", "tags": toAnySlice(tags)}
-		res, err := callBoardTool(t, h, "board_create_task", args)
+		res, err := callBoardTool(t, h, "board_create_story", args)
 		require.NoError(t, err)
 		require.NotNil(t, res)
 		assert.False(t, res.IsError, "tags %v must ride verbatim (OR4: extraction is the engine's, conservative): %s",
@@ -612,30 +613,30 @@ func callBoardTool(t *testing.T, h *handlers, name string, args map[string]any) 
 		return h.boardGet(ctx, makeReq(name, args))
 	case "board_read":
 		return h.boardRead(ctx, makeReq(name, args))
-	case "board_task_events":
-		return h.boardTaskEvents(ctx, makeReq(name, args))
+	case "board_story_events":
+		return h.boardStoryEvents(ctx, makeReq(name, args))
 	case "board_record_verdict":
 		return h.boardRecordVerdict(ctx, makeReq(name, args))
-	case "board_task_verdicts":
-		return h.boardTaskVerdicts(ctx, makeReq(name, args))
+	case "board_story_verdicts":
+		return h.boardStoryVerdicts(ctx, makeReq(name, args))
 	case "board_health":
 		return h.boardHealth(ctx, makeReq(name, args))
 	case "board_create_project":
 		return h.boardCreateProject(ctx, makeReq(name, args))
 	case "board_create_epic":
 		return h.boardCreateEpic(ctx, makeReq(name, args))
-	case "board_create_task":
-		return h.boardCreateTask(ctx, makeReq(name, args))
+	case "board_create_story":
+		return h.boardCreateStory(ctx, makeReq(name, args))
 	case "board_update_item":
 		return h.boardUpdateItem(ctx, makeReq(name, args))
 	case "board_move_stage":
 		return h.boardMoveStage(ctx, makeReq(name, args))
-	case "board_start_task":
-		return h.boardStartTask(ctx, makeReq(name, args))
-	case "board_start_tasks":
-		return h.boardStartTasks(ctx, makeReq(name, args))
-	case "board_delete_tasks":
-		return h.boardDeleteTasks(ctx, makeReq(name, args))
+	case "board_start_story":
+		return h.boardStartStory(ctx, makeReq(name, args))
+	case "board_start_stories":
+		return h.boardStartStories(ctx, makeReq(name, args))
+	case "board_delete_stories":
+		return h.boardDeleteStories(ctx, makeReq(name, args))
 	case "board_move_stage_bulk":
 		return h.boardMoveStageBulk(ctx, makeReq(name, args))
 	case "board_epic_activate":
@@ -652,10 +653,10 @@ func callBoardTool(t *testing.T, h *handlers, name string, args map[string]any) 
 		return h.boardProjectUnarchive(ctx, makeReq(name, args))
 	case "board_delete":
 		return h.boardDelete(ctx, makeReq(name, args))
-	case "board_pause_task":
-		return h.boardPauseTask(ctx, makeReq(name, args))
-	case "board_resume_task":
-		return h.boardResumeTask(ctx, makeReq(name, args))
+	case "board_pause_story":
+		return h.boardPauseStory(ctx, makeReq(name, args))
+	case "board_resume_story":
+		return h.boardResumeStory(ctx, makeReq(name, args))
 	case "board_project_pause":
 		return h.boardProjectPause(ctx, makeReq(name, args))
 	case "board_project_resume":
@@ -707,7 +708,7 @@ func (e *simpleError) Error() string { return e.msg }
 func TestBoardTools_TaskTagsClear(t *testing.T) {
 	empty := []string{}
 	m := &MockAPIClient{}
-	m.On("BoardUpdateTask", mock.Anything, "tsk-cccc3333", BoardTaskBody{Tags: &empty}).
+	m.On("BoardUpdateStory", mock.Anything, "tsk-cccc3333", BoardStoryBody{Tags: &empty}).
 		Return(`{"short_id":"tsk-cccc3333","tags":[]}`, nil).Once()
 	h := &handlers{client: m, timeout: 30 * time.Second}
 	res, err := callBoardTool(t, h, "board_update_item",
@@ -718,7 +719,7 @@ func TestBoardTools_TaskTagsClear(t *testing.T) {
 	m.AssertExpectations(t)
 
 	m2 := &MockAPIClient{}
-	m2.On("BoardUpdateTask", mock.Anything, "tsk-cccc3333", BoardTaskBody{Title: "x"}).
+	m2.On("BoardUpdateStory", mock.Anything, "tsk-cccc3333", BoardStoryBody{Title: "x"}).
 		Return(`{"short_id":"tsk-cccc3333"}`, nil).Once()
 	h2 := &handlers{client: m2, timeout: 30 * time.Second}
 	res2, err := callBoardTool(t, h2, "board_update_item",
@@ -733,10 +734,10 @@ func TestBoardTools_TaskTagsClear(t *testing.T) {
 // a present-empty tags pointer serializes "tags":[]; nil omits the key.
 func TestBoardTools_TaskTagsClearWire(t *testing.T) {
 	empty := []string{}
-	b, err := json.Marshal(BoardTaskBody{Tags: &empty})
+	b, err := json.Marshal(BoardStoryBody{Tags: &empty})
 	require.NoError(t, err)
 	assert.Contains(t, string(b), `"tags":[]`)
-	b, err = json.Marshal(BoardTaskBody{Title: "x"})
+	b, err = json.Marshal(BoardStoryBody{Title: "x"})
 	require.NoError(t, err)
 	assert.NotContains(t, string(b), `"tags"`)
 }
@@ -906,11 +907,11 @@ func TestBoardUpdateItem_SchemaRequiredList(t *testing.T) {
 // be created — the silent-drop class guard).
 func TestBoardCreateTask_RefusesSetCriteriaMet(t *testing.T) {
 	m := &MockAPIClient{}
-	m.On("BoardCreateTask", mock.Anything, "epc-bbbb2222", mock.Anything).
+	m.On("BoardCreateStory", mock.Anything, "epc-bbbb2222", mock.Anything).
 		Return("", fmt.Errorf("must not be called")).Maybe()
 	h := &handlers{client: m, timeout: 30 * time.Second}
 
-	res, err := callBoardTool(t, h, "board_create_task", map[string]any{
+	res, err := callBoardTool(t, h, "board_create_story", map[string]any{
 		"epic_id": "epc-bbbb2222", "title": "T",
 		"set_criteria_met": map[string]any{"index": 0, "met": true},
 	})
@@ -918,6 +919,173 @@ func TestBoardCreateTask_RefusesSetCriteriaMet(t *testing.T) {
 	require.NotNil(t, res)
 	require.True(t, res.IsError, "the refusal is a tool error")
 	assert.Contains(t, boardResultText(res), "UPDATES only")
-	m.AssertNotCalled(t, "BoardCreateTask", mock.Anything, "epc-bbbb2222", mock.Anything,
+	m.AssertNotCalled(t, "BoardCreateStory", mock.Anything, "epc-bbbb2222", mock.Anything,
 		"a refused create never reaches the client — nothing can store")
+}
+
+// TestBoardStoryRenameAliases_AliasPathE2E — the story rename's
+// compatibility contract (owner ruling 2026-10-30 phase 2), proven
+// end-to-end through the real mcp-go server (registration + middleware
+// + handler): calling a PRE-RENAME tool name behaves exactly as its
+// canonical twin — the story operation lands against the canonical
+// client method — and the answer carries the deprecation notice as a
+// second content block. The legacy INPUT-KEY spelling (task_id) rides
+// the same one-release window under the CANONICAL name, notice and
+// all; the canonical spelling carries none.
+func TestBoardStoryRenameAliases_AliasPathE2E(t *testing.T) {
+	m := &MockAPIClient{}
+	m.On("BoardCreateStory", mock.Anything, "epc-bbbb2222", BoardStoryBody{
+		Title: "T1", Description: "d", RequestID: "req-1",
+	}).Return(`{"short_id":"tsk-cccc3333","title":"T1"}`, nil)
+	m.On("BoardPauseStory", mock.Anything, "tsk-cccc3333", "req-2").
+		Return(`{"short_id":"tsk-cccc3333","paused":true}`, nil)
+	m.On("BoardResumeStory", mock.Anything, "tsk-cccc3333", "").
+		Return(`{"short_id":"tsk-cccc3333","paused":false}`, nil)
+
+	srv := NewServer(m, 30*time.Second)
+	cl, err := mcpgoclient.NewInProcessClient(srv)
+	require.NoError(t, err)
+	defer func() { _ = cl.Close() }()
+	ctx := context.Background()
+	require.NoError(t, cl.Start(ctx))
+	initReq := mcp.InitializeRequest{}
+	initReq.Params.ProtocolVersion = mcp.LATEST_PROTOCOL_VERSION
+	initReq.Params.ClientInfo = mcp.Implementation{Name: "alias-e2e", Version: "1.0"}
+	_, err = cl.Initialize(ctx, initReq)
+	require.NoError(t, err)
+
+	call := func(name string, args map[string]any) *mcp.CallToolResult {
+		t.Helper()
+		req := mcp.CallToolRequest{}
+		req.Params.Name = name
+		req.Params.Arguments = args
+		res, err := cl.CallTool(ctx, req)
+		require.NoError(t, err)
+		return res
+	}
+	noticeOf := func(res *mcp.CallToolResult) string {
+		t.Helper()
+		require.NotEmpty(t, res.Content, "result carries content")
+		texts := []string{}
+		for _, c := range res.Content {
+			if tc, ok := c.(mcp.TextContent); ok {
+				texts = append(texts, tc.Text)
+			}
+		}
+		require.NotEmpty(t, texts)
+		if len(texts) < 2 {
+			return ""
+		}
+		return texts[1]
+	}
+
+	// The ALIAS tool name: the create lands on the canonical client
+	// method (the story IS created) and the notice names both names.
+	res := call("board_create_task", map[string]any{
+		"epic_id": "epc-bbbb2222", "title": "T1", "description": "d", "request_id": "req-1",
+	})
+	assert.False(t, res.IsError)
+	assert.Contains(t, res.Content[0].(mcp.TextContent).Text, "tsk-cccc3333",
+		"the alias path creates the story")
+	notice := noticeOf(res)
+	assert.Contains(t, notice, "DEPRECATED", "alias call carries the deprecation notice")
+	assert.Contains(t, notice, "board_create_story", "notice names the canonical tool")
+	assert.Contains(t, notice, "v0.46.0", "notice names the removal release")
+
+	// The legacy INPUT KEY under the CANONICAL name: same behavior,
+	// same notice discipline.
+	res = call("board_pause_story", map[string]any{"task_id": "tsk-cccc3333", "request_id": "req-2"})
+	assert.False(t, res.IsError)
+	assert.Contains(t, res.Content[0].(mcp.TextContent).Text, "tsk-cccc3333",
+		"the legacy key resolves — the pause lands")
+	assert.Contains(t, noticeOf(res), "DEPRECATED", "legacy input key carries the deprecation notice")
+
+	// The canonical spelling: no notice anywhere.
+	res = call("board_resume_story", map[string]any{"story_id": "tsk-cccc3333"})
+	assert.False(t, res.IsError)
+	assert.Empty(t, noticeOf(res), "canonical name + canonical key carry no deprecation notice")
+
+	m.AssertExpectations(t)
+}
+
+// TestBoardStoryRenameAliases_NoticeRidesErrors — the review round 1
+// unhappy tier for the external surface: an alias call whose platform
+// leg FAILS still carries the deprecation notice as the second
+// content block (IsError set — a deprecated spelling that fails still
+// says it is going away).
+func TestBoardStoryRenameAliases_NoticeRidesErrors(t *testing.T) {
+	m := &MockAPIClient{}
+	m.On("BoardPauseStory", mock.Anything, "tsk-missing-1", "").
+		Return("", fmt.Errorf("API error 404: not found"))
+
+	srv := NewServer(m, 30*time.Second)
+	cl, err := mcpgoclient.NewInProcessClient(srv)
+	require.NoError(t, err)
+	defer func() { _ = cl.Close() }()
+	ctx := context.Background()
+	require.NoError(t, cl.Start(ctx))
+	initReq := mcp.InitializeRequest{}
+	initReq.Params.ProtocolVersion = mcp.LATEST_PROTOCOL_VERSION
+	initReq.Params.ClientInfo = mcp.Implementation{Name: "alias-err", Version: "1.0"}
+	_, err = cl.Initialize(ctx, initReq)
+	require.NoError(t, err)
+
+	req := mcp.CallToolRequest{}
+	req.Params.Name = "board_pause_task"
+	req.Params.Arguments = map[string]any{"story_id": "tsk-missing-1"}
+	res, err := cl.CallTool(ctx, req)
+	require.NoError(t, err)
+	assert.True(t, res.IsError, "the platform 404 renders an error result")
+	require.GreaterOrEqual(t, len(res.Content), 2, "the alias notice rides the error envelope")
+	texts := []string{}
+	for _, c := range res.Content {
+		if tc, ok := c.(mcp.TextContent); ok {
+			texts = append(texts, tc.Text)
+		}
+	}
+	assert.Contains(t, texts[0], "API error 404")
+	assert.Contains(t, texts[1], "DEPRECATED")
+	assert.Contains(t, texts[1], "board_pause_story")
+	m.AssertExpectations(t)
+}
+
+// TestBoardStoryRenameAliases_LegacyKeyNoticeRidesErrors (review
+// round 2's remaining unhappy tier, external side): the CANONICAL
+// tool name with the LEGACY input key on a FAILING call still carries
+// the key notice (the middleware appends to IsError results — pinned,
+// not assumed).
+func TestBoardStoryRenameAliases_LegacyKeyNoticeRidesErrors(t *testing.T) {
+	m := &MockAPIClient{}
+	m.On("BoardMoveStage", mock.Anything, "tsk-paused-1", "done", "", "").
+		Return("", fmt.Errorf("API error 409: task_paused"))
+
+	srv := NewServer(m, 30*time.Second)
+	cl, err := mcpgoclient.NewInProcessClient(srv)
+	require.NoError(t, err)
+	defer func() { _ = cl.Close() }()
+	ctx := context.Background()
+	require.NoError(t, cl.Start(ctx))
+	initReq := mcp.InitializeRequest{}
+	initReq.Params.ProtocolVersion = mcp.LATEST_PROTOCOL_VERSION
+	initReq.Params.ClientInfo = mcp.Implementation{Name: "legacy-err", Version: "1.0"}
+	_, err = cl.Initialize(ctx, initReq)
+	require.NoError(t, err)
+
+	req := mcp.CallToolRequest{}
+	req.Params.Name = "board_move_stage"
+	req.Params.Arguments = map[string]any{"task_id": "tsk-paused-1", "to_stage": "done"}
+	res, err := cl.CallTool(ctx, req)
+	require.NoError(t, err)
+	assert.True(t, res.IsError, "the platform guard renders an error result")
+	require.GreaterOrEqual(t, len(res.Content), 2, "the legacy-key notice rides the error envelope")
+	texts := []string{}
+	for _, c := range res.Content {
+		if tc, ok := c.(mcp.TextContent); ok {
+			texts = append(texts, tc.Text)
+		}
+	}
+	assert.Contains(t, texts[0], "API error 409")
+	assert.Contains(t, texts[1], "DEPRECATED")
+	assert.Contains(t, texts[1], "story_id")
+	m.AssertExpectations(t)
 }

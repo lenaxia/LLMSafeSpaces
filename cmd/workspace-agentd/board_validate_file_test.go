@@ -86,7 +86,7 @@ func TestBoardPayloadSchema_DTOParity(t *testing.T) {
 		require.NoError(t, err)
 		// setCriteriaMet is control-plane: read from INLINE tool
 		// arguments (the #1946 grant), refused in the file.
-		parity("create_task", props, reflect.TypeOf(mcpclient.BoardTaskBody{}), []string{"setCriteriaMet"})
+		parity("create_task", props, reflect.TypeOf(mcpclient.BoardStoryBody{}), []string{"setCriteriaMet"})
 	})
 
 	t.Run("update_task_patch", func(t *testing.T) {
@@ -95,7 +95,7 @@ func TestBoardPayloadSchema_DTOParity(t *testing.T) {
 		// setCriteriaMet: inline-only control-plane (above); dependsOn:
 		// the platform's UPDATE DTO does not bind it (a file spelling
 		// would be silently dropped — refused here instead).
-		parity("update_task_patch", props, reflect.TypeOf(mcpclient.BoardTaskBody{}), []string{"setCriteriaMet", "dependsOn"})
+		parity("update_task_patch", props, reflect.TypeOf(mcpclient.BoardStoryBody{}), []string{"setCriteriaMet", "dependsOn"})
 	})
 
 	t.Run("create_epic and update_epic_patch", func(t *testing.T) {
@@ -438,11 +438,11 @@ func TestBoardValidate_DualEntryPointEquivalence(t *testing.T) {
 		payload  string
 		routing  map[string]any
 	}{
-		"seedless create": {"create_task", "board_create_task",
+		"seedless create": {"create_task", "board_create_story",
 			`{"title":"T"}`, map[string]any{"epicId": "epc-bbbb2222"}},
 		"unknown field": {"create_epic", "board_create_epic",
 			`{"title":"E","bogus":1}`, map[string]any{"projectId": "prj-aaaa1111"}},
-		"placeholder": {"create_task", "board_create_task",
+		"placeholder": {"create_task", "board_create_story",
 			`{"title":"tbd","description":"d","acceptanceCriteria":[{"text":"c"}]}`, map[string]any{"epicId": "epc-bbbb2222"}},
 		"plan both arms": {"import_plan", "board_import_plan",
 			`{"epic":{"title":"E"},"epicId":"epc-x","tasks":[{"key":"k","title":"T","description":"d","acceptanceCriteria":[{"text":"c"}]}]}`,

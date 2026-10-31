@@ -62,7 +62,7 @@ func TestMCPBoard_ManagerSessionUnresolvableDeclaredRef(t *testing.T) {
 
 	path := filepath.Join(t.TempDir(), "patch.json")
 	require.NoError(t, os.WriteFile(path, []byte(`{"title":"T"}`), 0o600))
-	_, err := mcpAutomation(context.Background(), mcpTestPassword, "board_update_task", map[string]any{
+	_, err := mcpAutomation(context.Background(), mcpTestPassword, "board_update_story", map[string]any{
 		"taskId": "tsk-aaaa1111", "patchFile": path,
 		"sessionId": "No Such Alias Anywhere"})
 	require.NoError(t, err, "an unresolvable declared ref degrades to empty attribution — the call proceeds")
@@ -78,5 +78,5 @@ func TestMCPBoard_ManagerSessionUnresolvableDeclaredRef(t *testing.T) {
 	require.Len(t, warns, 1, "exactly one loud loss note")
 	assert.Contains(t, warns[0].Message, "empty audit attribution")
 	assert.Equal(t, "No Such Alias Anywhere", warns[0].ContextMap()["ref"])
-	assert.Equal(t, "board_update_task", warns[0].ContextMap()["tool"])
+	assert.Equal(t, "board_update_story", warns[0].ContextMap()["tool"])
 }

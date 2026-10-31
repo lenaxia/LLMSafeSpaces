@@ -41,7 +41,7 @@ interface TaskDialogProps {
 }
 
 /**
- * TaskDialog — the create/edit surface (§4.8): title/description (the
+ * StoryDialog — the create/edit surface (§4.8): title/description (the
  * description seeds the worker charter, R2), tags with the OR4
  * pr:N anchor validated client-side (^pr:[1-9][0-9]*$), acceptance
  * criteria with reviewer check-off (Done preparation — the engine's Done
@@ -49,7 +49,7 @@ interface TaskDialogProps {
  * and the structural dependency editor (add/remove, the ONLY blocking
  * mechanism — R3/R4).
  */
-export function TaskDialog({
+export function StoryDialog({
   open,
   onOpenChange,
   epic,

@@ -23,7 +23,7 @@ interface TaskDeleteDialogProps {
 }
 
 /**
- * TaskDeleteDialog — #1832 item 3's task kebab → delete flow. The
+ * StoryDeleteDialog — #1832 item 3's task kebab → delete flow. The
  * confirm modal exposes the 'reconnect dependents to upstream'
  * checkbox (#1747's optional flag): unchecked, dependents are simply
  * unblocked (each gets an unblocked_by_delete audit event); checked,
@@ -31,7 +31,7 @@ interface TaskDeleteDialogProps {
  * cycle-guarded server-side). The dependents are surfaced pre-flight
  * from the read model so the choice is informed.
  */
-export function TaskDeleteDialog({ open, onOpenChange, task, projectTasks, onDelete, error, onDismissError }: TaskDeleteDialogProps) {
+export function StoryDeleteDialog({ open, onOpenChange, task, projectTasks, onDelete, error, onDismissError }: TaskDeleteDialogProps) {
   // The useState(false) initializer is a formality: the re-arm effect
   // below is the default's real authority (it fires on every open AND
   // every task switch, covering the dialog-reused-same-mount case the
@@ -134,7 +134,7 @@ export function TaskDeleteDialog({ open, onOpenChange, task, projectTasks, onDel
 }
 
 /** Renders the delete result as a page notice (orphaned vs reconnected). */
-export function describeTaskDeleteResult(result: BoardDeleteResult): string {
+export function describeStoryDeleteResult(result: BoardDeleteResult): string {
   const base = `${result.short_id} deleted`;
   const orphans = result.orphaned_dependents ?? [];
   const reconnected = result.reconnected ?? [];
