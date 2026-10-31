@@ -35,12 +35,15 @@ package main
 //
 // A failing fence is reported by FILE AND SLUG (the canonical header's
 // slug == filename stem), so the failure names exactly where to fix;
-// an UNCLOSED fence at EOF is an error, never a silent skip (review r1
-// finding 2: a dangling opener once dropped the fence's content from
-// every check). The extractor is the mechanism behind the
+// an UNCLOSED fence is an error, never a silent skip — at EOF (review
+// r1 finding 2) and mid-file via opener-like-line detection (review r2
+// finding 4: a deleted closer once let the fence silently swallow the
+// next one). The extractor is the mechanism behind the
 // payload-validation pins of Tier 1; the async Tier 2 walk (the
-// platform patterns-drift validator workflow) mirrors this dispatch
-// against LIVE tool descriptions.
+// platform patterns-drift validator workflow) mirrors its
+// machine-validation legs (payload / spec / schema) against LIVE
+// reality, and adds judgment legs (vocabulary, neutrality, advice
+// currency) no static pin can carry.
 
 import (
 	"encoding/json"
