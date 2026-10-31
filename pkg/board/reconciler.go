@@ -19,6 +19,13 @@ import (
 // reconciler.go — the self-healing convergence sweep (design §4.5):
 //
 //	RC1 lease reclaims — guarded UPDATE, NULL-lease-inclusive belt;
+//	   every pass that definitively ENDS a claim (the wall-clock
+//	   reclaim, the wedge verdict, the in_review persona lapse) also
+//	   ABORTS the deposed session post-commit (S8, owner ruling
+//	   2026-10-30: "When a lease is reclaimed, an abort should be sent
+//	   to the session just to ensure it does stop") and audit-logs the
+//	   deposal (action reclaim_abort: session, timestamp, the reclaim
+//	   event it answers);
 //	RC2 external-truth drift — pr:N anchors on in_review rows (event-fed
 //	   off the watermark: only rows whose in_review transition is newer
 //	   than the watermark are checked);
@@ -43,7 +50,10 @@ const sweepScope = "default"
 // boardNudgeDeliveryConcurrency bounds the concurrent sentinel-delivery
 // batch inside one RC1 pass (each delivery carries a ~10s fast-fail
 // window; the victims' row locks are held until commit — the batch
-// collapses an N-victim stall to ~one window).
+// collapses an N-victim stall to ~one window). The post-commit
+// deposed-session abort batch below rides the same bound (no locks are
+// held there, but an unbounded burst of N interrupt POSTs has no
+// upside).
 const boardNudgeDeliveryConcurrency = 8
 
 // Failpoint names (the kill-test fault seams).
@@ -262,6 +272,7 @@ func (s *Service) rc1Reclaims(ctx context.Context) (int, error) {
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 	var pending []Event
+	var deposed []deposedWorker
 
 	rows, err := tx.Query(ctx, `
 		SELECT t.id, t.project_id, COALESCE(t.lease_expires_at::text, 'null'), t.failure_count,
@@ -557,6 +568,17 @@ func (s *Service) rc1Reclaims(ctx context.Context) (int, error) {
 				return 0, err
 			}
 			pending = append(pending, evt)
+			// S8: the wedge verdict definitively ends the claim — the
+			// deposed session is aborted post-commit (belt-and-suspenders
+			// on the verdict: "believed silent" is not "stopped", and a
+			// wedged generation may still be holding pod resources).
+			if d, aevt, ok, derr := s.deposeTx(ctx, tx, v.project, v.id, v.episode, v.assignee,
+				"reconciler:wedge:"+v.id+":"+v.nudgeID); derr != nil {
+				return 0, derr
+			} else if ok {
+				pending = append(pending, aevt)
+				deposed = append(deposed, d)
+			}
 			applied++
 			continue
 		}
@@ -591,11 +613,118 @@ func (s *Service) rc1Reclaims(ctx context.Context) (int, error) {
 		}
 		pending = append(pending, evt)
 		applied++ // r1-C5: count what landed, not what was scanned
+		// S8 (owner ruling 2026-10-30): the guarded UPDATE above proves
+		// THIS sweep ended the claim (RowsAffected>0 under the expiry
+		// predicate) — the deposed holder is aborted post-commit and the
+		// deposal audit-logged in the same transaction as the reclaim.
+		if d, aevt, ok, derr := s.deposeTx(ctx, tx, v.project, v.id, v.episode, v.assignee,
+			"reconciler:reclaim:"+v.id+":"+v.episode); derr != nil {
+			return 0, derr
+		} else if ok {
+			pending = append(pending, aevt)
+			deposed = append(deposed, d)
+		}
 	}
 	if err := s.commitPublishing(ctx, tx, pending...); err != nil {
 		return 0, err
 	}
+	// S8: the reclaims are COMMITTED — the deposed claims are superseded
+	// for good. Cut each deposed session's in-flight generation now.
+	// Post-commit ONLY (the delete path's r2 ordering rule): a pre-commit
+	// abort could cut a session whose reclaim then rolls back — an abort
+	// of a LIVE claim, the one guard this feature must never break.
+	s.abortDeposedWorkers(ctx, deposed)
 	return applied, nil
+}
+
+// --- S8: the deposed-session abort (owner ruling 2026-10-30) ----------------------
+//
+// "When a lease is reclaimed, an abort should be sent to the session
+// just to ensure it does stop." Lease expiry freed the row but never
+// TOLD the old worker in any way it cannot ignore: an alive-but-slow
+// session (the 2026-10-30 incident's exact shape — healthy workers
+// mid-marathon turns, lapsed at exactly 45:00 while still generating)
+// kept running after reclaim, two workers on one row until the old
+// one's next board write surfaced the 409. The abort primitive already
+// existed (abort_session semantics: cut the in-flight generation,
+// history preserved) — it is now wired to every pass that definitively
+// ends a claim.
+
+// deposedWorker is one ended claim's old holder, captured at the
+// reclaim that deposed it. The abort names the OLD session by its
+// recorded identity — never a re-read of the row, which by delivery
+// time may already name a fresh claimant (fresh sessions are
+// spawner-minted per claim, ruling R9, so the captured id can never be
+// the new holder).
+type deposedWorker struct {
+	taskID, session string
+}
+
+// deposeTx records the deposal in the SAME transaction as the reclaim
+// it answers and returns the post-commit delivery entry. The audit row
+// (action reclaim_abort) is S7's trail: WHICH session was deposed, WHEN
+// (the event's created_at), and WHICH reclaim ended it (reclaimEventID
+// — the deterministic id of the reclaim/wedge event committed beside
+// it). The event id is deterministic (reconciler:reclaim-abort:<task>:
+// <episode>, the episode keyed like the reclaim's own id) so a crashed
+// sweep that replays writes no duplicate trail. ok=false — no event, no
+// delivery — when there is no session identity to abort (the async
+// spawn interim) or no abort seam installed (a nil seam dispatches
+// nothing, and an audit row for nothing would lie: the pin is that the
+// reclaim itself still succeeds, degraded honestly).
+func (s *Service) deposeTx(ctx context.Context, tx pgx.Tx, project, taskID, episode, assignee, reclaimEventID string) (deposedWorker, Event, bool, error) {
+	if assignee == "" || s.aborter == nil {
+		return deposedWorker{}, Event{}, false, nil
+	}
+	evt, err := recordEventTx(ctx, tx, project, "reconciler:reclaim-abort:"+taskID+":"+episode,
+		"reclaim_abort", "task", taskID, Actor{Kind: ActorSystem, Surface: SurfaceReconciler},
+		map[string]any{"task_id": taskID, "session": assignee, "reclaim_event": reclaimEventID})
+	if err != nil {
+		return deposedWorker{}, Event{}, false, err
+	}
+	if evt.ID == "" {
+		// Deterministic-id replay: a concurrent sweep already recorded
+		// (and delivered) THIS deposal — a duplicate reclaim must not
+		// re-abort an already-stopped session (idempotent no-op).
+		return deposedWorker{}, Event{}, false, nil
+	}
+	return deposedWorker{taskID: taskID, session: assignee}, evt, true, nil
+}
+
+// abortDeposed delivers ONE deposed-session abort — post-commit,
+// best-effort (the 409 claim_token arbitration remains the authority;
+// this is the belt that makes the stop enforced rather than assumed).
+func (s *Service) abortDeposed(ctx context.Context, d deposedWorker) {
+	if s.aborter == nil {
+		return
+	}
+	if err := s.aborter(ctx, d.taskID, d.session); err != nil {
+		slog.WarnContext(ctx, "board: deposed-worker abort delivery failed (the 409 arbitration remains)",
+			"task_id", d.taskID, "session", d.session, "err", err.Error())
+	}
+}
+
+// abortDeposedWorkers delivers a reclaim pass's abort batch — bounded
+// concurrent (a mass-lapse incident reclaims N sessions in ONE sweep;
+// sequential delivery would stall the sweep on the slowest pod), on the
+// sweep's context, completing before the phase returns so callers and
+// pins observe a settled batch.
+func (s *Service) abortDeposedWorkers(ctx context.Context, deposed []deposedWorker) {
+	if len(deposed) == 0 {
+		return
+	}
+	var wg sync.WaitGroup
+	sem := make(chan struct{}, boardNudgeDeliveryConcurrency)
+	for _, d := range deposed {
+		wg.Add(1)
+		go func(d deposedWorker) { //nolint:gosec,contextcheck // G118/contextcheck: deliberate — bounded by the sem and the sweep ctx like the nudge batch; the abort must not be lost to a returning request ctx
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+			s.abortDeposed(ctx, d)
+		}(d)
+	}
+	wg.Wait()
 }
 
 // personaReclaimEvents + spawn nudges are the stage-persona claim
@@ -635,7 +764,8 @@ func (s *Service) rc1PersonaClaims(ctx context.Context) (personaReclaim, error) 
 
 	// --- (a) lapse pass ---------------------------------------------------
 	rows, err := s.q().Query(ctx, `
-		SELECT t.id, t.project_id, COALESCE(t.lease_expires_at::text, 'null'), t.failure_count
+		SELECT t.id, t.project_id, COALESCE(t.lease_expires_at::text, 'null'), t.failure_count,
+			COALESCE(t.assignee_session,'')
 		FROM tasks t
 		WHERE t.stage='in_review' AND t.lease_expires_at IS NOT NULL AND t.lease_expires_at < now()`)
 	if err != nil {
@@ -644,11 +774,12 @@ func (s *Service) rc1PersonaClaims(ctx context.Context) (personaReclaim, error) 
 	type lapseVictim struct {
 		id, project, episode string
 		failures             int32
+		assignee             string
 	}
 	var lapses []lapseVictim
 	for rows.Next() {
 		var v lapseVictim
-		if err := rows.Scan(&v.id, &v.project, &v.episode, &v.failures); err != nil {
+		if err := rows.Scan(&v.id, &v.project, &v.episode, &v.failures, &v.assignee); err != nil {
 			rows.Close()
 			return out, err
 		}
@@ -687,8 +818,23 @@ func (s *Service) rc1PersonaClaims(ctx context.Context) (personaReclaim, error) 
 				_ = tx.Rollback(ctx)
 				return out, err
 			}
-			if err := s.commitPublishing(ctx, tx, evt); err != nil {
+			pending := []Event{evt}
+			// S8: the config-removal lapse ends the reviewer's claim too
+			// — the deposed persona session is aborted post-commit.
+			d, aevt, ok, derr := s.deposeTx(ctx, tx, v.project, v.id, v.episode, v.assignee,
+				"reconciler:reclaim:"+v.id+":"+v.episode)
+			if derr != nil {
+				_ = tx.Rollback(ctx)
+				return out, derr
+			}
+			if ok {
+				pending = append(pending, aevt)
+			}
+			if err := s.commitPublishing(ctx, tx, pending...); err != nil {
 				return out, err
+			}
+			if ok {
+				s.abortDeposed(ctx, d)
 			}
 			out.applied++
 			continue
@@ -736,8 +882,24 @@ func (s *Service) rc1PersonaClaims(ctx context.Context) (personaReclaim, error) 
 			_ = tx.Rollback(ctx)
 			return out, err
 		}
-		if err := s.commitPublishing(ctx, tx, evt); err != nil {
+		pending := []Event{evt}
+		// S8: the persona lapse is the in_review twin of RC1's reclaim —
+		// the deposed reviewer session is aborted post-commit, its
+		// deposal audit-logged beside the lapse.
+		d, aevt, ok, derr := s.deposeTx(ctx, tx, v.project, v.id, v.episode, v.assignee,
+			"reconciler:reclaim:"+v.id+":"+v.episode)
+		if derr != nil {
+			_ = tx.Rollback(ctx)
+			return out, derr
+		}
+		if ok {
+			pending = append(pending, aevt)
+		}
+		if err := s.commitPublishing(ctx, tx, pending...); err != nil {
 			return out, err
+		}
+		if ok {
+			s.abortDeposed(ctx, d)
 		}
 		out.applied++
 	}

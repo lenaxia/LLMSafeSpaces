@@ -306,8 +306,11 @@ type Failpoint func(where string) error
 type WorkerSpawner func(ctx context.Context, claim *Claim) (sessionID string, err error)
 
 // WorkerAborter aborts a worker session whose claim was revoked (delete
-// of an in-flight claim, superseded-claim cleanup). Rides the existing
-// interrupt seam in production; no-op by default.
+// of an in-flight claim, the S8 reclaim deposal — every reconciler pass
+// that definitively ends a claim aborts the deposed holder post-commit —
+// and superseded-spawn cleanup). Rides the existing interrupt seam in
+// production (the V1 session abort — no bus dependency); no-op by
+// default.
 type WorkerAborter func(ctx context.Context, taskID, assigneeSession string) error
 
 // WorkerMessenger delivers a pause/resume DIRECTIVE to an in-flight
