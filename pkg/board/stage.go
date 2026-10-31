@@ -782,6 +782,15 @@ func (s *Service) Heartbeat(ctx context.Context, actor Actor, taskID, shortIDOrI
 		responded = true
 		progress = observedProgressAt
 		s.writeAudit(ctx, t.ProjectID, "heartbeat", "task", t.ID, actor)
+		// S4 (design 0072): the response-channel renewal is the
+		// observation plane's STRONGEST alive signal — the worker
+		// answered the sentinel with the tool the prose demanded.
+		// Emitted after the guarded write committed (the sink projects
+		// decisions, never attempts); fail-open like every projection.
+		s.emitLease(ctx, LeaseEvent{
+			Kind: LeaseEventRenewed, TaskID: t.ID, TaskShortID: t.ShortID, ProjectID: t.ProjectID,
+			Assignee: pick(t.AssigneeSession, actor.SessionID), Source: RenewSourceHeartbeat,
+		})
 	case errors.Is(err, pgx.ErrNoRows):
 		// No live nudge (or the claim raced away): record the arrival
 		// — the advisory shape. The lease is NOT extended (the

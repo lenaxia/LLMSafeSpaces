@@ -326,3 +326,36 @@ func TestBusE2E_LeaseWedgeVerdictLogsNotMessages(t *testing.T) {
 		3*time.Second, 10*time.Millisecond, "the wedge verdict never acked")
 	assert.Zero(t, env.harness.postCount(), "a wedge verdict must not message the wedged worker")
 }
+
+// TestBusE2E_LeaseLifecycleEventsAckQuietly: the S4 observation arms —
+// renewed / reclaimed — published exactly as the API's
+// boardLeaseEventbus does (the SHARED pkg/eventbus payload builders:
+// parity by construction, not copy-paste). The lease consumer group
+// acks both and messages NOBODY: a renewed worker is mid-work, a
+// reclaimed row's assignee is gone — the events are the pod's LOG
+// visibility (the 2026-10-30 incident's invisible transitions).
+func TestBusE2E_LeaseLifecycleEventsAckQuietly(t *testing.T) {
+	env := newBusEnv(t, 40*time.Millisecond,
+		fakeHarnessSession{id: "ses_assignee", title: "worker"},
+	)
+	env.waitForGroup(t, eventbus.GroupLease)
+	const task = "0197f0aa-1111-2222-3333-444455556666"
+
+	_, err := env.bus.Publish(context.Background(), eventbus.Event{
+		Topic:   eventbus.LeaseRenewedTopic(task),
+		At:      time.Now(),
+		Payload: eventbus.LeaseRenewPayload(task, "tsk-crimson-finch-blooms", "ses_assignee", "busy_gate"),
+	})
+	require.NoError(t, err)
+	_, err = env.bus.Publish(context.Background(), eventbus.Event{
+		Topic:   eventbus.LeaseReclaimedTopic(task),
+		At:      time.Now(),
+		Payload: eventbus.LeaseReclaimPayload(task, "tsk-crimson-finch-blooms", "ses_assignee", "lease_lapse", 3),
+	})
+	require.NoError(t, err)
+
+	require.Eventually(t, func() bool { return env.groupPending(t, eventbus.GroupLease) == 0 },
+		3*time.Second, 10*time.Millisecond, "the lifecycle events never acked")
+	assert.Zero(t, env.harness.postCount(),
+		"renewals and reclaims are observation-plane events — neither messages a session")
+}

@@ -15,12 +15,14 @@ package handlers
 import (
 	"context"
 	"encoding/json"
+	"strconv"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	apitypes "github.com/lenaxia/llmsafespaces/api/internal/types"
 	"github.com/lenaxia/llmsafespaces/pkg/board"
+	"github.com/lenaxia/llmsafespaces/pkg/eventbus"
 )
 
 // warnLogger is the minimal surface BoardEventPublisher needs
@@ -111,12 +113,17 @@ func (h *ProxyHandler) boardEventEnqueuer(events chan<- board.Event, log warnLog
 const boardPublishQueue = 256
 
 func (h *ProxyHandler) boardEventDeliver(pool *pgxpool.Pool, log warnLogger, evt board.Event) {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	// The lookup and the translate each get their OWN bounded context:
+	// the translate derives from Background, never from a canceled
+	// parent (a timeout child of a canceled ctx is born canceled — the
+	// r1 review's regression: every v1 frame degraded raw when the
+	// lookup's cancel ran first).
+	lookupCtx, lookupCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	var owner, workspaceID string
-	err := pool.QueryRow(ctx,
+	err := pool.QueryRow(lookupCtx,
 		`SELECT user_id, target_workspace_id::text FROM projects WHERE id=$1`,
 		evt.ProjectID).Scan(&owner, &workspaceID)
-	cancel()
+	lookupCancel()
 	if err != nil {
 		log.Warn("board: SSE projection skipped — project lookup failed (reseed belt covers)",
 			"projectID", evt.ProjectID, "error", err.Error())
@@ -130,7 +137,7 @@ func (h *ProxyHandler) boardEventDeliver(pool *pgxpool.Pool, log warnLogger, evt
 	// is never rewritten; the degraded shapes are markDeprecatedSession-
 	// ID's (raw + session_id_deprecated) and its task-field twin
 	// (raw + assignee_session_deprecated).
-	evt.Actor, evt.Payload = h.translateBoardEventIDs(pool, workspaceID, evt.Actor, evt.Payload)
+	evt.Actor, evt.Payload = translateBoardEventIDs(context.Background(), pool, workspaceID, evt.Actor, evt.Payload)
 	h.publishBoardFanout(owner, workspaceID, evt)
 }
 
@@ -138,8 +145,11 @@ func (h *ProxyHandler) boardEventDeliver(pool *pgxpool.Pool, log warnLogger, evt
 // actor blob and the payload's assignee keys, resolve them against the
 // project's target workspace in ONE session_index consult, translate
 // both. Failures degrade raw (the translators never break a read).
-func (h *ProxyHandler) translateBoardEventIDs(pool *pgxpool.Pool, workspaceID string, actor, payload []byte) ([]byte, []byte) {
-	if workspaceID == "" {
+func translateBoardEventIDs(ctx context.Context, pool *pgxpool.Pool, workspaceID string, actor, payload []byte) ([]byte, []byte) {
+	if workspaceID == "" || pool == nil {
+		// No workspace scope or no pool (the bus join's tests mount the
+		// broker without one): degrade raw — the translators never
+		// break a read.
 		return actor, payload
 	}
 	ids := make([]string, 0, 2)
@@ -155,9 +165,138 @@ func (h *ProxyHandler) translateBoardEventIDs(pool *pgxpool.Pool, workspaceID st
 	if len(ids) == 0 {
 		return actor, payload
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	tctx, cancel := context.WithTimeout(ctx, 2*time.Second)
 	defer cancel()
-	phrases := board.LookupSessionPhrases(ctx, pool, workspaceID, ids)
+	phrases := board.LookupSessionPhrases(tctx, pool, workspaceID, ids)
 	return board.TranslateActorSessionPhrase(actor, phrases),
 		board.TranslatePayloadAssignees(payload, phrases)
+}
+
+// ---- The bus join (design 0072 S6) ----
+//
+// When the board eventbus is armed, the SSE projection is served from
+// the per-workspace stream: the app-side publisher appends one
+// board.{project}.event entry per COMMITTED board_events row (plus
+// task.{id}.stamped entries for landed assignee stamps), and the
+// API-side SSE consumer group renders those entries into the SAME
+// board.event frames through the SAME translate+fan-out path as the
+// v1 leg below. Parity is byte-level: one committed row renders to
+// exactly the frame boardSSEEvent produces, whichever leg carried it.
+//
+// The consumer is deliberately drop-tolerant: render or fan-out
+// failures log and ACK (never wedge the group on an advisory
+// projection — the reseed belt is the consumer's safety net, the same
+// posture as the v1 leg's overflow drop). The group's value here is
+// cursor durability and per-replica fan-out, not redelivery.
+
+// boardStampAction is the SSE action for landed assignee stamps. A
+// stamp writes no board_events row (it is a guarded row write, not a
+// caller action), so the frame synthesizes the row: the frontend's
+// ["board"] invalidation refetches and the assignee appears without
+// waiting for the 30s poll.
+const boardStampAction = "assignee_stamped"
+
+// boardFanoutBroker is the broker surface the bus join needs (the
+// user event broker satisfies it; tests mount it directly).
+type boardFanoutBroker interface {
+	PublishToUser(userID string, evt apitypes.WorkspaceSSEEvent)
+	PublishToWorkspace(workspaceID string, evt apitypes.WorkspaceSSEEvent)
+}
+
+// BoardEventBusHandler renders bus entries into board.event frames
+// and fans them out. Scope (owner + workspace) rides the payload —
+// resolved at PUBLISH time — so delivery performs NO project lookup
+// (the retired per-delivery read of the v1 leg). Exported over the
+// broker interface so the join is constructible end-to-end in tests
+// (app-side publisher → stream → this handler → broker).
+func BoardEventBusHandler(broker boardFanoutBroker, pool *pgxpool.Pool, log warnLogger) eventbus.Handler {
+	return func(ctx context.Context, msg eventbus.Message) error {
+		if broker == nil {
+			// Always-ACK: an advisory projection never wedges the group.
+			return nil
+		}
+		deliverBoardBusMessage(ctx, broker, pool, log, msg)
+		return nil
+	}
+}
+
+// BoardEventBusHandler mounts the join on this handler's broker (nil
+// when no broker is mounted — engine dark, the join never starts).
+func (h *ProxyHandler) BoardEventBusHandler(pool *pgxpool.Pool, log warnLogger) eventbus.Handler {
+	if h.userBroker == nil {
+		return nil
+	}
+	return BoardEventBusHandler(h.userBroker, pool, log)
+}
+
+// deliverBoardBusMessage is one entry's render+fan-out.
+func deliverBoardBusMessage(ctx context.Context, broker boardFanoutBroker, pool *pgxpool.Pool, log warnLogger, msg eventbus.Message) {
+	p := msg.Event.Payload
+	if projectID, ok := eventbus.ParseBoardEvent(msg.Event.Topic); ok {
+		createdAt, err := time.Parse(time.RFC3339Nano, p[eventbus.FieldBoardCreatedAt])
+		if err != nil {
+			log.Warn("board: SSE bus join — unparseable created_at, dropping entry (reseed belt covers)",
+				"projectID", projectID, "eventID", p[eventbus.FieldBoardEventID])
+			return
+		}
+		evt := board.Event{
+			ID:        p[eventbus.FieldBoardEventID],
+			ProjectID: projectID,
+			ItemKind:  p[eventbus.FieldBoardItemKind],
+			ItemID:    p[eventbus.FieldBoardItemID],
+			Action:    p[eventbus.FieldBoardAction],
+			Actor:     []byte(p[eventbus.FieldBoardActor]),
+			Payload:   []byte(p[eventbus.FieldBoardPayload]),
+			CreatedAt: createdAt,
+		}
+		fanOutBoardEvent(ctx, broker, pool, log, evt, p[eventbus.FieldBoardOwner], p[eventbus.FieldBoardWorkspace])
+		return
+	}
+	if taskID, arm, ok := eventbus.ParseTask(msg.Event.Topic); ok && arm == "stamped" {
+		lag, _ := strconv.ParseFloat(p[eventbus.FieldStampLagSeconds], 64)
+		inner, err := json.Marshal(map[string]any{
+			"task_short_id":     p[eventbus.FieldBoardShortID],
+			"assignee_session":  p[eventbus.FieldStampAssignee],
+			"assignee_origin":   p[eventbus.FieldStampOrigin],
+			"stamp_lag_seconds": lag,
+		})
+		if err != nil {
+			log.Warn("board: SSE bus join — stamp payload marshal failed, dropping entry", "task", taskID)
+			return
+		}
+		actor, _ := json.Marshal(map[string]string{
+			"kind": "system", "surface": "engine", "session_id": p[eventbus.FieldStampAssignee],
+		})
+		evt := board.Event{
+			ID:        "stamp-" + msg.ID,
+			ProjectID: p["project_id"],
+			ItemKind:  "task",
+			ItemID:    taskID,
+			Action:    boardStampAction,
+			Actor:     actor,
+			Payload:   inner,
+			CreatedAt: msg.Event.At,
+		}
+		fanOutBoardEvent(ctx, broker, pool, log, evt, p[eventbus.FieldBoardOwner], p[eventbus.FieldBoardWorkspace])
+		return
+	}
+	// Unknown shape: the vocabulary is a convention — log and move on.
+	log.Warn("board: SSE bus join — unknown topic shape, dropping entry", "topic", msg.Event.Topic)
+}
+
+// fanOutBoardEvent is the shared delivery tail: the SAME bounded
+// phrase translation and dual-channel fan-out the v1 leg runs at
+// emission, with the scope from the payload instead of a project
+// lookup.
+func fanOutBoardEvent(ctx context.Context, broker boardFanoutBroker, pool *pgxpool.Pool, log warnLogger, evt board.Event, owner, workspaceID string) {
+	evt.Actor, evt.Payload = translateBoardEventIDs(ctx, pool, workspaceID, evt.Actor, evt.Payload)
+	if workspaceID != "" {
+		broker.PublishToWorkspace(workspaceID, boardSSEEvent(evt))
+	}
+	if owner == "" {
+		return
+	}
+	userCopy := boardSSEEvent(evt)
+	userCopy.WorkspaceID = workspaceID
+	broker.PublishToUser(owner, userCopy)
 }
