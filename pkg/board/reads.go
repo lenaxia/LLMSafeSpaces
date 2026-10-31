@@ -29,6 +29,9 @@ func (s *Service) GetTask(ctx context.Context, taskID, shortIDOrID string) (*Tas
 	}
 	s.decorateTask(ctx, t, nil)
 	s.translateTaskReads(ctx, t)
+	// RC-C S2: badge honesty rides the same read edge — busy is
+	// re-derived per read under the lease TTL (busy.go).
+	s.decorateAssigneeBusy(ctx, t)
 	return t, nil
 }
 
@@ -78,6 +81,9 @@ func (s *Service) ListTasks(ctx context.Context, projectID string, stage, failed
 	// #1922: one bounded translation pass for the whole batch (the
 	// public read edge — canonical rows above stay untouched).
 	s.translateTaskReads(ctx, scanned...)
+	// RC-C S2: one batched busy question for the whole list (the
+	// board's primary feed — the badge poll).
+	s.decorateAssigneeBusy(ctx, scanned...)
 	for _, t := range scanned {
 		if proj == nil || proj.ID != t.ProjectID {
 			p, perr := s.store.resolveProject(ctx, s.q(), "", t.ProjectID)
@@ -346,6 +352,9 @@ func (s *Service) SearchTasks(ctx context.Context, userID, q string, filters Sea
 	}
 	// #1922: the search projection rides the same read-edge translation.
 	s.translateTaskReads(ctx, scanned...)
+	// RC-C S2: …and the same read-edge busy pass (a search hit's badge
+	// tells the same truth a list row's does).
+	s.decorateAssigneeBusy(ctx, scanned...)
 	for _, t := range scanned {
 		res.Results = append(res.Results, *t)
 	}
