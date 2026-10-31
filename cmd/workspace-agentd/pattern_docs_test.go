@@ -33,19 +33,17 @@ package main
 
 import (
 	"embed"
-	"encoding/json"
-	"fmt"
-	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
+	"time"
 
-	wf "github.com/lenaxia/llmsafespaces/pkg/workflows"
+	mcp "github.com/lenaxia/llmsafespaces/pkg/mcp"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"gopkg.in/yaml.v3"
 )
 
 // patternDocSet is one embedded directory plus its identity: the path
@@ -486,182 +484,173 @@ func keysOf(m map[string]bool) []string {
 // Every fenced code block carries a machine-readable infostring —
 // `<lang> kind=<kind> [op=<op>]` — so tests can extract and validate
 // each block mechanically. Exactly ONE kind= per fence; a bare ```
-// opening fence is a pinned format violation.
+// opening fence is a pinned format violation. THE EXTRACTOR and the
+// kind→validator dispatch (board-payload → the real board_validate_file
+// pipeline; workflow-spec → the real ParseSpec+ValidateSpec; gate-script
+// → py_compile / node --check; shell/output → human-rendered) live in
+// pattern_fence_extractor_test.go.
 
-// fenceBlock is one extracted fenced code block.
-type fenceBlock struct {
-	file, slug, info, body string
-}
+// --- STATIC DRIFT PINS (tsk-surging-frontier-dines, owner ruling
+// 2026-10-30): Tier 1 — the examples must reference the REAL tool
+// surface and the REAL placeholder grammar. Mechanical rot is cheap to
+// check and CI-blocking; the async Tier 2 validator (a platform
+// workflow + weekly cron, dogfooded as workflow-patterns/
+// patterns-drift-validator.md) catches the judgment calls.
 
-// fenceKind is the kind= token; fenceOp the op= token.
-func (f fenceBlock) location() string {
-	return fmt.Sprintf("%s:%s", f.file, f.slug)
-}
+// exampleToolToken extracts every board_*/workflow_*/trigger_* token
+// referenced across both example catalogs (prose and fences alike).
+var exampleToolToken = regexp.MustCompile(`\b(?:board|workflow|trigger)_[a-z_]+`)
 
-var validFenceKinds = map[string]bool{
-	"board-payload": true, "workflow-spec": true, "gate-script": true,
-	"shell": true, "output": true,
-}
+// TestPatternDocs_ToolNameRegistryPin: every tool name an example
+// teaches exists in the CURRENT tool catalogs — the same source the
+// #1415/0059 drift pins read: the agentd catalog (mcpToolCatalog, the
+// in-workspace agent's surface the examples address) UNION the external
+// pkg/mcp projection (NewServer's registered set). A renamed or
+// deleted tool reddens this pin naming the example file that still
+// references it — the example rots the day the surface moves, not
+// years later.
+func TestPatternDocs_ToolNameRegistryPin(t *testing.T) {
+	// The live union of tool names.
+	live := map[string]bool{}
+	for _, tool := range mcpToolCatalog() {
+		live[tool.Name] = true
+	}
+	for name := range externalMCPCatalogNames(t) {
+		live[name] = true
+	}
+	require.NotEmpty(t, live, "the tool catalogs must resolve")
 
-var validFenceOps = map[string]bool{
-	"create_task": true, "create_epic": true, "update_task_patch": true,
-	"update_epic_patch": true, "import_plan": true, "set_config": true,
-}
-
-// extractFences walks both embedded directories and returns every fenced
-// code block with its file, slug (from the canonical header), infostring,
-// and body. Opening fences without an infostring are returned too (kind
-// "") so the format pin can name them.
-func extractFences(t *testing.T) []fenceBlock {
-	t.Helper()
-	var out []fenceBlock
+	referenced := map[string][]string{} // tool → example files referencing it
 	for _, set := range patternDocSets {
 		err := fs.WalkDir(set.fsys, set.embedded, func(path string, d fs.DirEntry, err error) error {
 			if err != nil || d.IsDir() {
 				return err
 			}
-			name := filepath.Base(path)
 			content, err := set.fsys.ReadFile(path)
 			if err != nil {
 				return err
 			}
-			slug := strings.TrimSuffix(name, ".md")
-			var cur *fenceBlock
-			for _, line := range strings.Split(string(content), "\n") {
-				s := strings.TrimRight(line, "\r")
-				if cur == nil {
-					if strings.HasPrefix(s, "```") {
-						cur = &fenceBlock{file: name, slug: slug, info: strings.TrimSpace(s[3:])}
+			name := filepath.Base(path)
+			for _, tok := range exampleToolToken.FindAllString(string(content), -1) {
+				referenced[tok] = append(referenced[tok], name)
+			}
+			return nil
+		})
+		require.NoError(t, err)
+	}
+	require.NotEmpty(t, referenced, "the examples reference board/workflow/trigger tools")
+
+	// Sanity: the pin has teeth — a fabricated name must fail (guards
+	// against a catalog accidentally matching EVERYTHING).
+	assert.False(t, live["board_definitely_not_a_tool"], "the catalog must not contain fabricated names")
+
+	for tok, files := range referenced {
+		assert.True(t, live[tok],
+			"%s references tool %q which is NOT in the current tool catalogs (agentd mcpToolCatalog ∪ pkg/mcp NewServer) — the example has rotted; update the example or restore the tool name",
+			strings.Join(uniqueStrings(files), ", "), tok)
+	}
+}
+
+// externalMCPCatalogNames lists the external MCP projection's tool
+// names (pkg/mcp — the api-side surface external agents see). Listing
+// registers nothing and calls nothing: handlers stay inert.
+func externalMCPCatalogNames(t *testing.T) map[string]bool {
+	t.Helper()
+	srv := mcp.NewServer(nil, 30*time.Second)
+	out := map[string]bool{}
+	for name := range srv.ListTools() {
+		out[name] = true
+	}
+	require.NotEmpty(t, out, "pkg/mcp must register its tools")
+	return out
+}
+
+// placeholderRefToken captures one `{{…}}` candidate on a single line
+// (no nested braces, no newline — the grammar's own constraints).
+var placeholderRefToken = regexp.MustCompile(`\{\{[^{}\n]*\}\}`)
+
+// validPlaceholderPath matches the documented {{.path}} grammar
+// (placeholder-rules.md): dot-prefixed, segments of word characters
+// and hyphens joined by single dots — dotted-path walks included
+// ({{.body.pull_request.title}}, {{.headers.x-request-id}}).
+var validPlaceholderPath = regexp.MustCompile(`^\{\{\.[A-Za-z0-9_-]+(\.[A-Za-z0-9_-]+)*\}\}$`)
+
+// validTriggerVarToken matches the routine-path's jinja-style var
+// ({{key}} — gate-script vars substituted into trigger prompts; no
+// leading dot). The dot-prefixed platform tokens ({{.input}},
+// {{.prevResult}}, {{.scriptResult}}) are validPlaceholderPath already.
+var validTriggerVarToken = regexp.MustCompile(`^\{\{[A-Za-z0-9_]+\}\}$`)
+
+// TestPatternDocs_PlaceholderGrammarPin: every {{…}} reference in the
+// example catalogs parses against the documented placeholder grammar
+// (placeholder-rules.md) — the workflow agent-node form {{.path}} with
+// dotted-path walks, or the trigger-prompt forms {{key}}. Drift this
+// pin catches: spaces inside refs ({{ body.title }}), empty or
+// double-dot segments ({{.a..b}}, {{.}}), truncated braces, or a ref
+// smuggled into prose with junk inside. The ONE escape: the grammar
+// document itself (placeholder-rules.md) quotes counter-examples in
+// prose — tokens carrying whitespace or backticks are permitted only
+// there; every other file must emit refs the runtime can resolve.
+func TestPatternDocs_PlaceholderGrammarPin(t *testing.T) {
+	const grammarDoc = "placeholder-rules.md"
+	for _, set := range patternDocSets {
+		err := fs.WalkDir(set.fsys, set.embedded, func(path string, d fs.DirEntry, err error) error {
+			if err != nil || d.IsDir() {
+				return err
+			}
+			content, err := set.fsys.ReadFile(path)
+			if err != nil {
+				return err
+			}
+			name := filepath.Base(path)
+			isGrammarDoc := name == grammarDoc
+			for lineNo, line := range strings.Split(string(content), "\n") {
+				candidates := placeholderRefToken.FindAllString(line, -1)
+				for _, cand := range candidates {
+					inside := strings.TrimSuffix(strings.TrimPrefix(cand, "{{"), "}}")
+					if strings.ContainsAny(inside, " \t`") {
+						// Quoted counter-example material (whitespace or
+						// backticks inside) — permitted ONLY in the
+						// grammar document, which teaches the rejected
+						// forms; every other file must emit clean refs.
+						if !isGrammarDoc {
+							t.Errorf("%s:%d: placeholder candidate %q carries whitespace/backtick — refs are {{.path}} or {{key}} with nothing else inside",
+								name, lineNo+1, cand)
+						}
+						continue
 					}
-				} else if s == "```" {
-					out = append(out, *cur)
-					cur = nil
-				} else {
-					cur.body += line + "\n"
+					if validPlaceholderPath.MatchString(cand) || validTriggerVarToken.MatchString(cand) {
+						continue
+					}
+					t.Errorf("%s:%d: placeholder %q does not parse against the documented grammar ({{.dotted.path}} or {{key}} — see placeholder-rules.md)",
+						name, lineNo+1, cand)
+				}
+				// Truncated braces: a `{{` the candidate scan could not
+				// close on this line is a ref the runtime can never
+				// resolve (and the grammar says it stays literal — the
+				// examples must not teach broken forms outside the
+				// grammar doc).
+				opened := strings.Count(line, "{{")
+				if !isGrammarDoc && opened > len(candidates) {
+					t.Errorf("%s:%d: %d `{{` opener(s) but only %d well-formed ref(s) — a truncated placeholder never resolves",
+						name, lineNo+1, opened, len(candidates))
 				}
 			}
 			return nil
 		})
 		require.NoError(t, err)
 	}
-	require.NotEmpty(t, out, "the catalogs carry fenced examples")
+}
+
+// uniqueStrings deduplicates preserving first-seen order.
+func uniqueStrings(in []string) []string {
+	seen := map[string]bool{}
+	out := make([]string, 0, len(in))
+	for _, s := range in {
+		if !seen[s] {
+			seen[s] = true
+			out = append(out, s)
+		}
+	}
 	return out
-}
-
-// parseFenceInfo validates the infostring shape: `<lang> kind=<kind>
-// [op=<op>]` — a language token first, EXACTLY one kind=, and op= only
-// where the kind needs it. Returns (kind, op).
-func parseFenceInfo(t *testing.T, f fenceBlock) (kind, op string) {
-	t.Helper()
-	toks := strings.Fields(f.info)
-	require.NotEmpty(t, toks, "%s: a fence's infostring needs a language token and kind=", f.location())
-	assert.NotContains(t, toks[0], "=", "%s: the first infostring token is the language, not key=value", f.location())
-	for _, tok := range toks {
-		switch {
-		case strings.HasPrefix(tok, "kind="):
-			require.Empty(t, kind, "%s: exactly ONE kind= per fence", f.location())
-			kind = strings.TrimPrefix(tok, "kind=")
-		case strings.HasPrefix(tok, "op="):
-			require.Empty(t, op, "%s: at most one op= per fence", f.location())
-			op = strings.TrimPrefix(tok, "op=")
-		default:
-			assert.NotContains(t, tok, "=", "%s: unknown key=value token %q in the infostring", f.location(), tok)
-		}
-	}
-	return kind, op
-}
-
-// TestPatternDocs_FencePins_InfostringOnEveryFence: no bare fences, the
-// kind vocabulary is closed, and board-payload fences name a valid op —
-// the contract the follow-up extractor dispatches on.
-func TestPatternDocs_FencePins_InfostringOnEveryFence(t *testing.T) {
-	kinds := map[string]int{}
-	for _, f := range extractFences(t) {
-		kind, op := parseFenceInfo(t, f)
-		require.NotEmpty(t, kind, "%s: bare fence — every code fence carries kind=", f.location())
-		assert.True(t, validFenceKinds[kind], "%s: fence kind %q not in the convention", f.location(), kind)
-		kinds[kind]++
-		if kind == "board-payload" {
-			assert.True(t, validFenceOps[op], "%s: board-payload fences name a valid op (got %q)", f.location(), op)
-			require.NotEmpty(t, op, "%s: board-payload requires op=", f.location())
-		} else {
-			assert.Empty(t, op, "%s: op= belongs to board-payload fences only", f.location())
-		}
-	}
-	// The catalogs' machine-validated classes exist at all: board
-	// payloads to validate, workflow specs to validate.
-	assert.Greater(t, kinds["board-payload"], 0, "board catalog: kind=board-payload fences must exist")
-	assert.GreaterOrEqual(t, kinds["workflow-spec"], 5, "workflow catalog: the canonical DAGs ride kind=workflow-spec fences")
-}
-
-// TestPatternDocs_BoardPayloadFences_PassRealValidator: every
-// kind=board-payload fence decodes as ONE strict JSON document and
-// passes the REAL board_validate_file pipeline for its op — the
-// examples are pasteable-verbatim valid (same validator the tool and
-// the CRUD gate run).
-func TestPatternDocs_BoardPayloadFences_PassRealValidator(t *testing.T) {
-	checked := 0
-	for _, f := range extractFences(t) {
-		kind, op := parseFenceInfo(t, f)
-		if kind != "board-payload" {
-			continue
-		}
-		checked++
-		payload, err := decodeBoardPayloadJSON([]byte(f.body))
-		require.NoError(t, err, "%s: fence body must be ONE strict JSON object", f.location())
-		report := validateBoardPayload(op, payload)
-		assert.True(t, report.Valid,
-			"%s: board-payload (op=%s) must pass the real validator — findings: %s",
-			f.location(), op, boardValidateReportJSON(report))
-	}
-	assert.Positive(t, checked, "the board catalogs must carry board-payload fences")
-}
-
-// TestPatternDocs_WorkflowSpecFences_PassRealValidation: every
-// kind=workflow-spec fence parses (JSON or YAML, single document) and
-// passes the REAL spec validation workflow_create applies
-// (ParseSpec + ValidateSpec, nil predecessor schemas, empty defaults).
-func TestPatternDocs_WorkflowSpecFences_PassRealValidation(t *testing.T) {
-	checked := 0
-	for _, f := range extractFences(t) {
-		kind, _ := parseFenceInfo(t, f)
-		if kind != "workflow-spec" {
-			continue
-		}
-		checked++
-		specJSON, err := specJSONFromFence(f.body)
-		require.NoError(t, err, "%s: fence body must be a single JSON/YAML spec document", f.location())
-		spec, err := wf.ParseSpec(json.RawMessage(specJSON))
-		require.NoError(t, err, "%s: ParseSpec", f.location())
-		errs := wf.ValidateSpec(spec, nil, wf.DefaultsBlock{})
-		assert.Empty(t, errs, "%s: workflow-spec must pass the real validation", f.location())
-	}
-	assert.GreaterOrEqual(t, checked, 5, "the workflow catalog carries at least five canonical DAGs")
-}
-
-// specJSONFromFence mirrors the API's dialect handling (workflow_create
-// honors the field name specYaml): valid JSON passes through, otherwise
-// a single YAML document is converted; a second document is refused.
-func specJSONFromFence(body string) (string, error) {
-	trimmed := strings.TrimSpace(body)
-	if trimmed == "" {
-		return "", fmt.Errorf("empty spec")
-	}
-	if json.Valid([]byte(trimmed)) {
-		return trimmed, nil
-	}
-	dec := yaml.NewDecoder(strings.NewReader(trimmed))
-	var doc any
-	if err := dec.Decode(&doc); err != nil {
-		return "", fmt.Errorf("spec is neither JSON nor YAML: %w", err)
-	}
-	var extra any
-	if err := dec.Decode(&extra); err != io.EOF {
-		return "", fmt.Errorf("spec must be a single document")
-	}
-	out, err := json.Marshal(doc)
-	if err != nil {
-		return "", fmt.Errorf("cannot normalize YAML spec: %w", err)
-	}
-	return string(out), nil
 }
