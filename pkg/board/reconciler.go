@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -64,13 +65,13 @@ const (
 // sweep itself is stateless between passes apart from the watermark).
 type Reconciler struct {
 	svc *Service
-	// obsPruneLast stamps the S7 observation-trail prune's last run
-	// (zero = never). Instance-scoped on purpose (review r1: no
-	// package-level mutable state — test reconcilers must not couple
-	// to one shared timestamp); touched only from Start's single
-	// sweep loop and manual Sweeps, and a racing duplicate prune is a
-	// harmless idempotent DELETE.
-	obsPruneLast time.Time
+	// obsPruneNanos stamps the S7 observation-trail prune's last run
+	// (unix nanos; 0 = never). Instance-scoped (review r1: no
+	// package-level mutable state) AND synchronized (review r2: the
+	// concurrent-Sweep pattern — reconciler_kill_test's four parallel
+	// sweeps — is a designed standing shape, so the gate check+stamp
+	// is a CompareAndSwap, never an unsynchronized read/write pair).
+	obsPruneNanos atomic.Int64
 }
 
 // NewReconciler constructs the reconciler over a Service.
@@ -1466,26 +1467,42 @@ func (s *Service) rc4Net(ctx context.Context, cutoff time.Time) (int, error) {
 }
 
 // observationPruneDue reports whether the S7 trail's retention pass is
-// due at now — the pure gate maybePruneObservations consults (zero
-// value = never run = due). Split out so the gate semantics are
-// directly pinnable without waiting an hour.
-func (r *Reconciler) observationPruneDue(now time.Time) bool {
-	return r.obsPruneLast.IsZero() || now.Sub(r.obsPruneLast) >= ObservationPruneInterval
+// due at now given its last run — the pure gate maybePruneObservations
+// consults (zero last = never run = due). Split out so the gate
+// semantics are directly pinnable without waiting an hour.
+func observationPruneDue(last, now time.Time) bool {
+	return last.IsZero() || now.Sub(last) >= ObservationPruneInterval
 }
 
 // maybePruneObservations runs the S7 trail's retention pass at most
 // once per ObservationPruneInterval (the boundary itself is
 // observation.go's contract: per-task cap + TTL; board_events keeps
-// the permanent record). Fail-open inside PruneObservationTrail; the
-// stamp is written BEFORE the pass runs (a failed pass retried only
-// after the interval — the DELETE is idempotent either way).
+// the permanent record). Fail-open inside PruneObservationTrail. The
+// check+stamp is one CompareAndSwap over obsPruneNanos: concurrent
+// Sweeps (the kill-test pattern) race on the GATE only through the
+// atomic, and exactly one caller runs the pass (the DELETE is
+// idempotent regardless — the CAS is belt and braces, not a
+// correctness dependency). A failed pass retries only after the
+// interval (bounded, converges).
 func (r *Reconciler) maybePruneObservations(ctx context.Context) {
-	now := time.Now()
-	if !r.observationPruneDue(now) {
+	nowNanos := time.Now().UnixNano()
+	last := r.obsPruneNanos.Load()
+	if !observationPruneDue(unixNanoTime(last), time.Unix(0, nowNanos)) {
 		return
 	}
-	r.obsPruneLast = now
+	if !r.obsPruneNanos.CompareAndSwap(last, nowNanos) {
+		return // a concurrent sweep just stamped the interval — its pass covers us
+	}
 	r.svc.PruneObservationTrail(ctx)
+}
+
+// unixNanoTime renders the atomic's nanos as a Time for the pure gate
+// (zero nanos = the zero Time = due).
+func unixNanoTime(nanos int64) time.Time {
+	if nanos == 0 {
+		return time.Time{}
+	}
+	return time.Unix(0, nanos)
 }
 
 // Start runs the periodic sweep until ctx is canceled (the app's

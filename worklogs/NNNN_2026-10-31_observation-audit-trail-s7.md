@@ -42,14 +42,18 @@ Verdict CHANGES_REQUESTED; every finding addressed:
 
 Re-verified at the remediation head: full pkg/board integration (45.7s), api/internal/app, pkg/mcp, `make fmt-check`, `golangci-lint run ./...` 0 issues.
 
-## 5. What was deliberately NOT done
+## 5. Review round 2 (AI reviewer, head 30a2e1520) — remediated
+
+Verdict CHANGES_REQUESTED on exactly ONE blocking finding (six of seven r1 findings verified fixed, all three new pins mutation-verified red under their behavior breaks): my r1 de-globalization of the prune gate DROPPED THE ATOMICS — the instance field `obsPruneLast time.Time` raced under the Reconciler's designed concurrent-Sweep pattern (`TestKill_ExpiredLeasesReclaimedExactlyOnce` spawns four parallel Sweeps; `-race -tags=integration` deterministically red — my in-code "touched only from Start's single loop" premise was falsified by the repo's own kill-test). Remediation: `Reconciler.obsPruneNanos atomic.Int64`; the check+stamp is ONE CompareAndSwap (a losing racer skips — its winner's pass covers it); the pure gate became the package-level `observationPruneDue(last, now)` (unit-pinned), plus `TestObservationPruneGateConcurrentSweeps` gives the -race detector the contended shape deliberately. Verified: the kill test alone AND the full `-race -tags=integration ./pkg/board` suite green (48.4s), lint 0, fmt-check green.
+
+## 6. What was deliberately NOT done
 
 - **No per-task filter argument on `board_health`** — the charter offers "extend board_health OR a per-task audit read"; the additive window satisfies it at zero signature cost. `Service.TaskObservationTrail` is the per-task read, public for whichever surface wants it next; threading a filter arg through MCP client → loopback → REST → interface → mocks is a whole-lane blast radius for marginal gain, in exactly the files the pending merges conflict.
 - **No design-0072 amendment** — 0072's roadmap tracks bus consumers; S7 is not a consumer (it records at the decision seams the engine already owns). The plane relationship (ledger / bus / retained window) is documented in observation.go's header and monitoring.md.
 - **No frontend health-panel rendering** — the orchestrator surface is the MCP/REST read; the panel can render `observation_events` when a human asks for it.
 - **No summarization job for aged-out rows** — "older summarized or pruned per platform conventions": the summary IS the board_events ledger (already written, already permanent); a separate summarizer would duplicate it.
 
-## 6. Merge notes for the orchestrator
+## 7. Merge notes for the orchestrator
 
 - Base is the S4∪S5 union; S6 (`s6-bus-unification`) merges on top — my `emitLease` edit (trail row before bus sink) and the rc1 obsNudged loop are the only shared-region edits, both additive to what S6's stamp-events work touches (`stamp.go`'s success arm gains one call; S6's `WithStampSink` sits in the same file but different seam).
 - Migration 000055 is the next number after S5's 000054 on this line; if another lane takes 000055 first, renumber mechanically (the file references in observation.go's comments move with it via grep).
