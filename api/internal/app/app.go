@@ -1813,16 +1813,10 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 			// leaves writes unaffected; the UI's reseed belt covers a
 			// dropped projection.
 			//
-			// S6 (design 0072): when the board eventbus is armed the
-			// projection is BUS-FIRST — one board.{project}.event
-			// entry per committed row on the workspace stream (plus
-			// task.{id}.stage_changed for stage moves and
-			// task.{id}.stamped for landed assignee stamps), served to
-			// SSE consumers by the per-replica join group rendering
-			// the SAME frames. The v1 point-to-point leg below remains
-			// the verbatim fallback (unarmed default, per-event publish
-			// failure) — and on bus success it is NOT also called: the
-			// retired leg stays retired (pinned).
+			// S6 (design 0072): the install choice — bus-first when the
+			// arming above wired a producer, the v1 point-to-point leg
+			// verbatim otherwise (and per-event on any publish
+			// failure).
 			if boardPub := boardBusPublisherOrV1(boardBusPub, boardV1Publisher); boardPub != nil {
 				boardSvc.SetEventPublisher(boardPub)
 				boardReconciler.SetEventPublisher(boardPub)
