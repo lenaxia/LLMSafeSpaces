@@ -492,7 +492,9 @@ func (p *boardBusPublisher) publishStageChanged(ctx context.Context, scope board
 	// source is the row's actor kind (server-derived) — never the
 	// caller-supplied event id, which a client could prefix to forge
 	// the field (r1 review finding 2).
-	source := "user"
+	// source is the actor kind as WRITTEN; an absent/unparseable actor
+	// attests nothing (empty string — never a defaulted attribution).
+	source := ""
 	actorSession := ""
 	if len(evt.Actor) > 0 {
 		var a struct {
@@ -501,9 +503,7 @@ func (p *boardBusPublisher) publishStageChanged(ctx context.Context, scope board
 		}
 		if json.Unmarshal(evt.Actor, &a) == nil {
 			actorSession = a.SessionID
-			if a.Kind == "system" {
-				source = "system"
-			}
+			source = a.Kind
 		}
 	}
 	if err := p.tr.publishSoft(ctx, scope.workspaceID, eventbus.TaskStageTopic(taskID),
@@ -622,27 +622,44 @@ func (j *boardSSEJoin) syncOnce(ctx context.Context) {
 		cctx, cancel := context.WithCancel(ctx)
 		j.live[id] = cancel
 		j.wg.Add(1)
-		go func(workspaceID string) {
+		go func(workspaceID string, cancel context.CancelFunc) {
 			defer j.wg.Done()
+			// r1 robustness 1 (actually landed r2): a consumer that
+			// cannot start (busFor fails — a transient Redis blip at
+			// discovery time) or exits on a precondition failure
+			// RETIRES its live entry, so the NEXT sync re-arms it. A
+			// one-time blip parks the consumer for one interval,
+			// never for the process lifetime.
+			retire := func() {
+				j.mu.Lock()
+				defer j.mu.Unlock()
+				if _, still := j.live[workspaceID]; still {
+					delete(j.live, workspaceID)
+					cancel()
+				}
+			}
 			bus, err := j.tr.busFor(cctx, workspaceID)
 			if err != nil {
-				slog.Warn("board: SSE join — stream unwireable, consumer parked for this workspace",
+				slog.Warn("board: SSE join — stream unwireable this sync, the next discovery retries",
 					"workspace", workspaceID, "err", err.Error())
+				retire()
 				return
 			}
 			boardBusSSEJoined.Add(1)
-			err = bus.Consume(cctx, eventbus.ConsumeOptions{
-				Group: j.group, Consumer: j.consumer,
-				Topics:  []string{"board.*.event", "task.*.stamped"},
-				StartAt: eventbus.StartLive,
+			if err := bus.Consume(cctx, eventbus.ConsumeOptions{
+				Group:    j.group,
+				Consumer: j.consumer,
+				Topics:   []string{"board.*.event", "task.*.stamped"},
+				StartAt:  eventbus.StartLive,
 				OnError: func(msg eventbus.Message, err error) {
 					slog.Warn("board: SSE join consumer round failed (retrying)", "workspace", workspaceID, "err", err.Error())
 				},
-			}, j.handler)
-			if err != nil {
-				slog.Error("board: SSE join consumer exited", "workspace", workspaceID, "err", err.Error())
+			}, j.handler); err != nil {
+				slog.Error("board: SSE join consumer exited — the next discovery sync re-arms",
+					"workspace", workspaceID, "err", err.Error())
+				retire()
 			}
-		}(id)
+		}(id, cancel)
 	}
 	for id, cancel := range j.live {
 		if want[id] {

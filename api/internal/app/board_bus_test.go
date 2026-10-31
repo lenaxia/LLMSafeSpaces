@@ -536,13 +536,14 @@ func TestBoardBusPublisher_StageChangedHonesty(t *testing.T) {
 		"an unparseable payload publishes NO stage_changed entry")
 }
 
-// r1 review robustness 1: a consumer that cannot start (busFor fails
-// at discovery time) RETIRES its live entry — the next sync retries.
-// A one-time Redis blip parks the consumer for one interval, never
-// for the process lifetime.
+// r1 robustness 1 (landed r2 after a false first claim — the record
+// owns it): a consumer whose wire fails RETIRES its live entry, so the
+// NEXT sync re-arms it. The pin is deterministic in both directions:
+// registration is asserted SYNCHRONOUSLY inside syncOnce before any
+// Eventually runs (no first-check race), the retire is observed as the
+// entry leaving live (times out RED without the retire code), and the
+// healed-wire re-arm proves the next sync actually retries.
 func TestBoardSSEJoin_ConsumerRetiresOnWireFailure(t *testing.T) {
-	// Phase 1: the transport is dead at discovery time — the consumer
-	// must retire, leaving live empty (the retry precondition).
 	mr := miniredis.RunT(t)
 	tr := newBoardBusClient(mr.Addr(), "", "board events")
 	join := newBoardSSEJoin(tr, handlers.BoardEventBusHandler(eventbroker.NewUserEventBroker(), nil, busTestLogger{}),
@@ -550,27 +551,27 @@ func TestBoardSSEJoin_ConsumerRetiresOnWireFailure(t *testing.T) {
 	require.NotNil(t, join)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	mr.Close() // the wire dies BEFORE discovery
-	go join.Start(ctx)
+
+	// The wire dies BEFORE the consumer's busFor; syncOnce still
+	// REGISTERS the entry synchronously (asserted — no scheduling
+	// dependence), and the doomed goroutine must then retire it.
+	mr.Close()
+	join.syncOnce(ctx)
+	join.mu.Lock()
+	require.Len(t, join.live, 1, "syncOnce registers the consumer before its wire attempt")
+	join.mu.Unlock()
 	require.Eventually(t, func() bool {
 		join.mu.Lock()
 		defer join.mu.Unlock()
 		return len(join.live) == 0
-	}, 3*time.Second, 20*time.Millisecond, "a failed wire retires the live entry — the next sync retries")
+	}, 3*time.Second, 10*time.Millisecond,
+		"a failed wire retires the live entry — the next sync retries (RED without the retire)")
 
-	// Phase 2 (the healthy contrast): a live transport leaves the
-	// consumer registered — retire is failure-only, not churn.
+	// The re-arm: heal the wire, run the next sync — the consumer group
+	// appears on the healed stream.
 	mr2 := miniredis.RunT(t)
-	tr2 := newBoardBusClient(mr2.Addr(), "", "board events")
-	join2 := newBoardSSEJoin(tr2, handlers.BoardEventBusHandler(eventbroker.NewUserEventBroker(), nil, busTestLogger{}),
-		func(context.Context) ([]string, error) { return []string{"ws-1"}, nil })
-	ctx2, cancel2 := context.WithCancel(context.Background())
-	defer cancel2()
-	go join2.Start(ctx2)
-	require.Eventually(t, func() bool {
-		join2.mu.Lock()
-		defer join2.mu.Unlock()
-		return len(join2.live) == 1
-	}, 3*time.Second, 20*time.Millisecond, "a healthy consumer stays live")
-	assert.Equal(t, 1, joinGroupCount(t, mr2.Addr(), "ws-1"), "teardown has not run; the group persists")
+	tr.client = redis.NewClient(&redis.Options{Addr: mr2.Addr()})
+	join.syncOnce(ctx)
+	require.Eventually(t, func() bool { return joinGroupCount(t, mr2.Addr(), "ws-1") == 1 },
+		3*time.Second, 20*time.Millisecond, "the next sync re-arms the consumer on the healed wire")
 }

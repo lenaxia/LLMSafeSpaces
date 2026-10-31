@@ -26,15 +26,13 @@
 //	board.{project_id}.event     one committed board_events row (SSE join)
 //	lease.{task_id}.nudged       the nudge ladder sent its sentinel
 //	lease.{task_id}.wedge_verdict the ladder ruled a claim wedged
-//	lease.{task_id}.renewed      a ladder rung answered alive
-//	lease.{task_id}.reclaimed    a lapsed claim was reclaimed
-//	lease.{task_id}.renewed      the ladder renewed a lease (design
-//	                             0072 S4: the observation plane's
-//	                             renewal decisions, source-tagged)
+//	lease.{task_id}.renewed      a ladder rung answered alive (S4:
+//	                             the observation plane's renewal
+//	                             decisions, source-tagged)
 //	lease.{task_id}.reclaimed    the ladder reclaimed a lapsed claim
-//	                             (design 0072 S4: the lapse verdicts
-//	                             and reclaims the 2026-10-30 incident
-//	                             had to reconstruct by forensics)
+//	                             (S4: the lapse verdicts and reclaims
+//	                             the 2026-10-30 incident had to
+//	                             reconstruct by forensics)
 //
 // Subscriptions are topic PATTERNS with `*` (any ONE segment) and a
 // trailing `**` (one or more remaining segments): "session.*.idle"

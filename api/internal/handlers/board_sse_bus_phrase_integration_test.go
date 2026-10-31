@@ -6,7 +6,9 @@
 package handlers
 
 // board_sse_bus_phrase_integration_test.go — the r1 review's parity
-// gap, closed: the bus-join render parity pin ran with a nil pool, so
+// gap, closed (the function name rides the
+// TestIntegrationBoardSSELiveProjection prefix so the CI step's -run
+// filter executes it): the bus-join render parity pin ran with a nil pool, so
 // the phrase-translation step was a no-op on BOTH legs — exactly the
 // hole the dead-ctx regression slipped through (the v1 leg's
 // translation silently degraded raw while the bus leg translated
@@ -31,7 +33,7 @@ import (
 	"github.com/lenaxia/llmsafespaces/pkg/eventbus"
 )
 
-func TestIntegrationBoardSSEBusJoinPhraseParity(t *testing.T) {
+func TestIntegrationBoardSSELiveProjectionBusJoinPhraseParity(t *testing.T) {
 	dsn := os.Getenv("TEST_DATABASE_URL")
 	if dsn == "" {
 		dsn = "postgres://postgres:testpass@localhost:5433/llmsafespaces_test?sslmode=disable"
