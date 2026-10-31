@@ -144,6 +144,11 @@ type Service struct {
 	// 0072 S4 — the observation plane). Nil = inert (nothing is
 	// projected; the ladder itself is unchanged).
 	leaseEvents LeaseEventSink
+	// busySrc answers "is this assignee mid-turn right now?" for the
+	// read edge (RC-C S2 badge honesty + the busy TTL — busy.go). Nil
+	// = inert: nothing is ever reported busy; claimed rows render
+	// claimed-but-quiet, never the dishonest spin.
+	busySrc AssigneeBusySource
 	// redispatcher delivers the #1959 bounce re-dispatch turn to the
 	// ORIGINAL implementer's existing session (the ruling's
 	// bounce-target semantics). Nil = no delivery seam: the bounce

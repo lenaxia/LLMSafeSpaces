@@ -599,6 +599,17 @@ func (s *Service) spawnSync(ctx context.Context, claim *Claim) {
 // live worker killed on an unanswerable question.
 func (s *Service) claimStillLive(ctx context.Context, taskID, token string) bool {
 	var n int
+	// The fault seam (kill-pins): an armed failpoint fails the re-check
+	// like a DB error — the b1a73e79c regression (error → LIVE, never
+	// an abort on an unanswerable question) is pinnable only through
+	// an injectable error on exactly this query.
+	if s.failpoint != nil {
+		if ferr := s.failpoint("stamp.liveness_recheck"); ferr != nil {
+			slog.WarnContext(ctx, "board: spawn-stamp liveness re-check unreadable — treating the claim as live (no abort on an unanswerable question)",
+				"task_id", taskID, "err", ferr.Error())
+			return true
+		}
+	}
 	if err := s.q().QueryRow(ctx,
 		`SELECT count(*) FROM tasks WHERE id=$1 AND claim_token=$2`, taskID, token).Scan(&n); err != nil {
 		slog.WarnContext(ctx, "board: spawn-stamp liveness re-check unreadable — treating the claim as live (no abort on an unanswerable question)",

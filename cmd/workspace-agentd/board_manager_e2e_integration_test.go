@@ -408,6 +408,32 @@ func (s *boardE2ESeam) managerRearm(c *gin.Context) {
 	c.JSON(http.StatusOK, t)
 }
 
+// managerDepose mirrors the production pod seam's depose route (S5,
+// the DEPOSED directive — the manager route's salvage handoff).
+func (s *boardE2ESeam) managerDepose(c *gin.Context) {
+	fields, ws, owner, session, ok := s.resolve(c)
+	if !ok {
+		return
+	}
+	var req struct {
+		Branch    string `json:"branch"`
+		PR        string `json:"pr"`
+		Head      string `json:"head"`
+		State     string `json:"state"`
+		Note      string `json:"note"`
+		RequestID string `json:"requestId"`
+	}
+	_ = json.Unmarshal(boardE2EFieldsJSON(fields), &req)
+	ptr := board.SalvagePointer{Branch: req.Branch, PR: req.PR, Head: req.Head, State: req.State, Note: req.Note}
+	t, err := s.svc.DeposeTask(c.Request.Context(), s.managerActor(owner, ws, session),
+		"", c.Param("id"), ptr, req.RequestID)
+	if err != nil {
+		s.engineError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, t)
+}
+
 func boardE2EEventCount(t *testing.T, ctx context.Context, pool *pgxpool.Pool) int {
 	t.Helper()
 	var n int
@@ -491,6 +517,7 @@ func TestIntegrationBoardManagerE2E(t *testing.T) {
 	b.POST("/epics/:id/activate", seam.epicActivate)
 	b.POST("/tasks/:id/move-stage", seam.managerMoveStage)
 	b.POST("/tasks/:id/rearm", seam.managerRearm)
+	b.POST("/tasks/:id/depose", seam.managerDepose)
 	b.GET("/config", seam.getConfig)
 	b.PUT("/config", seam.setConfig)
 
@@ -655,6 +682,86 @@ func TestIntegrationBoardManagerE2E(t *testing.T) {
 	require.NoError(t, json.Unmarshal([]byte(resp.Body), &moved))
 	assert.Equal(t, board.StageBacklog, moved.Stage)
 	assert.Zero(t, moved.Attempts, "re-pooled with the fresh-judgment ledger")
+
+	// --- E2 (S5, the DEPOSED directive): the salvage handoff end to
+	// end — the manager tool through the real dispatch → wire → seam →
+	// engine → PG. Happy arm: a LAPSED in_progress claim (staged in
+	// the incident's shape — assignee stamped, lease expired, quiet)
+	// is deposed with the full pointer; the fields survive the chain
+	// byte-for-byte and land on the row; the requeue is rc1-parity.
+	_, err = pool.Exec(ctx, `
+		UPDATE tasks SET stage='in_progress', stage_entered_at=now(),
+			claim_token=gen_random_uuid(), assignee_session='sess-deposed-e2e',
+			lease_expires_at=now()-interval '5 minutes', attempts=1
+		WHERE id=$1`, task.ID)
+	require.NoError(t, err)
+
+	resp, err = dispatchBoardManagerTool(ctx, client, e2eMCPPassword, "board_depose_task", map[string]any{
+		"lsp_injected_session": mgrSession,
+		"taskId":               task.ShortID,
+		"branch":               "feat/sprint-board-story-vocabulary",
+		"pr":                   "1997",
+		"head":                 "65e4d9dcd",
+		"state":                "full rename sweep pushed; worklog 1237, CHANGELOG row",
+		"note":                 "verify against the criteria, then iterate with the reviewer",
+	}, "sa-token", wsPod)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, resp.Status, resp.Body)
+	var deposed board.Task
+	require.NoError(t, json.Unmarshal([]byte(resp.Body), &deposed))
+	assert.Equal(t, board.StageBacklog, deposed.Stage, "the lapsed claim requeued")
+	require.NotNil(t, deposed.Salvage, "the read edge carries the pointer")
+	assert.Equal(t, "feat/sprint-board-story-vocabulary", deposed.Salvage.Branch)
+	assert.Equal(t, "1997", deposed.Salvage.PR)
+
+	var rawSalvage []byte
+	require.NoError(t, pool.QueryRow(ctx, `SELECT salvage FROM tasks WHERE id=$1`, task.ID).Scan(&rawSalvage))
+	var onRow board.SalvagePointer
+	require.NoError(t, json.Unmarshal(rawSalvage, &onRow))
+	assert.Equal(t, board.SalvagePointer{
+		Branch: "feat/sprint-board-story-vocabulary", PR: "1997", Head: "65e4d9dcd",
+		State: "full rename sweep pushed; worklog 1237, CHANGELOG row",
+		Note:  "verify against the criteria, then iterate with the reviewer",
+	}, onRow, "the pointer fields survive the agentd→wire→seam→engine chain verbatim")
+
+	var deposeEvents int
+	require.NoError(t, pool.QueryRow(ctx,
+		`SELECT count(*) FROM board_events WHERE action='depose' AND item_id=$1`, task.ID).Scan(&deposeEvents))
+	assert.Equal(t, 1, deposeEvents, "the deposition is audit-logged")
+	var depAssignee *string
+	require.NoError(t, pool.QueryRow(ctx, `SELECT assignee_session FROM tasks WHERE id=$1`, task.ID).Scan(&depAssignee))
+	require.Nil(t, depAssignee, "the deposed session no longer holds the row")
+
+	// Unhappy arm: a LIVE claim refuses through the same real chain
+	// (the pinned guard, engine-grade 409 claim_live).
+	_, err = pool.Exec(ctx, `
+		UPDATE tasks SET stage='in_progress', stage_entered_at=now(),
+			claim_token=gen_random_uuid(), assignee_session='sess-alive-e2e',
+			lease_expires_at=now()+interval '30 minutes', salvage=NULL
+		WHERE id=$1`, task.ID)
+	require.NoError(t, err)
+
+	_, err = dispatchBoardManagerTool(ctx, client, e2eMCPPassword, "board_depose_task", map[string]any{
+		"lsp_injected_session": mgrSession,
+		"taskId":               task.ShortID,
+		"state":                "should never land",
+	}, "sa-token", wsPod)
+	require.Error(t, err, "a live healthy claim refuses deposition — the real-chain 409")
+	assert.Contains(t, err.Error(), "409")
+	assert.Contains(t, err.Error(), "claim_live")
+	var liveSalvage []byte
+	require.NoError(t, pool.QueryRow(ctx, `SELECT salvage FROM tasks WHERE id=$1`, task.ID).Scan(&liveSalvage))
+	assert.Empty(t, liveSalvage, "the refused depose wrote no pointer")
+	require.NoError(t, pool.QueryRow(ctx,
+		`SELECT count(*) FROM board_events WHERE action='depose' AND item_id=$1`, task.ID).Scan(&deposeEvents))
+	assert.Equal(t, 1, deposeEvents, "and no second audit event")
+
+	// Leave the row parked for the sections below.
+	_, err = pool.Exec(ctx, `
+		UPDATE tasks SET stage='backlog', stage_entered_at=now(),
+			claim_token=NULL, lease_expires_at=NULL, assignee_session=NULL
+		WHERE id=$1`, task.ID)
+	require.NoError(t, err)
 
 	// --- G+H (#1837, relabeled past main's section E): composed
 	// file→store byte-identical + corruption refusal — the real

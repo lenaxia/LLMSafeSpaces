@@ -173,3 +173,50 @@ func (s *BoardSuite) TestPin_StampExhaustionRunsUnstampedUntilBackfill() {
 	s.Require().NotNil(row.Assignee, "the claim is observable again (eventually-true, never write-once)")
 	s.Equal("sess-healed", *row.Assignee)
 }
+
+// TestPin_ClaimStillLiveErrorAnswersLive — the b1a73e79c regression
+// pin (review r1's hard gate): the spawn-stamp guard's liveness
+// RE-CHECK erroring must answer LIVE (no abort), never abort a worker
+// on an unanswerable question. Pre-fix, the error branch returned
+// false and the aborter fired on exactly this shape — the identical
+// kill-a-live-worker bug could be reintroduced undetected without this
+// fault seam. The stamp write ALSO exhausts here (both belts under one
+// outage), so the pin exercises the full worst case: stamp lost AND
+// the re-check unanswerable → the worker still runs, back-fill heals.
+func (s *BoardSuite) TestPin_ClaimStillLiveErrorAnswersLive() {
+	ws := s.seedWorkspace()
+	p := s.seedProject(ws, 1)
+	e := s.seedEpic(p, board.EpicActive)
+	s.seedTask(e, "recheck-unreadable", nil, false)
+
+	// The full-outage shape: every stamp-write attempt fails AND the
+	// post-exhaustion liveness re-check is unanswerable.
+	s.fps.armAt("stamp.write", errors.New("injected outage: db down"))
+	s.fps.armAt("stamp.liveness_recheck", errors.New("injected outage: re-check unreadable"))
+	defer s.fps.disarm("stamp.write")
+	defer s.fps.disarm("stamp.liveness_recheck")
+
+	c := s.claimOrFail(ws)
+
+	row := s.rawTask(c.TaskID)
+	s.Nil(row.Assignee, "the stamp never landed")
+	s.Require().GreaterOrEqual(s.fps.hitsFor("stamp.liveness_recheck"), 1,
+		"the pin actually drove the error branch (not a healthy-recheck pass)")
+	s.Equal(0, s.aborter.count(),
+		"an UNREADABLE re-check is live-by-default — no abort on an unanswerable question (b1a73e79c)")
+	s.Require().NotNil(row.ClaimToken, "the live claim is untouched")
+	s.Equal(c.ClaimToken, *row.ClaimToken)
+
+	// Healing: the outage clears and the next claim evidence back-fills
+	// the stamp — the eventually-true belt owns the recovery end-to-end.
+	s.fps.disarm("stamp.write")
+	s.fps.disarm("stamp.liveness_recheck")
+	_, err := s.svc.Heartbeat(context.Background(),
+		board.Actor{Kind: board.ActorUser, UserID: testUser, Surface: board.SurfaceAgent,
+			ClaimToken: c.ClaimToken, SessionID: "sess-healed-recheck"},
+		"", c.ShortID, time.Now().UTC())
+	s.Require().NoError(err)
+	row = s.rawTask(c.TaskID)
+	s.Require().NotNil(row.Assignee, "the claim is observable again after the outage")
+	s.Equal("sess-healed-recheck", *row.Assignee)
+}
