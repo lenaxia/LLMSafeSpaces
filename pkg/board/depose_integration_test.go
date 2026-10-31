@@ -223,10 +223,31 @@ func (s *BoardSuite) TestDepose_LiveClaimRefuses() {
 	require.ErrorAs(s.T(), err, &guard)
 	require.Equal(s.T(), board.GuardClaimLive, guard.Code)
 
+	// Arm 3b — busy AT CAP (review r1's lockout finding): past
+	// boardBusyRenewCap consecutive busy-only renewals the LADDER
+	// stops honoring Busy (it proceeds toward the wedge verdict) — the
+	// depose guard must refuse on the SAME exhausted truth, or the
+	// stuck busy-true zombie row becomes UNDEPOSABLE (the exact class
+	// this directive exists to salvage).
+	_, execErr := s.pool.Exec(ctx, `UPDATE tasks SET busy_renews=3 WHERE id=$1`, t.ID)
+	s.Require().NoError(execErr)
+	lives.set(assignee, board.AssigneeObservation{Observed: true, Exists: true, Busy: true})
+	out, err := s.svc.DeposeTask(ctx, s.agentManager(ws, "orchestrator-depose"), "", t.ShortID, deposePtr(), "")
+	s.Require().NoError(err, "busy evidence exhausted for the epoch — depose proceeds as the ladder would")
+	require.Equal(s.T(), board.StageBacklog, out.Stage)
+	require.NotNil(s.T(), s.salvageOnRow(t.ID), "the zombie row took its salvage pointer")
+
+	// Re-claim so Arms 4-5 exercise an in_progress row again.
+	s.clearTaskBackoff(t.ID)
+	c2 := s.claimOrFail(ws)
+	require.Equal(s.T(), t.ID, c2.TaskID)
+	s.expireLease(t.ID)
+	lives.set(assignee, board.AssigneeObservation{Observed: true, Exists: true})
+
 	// Arm 4 — the post-nudge heartbeat (the response channel): a
 	// heartbeat later than the sentinel is the strong alive signal,
 	// whatever the observation seam says (here: dead-evidence).
-	_, execErr := s.pool.Exec(ctx, `
+	_, execErr = s.pool.Exec(ctx, `
 		UPDATE tasks SET nudge_id='n-1', nudged_at=now()-interval '2 minutes',
 			last_heartbeat_at=now()-interval '1 minute' WHERE id=$1`, t.ID)
 	s.Require().NoError(execErr)
@@ -235,7 +256,7 @@ func (s *BoardSuite) TestDepose_LiveClaimRefuses() {
 	require.ErrorAs(s.T(), err, &guard)
 	require.Equal(s.T(), board.GuardClaimLive, guard.Code)
 	require.Equal(s.T(), board.StageInProgress, s.rawTask(t.ID).Stage, "still never deposed")
-	require.Equal(s.T(), 0, s.countEvents("depose"))
+	require.Equal(s.T(), 1, s.countEvents("depose"))
 
 	// Arm 5 — degradable honesty: quiet + expired + NO observation
 	// source deposes on the wall-clock lease alone (the S1 trust
@@ -246,7 +267,7 @@ func (s *BoardSuite) TestDepose_LiveClaimRefuses() {
 		`UPDATE tasks SET nudge_id=NULL, nudged_at=NULL, last_heartbeat_at=NULL WHERE id=$1`, t.ID)
 	s.Require().NoError(execErr)
 	s.svc = s.newDeposeService(msg, nil)
-	out, err := s.svc.DeposeTask(ctx, s.agentManager(ws, "orchestrator-depose"), "", t.ShortID, deposePtr(), "")
+	out, err = s.svc.DeposeTask(ctx, s.agentManager(ws, "orchestrator-depose"), "", t.ShortID, deposePtr(), "")
 	s.Require().NoError(err)
 	require.Equal(s.T(), board.StageBacklog, out.Stage)
 	require.NotNil(s.T(), s.salvageOnRow(t.ID))

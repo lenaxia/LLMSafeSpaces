@@ -186,6 +186,14 @@ func (f *failpoints) disarm(where string) {
 	delete(f.arm, where)
 }
 
+// hitsFor reports how many times the seam consulted a failpoint site
+// (pins assert their fault path actually ran, not a healthy pass).
+func (f *failpoints) hitsFor(where string) int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return int(f.hits[where])
+}
+
 // BoardSuite is the shared harness: a real PG, a Service with all seams
 // faked, and seed helpers.
 type BoardSuite struct {

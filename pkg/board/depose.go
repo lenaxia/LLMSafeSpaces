@@ -150,22 +150,23 @@ func (s *Service) DeposeTask(ctx context.Context, actor Actor, taskID, shortIDOr
 			// lease — the expired lease IS the lapse evidence (S1).
 			if cur.AssigneeSession != "" {
 				if s.deposeShowsLife(ctx, tx, cur) {
-					return nil, &GuardError{Code: GuardClaimLive, Detail: "the expired claim shows life (movement, mid-turn busy, post-sentinel reaction, or a post-nudge heartbeat) — the ladder would renew it; deposition refused"}
+					return nil, &GuardError{Code: GuardClaimLive, Detail: "the expired claim shows life (movement, un-exhausted mid-turn busy, post-sentinel reaction, or a post-nudge heartbeat) — the ladder would renew it; deposition refused"}
 				}
 			}
-			// The requeue: EXACTLY the rc1 reclaim overlay (failure
-			// counted consecutively, backoff cooldown, episode slots
-			// cleared) plus the salvage pointer — depose accelerates
-			// the reclaim the sweep would perform. attempts stay
-			// untouched (the increment belongs to the next claim).
+			// The requeue: rc1's reclaim statement VERBATIM (same
+			// columns, same overlay: failure counted consecutively,
+			// backoff cooldown, episode slots cleared) plus the salvage
+			// pointer — depose accelerates the reclaim the sweep would
+			// perform. attempts stay untouched (the increment belongs
+			// to the next claim).
 			tag, err := tx.Exec(ctx, `
 				UPDATE tasks SET stage='backlog', stage_entered_at=now(),
 					claim_token=NULL, lease_expires_at=NULL, assignee_session=NULL, implementer_session=NULL,
 					claim_incremented_attempts=false, claim_persona=NULL,
-					nudge_id=NULL, nudged_at=NULL, last_heartbeat_at=NULL, busy_renews=0,
+					nudge_id=NULL, nudged_at=NULL, last_heartbeat_at=NULL,
 					last_attempt_failed=true, failure_count=failure_count+1, last_failure_at=now(),
 					cooldown_until=now()+make_interval(secs=>$2::float8),
-					salvage=$3, updated_at=now()
+					salvage=$3
 				WHERE id=$1 AND stage='in_progress' AND NOT pending_input
 				  AND (lease_expires_at IS NULL OR lease_expires_at < now())`,
 				cur.ID, s.cfg.failureBackoff(cur.FailureCount+1).Seconds(), ptrJSON)
@@ -195,6 +196,12 @@ func (s *Service) DeposeTask(ctx context.Context, actor Actor, taskID, shortIDOr
 			if tag.RowsAffected() == 0 {
 				return nil, &GuardError{Code: GuardStage, Detail: "row moved — server-arbitrated refusal"}
 			}
+		default:
+			// Defensive: the five-stage vocabulary is DB-CHECK-pinned,
+			// but a future sixth stage must fall through to a LOUD
+			// refusal here, never a no-op success payload (review r1's
+			// latent fail-open finding).
+			return nil, &GuardError{Code: GuardStage, Detail: "depose has no enumerated arm for stage " + cur.Stage + " — refusing loud"}
 		}
 		return map[string]any{
 			"task_id":         cur.ID,
@@ -233,17 +240,24 @@ func (s *Service) DeposeTask(ctx context.Context, actor Actor, taskID, shortIDOr
 // alive signal the seamless-lease ladder would renew on? Read under the
 // row lock (the rc1 consult pattern): the row's own heartbeat-vs-nudge
 // ordinal first (server-clock, one domain), then the observation seam's
-// movement/busy/post-sentinel facts.
+// movement/busy/post-sentinel facts. Busy is honored under the SAME
+// cap the ladder enforces (boardBusyRenewCap): past cap consecutive
+// busy-only renewals the ladder treats Busy as EXHAUSTED and proceeds
+// toward the wedge verdict — depose must not refuse on the very truth
+// the ladder itself has stopped believing (review r1's lockout
+// finding: the stuck busy-true zombie row would become UNDEPOSABLE,
+// the exact class this directive exists to salvage).
 func (s *Service) deposeShowsLife(ctx context.Context, q Queryer, cur *Task) bool {
 	var nudgeID *string
 	var nudgedAt, lastHeartbeat *time.Time
+	var busyRenews int32
 	if err := q.QueryRow(ctx,
-		`SELECT nudge_id, nudged_at, last_heartbeat_at FROM tasks WHERE id=$1`, cur.ID).
-		Scan(&nudgeID, &nudgedAt, &lastHeartbeat); err != nil {
+		`SELECT nudge_id, nudged_at, last_heartbeat_at, busy_renews FROM tasks WHERE id=$1`, cur.ID).
+		Scan(&nudgeID, &nudgedAt, &lastHeartbeat, &busyRenews); err != nil {
 		// An unreadable row is the claimStillLive lesson (b1a73e79c):
 		// the unanswerable question must not kill — treat as no
 		// EXTRA life evidence and let the write-side predicate arbitrate.
-		slog.WarnContext(ctx, "board: depose heartbeat-evidence read failed (deferring to the write predicate)",
+		slog.WarnContext(ctx, "board: depose life-evidence read failed (deferring to the write predicate)",
 			"taskId", cur.ID, "error", err.Error())
 	}
 	if nudgedAt != nil && lastHeartbeat != nil && lastHeartbeat.After(*nudgedAt) {
@@ -258,7 +272,8 @@ func (s *Service) deposeShowsLife(ctx context.Context, q Queryer, cur *Task) boo
 	if !ok || !o.Observed {
 		return false // no-evidence — never death, and never a refusal either
 	}
-	return o.MovedSinceLastSweep || o.Busy || o.EventsAfterNudge
+	busyHonored := o.Busy && busyRenews < boardBusyRenewCap
+	return o.MovedSinceLastSweep || busyHonored || o.EventsAfterNudge
 }
 
 // deliverDeposedDirective sends the DEPOSED directive to the deposed

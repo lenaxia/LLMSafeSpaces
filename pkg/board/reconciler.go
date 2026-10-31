@@ -251,6 +251,15 @@ func (r *Reconciler) advanceWatermark(ctx context.Context, cutoff, sweepHigh tim
 	return err
 }
 
+// boardBusyRenewCap bounds the busy-gate's deferral engine-wide (the
+// ladder's own bound, rc1's review round 1 blocking finding): past
+// this many consecutive busy-ONLY renewals in one claim epoch, Busy
+// evidence is exhausted — the ladder proceeds as if busy were false,
+// and S5's depose guard (depose.go) refuses on the SAME exhausted
+// truth (a source latched busy-true forever must neither hold a lease
+// forever nor lock the salvage lever out of the zombie row).
+const boardBusyRenewCap = 3
+
 // rc1Reclaims reclaims every lapsed in_progress row: guarded UPDATE
 // (stage predicate re-checked at write time; SKIP LOCKED lets concurrent
 // sweeps divide the work), attempts untouched (the increment belongs to
@@ -328,7 +337,6 @@ func (s *Service) rc1Reclaims(ctx context.Context) (int, error) {
 	// mid-turn shapes never approach it: the harness timebox bounds a
 	// turn and the next tool call's PART_START is movement evidence
 	// (which RESETS the count).
-	const boardBusyRenewCap = 3
 	decisions := make(map[string]ladderDecision, len(victims))
 	wedgeEvidence := make(map[string]string, len(victims))
 	nudgeIDs := make(map[string]string, len(victims))
