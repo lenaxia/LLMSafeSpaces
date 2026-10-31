@@ -126,6 +126,14 @@ type Task struct {
 	// precedent. Set at the read edge ONLY; the stored row stays
 	// canonical (bounce/reconciler/messenger consumers keep raw).
 	AssigneeSessionDeprecated bool `json:"assignee_session_deprecated,omitempty"`
+	// AssigneeBusy (derived, read-edge only — RC-C S2 badge honesty):
+	// the assignee session is MID-TURN right now (the harness's
+	// derived-busy truth: streaming or an in-flight tool call) AND the
+	// claim's lease is live. False/absent = claimed-but-quiet — idle,
+	// unobserved here, or past the lease without renewal (the busy
+	// TTL: a lapsed claim never spins). Never stored: the answer is a
+	// property of NOW, sampled per read (busy.go's decorate pass).
+	AssigneeBusy bool `json:"assignee_busy,omitempty"`
 	// ImplementerSession is the #1959 bounce-consumer identity: the
 	// session that moved the row to in_review — the ORIGINAL worker the
 	// ruling's bounce re-dispatches. Captured at the forward exit
