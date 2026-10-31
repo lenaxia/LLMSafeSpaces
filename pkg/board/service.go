@@ -68,6 +68,23 @@ func WithNudgeSender(n NudgeSender) Option {
 	return func(s *Service) { s.nudger = n }
 }
 
+// WithLeaseEventSink installs the seamless lease's observation-plane
+// projection (design 0072 S4): the ladder's post-commit decisions —
+// renewals (which rung), wedge verdicts (evidence), reclaims (reason)
+// — reported to the sink. Nil (the default) is the inert posture: the
+// ladder behaves byte-identically, nothing is projected.
+func WithLeaseEventSink(sink LeaseEventSink) Option {
+	return func(s *Service) { s.leaseEvents = sink }
+}
+
+// WithStampSink installs the stamp-event projection (design 0072 S6):
+// every landed assignee stamp (spawn or back-fill) is an event on the
+// bus. Nil = inert (nothing is projected; the stamp semantics are
+// unchanged).
+func WithStampSink(sink StampEventSink) Option {
+	return func(s *Service) { s.stampEvents = sink }
+}
+
 // WithBounceRedispatcher installs the #1959 bounce re-dispatch seam:
 // delivery of a re-dispatch turn (fresh bounce claim token + embedded
 // verdict chain) to the ORIGINAL implementer's EXISTING session — the
@@ -136,6 +153,14 @@ type Service struct {
 	// = inert: nothing is ever reported busy; claimed rows render
 	// claimed-but-quiet, never the dishonest spin.
 	busySrc AssigneeBusySource
+	// leaseEvents projects the ladder's post-commit decisions (design
+	// 0072 S4 — the observation plane). Nil = inert (nothing is
+	// projected; the ladder itself is unchanged).
+	leaseEvents LeaseEventSink
+	// stampEvents projects landed assignee stamps (design 0072 S6 —
+	// the observation plane). Nil = inert (the stamp write's own
+	// semantics — retry, back-fill, stamp_lag — are unchanged).
+	stampEvents StampEventSink
 	// redispatcher delivers the #1959 bounce re-dispatch turn to the
 	// ORIGINAL implementer's existing session (the ruling's
 	// bounce-target semantics). Nil = no delivery seam: the bounce
@@ -159,6 +184,11 @@ type Service struct {
 // SetEventPublisher installs or replaces the §4.6 event projection at
 // wiring time (before first use); nil disables publishing.
 func (s *Service) SetEventPublisher(pub EventPublisher) { s.publisher = pub }
+
+// SetStampSink installs or replaces the stamp-event projection (the
+// WithStampSink option's setter twin — tests mount it on the harness
+// service). nil disables the projection.
+func (s *Service) SetStampSink(sink StampEventSink) { s.stampEvents = sink }
 
 // publishCommitted fans a committed board event to the installed
 // publisher. Called strictly AFTER the writing transaction commits

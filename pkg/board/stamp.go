@@ -84,6 +84,44 @@ const (
 	stampOriginBackfill = "backfill"
 )
 
+// StampEvent is the stamp's event projection (design 0072 S6): every
+// LANDED stamp — the row's assignee identity appearing on the
+// observation plane — is an event, emitted post-write alongside the
+// stamp_lag observation. The stamp writes no board_events row (it is
+// a guarded row write, not a caller action), so the bus entry is its
+// only event surface.
+type StampEvent struct {
+	TaskID      string
+	TaskShortID string
+	ProjectID   string
+	Assignee    string
+	Origin      string // stampOriginSpawn | stampOriginBackfill
+	LagSeconds  float64
+}
+
+// StampEventSink receives landed stamp events. Post-write, fail-open:
+// a sink failure is logged at the sink and never changes board state.
+// Nil = inert (the default — nothing is projected).
+type StampEventSink func(ctx context.Context, ev StampEvent)
+
+// emitStamp hands one landed stamp to the projection. The contract is
+// the EventPublisher's: the sink must be fast and never block the
+// write path — and a sink that panics anyway is CONTAINED here (a
+// broken projection must never take the stamp or its caller down;
+// loud, then on).
+func (s *Service) emitStamp(ctx context.Context, ev StampEvent) {
+	if s.stampEvents == nil {
+		return
+	}
+	defer func() {
+		if r := recover(); r != nil {
+			slog.ErrorContext(ctx, "board: stamp event sink panicked — contained (the stamp itself landed)",
+				"task_id", ev.TaskID, "origin", ev.Origin, "panic", r)
+		}
+	}()
+	s.stampEvents(ctx, ev)
+}
+
 // StampLag exposes the lag histogram for tests and admin surfaces
 // (production code writes; the obs.LoopLastRun precedent).
 func StampLag() *prometheus.HistogramVec { return stampLag }
@@ -129,7 +167,8 @@ func stampBackoff(attempt int) time.Duration {
 // counter and logs at ERROR; exhaustion logs loud and returns
 // landed=false (the back-fill belt owns recovery — the stamp becomes
 // true when the claim's next evidence arrives).
-func (s *Service) writeAssigneeStamp(ctx context.Context, taskID, claimToken, sessionID, stage string) bool {
+func (s *Service) writeAssigneeStamp(ctx context.Context, claim *Claim, sessionID, stage string) bool {
+	taskID, claimToken := claim.TaskID, claim.ClaimToken
 	var lastErr error
 	for attempt := 1; attempt <= stampWriteAttempts; attempt++ {
 		if attempt > 1 {
@@ -162,6 +201,10 @@ func (s *Service) writeAssigneeStamp(ctx context.Context, taskID, claimToken, se
 				taskID, sessionID, claimToken, stage, s.cfg.LeaseDuration.Seconds()).Scan(&lagSeconds)
 			if err == nil {
 				stampLag.WithLabelValues(stampOriginSpawn).Observe(lagSeconds)
+				s.emitStamp(ctx, StampEvent{
+					TaskID: taskID, TaskShortID: claim.ShortID, ProjectID: claim.ProjectID,
+					Assignee: sessionID, Origin: stampOriginSpawn, LagSeconds: lagSeconds,
+				})
 				return true
 			}
 			if errors.Is(err, pgx.ErrNoRows) {
@@ -213,6 +256,10 @@ func (s *Service) backfillAssigneeStamp(ctx context.Context, t *Task, actor Acto
 		// heartbeat's own arm decides renewal); only the observation
 		// plane's key was missing.
 		stampLag.WithLabelValues(stampOriginBackfill).Observe(lagSeconds)
+		s.emitStamp(ctx, StampEvent{
+			TaskID: t.ID, TaskShortID: t.ShortID, ProjectID: t.ProjectID,
+			Assignee: actor.SessionID, Origin: stampOriginBackfill, LagSeconds: lagSeconds,
+		})
 		slog.InfoContext(ctx, "board: assignee stamp back-filled from claim evidence — the observation plane sees the claim again",
 			"task_id", t.ID, "session_id", actor.SessionID, "lag_seconds", lagSeconds)
 	case errors.Is(err, pgx.ErrNoRows):
