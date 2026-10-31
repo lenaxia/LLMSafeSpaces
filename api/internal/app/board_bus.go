@@ -327,10 +327,8 @@ type boardBusPublisher struct {
 	scope boardScopeSource
 	v1    board.EventPublisher
 
-	events     chan board.Event
-	stamps     chan board.StampEvent
-	closeOnce  sync.Once
-	drainClose chan struct{}
+	events chan board.Event
+	stamps chan board.StampEvent
 }
 
 // newBoardBusPublisher wires the S6 producers. Nil transport (the
@@ -343,7 +341,6 @@ func newBoardBusPublisher(tr *boardBusClient, scope boardScopeSource, v1 board.E
 	p := &boardBusPublisher{
 		tr: tr, scope: scope, v1: v1,
 		events: make(chan board.Event, boardBusQueue), stamps: make(chan board.StampEvent, boardBusQueue),
-		drainClose: make(chan struct{}),
 	}
 	go p.drainEvents()
 	go p.drainStamps()
@@ -386,33 +383,15 @@ func (p *boardBusPublisher) StampEventSink(ctx context.Context, ev board.StampEv
 	}
 }
 
-// Close stops the drainers (pending entries flush to v1 first).
-func (p *boardBusPublisher) Close() {
-	if p == nil {
-		return
-	}
-	p.closeOnce.Do(func() { close(p.drainClose) })
-}
-
 // drainEvents is the event leg's single drainer: per-project order
 // preserved (the v1 single-drainer parity), scope resolved at publish
-// time, v1 fallback per event.
+// time, v1 fallback per event. Runs for the process lifetime (the v1
+// leg's drainer has no shutdown either — the write path is done long
+// before shutdown ordering matters).
 func (p *boardBusPublisher) drainEvents() {
 	ctx := context.Background()
-	for {
-		select {
-		case <-p.drainClose:
-			for {
-				select {
-				case evt := <-p.events:
-					p.deliverEvent(ctx, evt)
-				default:
-					return
-				}
-			}
-		case evt := <-p.events:
-			p.deliverEvent(ctx, evt)
-		}
+	for evt := range p.events {
+		p.deliverEvent(ctx, evt)
 	}
 }
 
@@ -484,23 +463,12 @@ func (p *boardBusPublisher) publishStageChanged(ctx context.Context, scope board
 	}
 }
 
-// drainStamps is the stamp leg's drainer (no v1 — pure projection).
+// drainStamps is the stamp leg's drainer (no v1 — pure projection,
+// process lifetime like the event leg).
 func (p *boardBusPublisher) drainStamps() {
 	ctx := context.Background()
-	for {
-		select {
-		case <-p.drainClose:
-			for {
-				select {
-				case ev := <-p.stamps:
-					p.deliverStamp(ctx, ev)
-				default:
-					return
-				}
-			}
-		case ev := <-p.stamps:
-			p.deliverStamp(ctx, ev)
-		}
+	for ev := range p.stamps {
+		p.deliverStamp(ctx, ev)
 	}
 }
 
