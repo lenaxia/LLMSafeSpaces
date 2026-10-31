@@ -1325,6 +1325,34 @@
   
 </li>
         
+          <li class="md-nav__item">
+  <a href="#event-bus-design-0072-s3" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Event bus (design 0072, S3)
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Event bus (design 0072, S3)">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#event-bus-health-model-what-a-healthy-bus-looks-like" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Event bus health model — what a healthy bus looks like
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+        
       </ul>
     </nav>
   
@@ -2576,6 +2604,34 @@
   
 </li>
         
+          <li class="md-nav__item">
+  <a href="#event-bus-design-0072-s3" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Event bus (design 0072, S3)
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Event bus (design 0072, S3)">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#event-bus-health-model-what-a-healthy-bus-looks-like" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Event bus health model — what a healthy bus looks like
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+        
       </ul>
     </nav>
   
@@ -3061,6 +3117,90 @@
 <li><strong><code>LLMSafespacesWakeFailures</code></strong> (warning): the reseed behind the wake is failing — opencode unreachable or store read errors. The stalled entries will not self-resolve; fix the harness path first (agentd logs <code>stall wake failed</code>).</li>
 <li><strong><code>LLMSafeSpacesDeliveryLatencyBudget</code></strong> (warning): Deliver-ack p99 &gt; 1s sustained — fsync latency on the platform volume or WAL contention. Every send on the pod slows; check the volume's write latency and ledger WAL compaction (<code>ledger.compact</code> runs at retention boundaries).</li>
 </ul>
+<h4 id="event-bus-design-0072-s3">Event bus (design 0072, S3)<a class="headerlink" href="#event-bus-design-0072-s3" title="Permanent link">&para;</a></h4>
+<p>The workspace event bus (one Redis/Valkey Stream per workspace, <code>workspace:{id}:events</code>) exports its health surface when <code>AGENTD_EVENTBUS_ADDR</code> arms the bus. Collected every 30s by agentd's health loop (first snapshot at startup) and scraped on the same admin port.</p>
+<table>
+<thead>
+<tr>
+<th>Metric</th>
+<th>Type</th>
+<th>Labels</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>workspace_agentd_eventbus_publishes_total</code></td>
+<td>Counter</td>
+<td><code>workspace_id</code>, <code>topic_family</code>, <code>outcome</code></td>
+<td>Publish outcomes: <code>published</code> / <code>failed</code> (validation or transport). A failed publish falls back to the direct v1 delivery leg — wake-ups still flow; the counter rise is the degradation signal.</td>
+</tr>
+<tr>
+<td><code>workspace_agentd_eventbus_last_publish_timestamp_seconds</code></td>
+<td>Gauge</td>
+<td><code>workspace_id</code></td>
+<td>Unix timestamp of the newest entry's publish time. <strong>The silent-publisher signal</strong>: alert on <code>time() -</code> this while sessions are busy. No series = the stream has no entries.</td>
+</tr>
+<tr>
+<td><code>workspace_agentd_eventbus_deliveries_total</code></td>
+<td>Counter</td>
+<td><code>workspace_id</code>, <code>group</code>, <code>outcome</code></td>
+<td>Dispatch outcomes per consumer group: <code>delivered</code>, <code>filtered</code> (pattern-skipped, acked unread), <code>handler_error</code> (left pending — the reclaim is the retry), <code>poison</code> (dropped past the attempt cap), <code>ack_error</code>.</td>
+</tr>
+<tr>
+<td><code>workspace_agentd_eventbus_redeliveries_total</code></td>
+<td>Counter</td>
+<td><code>workspace_id</code>, <code>group</code></td>
+<td>Dispatches that were redeliveries (delivery count &gt; 1) — the at-least-once machinery working; rising without <code>delivered</code> rising means work is being retried, not completed.</td>
+</tr>
+<tr>
+<td><code>workspace_agentd_eventbus_stream_entries</code></td>
+<td>Gauge</td>
+<td><code>workspace_id</code></td>
+<td>Stream entry count (bounded ~10k by the publisher's MAXLEN — the retained-replay window).</td>
+</tr>
+<tr>
+<td><code>workspace_agentd_eventbus_group_lag</code></td>
+<td>Gauge</td>
+<td><code>workspace_id</code>, <code>group</code></td>
+<td>Entries never delivered to the group (capped at 10000). Consumers dead or falling behind.</td>
+</tr>
+<tr>
+<td><code>workspace_agentd_eventbus_group_pending</code></td>
+<td>Gauge</td>
+<td><code>workspace_id</code>, <code>group</code></td>
+<td>Delivered-but-un-acked entries: failing handlers, or consumers that died mid-work (the reclaim sweep is the retry).</td>
+</tr>
+<tr>
+<td><code>workspace_agentd_eventbus_group_consumers</code></td>
+<td>Gauge</td>
+<td><code>workspace_id</code>, <code>group</code></td>
+<td>Registered consumer names. 0 with lag/pending &gt; 0 = the dead-group shape (names persist until <code>XGROUP DELCONSUMER</code>, so 0 means nobody ever joined or all were removed).</td>
+</tr>
+<tr>
+<td><code>workspace_agentd_eventbus_group_oldest_pending_idle_seconds</code></td>
+<td>Gauge</td>
+<td><code>workspace_id</code>, <code>group</code></td>
+<td>How long the longest-idle pending entry has sat un-acked (0 = empty). Healthy consumers reclaim past 60s; far past that, nobody is reclaiming — the wedged-group signal.</td>
+</tr>
+<tr>
+<td><code>workspace_agentd_eventbus_group_stalled</code></td>
+<td>Gauge</td>
+<td><code>workspace_id</code>, <code>group</code></td>
+<td>Derived 0/1: no consumers with a backlog, oldest pending idle ≥ 5m, or lag ≥ 100. Edge-logged (<code>event bus: consumer group STALLED</code> / <code>recovered</code>) on transition.</td>
+</tr>
+</tbody>
+</table>
+<h5 id="event-bus-health-model-what-a-healthy-bus-looks-like">Event bus health model — what a healthy bus looks like<a class="headerlink" href="#event-bus-health-model-what-a-healthy-bus-looks-like" title="Permanent link">&para;</a></h5>
+<ul>
+<li><strong>A quiet bus is healthy</strong>: no workspace activity means no publishes, empty groups, all-zero gauges. Silence alone is NOT a fault — silence <em>plus</em> a growing backlog is.</li>
+<li><strong>Healthy publish leg</strong>: <code>publishes_total{outcome="published"}</code> rises when sessions settle (or the lease ladder nudges); <code>failed</code> stays flat. A silent publisher is caught by <code>time() - last_publish_timestamp_seconds</code> exceeding any sane quiet period <em>while sessions are visibly busy</em> — that combination means settles stopped reaching the bus (agentd also logs each fallback to the direct leg at publish failure).</li>
+<li><strong>Healthy consumer group</strong> (<code>notifier</code>, <code>lease</code>): <code>lag</code> returns to 0 shortly after publishes, <code>pending</code> returns to 0, <code>oldest_pending_idle</code> stays near 0. Transient blips (a burst, one handler error) are the at-least-once machinery working — <code>redeliveries_total</code> may tick.</li>
+<li><strong>Stalled group, dead shape</strong>: <code>group_consumers == 0</code> with <code>lag &gt; 0</code> — nobody is consuming; every publish grows the backlog forever. Usually the agentd process died or never started its groups (check the pod and the <code>event bus: transport wired</code> boot log).</li>
+<li><strong>Stalled group, wedged shape</strong>: <code>group_oldest_pending_idle_seconds</code> ≥ 300 — entries were delivered but no consumer reclaimed them through five reclaim sweeps (healthy reclaim is 60s). The consumer names may still be registered (dead pods leave stale names); the idle time is the truth.</li>
+<li><strong>Failing-but-alive group</strong>: <code>deliveries_total{outcome="handler_error"}</code> (or <code>poison</code>) rising while <code>lag</code>/<code>pending</code> cycle — the group consumes but its work fails; that is a downstream fault (delivery seam), not a bus fault.</li>
+<li><strong>Probe failure</strong>: agentd logs <code>event bus: health probe failed</code> (first failure, then every 10<sup>th</sup>) — Redis/Valkey unreachable from the pod; gauges go stale at their last values, which is itself the signal.</li>
+</ul>
 <div class="admonition warning">
 <p class="admonition-title">cgroup v2 required</p>
 <p><code>workspace_memory_bytes</code> and <code>workspace_oom_kills_total</code> require cgroup v2. On cgroup v1 hosts these silently produce nothing — agentd logs a single Warn per pod boot. See <a href="../storage/#cgroup-v2-requirement">Storage</a>.</p>
@@ -3305,6 +3445,18 @@
 </span><span id="__span-8-22"><a id="__codelineno-8-22" name="__codelineno-8-22" href="#__codelineno-8-22"></a>
 </span><span id="__span-8-23"><a id="__codelineno-8-23" name="__codelineno-8-23" href="#__codelineno-8-23"></a><span class="c1"># OOM kills in the last hour</span>
 </span><span id="__span-8-24"><a id="__codelineno-8-24" name="__codelineno-8-24" href="#__codelineno-8-24"></a><span class="kr">increase</span><span class="o">(</span><span class="nv">workspace_oom_kills_total</span><span class="p">[</span><span class="s">1h</span><span class="p">]</span><span class="o">)</span>
+</span><span id="__span-8-25"><a id="__codelineno-8-25" name="__codelineno-8-25" href="#__codelineno-8-25"></a>
+</span><span id="__span-8-26"><a id="__codelineno-8-26" name="__codelineno-8-26" href="#__codelineno-8-26"></a><span class="c1"># Event bus: stalled consumer groups (design 0072 S3)</span>
+</span><span id="__span-8-27"><a id="__codelineno-8-27" name="__codelineno-8-27" href="#__codelineno-8-27"></a><span class="k">max</span><span class="w"> </span><span class="k">by</span><span class="w"> </span><span class="o">(</span><span class="nv">workspace_id</span><span class="p">,</span><span class="w"> </span><span class="k">group</span><span class="o">)</span><span class="w"> </span><span class="o">(</span><span class="nv">workspace_agentd_eventbus_group_stalled</span><span class="o">)</span><span class="w"> </span><span class="o">==</span><span class="w"> </span><span class="mi">1</span>
+</span><span id="__span-8-28"><a id="__codelineno-8-28" name="__codelineno-8-28" href="#__codelineno-8-28"></a>
+</span><span id="__span-8-29"><a id="__codelineno-8-29" name="__codelineno-8-29" href="#__codelineno-8-29"></a><span class="c1"># Event bus: silent publisher — newest entry older than 30m</span>
+</span><span id="__span-8-30"><a id="__codelineno-8-30" name="__codelineno-8-30" href="#__codelineno-8-30"></a><span class="kr">time</span><span class="o">()</span><span class="w"> </span><span class="o">-</span><span class="w"> </span><span class="nv">workspace_agentd_eventbus_last_publish_timestamp_seconds</span><span class="w"> </span><span class="o">&gt;</span><span class="w"> </span><span class="mi">1800</span>
+</span><span id="__span-8-31"><a id="__codelineno-8-31" name="__codelineno-8-31" href="#__codelineno-8-31"></a>
+</span><span id="__span-8-32"><a id="__codelineno-8-32" name="__codelineno-8-32" href="#__codelineno-8-32"></a><span class="c1"># Event bus: publish failures (each fell back to the direct v1 leg)</span>
+</span><span id="__span-8-33"><a id="__codelineno-8-33" name="__codelineno-8-33" href="#__codelineno-8-33"></a><span class="k">sum</span><span class="w"> </span><span class="k">by</span><span class="w"> </span><span class="o">(</span><span class="nv">workspace_id</span><span class="o">)</span><span class="w"> </span><span class="o">(</span><span class="kr">rate</span><span class="o">(</span><span class="nv">workspace_agentd_eventbus_publishes_total</span><span class="p">{</span><span class="nl">outcome</span><span class="o">=</span><span class="p">"</span><span class="s">failed</span><span class="p">"}[</span><span class="s">5m</span><span class="p">]</span><span class="o">))</span>
+</span><span id="__span-8-34"><a id="__codelineno-8-34" name="__codelineno-8-34" href="#__codelineno-8-34"></a>
+</span><span id="__span-8-35"><a id="__codelineno-8-35" name="__codelineno-8-35" href="#__codelineno-8-35"></a><span class="c1"># Event bus: consumer groups falling behind (undelivered backlog)</span>
+</span><span id="__span-8-36"><a id="__codelineno-8-36" name="__codelineno-8-36" href="#__codelineno-8-36"></a><span class="k">max</span><span class="w"> </span><span class="k">by</span><span class="w"> </span><span class="o">(</span><span class="nv">workspace_id</span><span class="p">,</span><span class="w"> </span><span class="k">group</span><span class="o">)</span><span class="w"> </span><span class="o">(</span><span class="nv">workspace_agentd_eventbus_group_lag</span><span class="o">)</span><span class="w"> </span><span class="o">&gt;</span><span class="w"> </span><span class="mi">100</span>
 </span></code></pre></div>
 <hr />
 <h2 id="log-aggregation">Log aggregation<a class="headerlink" href="#log-aggregation" title="Permanent link">&para;</a></h2>
@@ -3390,7 +3542,7 @@
     <span class="md-icon" title="Last update">
       <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M21 13.1c-.1 0-.3.1-.4.2l-1 1 2.1 2.1 1-1c.2-.2.2-.6 0-.8l-1.3-1.3c-.1-.1-.2-.2-.4-.2m-1.9 1.8-6.1 6V23h2.1l6.1-6.1zM12.5 7v5.2l4 2.4-1 1L11 13V7zM11 21.9c-5.1-.5-9-4.8-9-9.9C2 6.5 6.5 2 12 2c5.3 0 9.6 4.1 10 9.3-.3-.1-.6-.2-1-.2s-.7.1-1 .2C19.6 7.2 16.2 4 12 4c-4.4 0-8 3.6-8 8 0 4.1 3.1 7.5 7.1 7.9l-.1.2z"/></svg>
     </span>
-    <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-timeago" title="September 1, 2026 13:17:32 UTC"><span class="timeago" datetime="2026-09-01T13:17:32+00:00" locale="en"></span></span><span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-iso_date" title="September 1, 2026 13:17:32 UTC">2026-09-01</span>
+    <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-timeago" title="October 31, 2026 17:01:25 UTC"><span class="timeago" datetime="2026-10-31T17:01:25+00:00" locale="en"></span></span><span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-iso_date" title="October 31, 2026 17:01:25 UTC">2026-10-31</span>
   </span>
 
     
