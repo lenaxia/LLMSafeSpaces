@@ -271,10 +271,13 @@ func TestSandboxPod_VolumeFootprint(t *testing.T) {
 	// (workspace), /home/sandbox (home), /tmp (tmp), and — since Epic 69
 	// US-69.2 — /platform (platform: the sessionstate durable cursor;
 	// single-container mode only, the documented uid-1000 weakening).
+	// Design 0070 §2.4a adds /exchange (the board payload exchange dir,
+	// dual-rw in BOTH modes — deliberately added to this footprint).
 	var workspaceMountPaths []string
 	homeMountSubPath := ""
 	workspaceMountSubPath := ""
 	tmpMountSubPath := ""
+	exchangeMountSubPath := ""
 	for _, m := range main.VolumeMounts {
 		if m.Name == "workspace" {
 			workspaceMountPaths = append(workspaceMountPaths, m.MountPath)
@@ -287,11 +290,14 @@ func TestSandboxPod_VolumeFootprint(t *testing.T) {
 			if m.MountPath == "/tmp" {
 				tmpMountSubPath = m.SubPath
 			}
+			if m.MountPath == "/exchange" {
+				exchangeMountSubPath = m.SubPath
+			}
 		}
 		require.NotEqual(t, "sandbox-home", m.Name, "sandbox-home emptyDir mount must not exist")
 	}
-	require.ElementsMatch(t, []string{"/workspace", "/home/sandbox", "/tmp", "/platform"}, workspaceMountPaths,
-		"workspace PVC must be mounted at /workspace, /home/sandbox, /tmp, and /platform (Epic 69 platform/ subPath)")
+	require.ElementsMatch(t, []string{"/workspace", "/home/sandbox", "/tmp", "/platform", "/exchange"}, workspaceMountPaths,
+		"workspace PVC must be mounted at /workspace, /home/sandbox, /tmp, /platform, and /exchange")
 	require.Equal(t, "workspace", workspaceMountSubPath,
 		"/workspace mount must use SubPath: \"workspace\"")
 	require.Equal(t, "home", homeMountSubPath,
@@ -306,6 +312,8 @@ func TestSandboxPod_VolumeFootprint(t *testing.T) {
 	}
 	require.Equal(t, "platform", platformMountSubPath,
 		"/platform mount must use SubPath: \"platform\" (Epic 69 US-69.2)")
+	require.Equal(t, "exchange", exchangeMountSubPath,
+		"/exchange mount must use SubPath: \"exchange\" (design 0070 §2.4a payload exchange dir)")
 
 	for _, v := range pod.Spec.Volumes {
 		require.NotEqual(t, "sandbox-home", v.Name, "sandbox-home emptyDir volume must not exist")

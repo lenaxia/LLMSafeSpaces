@@ -245,6 +245,16 @@ func (r *WorkspaceReconciler) buildAgentdSidecarContainer(workspace *v1.Workspac
 			// workspace container's uid-1000 space (mount-topology integrity,
 			// design 0055 M2).
 			{Name: "workspace", MountPath: "/platform", SubPath: "platform"},
+			// Design 0070 §2.4a: the exchange/ subPath — the board payload
+			// exchange dir, the ONE PVC subtree RW in BOTH uid spaces (the
+			// runtime container mounts it too — pod_builder.go). The design
+			// 0070 auto-cleanup hook unlinks consumed payload files here;
+			// before this dir existed every payload call cleanup_warning'd
+			// EROFS (the workspace mount above is ReadOnly BY DESIGN — this
+			// is the purpose-scoped carve-out, NOT a weakening of it: the
+			// dir holds only short-lived payload files, created mode 0770
+			// gid 1000 by the platform-dirs init so both uids share it).
+			{Name: "workspace", MountPath: agentd.ExchangePath, SubPath: "exchange"},
 			// US-4b: both new volumes RW — the ConfigWriter and the
 			// reload handler write here; the workspace container gets
 			// agentd-config RO and NEVER agentd-secrets.

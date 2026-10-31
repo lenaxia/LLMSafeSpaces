@@ -410,7 +410,7 @@ func validateBoardPayloadFile(op, path string) (string, error) {
 		report.Findings = append(report.Findings, boardPayloadFinding{
 			Path: "file", Rule: "file", Severity: "error",
 			Problem: err.Error(),
-			Fix:     "write the JSON payload with the write tool (relative paths resolve against the workspace root), then pass its path",
+			Fix:     "write the JSON payload with the write tool DIRECTLY under /exchange (the payload exchange dir; relative paths resolve against it; NO subdirectories — nested files cannot auto-delete), then pass its path",
 		})
 		report.Valid = false
 		return boardRenderReport(report)

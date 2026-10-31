@@ -36,8 +36,11 @@ import (
 
 // buildPlatformInit returns the init-fs container: uid-1000 PVC prep
 // (subPath roots, hardened symlink farm, password/admin-token install,
-// free-models copy — see cmd/workspace-agentd/init_fs.go).
-func (r *WorkspaceReconciler) buildPlatformInit(relayOn bool, platformSubpath string) corev1.Container {
+// free-models copy — see cmd/workspace-agentd/init_fs.go). The
+// exchangeFlag rides the same create/skip discipline as platform/
+// (design 0070 §2.4a: single-container mode creates exchange/ here;
+// sidecar mode defers to the uid-2000 platform-dirs init).
+func (r *WorkspaceReconciler) buildPlatformInit(relayOn bool, platformSubpath, exchangeSubpath string) corev1.Container {
 	trueVal := true
 	falseVal := false
 	uid1000 := int64(1000)
@@ -62,7 +65,7 @@ func (r *WorkspaceReconciler) buildPlatformInit(relayOn bool, platformSubpath st
 		Name:    "platform-init",
 		Image:   r.AgentdImage,
 		Command: []string{agentdMountPath + agentdBinaryRelPath},
-		Args:    []string{"init-fs", "--platform-subpath=" + platformSubpath},
+		Args:    []string{"init-fs", "--platform-subpath=" + platformSubpath, "--exchange-subpath=" + exchangeSubpath},
 		SecurityContext: &corev1.SecurityContext{
 			ReadOnlyRootFilesystem:   &trueVal,
 			RunAsNonRoot:             &trueVal,
@@ -190,6 +193,13 @@ func buildBootstrapTokenVolume() corev1.Volume {
 // mode 0750; payload files (seq cursor, ledger) are 0640 per design 0055
 // M2 (a directory needs the x bit to traverse — the design's "0640"
 // applies to files).
+//
+// Design 0070 §2.4a: the same init creates the exchange/ subPath (the
+// board payload exchange dir) alongside platform/. exchange/ is the
+// dual-rw dir — mode 0770 (group rwx), created under the pod's shared
+// gid 1000 so BOTH the runtime container (uid 1000) and the sidecar
+// (uid 2000, RunAsGroup 1000) write it; see init_fs.go's
+// ensureExchangeDir for the mode rationale and the threat model.
 func (r *WorkspaceReconciler) buildPlatformDirsInit() corev1.Container {
 	trueVal := true
 	falseVal := false
@@ -198,7 +208,7 @@ func (r *WorkspaceReconciler) buildPlatformDirsInit() corev1.Container {
 		Name:    "platform-dirs",
 		Image:   r.AgentdImage,
 		Command: []string{agentdMountPath + agentdBinaryRelPath},
-		Args:    []string{"init-fs", "--platform-subpath=only"},
+		Args:    []string{"init-fs", "--platform-subpath=only", "--exchange-subpath=only"},
 		VolumeMounts: []corev1.VolumeMount{
 			{Name: "agentd", MountPath: agentdMountPath, ReadOnly: true},
 			{Name: "workspace", MountPath: "/pvc"},
