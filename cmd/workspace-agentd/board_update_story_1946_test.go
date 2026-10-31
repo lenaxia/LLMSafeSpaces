@@ -16,7 +16,7 @@ import (
 )
 
 // board_update_task_1946_test.go — the #1946 dual-route on
-// board_update_task's dispatcher (mirroring board_move_stage's #1832
+// board_update_story's dispatcher (mirroring board_move_stage's #1832
 // WS2 shape): a claim-token-carrying call rides the worker projection's
 // scoped set-criteria-met route; a token-less call keeps the manager
 // path byte-identically — open to any in-workspace session (ruling
@@ -30,7 +30,7 @@ func TestMCPBoard_UpdateTaskDualRoute_1946(t *testing.T) {
 		api, rec := newAutomationAPI(t, 200, `{"id":"t-1","stage":"in_review","claim_persona":"reviewer"}`)
 		setupRenameWorkspaceEnv(t, api)
 
-		out, err := mcpAutomation(context.Background(), mcpTestPassword, "board_update_task", map[string]any{
+		out, err := mcpAutomation(context.Background(), mcpTestPassword, "board_update_story", map[string]any{
 			"taskId": "tsk-aaaa1111", "claimToken": "tok-rev",
 			"setCriteriaMet": map[string]any{"index": 0, "met": true}})
 		require.NoError(t, err)
@@ -51,7 +51,7 @@ func TestMCPBoard_UpdateTaskDualRoute_1946(t *testing.T) {
 		api, rec := newAutomationAPI(t, 200, `{"id":"t-1"}`)
 		setupRenameWorkspaceEnv(t, api)
 
-		_, err := mcpAutomation(context.Background(), mcpTestPassword, "board_update_task", map[string]any{
+		_, err := mcpAutomation(context.Background(), mcpTestPassword, "board_update_story", map[string]any{
 			"task": map[string]any{"shortId": "tsk-aaaa1111", "claimToken": "tok-rev",
 				"setCriteriaMet": map[string]any{"index": 1, "met": false}}})
 		require.NoError(t, err)
@@ -67,7 +67,7 @@ func TestMCPBoard_UpdateTaskDualRoute_1946(t *testing.T) {
 
 		path := filepath.Join(t.TempDir(), "patch.json")
 		require.NoError(t, os.WriteFile(path, []byte(`{"title":"T"}`), 0o600))
-		_, err := mcpAutomation(context.Background(), mcpTestPassword, "board_update_task", map[string]any{
+		_, err := mcpAutomation(context.Background(), mcpTestPassword, "board_update_story", map[string]any{
 			"taskId": "tsk-aaaa1111", "patchFile": path,
 			"lsp_injected_session": "sessi-2feellha"})
 		require.NoError(t, err)
@@ -85,7 +85,7 @@ func TestMCPBoard_UpdateTaskDualRoute_1946(t *testing.T) {
 		setupRenameWorkspaceEnv(t, api)
 		boardWorkerSessions.record("ses_spawnedselfcert")
 
-		_, err := mcpAutomation(context.Background(), mcpTestPassword, "board_update_task", map[string]any{
+		_, err := mcpAutomation(context.Background(), mcpTestPassword, "board_update_story", map[string]any{
 			"taskId": "tsk-aaaa1111", "setCriteriaMet": map[string]any{"index": 0, "met": true},
 			"lsp_injected_session": "ses_spawnedselfcert"})
 		require.Error(t, err, "a task worker self-certifying through the manager shape stays refused")
@@ -103,7 +103,7 @@ func TestMCPBoard_UpdateTaskDualRoute_1946(t *testing.T) {
 		setupRenameWorkspaceEnv(t, api)
 		boardWorkerSessions.record("ses_wrapshaper")
 
-		_, err := mcpAutomation(context.Background(), mcpTestPassword, "board_update_task", map[string]any{
+		_, err := mcpAutomation(context.Background(), mcpTestPassword, "board_update_story", map[string]any{
 			"plan":                 map[string]any{"setCriteriaMet": map[string]any{"index": 0, "met": true}},
 			"lsp_injected_session": "ses_wrapshaper"})
 		require.Error(t, err, "wrapper-key shaping must not slip setCriteriaMet past the pin")
@@ -123,7 +123,7 @@ func TestMCPBoard_UpdateTaskDualRoute_1946(t *testing.T) {
 
 		path := filepath.Join(t.TempDir(), "patch.json")
 		require.NoError(t, os.WriteFile(path, []byte(`{"acceptanceCriteria":[{"text":"done","met":true}]}`), 0o600))
-		_, err := mcpAutomation(context.Background(), mcpTestPassword, "board_update_task", map[string]any{
+		_, err := mcpAutomation(context.Background(), mcpTestPassword, "board_update_story", map[string]any{
 			"taskId": "tsk-aaaa1111", "patchFile": path,
 			"lsp_injected_session": "ses_criteriarepl"})
 		require.Error(t, err, "a worker re-writing its own criteria (met flags ride the replace) is self-certification")
@@ -138,7 +138,7 @@ func TestMCPBoard_UpdateTaskDualRoute_1946(t *testing.T) {
 
 		path := filepath.Join(t.TempDir(), "patch.json")
 		require.NoError(t, os.WriteFile(path, []byte(`{"acceptanceCriteria":[{"text":"done","met":true}]}`), 0o600))
-		_, err := mcpAutomation(context.Background(), mcpTestPassword, "board_update_task", map[string]any{
+		_, err := mcpAutomation(context.Background(), mcpTestPassword, "board_update_story", map[string]any{
 			"taskId": "tsk-aaaa1111", "patchFile": path,
 			"lsp_injected_session": "ses_orchestrator"})
 		require.NoError(t, err, "a manager/orchestrator replace is the pin's non-concern")
@@ -157,7 +157,7 @@ func TestMCPBoard_UpdateTaskDualRoute_1946(t *testing.T) {
 
 		path := filepath.Join(t.TempDir(), "body.json")
 		require.NoError(t, os.WriteFile(path, []byte(`{"title":"T","description":"d","acceptanceCriteria":[{"text":"done","met":true}]}`), 0o600))
-		_, err := mcpAutomation(context.Background(), mcpTestPassword, "board_create_task", map[string]any{
+		_, err := mcpAutomation(context.Background(), mcpTestPassword, "board_create_story", map[string]any{
 			"epicId": "epc-aaaa1111", "bodyFile": path,
 			"lsp_injected_session": "ses_premetcreate"})
 		require.Error(t, err, "a worker creating its own work pre-certified is self-certification")
@@ -187,7 +187,7 @@ func TestMCPBoard_UpdateTaskDualRoute_1946(t *testing.T) {
 
 		path := filepath.Join(t.TempDir(), "body.json")
 		require.NoError(t, os.WriteFile(path, []byte(`{"title":"T","description":"d","acceptanceCriteria":[{"text":"done"}]}`), 0o600))
-		_, err := mcpAutomation(context.Background(), mcpTestPassword, "board_create_task", map[string]any{
+		_, err := mcpAutomation(context.Background(), mcpTestPassword, "board_create_story", map[string]any{
 			"epicId": "epc-aaaa1111", "bodyFile": path,
 			"lsp_injected_session": "ses_plaincreate"})
 		require.NoError(t, err, "ordinary backlog criteria (no met flags) are a worker's legal create")
@@ -200,7 +200,7 @@ func TestMCPBoard_UpdateTaskDualRoute_1946(t *testing.T) {
 
 		path := filepath.Join(t.TempDir(), "body.json")
 		require.NoError(t, os.WriteFile(path, []byte(`{"title":"T","description":"d","acceptanceCriteria":[{"text":"done","met":true}]}`), 0o600))
-		_, err := mcpAutomation(context.Background(), mcpTestPassword, "board_create_task", map[string]any{
+		_, err := mcpAutomation(context.Background(), mcpTestPassword, "board_create_story", map[string]any{
 			"epicId": "epc-aaaa1111", "bodyFile": path,
 			"lsp_injected_session": "ses_orchestrator"})
 		require.NoError(t, err, "the platform surface deliberately supports manager-sourced pre-met creates")

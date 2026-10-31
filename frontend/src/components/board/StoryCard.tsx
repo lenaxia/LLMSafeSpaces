@@ -72,7 +72,7 @@ interface TaskCardProps {
 }
 
 /**
- * TaskCard — §4.8's card. 2026-10-28 rulings 4+5: the TITLE is the
+ * StoryCard — §4.8's card. 2026-10-28 rulings 4+5: the TITLE is the
  * primary label (the tsk- id lives only in the details drawer popup and
  * data/aria attributes); the layout wraps — long titles wrap INSIDE the
  * card (min-w-0 + break-words), action buttons sit in a shrink-0 cluster
@@ -82,7 +82,7 @@ interface TaskCardProps {
  * with its escalation preview, and the backlog Start affordance
  * (task_start) are unchanged.
  */
-export function TaskCard({ task, projectTasks, pending, refused, dimmed, highlighted, onStart, starting, kebabItems, onOpen, onDetails, workspaceId, onDragStart, onDragEnd }: TaskCardProps) {
+export function StoryCard({ task, projectTasks, pending, refused, dimmed, highlighted, onStart, starting, kebabItems, onOpen, onDetails, workspaceId, onDragStart, onDragEnd }: TaskCardProps) {
   const [showBlockedBy, setShowBlockedBy] = useState(false);
   const anchor = prAnchorOf(task.tags);
   const depStages = (task.blocked_by ?? []).map((id) => {

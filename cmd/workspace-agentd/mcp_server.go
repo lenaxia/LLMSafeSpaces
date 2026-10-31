@@ -155,7 +155,7 @@ func boardManagerTools() []mcpTool {
 			// are the manager's project/fleet projections.
 			Name:        "board_list",
 			Annotations: annot(true, false, false),
-			Description: "List EVERY story (the wire/API term is 'task') of one board project in a single call (#1837 P2a) — the orchestrator's overview the per-story board_read cannot give. Each row carries the stage, claim (assignee session), lease expiry, paused, blocked, attempts, and cooldown columns (live claim TOKENS are deliberately absent from the bulk projection — board_read keeps the token for the claimant's own flow); the response also derives the project's ready HINT (backlog + unblocked + unpaused + not cooling — the story-level claim predicates; epic-quota and project gates resolve at claim time; rendered only on fully unfiltered lists). The assignee_session column is a RESOLVABLE session ref (owner ruling 2026-10-29): the 3-word phrase when the session index knows the worker, else the raw harness id (assignee_session_deprecated) — both forms address session_read / session_metadata when you need to inspect the session behind a claim. Workspace-scoped (a foreign workspace's project is a plain 404); open to any in-workspace session (the manager-grant gate is repealed, ruling 2026-10-27, tsk-copper-refectory-generates).",
+			Description: "List EVERY story (the REST wire term is 'task') of one board project in a single call (#1837 P2a) — the orchestrator's overview the per-story board_read cannot give. Each row carries the stage, claim (assignee session), lease expiry, paused, blocked, attempts, and cooldown columns (live claim TOKENS are deliberately absent from the bulk projection — board_read keeps the token for the claimant's own flow); the response also derives the project's ready HINT (backlog + unblocked + unpaused + not cooling — the story-level claim predicates; epic-quota and project gates resolve at claim time; rendered only on fully unfiltered lists). The assignee_session column is a RESOLVABLE session ref (owner ruling 2026-10-29): the 3-word phrase when the session index knows the worker, else the raw harness id (assignee_session_deprecated) — both forms address session_read / session_metadata when you need to inspect the session behind a claim. Workspace-scoped (a foreign workspace's project is a plain 404); open to any in-workspace session (the manager-grant gate is repealed, ruling 2026-10-27, tsk-copper-refectory-generates).",
 			InputSchema: map[string]any{"type": "object", "properties": map[string]any{
 				"projectId": map[string]any{"type": "string", "description": "Project short id (prj-… or UUID)"},
 				"stage":     map[string]any{"type": "string", "enum": []string{"backlog", "in_progress", "in_review", "done", "failed", "pending_input"}, "description": "Optional stage filter (wire set; pending_input = the flag filter — rows awaiting input on any real stage, 000050)"},
@@ -291,71 +291,71 @@ func boardManagerTools() []mcpTool {
 			}, "required": []string{"epicId"}},
 		},
 		{
-			Name:        "board_create_task",
-			Description: "Create one story (the wire/API term is 'task') in an epic's backlog. The description (markdown) seeds the worker charter; acceptance criteria define Done (ALL met + evidence). ATOMIC-CREATE CONTRACT (#1849): a non-empty description AND at least one acceptance criterion are REQUIRED — a create missing either, or whose title/description/criterion is ENTIRELY a placeholder-class token (placeholder, todo, tbd, asdf, qwerty…), is rejected outright; re-compose (prose that merely mentions such a token is fine). dependsOn (short ids of existing stories) adds prerequisite edges in the same write; ordering is dependency-only FIFO by creation — no priority field exists. PAYLOAD IS FILE-ONLY (design 0070 cutover): write the whole payload JSON {title, description, tags, acceptanceCriteria, dependsOn} with the write tool, check it with board_validate_file (op create_task), then submit bodyFile — the file is DELETED after a successful create (re-write to retry; a retried create that finds no file should check board_list to confirm it landed). This is the FLAT single-story document; for an epic plus its stories, or SEVERAL stories at once, use board_import_plan's planFile instead. Open to any in-workspace session (the manager-grant gate is repealed, ruling 2026-10-27, tsk-copper-refectory-generates).",
+			Name:        "board_create_story",
+			Description: "Create one story (the REST wire term is 'task') in an epic's backlog. The description (markdown) seeds the worker charter; acceptance criteria define Done (ALL met + evidence). ATOMIC-CREATE CONTRACT (#1849): a non-empty description AND at least one acceptance criterion are REQUIRED — a create missing either, or whose title/description/criterion is ENTIRELY a placeholder-class token (placeholder, todo, tbd, asdf, qwerty…), is rejected outright; re-compose (prose that merely mentions such a token is fine). dependsOn (short ids of existing stories) adds prerequisite edges in the same write; ordering is dependency-only FIFO by creation — no priority field exists. PAYLOAD IS FILE-ONLY (design 0070 cutover): write the whole payload JSON {title, description, tags, acceptanceCriteria, dependsOn} with the write tool, check it with board_validate_file (op create_task), then submit bodyFile — the file is DELETED after a successful create (re-write to retry; a retried create that finds no file should check board_list to confirm it landed). This is the FLAT single-story document; for an epic plus its stories, or SEVERAL stories at once, use board_import_plan's planFile instead. Open to any in-workspace session (the manager-grant gate is repealed, ruling 2026-10-27, tsk-copper-refectory-generates).",
 			InputSchema: json.RawMessage(`{"properties":{"epicId":{"description":"Epic short id (epc-… or UUID)","type":"string"},"bodyFile":{"description":"REQUIRED — workspace file holding the whole story payload JSON {title, description, tags, acceptanceCriteria, dependsOn, requestId?} (relative paths resolve against the workspace root)","type":"string"}},"required":["epicId","bodyFile"],"type":"object"}`),
 		},
 		{
-			Name:        "board_update_task",
-			Description: "Patch a story (the wire/API term is 'task'; title, description, tags, criteria — replace-if-present semantics; omitted fields keep existing values). setCriteriaMet is {index, met} — check off OR uncheck the criterion at the 0-based index (the reviewer's Done preparation can walk flags BOTH ways, #1837 P2b; the bare-integer form still decodes as {index, met:true}); REFUSED alongside an acceptanceCriteria replace (send one or the other); out-of-bounds indices are loud errors. THE PATCH PAYLOAD IS FILE-ONLY (design 0070 cutover): write the patch JSON {title?, description?, tags?, acceptanceCriteria?} with the write tool (board_read first — criteria REPLACE the full set), check it with board_validate_file (op update_task_patch), then submit patchFile — the file is DELETED after a successful update. patchFile is REQUIRED on the manager route; the ONE exception is the bare criteria check-off {taskId, setCriteriaMet}. #1946 scoped grant: a caller sending its charter claimToken rides the worker route and may record setCriteriaMet on its OWN claimed row ONLY (any other field with a claimToken refuses loudly); story workers self-certifying their own work stay refused (ruling 2026-10-27, tsk-copper-refectory-generates — the one surviving registry refusal).",
-			InputSchema: json.RawMessage(`{"properties":{"taskId":{"description":"Story short id (phrase form tsk-crimson-finch-blooms, legacy tsk-XXXXXXXX forms still resolve, or UUID)","type":"string"},"claimToken":{"description":"The claim token from your charter envelope — present ONLY for the #1946 reviewer-persona grant: the call routes to the worker surface and may record setCriteriaMet on your OWN claimed row (any other field refuses). Omit it for the manager patch.","type":"string"},"setCriteriaMet":{"description":"{index, met} — check off OR uncheck the criterion (the legacy bare integer = check-off); refused alongside acceptanceCriteria","properties":{"index":{"description":"0-based criterion index","type":"integer"},"met":{"description":"The flag to write (default true — the legacy bare-integer form)","type":"boolean"}},"required":["index"],"type":"object"},"patchFile":{"description":"REQUIRED (manager patch) — workspace file holding the patch JSON {title?, description?, tags?, acceptanceCriteria?, requestId?} (relative paths resolve against the workspace root)","type":"string"}},"required":["taskId"],"type":"object"}`),
+			Name:        "board_update_story",
+			Description: "Patch a story (the REST wire term is 'task'; title, description, tags, criteria — replace-if-present semantics; omitted fields keep existing values). setCriteriaMet is {index, met} — check off OR uncheck the criterion at the 0-based index (the reviewer's Done preparation can walk flags BOTH ways, #1837 P2b; the bare-integer form still decodes as {index, met:true}); REFUSED alongside an acceptanceCriteria replace (send one or the other); out-of-bounds indices are loud errors. THE PATCH PAYLOAD IS FILE-ONLY (design 0070 cutover): write the patch JSON {title?, description?, tags?, acceptanceCriteria?} with the write tool (board_read first — criteria REPLACE the full set), check it with board_validate_file (op update_task_patch), then submit patchFile — the file is DELETED after a successful update. patchFile is REQUIRED on the manager route; the ONE exception is the bare criteria check-off {storyId, setCriteriaMet}. #1946 scoped grant: a caller sending its charter claimToken rides the worker route and may record setCriteriaMet on its OWN claimed row ONLY (any other field with a claimToken refuses loudly); story workers self-certifying their own work stay refused (ruling 2026-10-27, tsk-copper-refectory-generates — the one surviving registry refusal).",
+			InputSchema: json.RawMessage(`{"properties":{"storyId":{"description":"Story short id (phrase form tsk-crimson-finch-blooms, legacy tsk-XXXXXXXX forms still resolve, or UUID)","type":"string"},"claimToken":{"description":"The claim token from your charter envelope — present ONLY for the #1946 reviewer-persona grant: the call routes to the worker surface and may record setCriteriaMet on your OWN claimed row (any other field refuses). Omit it for the manager patch.","type":"string"},"setCriteriaMet":{"description":"{index, met} — check off OR uncheck the criterion (the legacy bare integer = check-off); refused alongside acceptanceCriteria","properties":{"index":{"description":"0-based criterion index","type":"integer"},"met":{"description":"The flag to write (default true — the legacy bare-integer form)","type":"boolean"}},"required":["index"],"type":"object"},"patchFile":{"description":"REQUIRED (manager patch) — workspace file holding the patch JSON {title?, description?, tags?, acceptanceCriteria?, requestId?} (relative paths resolve against the workspace root)","type":"string"}},"required":["storyId"],"type":"object"}`),
 		},
 		{
 			Name:        "board_add_dependency",
 			Annotations: annot(false, false, true),
-			Description: "Add a structural dependency edge — the ONLY blocking mechanism: story→story within this workspace (the wire/API term is 'task'; cross-epic allowed, never cross-workspace). Cycles are rejected (409 with did-you-mean suggestions); duplicate edges are idempotent no-ops; edges per node are capped (16 default). Dependencies are SEMANTIC prerequisites — never use edges to express preference (ordering is FIFO by creation; ruling #1747). Open to any in-workspace session (the manager-grant gate is repealed, ruling 2026-10-27, tsk-copper-refectory-generates).",
-			InputSchema: json.RawMessage(`{"properties":{"taskId":{"description":"Dependent story short id (tsk-… phrase/legacy form, or UUID)","type":"string"},"dependsOn":{"description":"Prerequisite story short id (tsk-… phrase/legacy form, or UUID)","type":"string"}},"required":["taskId","dependsOn"],"type":"object"}`),
+			Description: "Add a structural dependency edge — the ONLY blocking mechanism: story→story within this workspace (the REST wire term is 'task'; cross-epic allowed, never cross-workspace). Cycles are rejected (409 with did-you-mean suggestions); duplicate edges are idempotent no-ops; edges per node are capped (16 default). Dependencies are SEMANTIC prerequisites — never use edges to express preference (ordering is FIFO by creation; ruling #1747). Open to any in-workspace session (the manager-grant gate is repealed, ruling 2026-10-27, tsk-copper-refectory-generates).",
+			InputSchema: json.RawMessage(`{"properties":{"storyId":{"description":"Dependent story short id (tsk-… phrase/legacy form, or UUID)","type":"string"},"dependsOn":{"description":"Prerequisite story short id (tsk-… phrase/legacy form, or UUID)","type":"string"}},"required":["storyId","dependsOn"],"type":"object"}`),
 		},
 		{
 			Name:        "board_remove_dependency",
 			Annotations: annot(false, false, true),
 			Description: "Remove one dependency edge. Removing an abandoned prerequisite's edge unblocks the dependent row (one of the pending_input resolutions). Open to any in-workspace session (the manager-grant gate is repealed, ruling 2026-10-27, tsk-copper-refectory-generates).",
-			InputSchema: json.RawMessage(`{"properties":{"taskId":{"description":"Dependent story short id (tsk-… phrase/legacy form, or UUID)","type":"string"},"dependsOn":{"description":"Prerequisite story short id (tsk-… phrase/legacy form, or UUID)","type":"string"}},"required":["taskId","dependsOn"],"type":"object"}`),
+			InputSchema: json.RawMessage(`{"properties":{"storyId":{"description":"Dependent story short id (tsk-… phrase/legacy form, or UUID)","type":"string"},"dependsOn":{"description":"Prerequisite story short id (tsk-… phrase/legacy form, or UUID)","type":"string"}},"required":["storyId","dependsOn"],"type":"object"}`),
 		},
 		{
-			Name:        "board_delete_task",
+			Name:        "board_delete_story",
 			Annotations: annot(false, true, false),
-			Description: "Destructively delete a story (the wire/API term is 'task'; #1747: cancel is eliminated — delete replaces it). An idle row goes straight; an in-flight row's worker turn is cut AFTER the delete commits (post-commit abort — the row's removal is the authority). The audit event embeds the story's full final-state snapshot. The story's edges cascade away: orphaned dependents are LISTED in the response and each gets an unblocked_by_delete audit event — they simply become ready; NO auto-reconnect ever happens (a wrong reconnect is a silent stale-chain stall). reconnect=true lets orphans inherit the deleted node's direct upstream edges (deduplicated, cycle-guarded) — only when the user's intent says so. Open to any in-workspace session (the manager-grant gate is repealed, ruling 2026-10-27, tsk-copper-refectory-generates).",
+			Description: "Destructively delete a story (the REST wire term is 'task'; #1747: cancel is eliminated — delete replaces it). An idle row goes straight; an in-flight row's worker turn is cut AFTER the delete commits (post-commit abort — the row's removal is the authority). The audit event embeds the story's full final-state snapshot. The story's edges cascade away: orphaned dependents are LISTED in the response and each gets an unblocked_by_delete audit event — they simply become ready; NO auto-reconnect ever happens (a wrong reconnect is a silent stale-chain stall). reconnect=true lets orphans inherit the deleted node's direct upstream edges (deduplicated, cycle-guarded) — only when the user's intent says so. Open to any in-workspace session (the manager-grant gate is repealed, ruling 2026-10-27, tsk-copper-refectory-generates).",
 			InputSchema: map[string]any{"type": "object", "properties": map[string]any{
-				"taskId":    map[string]any{"type": "string", "description": "Story short id (phrase form tsk-crimson-finch-blooms, legacy tsk-XXXXXXXX forms still resolve, or UUID)"},
+				"storyId":   map[string]any{"type": "string", "description": "Story short id (phrase form tsk-crimson-finch-blooms, legacy tsk-XXXXXXXX forms still resolve, or UUID)"},
 				"reconnect": map[string]any{"type": "boolean", "description": "Orphans inherit the deleted node's direct upstream edges (default off — the graph never rewrites itself implicitly)"},
-			}, "required": []string{"taskId"}},
+			}, "required": []string{"storyId"}},
 		},
 		{
-			Name:        "board_pause_task",
-			Description: "Pause one story (the wire/API term is 'task') — the scheduling lever: claim candidacy off, forward stage-writes refused (409 task_paused), and a HALT directive lands on the in-flight worker (it finishes its current thought, then stops — never a mid-generation cut). The lease keeps running (LAPSE accounting): a long pause naturally reclaims; resume brings the row back. Dependencies stay blocking while paused. Open to any in-workspace session (the manager-grant gate is repealed, ruling 2026-10-27, tsk-copper-refectory-generates).",
+			Name:        "board_pause_story",
+			Description: "Pause one story (the REST wire term is 'task') — the scheduling lever: claim candidacy off, forward stage-writes refused (409 task_paused), and a HALT directive lands on the in-flight worker (it finishes its current thought, then stops — never a mid-generation cut). The lease keeps running (LAPSE accounting): a long pause naturally reclaims; resume brings the row back. Dependencies stay blocking while paused. Open to any in-workspace session (the manager-grant gate is repealed, ruling 2026-10-27, tsk-copper-refectory-generates).",
 			InputSchema: map[string]any{"type": "object", "properties": map[string]any{
-				"taskId": map[string]any{"type": "string", "description": "Story short id (phrase form tsk-crimson-finch-blooms, legacy tsk-XXXXXXXX forms still resolve, or UUID)"},
-			}, "required": []string{"taskId"}},
+				"storyId": map[string]any{"type": "string", "description": "Story short id (phrase form tsk-crimson-finch-blooms, legacy tsk-XXXXXXXX forms still resolve, or UUID)"},
+			}, "required": []string{"storyId"}},
 		},
 		{
-			Name:        "board_resume_task",
+			Name:        "board_resume_story",
 			Description: "Resume a paused story: clears the flag and delivers the RESUME directive — the held session continues if its lease survived; a lapsed one re-enters the FIFO pool (a fresh worker claims it). Open to any in-workspace session (the manager-grant gate is repealed, ruling 2026-10-27, tsk-copper-refectory-generates).",
 			InputSchema: map[string]any{"type": "object", "properties": map[string]any{
-				"taskId": map[string]any{"type": "string", "description": "Story short id (phrase form tsk-crimson-finch-blooms, legacy tsk-XXXXXXXX forms still resolve, or UUID)"},
-			}, "required": []string{"taskId"}},
+				"storyId": map[string]any{"type": "string", "description": "Story short id (phrase form tsk-crimson-finch-blooms, legacy tsk-XXXXXXXX forms still resolve, or UUID)"},
+			}, "required": []string{"storyId"}},
 		},
 		{
-			Name:        "board_rearm_task",
-			Description: "Re-pool an attempts-exhausted story (the wire/API term is 'task'; #1832 WS3): an escalated row (stage=failed, pending_origin=escalated — attempts at the cap, the engine withheld the grant) returns to backlog with attempts reset to 0 (a fresh-judgment ledger; the pre-reset count rides the rearm audit event) and is claimable immediately. Only failed/escalated rows; other stages and origins keep their enumerated transitions. Open to any in-workspace session (the manager-grant gate is repealed, ruling 2026-10-27, tsk-copper-refectory-generates).",
+			Name:        "board_rearm_story",
+			Description: "Re-pool an attempts-exhausted story (the REST wire term is 'task'; #1832 WS3): an escalated row (stage=failed, pending_origin=escalated — attempts at the cap, the engine withheld the grant) returns to backlog with attempts reset to 0 (a fresh-judgment ledger; the pre-reset count rides the rearm audit event) and is claimable immediately. Only failed/escalated rows; other stages and origins keep their enumerated transitions. Open to any in-workspace session (the manager-grant gate is repealed, ruling 2026-10-27, tsk-copper-refectory-generates).",
 			InputSchema: map[string]any{"type": "object", "properties": map[string]any{
-				"taskId":    map[string]any{"type": "string", "description": "Story short id (phrase form tsk-crimson-finch-blooms, legacy tsk-XXXXXXXX forms still resolve, or UUID)"},
+				"storyId":   map[string]any{"type": "string", "description": "Story short id (phrase form tsk-crimson-finch-blooms, legacy tsk-XXXXXXXX forms still resolve, or UUID)"},
 				"requestId": map[string]any{"type": "string", "description": "Optional idempotency key: reuse ONE id per logical operation across retries"},
-			}, "required": []string{"taskId"}},
+			}, "required": []string{"storyId"}},
 		},
 		{
-			Name:        "board_depose_task",
-			Description: "Depose a LAPSED claim on a story (the wire/API term is 'task'; S5, the DEPOSED directive — 2026-10-30 incident remediation): record the salvage pointer — branch, PR number, last known state — on the row so the NEXT claim's charter embeds it automatically (inherit, don't restart; no more hand-written salvage notes). An in_progress lapsed claim is requeued exactly as the reclaim would (failure overlay + backoff cooldown) and the stale session receives a DEPOSED directive (stop working; your token is revoked); a backlog row takes the pointer alone (the reclaim already ran). GUARDS: a live healthy claim refuses (409 claim_live — an unexpired lease, or life evidence on the expired one: movement, mid-turn busy, post-sentinel reaction, or a post-nudge heartbeat); done/failed/in_review rows refuse; every deposition is audit-logged (action 'depose', payload = the pointer). At least one of branch/pr/head/state/note is required. Open to any in-workspace session (the manager-grant gate is repealed, ruling 2026-10-27).",
+			Name:        "board_depose_story",
+			Description: "Depose a LAPSED claim on a story (the REST wire term is 'task'; S5, the DEPOSED directive — 2026-10-30 incident remediation): record the salvage pointer — branch, PR number, last known state — on the row so the NEXT claim's charter embeds it automatically (inherit, don't restart; no more hand-written salvage notes). An in_progress lapsed claim is requeued exactly as the reclaim would (failure overlay + backoff cooldown) and the stale session receives a DEPOSED directive (stop working; your token is revoked); a backlog row takes the pointer alone (the reclaim already ran). GUARDS: a live healthy claim refuses (409 claim_live — an unexpired lease, or life evidence on the expired one: movement, mid-turn busy under the ladder's cap, post-sentinel reaction, or a post-nudge heartbeat); done/failed/in_review rows refuse; every deposition is audit-logged (action 'depose', payload = the pointer). At least one of branch/pr/head/state/note is required. Open to any in-workspace session (the manager-grant gate is repealed, ruling 2026-10-27).",
 			InputSchema: map[string]any{"type": "object", "properties": map[string]any{
-				"taskId": map[string]any{"type": "string", "description": "Story short id (phrase form tsk-crimson-finch-blooms, legacy tsk-XXXXXXXX forms still resolve, or UUID)"},
-				"branch": map[string]any{"type": "string", "description": "The pushed branch name the deposed attempt left behind"},
-				"pr":     map[string]any{"type": "string", "description": "The open pull request's number or URL"},
-				"head":   map[string]any{"type": "string", "description": "The last known commit SHA on the branch"},
-				"state":  map[string]any{"type": "string", "description": "Last known state, free text: what was done, what gates ran, what remains"},
-				"note":   map[string]any{"type": "string", "description": "Guidance for the inheriting worker (verify-first, what to build on)"},
+				"storyId": map[string]any{"type": "string", "description": "Story short id (phrase form tsk-crimson-finch-blooms, legacy tsk-XXXXXXXX forms still resolve, or UUID)"},
+				"branch":  map[string]any{"type": "string", "description": "The pushed branch name the deposed attempt left behind"},
+				"pr":      map[string]any{"type": "string", "description": "The open pull request's number or URL"},
+				"head":    map[string]any{"type": "string", "description": "The last known commit SHA on the branch"},
+				"state":   map[string]any{"type": "string", "description": "Last known state, free text: what was done, what gates ran, what remains"},
+				"note":    map[string]any{"type": "string", "description": "Guidance for the inheriting worker (verify-first, what to build on)"},
 				"requestId": map[string]any{"type": "string",
 					"description": "Optional idempotency key: reuse ONE id per logical operation across retries"},
-			}, "required": []string{"taskId"}},
+			}, "required": []string{"storyId"}},
 		},
 		{
 			// #1836: the bulk complete — the review-settlement sweep in
@@ -363,29 +363,29 @@ func boardManagerTools() []mcpTool {
 			// bulk CLAIM variant deliberately does not exist on this
 			// surface: task_start is owner-surface only (round-3 #2).
 			Name:        "board_move_stage_bulk",
-			Description: "Bulk stage move (#1836): one shared target stage + evidenceUrl across up to 50 stories (the wire/API term is 'task') in ONE call — each item is one full server-arbitrated board_move_stage (Done guard — ALL criteria met + evidence for done; pause guards; claim-token rule; auto-review dispatch on toStage=in_review; the done settle cascade). Response is a per-item result array [{id, status: done|failed, error?}] — partial failures are reported per item, never all-or-nothing; one malformed id sinks only its own item. Re-submitting the batch (same requestId) is safe: an item already at the target stage returns done, not conflict. The canonical use: completing review sets (in_review → done) after a verification sweep. Open to any in-workspace session (the manager-grant gate is repealed, ruling 2026-10-27, tsk-copper-refectory-generates).",
+			Description: "Bulk stage move (#1836): one shared target stage + evidenceUrl across up to 50 stories (the REST wire term is 'task') in ONE call — each item is one full server-arbitrated board_move_stage (Done guard — ALL criteria met + evidence for done; pause guards; claim-token rule; auto-review dispatch on toStage=in_review; the done settle cascade). Response is a per-item result array [{id, status: done|failed, error?}] — partial failures are reported per item, never all-or-nothing; one malformed id sinks only its own item. Re-submitting the batch (same requestId) is safe: an item already at the target stage returns done, not conflict. The canonical use: completing review sets (in_review → done) after a verification sweep. Open to any in-workspace session (the manager-grant gate is repealed, ruling 2026-10-27, tsk-copper-refectory-generates).",
 			InputSchema: map[string]any{"type": "object", "properties": map[string]any{
-				"taskIds":     map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Story short ids (phrase form preferred; legacy forms and UUIDs resolve) — 1 to 50 items"},
+				"storyIds":    map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Story short ids (phrase form preferred; legacy forms and UUIDs resolve) — 1 to 50 items"},
 				"toStage":     map[string]any{"type": "string", "enum": []string{"in_progress", "in_review", "done", "pending_input", "failed", "backlog"}, "description": "The ONE target stage every item moves to (per-item from-stage legality stays server-arbitrated; pending_input = set the flag, failed = the failure terminus — 000050)"},
 				"evidenceUrl": map[string]any{"type": "string", "description": "Artifact link applied to every item's transition (required when toStage=done)"},
 				"requestId":   map[string]any{"type": "string", "description": "Idempotency key: ONE per logical batch, reused across retries of the same batch — reusing a batch's key for a DIFFERENT batch replays the first batch's recorded outcomes (stale done items)"},
-			}, "required": []string{"taskIds", "toStage"}},
+			}, "required": []string{"storyIds", "toStage"}},
 		},
 		{
-			// #1836 sibling: the bulk delete — board_delete_task's batch
+			// #1836 sibling: the bulk delete — board_delete_story's batch
 			// twin (delete IS a manager action; only claim/create are
 			// owner-only, so unlike the bulk claim this form lives here).
-			Name:        "board_delete_tasks",
-			Description: "Bulk delete (#1836): the story-delete batch (wire: delete_task) — up to 50 destructive removals in ONE call, ONE shared reconnect flag. Each item is one full board_delete_task (its own snapshot-bearing audit event, orphan events + is_blocked rederive, post-commit worker abort for an in-flight row). Response is a per-item result array [{id, status: done|failed, orphaned_dependents?, reconnected?, error?}] — partial failures are reported per item, never all-or-nothing; one malformed id sinks only its own item. Idempotent retry for a destructive variant: re-submitting the batch is safe, and a miss, a foreign row, and an already-deleted row all render the SAME not_found item (absence is the done state — rendering it done would fabricate outcomes for foreign probes and leak foreign existence; never a conflict). Canonical use: cleanup sweeps after re-planning. Open to any in-workspace session (the manager-grant gate is repealed, ruling 2026-10-27, tsk-copper-refectory-generates).",
+			Name:        "board_delete_stories",
+			Description: "Bulk delete (#1836): the story-delete batch (wire: delete_task) — up to 50 destructive removals in ONE call, ONE shared reconnect flag. Each item is one full board_delete_story (its own snapshot-bearing audit event, orphan events + is_blocked rederive, post-commit worker abort for an in-flight row). Response is a per-item result array [{id, status: done|failed, orphaned_dependents?, reconnected?, error?}] — partial failures are reported per item, never all-or-nothing; one malformed id sinks only its own item. Idempotent retry for a destructive variant: re-submitting the batch is safe, and a miss, a foreign row, and an already-deleted row all render the SAME not_found item (absence is the done state — rendering it done would fabricate outcomes for foreign probes and leak foreign existence; never a conflict). Canonical use: cleanup sweeps after re-planning. Open to any in-workspace session (the manager-grant gate is repealed, ruling 2026-10-27, tsk-copper-refectory-generates).",
 			InputSchema: map[string]any{"type": "object", "properties": map[string]any{
-				"taskIds":   map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Story short ids (phrase form preferred; legacy forms and UUIDs resolve) — 1 to 50 items"},
+				"storyIds":  map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Story short ids (phrase form preferred; legacy forms and UUIDs resolve) — 1 to 50 items"},
 				"reconnect": map[string]any{"type": "boolean", "description": "The ONE shared reconnect flag: orphans of every deleted item inherit that item's direct upstream edges (deduplicated, cycle-guarded) — default off"},
 				"requestId": map[string]any{"type": "string", "description": "Idempotency key: ONE per logical batch, reused across retries of the same batch — reusing a batch's key for a DIFFERENT batch replays the first batch's recorded outcomes (stale done items)"},
-			}, "required": []string{"taskIds"}},
+			}, "required": []string{"storyIds"}},
 		},
 		{
 			Name:        "board_import_plan",
-			Description: "Materialize a plan atomically (#1747): ONE unified plan document (design 0070 §1a), any granularity — a NEW epic with all its stories ({epic: {title, outcome, tags}, tasks: [1..N]}), or N stories attached to an EXISTING epic ({epicId: \"epc-…\", tasks: [1..N]}); a single story is a one-element plan or board_create_task's flat bodyFile (the plan payload key is 'tasks' — the wire/API term for stories). EXACTLY ONE of epic|epicId (both/neither is refused); stories address each other by payload key in dependsOn; nodes-per-epic and edges-per-node caps apply; all-or-nothing in every mode. ALWAYS dry-run first (dryRun=true): the response renders the graph, warnings, and the initial ready set — show it to the user as the plan-approval moment; write only after approval. THE PLAN IS FILE-ONLY (design 0070 cutover): write the plan JSON with the write tool, check it with board_validate_file (op import_plan — local shape checks; the dryRun covers GRAPH semantics: cycles, caps), then submit planFile — the file is DELETED after a successful non-dry run (a dry run keeps it for the real submission). Open to any in-workspace session (the manager-grant gate is repealed, ruling 2026-10-27, tsk-copper-refectory-generates).",
+			Description: "Materialize a plan atomically (#1747): ONE unified plan document (design 0070 §1a), any granularity — a NEW epic with all its stories ({epic: {title, outcome, tags}, tasks: [1..N]}), or N stories attached to an EXISTING epic ({epicId: \"epc-…\", tasks: [1..N]}); a single story is a one-element plan or board_create_story's flat bodyFile (the plan payload key is 'tasks' — the wire/API term for stories). EXACTLY ONE of epic|epicId (both/neither is refused); stories address each other by payload key in dependsOn; nodes-per-epic and edges-per-node caps apply; all-or-nothing in every mode. ALWAYS dry-run first (dryRun=true): the response renders the graph, warnings, and the initial ready set — show it to the user as the plan-approval moment; write only after approval. THE PLAN IS FILE-ONLY (design 0070 cutover): write the plan JSON with the write tool, check it with board_validate_file (op import_plan — local shape checks; the dryRun covers GRAPH semantics: cycles, caps), then submit planFile — the file is DELETED after a successful non-dry run (a dry run keeps it for the real submission). Open to any in-workspace session (the manager-grant gate is repealed, ruling 2026-10-27, tsk-copper-refectory-generates).",
 			InputSchema: json.RawMessage(`{"properties":{"projectId":{"description":"Project short id (prj-… or UUID)","type":"string"},"dryRun":{"description":"Validate + render only — nothing is written (the plan-approval moment; the plan file survives)","type":"boolean"},"planFile":{"description":"REQUIRED — workspace file holding the unified plan JSON {epic:{title,outcome,tags} | epicId, tasks:[{key,title,description,tags,acceptanceCriteria,dependsOn}], requestId?} (relative paths resolve against the workspace root)","type":"string"}},"required":["projectId","planFile"],"type":"object"}`),
 		},
 		{
@@ -394,7 +394,7 @@ func boardManagerTools() []mcpTool {
 			// (write → validate → submit; validate-first is UX).
 			Name:        "board_validate_file",
 			Annotations: annot(true, false, false),
-			Description: "Validate one board payload FILE locally before submitting it — zero wire calls, purely advisory: the platform stays the authority, and for import_plan the existing dryRun checks GRAPH semantics (cycles, caps) while this checks the file's SHAPE. The canonical workflow for board_create_task/board_create_epic/board_update_task/board_update_epic/board_import_plan/board_set_config: write the JSON payload with the write tool → board_validate_file → submit the tool call with bodyFile/patchFile/planFile/configFile (the file auto-deletes on success). Checks, in order: file discipline (regular file, 256 KiB cap, UTF-8); strict JSON (single document, duplicate keys refused, object top level); placement (file params and routing/control keys do not belong INSIDE the file); the op's compiled schema (admitted fields derived from the platform request DTOs — unknown fields, required fields, types, shapes, caps, with JSON instance paths like tasks[2].acceptanceCriteria[0].text); #1849 atomic-create (non-empty description AND >=1 criterion); the placeholder-class token scan on titles/descriptions/criteria; plan-key uniqueness; exactly-one-of epic|epicId for import_plan. Findings carry {path, rule, severity error|warning, problem, fix, expected, actual}; warnings never block (e.g. acceptanceCriteria in an update patch REPLACES the full criteria set). The SAME findings refuse the CRUD call at submit time if you skip this step. This tool never deletes the file.",
+			Description: "Validate one board payload FILE locally before submitting it — zero wire calls, purely advisory: the platform stays the authority, and for import_plan the existing dryRun checks GRAPH semantics (cycles, caps) while this checks the file's SHAPE. The canonical workflow for board_create_story/board_create_epic/board_update_story/board_update_epic/board_import_plan/board_set_config: write the JSON payload with the write tool → board_validate_file → submit the tool call with bodyFile/patchFile/planFile/configFile (the file auto-deletes on success). Checks, in order: file discipline (regular file, 256 KiB cap, UTF-8); strict JSON (single document, duplicate keys refused, object top level); placement (file params and routing/control keys do not belong INSIDE the file); the op's compiled schema (admitted fields derived from the platform request DTOs — unknown fields, required fields, types, shapes, caps, with JSON instance paths like tasks[2].acceptanceCriteria[0].text); #1849 atomic-create (non-empty description AND >=1 criterion); the placeholder-class token scan on titles/descriptions/criteria; plan-key uniqueness; exactly-one-of epic|epicId for import_plan. Findings carry {path, rule, severity error|warning, problem, fix, expected, actual}; warnings never block (e.g. acceptanceCriteria in an update patch REPLACES the full criteria set). The SAME findings refuse the CRUD call at submit time if you skip this step. This tool never deletes the file.",
 			InputSchema: json.RawMessage(`{"properties":{"op":{"description":"The payload kind the file will be submitted as","enum":["create_task","create_epic","update_task_patch","update_epic_patch","import_plan","set_config"],"type":"string"},"file":{"description":"Workspace file path holding the JSON payload (relative paths resolve against the workspace root)","type":"string"}},"required":["op","file"],"type":"object"}`),
 		},
 	}
@@ -721,10 +721,10 @@ func mcpToolCatalog() []mcpTool {
 			// in-flight guard on every stage/lease write.
 			Name:        "board_read",
 			Annotations: annot(true, false, false),
-			Description: "Read ONE Sprint Board story (the wire/API term is 'task') — your claimed story's full worker view: the charter (description + acceptance criteria), stage, blocked-by dependencies with their stages, attempts, and your lease (claim state, expiry). Address it by shortId (a word-phrase id like tsk-crimson-finch-blooms from your charter envelope, #1831; legacy random tsk-XXXXXXXX ids still resolve, deprecated) or taskId (UUID); resolution is case-insensitive, and a near-miss id returns 404 with did-you-mean suggestions (verify the id and retry once). No claim token is needed — a read is not an in-flight write. The row's assignee_session and implementer_session are RESOLVABLE session refs (owner ruling 2026-10-29): the 3-word phrase when the session index knows the session, else the raw harness id (*_deprecated flagged) — pass either form to session_read / session_metadata to inspect the worker or reviewer behind the row. Use it to re-ground yourself on the story's current truth: after a 409 claim_token (your claim lapsed or the story moved — re-read before doing anything else), before reporting throttle or moving stage (stage and criteria may have changed), or whenever your charter's snapshot might be stale. The board's list/health overview projections live on the manager tools board_list/board_health (#1837).",
+			Description: "Read ONE Sprint Board story (the REST wire term is 'task') — your claimed story's full worker view: the charter (description + acceptance criteria), stage, blocked-by dependencies with their stages, attempts, and your lease (claim state, expiry). Address it by shortId (a word-phrase id like tsk-crimson-finch-blooms from your charter envelope, #1831; legacy random tsk-XXXXXXXX ids still resolve, deprecated) or storyId (UUID); resolution is case-insensitive, and a near-miss id returns 404 with did-you-mean suggestions (verify the id and retry once). No claim token is needed — a read is not an in-flight write. The row's assignee_session and implementer_session are RESOLVABLE session refs (owner ruling 2026-10-29): the 3-word phrase when the session index knows the session, else the raw harness id (*_deprecated flagged) — pass either form to session_read / session_metadata to inspect the worker or reviewer behind the row. Use it to re-ground yourself on the story's current truth: after a 409 claim_token (your claim lapsed or the story moved — re-read before doing anything else), before reporting throttle or moving stage (stage and criteria may have changed), or whenever your charter's snapshot might be stale. The board's list/health overview projections live on the manager tools board_list/board_health (#1837).",
 			InputSchema: map[string]any{"type": "object", "properties": map[string]any{
 				"shortId": map[string]any{"type": "string", "description": "The story's short id (word-phrase, tsk-crimson-finch-blooms, from your charter envelope); case-insensitive"},
-				"taskId":  map[string]any{"type": "string", "description": "The story's UUID (alternative to shortId; taskId wins when both are given)"},
+				"storyId": map[string]any{"type": "string", "description": "The story's UUID (alternative to shortId; storyId wins when both are given)"},
 			}, "required": []string{}},
 		},
 		{
@@ -734,36 +734,36 @@ func mcpToolCatalog() []mcpTool {
 				"claimToken":         map[string]any{"type": "string", "description": "The claim token from your charter envelope (the in-flight guard)"},
 				"observedProgressAt": map[string]any{"type": "string", "description": "RFC 3339 timestamp of your latest progress (last message/tool activity) — the response's stamp; the server clamps future stamps"},
 				"sessionId":          map[string]any{"type": "string", "description": "Optional: your own session id — self-identification for the assignee-stamp back-fill (RC-B): when your row's assignee stamp was lost, a token-carrying call that names its session re-stamps it, making the claim observable again"},
-				"shortId":            map[string]any{"type": "string", "description": "The story's short id (word-phrase form) — alternative to taskId"},
-				"taskId":             map[string]any{"type": "string", "description": "The story's UUID — alternative to shortId"},
+				"shortId":            map[string]any{"type": "string", "description": "The story's short id (word-phrase form) — alternative to storyId"},
+				"storyId":            map[string]any{"type": "string", "description": "The story's UUID — alternative to shortId"},
 			}, "required": []string{"claimToken"}},
 		},
 		{
 			Name:        "board_report_throttle",
-			Description: "Report a provider throttle (HTTP 429 / rate limit) hit while working your claimed story (the wire/API term is 'task'): the story returns to backlog with a cooldown and you are released — without attempt penalty (the attempt is rolled back; the story is re-served after the backoff, to a fresh worker). Also sets the project's slot cooldown, pausing NEW claims into the project while in-flight leases run out. Requires the claim token from your charter envelope; retryAfterSeconds is optional (the platform's default backoff applies when omitted). This concerns a LIVE claim only: a pending_input or already-lapsed row is refused (409 claim_token) — it is NOT a self-exit from pending_input. Call it as soon as you identify the failure as provider throttling, then stop; do not keep retrying the throttled operation.",
+			Description: "Report a provider throttle (HTTP 429 / rate limit) hit while working your claimed story (the REST wire term is 'task'): the story returns to backlog with a cooldown and you are released — without attempt penalty (the attempt is rolled back; the story is re-served after the backoff, to a fresh worker). Also sets the project's slot cooldown, pausing NEW claims into the project while in-flight leases run out. Requires the claim token from your charter envelope; retryAfterSeconds is optional (the platform's default backoff applies when omitted). This concerns a LIVE claim only: a pending_input or already-lapsed row is refused (409 claim_token) — it is NOT a self-exit from pending_input. Call it as soon as you identify the failure as provider throttling, then stop; do not keep retrying the throttled operation.",
 			InputSchema: map[string]any{"type": "object", "properties": map[string]any{
 				"claimToken":        map[string]any{"type": "string", "description": "The claim token from your charter envelope (the in-flight guard)"},
 				"retryAfterSeconds": map[string]any{"type": "integer", "description": "Optional backoff from the provider's Retry-After; omitted = the platform's default throttle backoff"},
-				"shortId":           map[string]any{"type": "string", "description": "The story's short id (word-phrase form) — alternative to taskId"},
-				"taskId":            map[string]any{"type": "string", "description": "The story's UUID — alternative to shortId"},
+				"shortId":           map[string]any{"type": "string", "description": "The story's short id (word-phrase form) — alternative to storyId"},
+				"storyId":           map[string]any{"type": "string", "description": "The story's UUID — alternative to shortId"},
 			}, "required": []string{"claimToken"}},
 		},
 		{
 			Name:        "board_move_stage",
-			Description: "Move a story's stage (the wire/API term is 'task') — the worker's forward writes when you hold a claim token, or the manager-grade move when you don't. WORKER (claimToken present, your claimed story): in_progress → in_review when your work is done (attach evidenceUrl — the artifact link for this transition: PR, build, doc); a review bounce (in_review → in_progress) re-arms a fresh claim and worker; → done requires ALL acceptance criteria met + evidenceUrl and is the reviewer's move, not yours. MANAGER (no claimToken — any in-workspace session, spawned workers included; the manager-grant gate is repealed, ruling 2026-10-27, tsk-copper-refectory-generates): the full legal manager set including the pending_input exits (→ in_progress re-claims, → backlog re-queues — the ONE attempts reset) and failed (the failure terminus 000050: attempts exhaustion and the lease wedge verdict land there; re-arm via board_rearm_task) — the pending_input freeze-out class (#1832) is gone; 000050: pending_input is a FLAG not a stage — the literal SETS the awaiting-input flag (row keeps its real stage) and the exits CLEAR it. A 409 with code claim_token means the claim is no longer yours — STOP and re-read the story with board_read. The story's stage machine arbitrates every move server-side; on refusal the response carries the authoritative row.",
+			Description: "Move a story's stage (the REST wire term is 'task') — the worker's forward writes when you hold a claim token, or the manager-grade move when you don't. WORKER (claimToken present, your claimed story): in_progress → in_review when your work is done (attach evidenceUrl — the artifact link for this transition: PR, build, doc); a review bounce (in_review → in_progress) re-arms a fresh claim and worker; → done requires ALL acceptance criteria met + evidenceUrl and is the reviewer's move, not yours. MANAGER (no claimToken — any in-workspace session, spawned workers included; the manager-grant gate is repealed, ruling 2026-10-27, tsk-copper-refectory-generates): the full legal manager set including the pending_input exits (→ in_progress re-claims, → backlog re-queues — the ONE attempts reset) and failed (the failure terminus 000050: attempts exhaustion and the lease wedge verdict land there; re-arm via board_rearm_story) — the pending_input freeze-out class (#1832) is gone; 000050: pending_input is a FLAG not a stage — the literal SETS the awaiting-input flag (row keeps its real stage) and the exits CLEAR it. A 409 with code claim_token means the claim is no longer yours — STOP and re-read the story with board_read. The story's stage machine arbitrates every move server-side; on refusal the response carries the authoritative row.",
 			InputSchema: map[string]any{"type": "object", "properties": map[string]any{
 				"claimToken":  map[string]any{"type": "string", "description": "The claim token from your charter envelope (the in-flight guard) — OMIT it only for the manager-grade move (any in-workspace session)"},
 				"toStage":     map[string]any{"type": "string", "description": "Target stage: in_review (work done), in_progress (re-work / the pending_input re-claim exit), done, pending_input (SET the awaiting-input flag — the row keeps its real stage, 000050), backlog (the pending_input re-queue exit clears the flag), failed (the failure terminus)"},
 				"evidenceUrl": map[string]any{"type": "string", "description": "The artifact link for this transition (PR, build, doc) — required for → done, good practice for → in_review"},
 				"requestId":   map[string]any{"type": "string", "description": "Optional idempotency key (UUID): reuse it on retry of the SAME logical move — a replay returns the original outcome, never a duplicate"},
 				"sessionId":   map[string]any{"type": "string", "description": "Optional: your own session id — self-identification for the assignee-stamp back-fill (RC-B), same as board_heartbeat's"},
-				"shortId":     map[string]any{"type": "string", "description": "The story's short id (word-phrase form) — alternative to taskId"},
-				"taskId":      map[string]any{"type": "string", "description": "The story's UUID — alternative to shortId"},
+				"shortId":     map[string]any{"type": "string", "description": "The story's short id (word-phrase form) — alternative to storyId"},
+				"storyId":     map[string]any{"type": "string", "description": "The story's UUID — alternative to shortId"},
 			}, "required": []string{"toStage"}},
 		},
 		{
 			Name:        "board_record_verdict",
-			Description: "Record your structured review verdict on a story (the wire/API term is 'task'; #1947 — the reviewer persona's ONE authorized write; you hold the in_review claim, so the verdict is yours to record). verdict=approve requires the story's evidence URL and ALL acceptance criteria met (the Done guard applies regardless — a refusal keeps your verdict in the chain with the reason); verdict=fail requires findings [{severity blocker|major|minor, pointer, criterionIndex}] and bounces the story to a fresh implementer with your findings embedded in its charter. Requires the claim token from your charter envelope. A 409 with code claim_token means the in_review claim is no longer yours — STOP and re-read the story with board_read.",
+			Description: "Record your structured review verdict on a story (the REST wire term is 'task'; #1947 — the reviewer persona's ONE authorized write; you hold the in_review claim, so the verdict is yours to record). verdict=approve requires the story's evidence URL and ALL acceptance criteria met (the Done guard applies regardless — a refusal keeps your verdict in the chain with the reason); verdict=fail requires findings [{severity blocker|major|minor, pointer, criterionIndex}] and bounces the story to a fresh implementer with your findings embedded in its charter. Requires the claim token from your charter envelope. A 409 with code claim_token means the in_review claim is no longer yours — STOP and re-read the story with board_read.",
 			InputSchema: map[string]any{"type": "object", "properties": map[string]any{
 				"claimToken":  map[string]any{"type": "string", "description": "The claim token from your charter envelope (the in-flight guard — required)"},
 				"verdict":     map[string]any{"type": "string", "description": "approve or fail"},
@@ -772,8 +772,8 @@ func mcpToolCatalog() []mcpTool {
 				"findings":    map[string]any{"type": "array", "description": "fail findings: [{severity, pointer, criterionIndex?}]", "items": map[string]any{"type": "object"}},
 				"requestId":   map[string]any{"type": "string", "description": "Optional idempotency key (UUID): reuse it on retry of the SAME logical verdict"},
 				"sessionId":   map[string]any{"type": "string", "description": "Optional: your own session id — self-identification for the assignee-stamp back-fill (RC-B), same as board_heartbeat's"},
-				"shortId":     map[string]any{"type": "string", "description": "The story's short id (word-phrase form) — alternative to taskId"},
-				"taskId":      map[string]any{"type": "string", "description": "The story's UUID — alternative to shortId"},
+				"shortId":     map[string]any{"type": "string", "description": "The story's short id (word-phrase form) — alternative to storyId"},
+				"storyId":     map[string]any{"type": "string", "description": "The story's UUID — alternative to shortId"},
 			}, "required": []string{"claimToken", "verdict", "reviewer"}},
 		},
 		{
@@ -1036,7 +1036,18 @@ func mcpHandler(password string) http.HandlerFunc {
 				writeMCPError(w, req.ID, -32602, fmt.Sprintf("Invalid params: %v", err))
 				return
 			}
-			result, err := callMCPTool(r.Context(), password, params.Name, params.Arguments)
+			// The story rename's one-release alias window (owner ruling
+			// 2026-10-30 phase 2): a pre-rename tool name resolves to
+			// its canonical twin, and the canonical storyId/storyIds
+			// input keys translate onto the wire's task spelling —
+			// either legacy spelling (name or key) carries the
+			// deprecation notice as a second content block (the
+			// sessionArgsDeprecationNote carrier pattern, errors
+			// included).
+			toolName, aliasNotice := boardStoryToolCanonical(params.Name)
+			toolArgs, legacyKeyNote := normalizeBoardStoryArgs(toolName, params.Arguments)
+			storyNote := boardStoryDeprecationNote(aliasNotice, legacyKeyNote)
+			result, err := callMCPTool(r.Context(), password, toolName, toolArgs)
 			if err != nil {
 				res := map[string]any{
 					"content": []map[string]any{
@@ -1046,8 +1057,11 @@ func mcpHandler(password string) http.HandlerFunc {
 				}
 				// #1816 §2 parity: the notice rides the error envelope
 				// too — a deprecated-form ref that FAILS still tells
-				// the caller the address form is going away.
-				if note := sessionArgsDeprecationNote(params.Arguments); note != "" {
+				// the caller the address form is going away. The story
+				// rename's alias/legacy-key notice rides the same
+				// carrier (a deprecated spelling that fails still
+				// says it is going away).
+				if note := firstNonEmpty(sessionArgsDeprecationNote(params.Arguments), storyNote); note != "" {
 					res["content"] = append(res["content"].([]map[string]any),
 						map[string]any{"type": "text", "text": note})
 				}
@@ -1064,8 +1078,9 @@ func mcpHandler(password string) http.HandlerFunc {
 			// envelope-level carrier covers every session tool
 			// uniformly, including array-shaped outputs (session_read)
 			// that have no object field to carry it (#1806's round
-			// left those shape-constrained).
-			if note := sessionArgsDeprecationNote(params.Arguments); note != "" {
+			// left those shape-constrained). The story rename's
+			// alias/legacy-key notice rides the same carrier.
+			if note := firstNonEmpty(sessionArgsDeprecationNote(params.Arguments), storyNote); note != "" {
 				content = append(content, map[string]any{"type": "text", "text": note})
 			}
 			res := map[string]any{
@@ -1076,7 +1091,7 @@ func mcpHandler(password string) http.HandlerFunc {
 			// structured twin alongside the text form (spec: both, for
 			// compatibility). Parse failures degrade to text-only — the
 			// text form is always the source of truth here.
-			if t := mcpToolByName(params.Name); t != nil && len(t.OutputSchema) > 0 {
+			if t := mcpToolByName(toolName); t != nil && len(t.OutputSchema) > 0 {
 				var structured map[string]any
 				if err := json.Unmarshal([]byte(result), &structured); err == nil && structured != nil {
 					res["structuredContent"] = structured
@@ -1308,11 +1323,11 @@ func callMCPTool(ctx context.Context, password, name string, args map[string]any
 		"board_create_epic", "board_update_epic",
 		"board_epic_activate", "board_epic_pause", "board_epic_archive", "board_epic_unarchive",
 		"board_delete_epic",
-		"board_create_task", "board_update_task",
+		"board_create_story", "board_update_story",
 		"board_add_dependency", "board_remove_dependency",
-		"board_delete_task", "board_pause_task", "board_resume_task", "board_rearm_task", "board_depose_task",
+		"board_delete_story", "board_pause_story", "board_resume_story", "board_rearm_story", "board_depose_story",
 		"board_move_stage_bulk",
-		"board_delete_tasks",
+		"board_delete_stories",
 		"board_import_plan",
 		"board_record_verdict": // #1947: the spawned reviewer persona's verdict channel
 		// #1701: the board worker tools ride the same automation seam

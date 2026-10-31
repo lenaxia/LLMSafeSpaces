@@ -191,13 +191,13 @@ function VerdictView({ verdict }: { verdict: BoardVerdict }) {
 }
 
 /**
- * TaskDrawer — #1832 item 4: the task-detail drawer. Header (title,
+ * StoryDrawer — #1832 item 4: the task-detail drawer. Header (title,
  * stage, claim/lease, blocked-by with live dep stages, attempts), the
  * charter + acceptance criteria with met state, and the FULL audit
  * timeline (the events read — stage transitions, claims who/when, review
  * verdicts when present, dependency-graph changes, orphan/unblock).
  */
-export function TaskDrawer({ open, onOpenChange, task, projectTasks = [], onEdit, workspaceId }: TaskDrawerProps) {
+export function StoryDrawer({ open, onOpenChange, task, projectTasks = [], onEdit, workspaceId }: TaskDrawerProps) {
   const eventsQuery = useQuery({
     queryKey: ["board", "task-events", task?.short_id ?? null],
     queryFn: () => boardApi.taskEvents(task!.short_id, TASK_EVENTS_LIMIT),

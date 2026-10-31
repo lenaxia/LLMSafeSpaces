@@ -81,20 +81,35 @@ func TestIntegration_FullWorkflow(t *testing.T) {
 	// board_health) + 5 #1747 board_* (project pause/resume, task
 	// pause/resume, delete, import_plan — board_cancel replaced by
 	// board_delete) + 1 workspace_status (#1760) + 2 #1832 item 5
-	// verdict tools (board_record_verdict, board_task_verdicts) + 1
-	// board_task_events (#1832 item 4) + 1 board_rearm_task
-	// (#1832 WS3) + 3 #1836 bulk tools (board_start_tasks,
-	// board_move_stage_bulk, board_delete_tasks) + 1 board_depose_task
-	// (S5, the DEPOSED directive) = 58).
+	// verdict tools (board_record_verdict, board_story_verdicts) + 1
+	// board_story_events (#1832 item 4) + 1 board_rearm_story
+	// (#1832 WS3) + 3 #1836 bulk tools (board_start_stories,
+	// board_move_stage_bulk, board_delete_stories) + 1 board_depose_story
+	// (S5, the DEPOSED directive) = 58, PLUS the 10 one-release
+	// deprecated story-rename aliases (story rename phase 2, owner
+	// ruling 2026-10-30: board_create_task, board_task_verdicts,
+	// board_task_events, board_start_task(s), board_delete_tasks,
+	// board_(rearm|pause|resume|depose)_task) = 68).
 	toolsResp, err := mcpClient.ListTools(ctx, mcp.ListToolsRequest{})
 	require.NoError(t, err)
-	assert.Len(t, toolsResp.Tools, 58)
+	assert.Len(t, toolsResp.Tools, 68)
 
 	toolNames := make(map[string]bool)
 	toolSchemas := make(map[string]mcp.Tool)
 	for _, tool := range toolsResp.Tools {
 		toolNames[tool.Name] = true
 		toolSchemas[tool.Name] = tool
+	}
+
+	for alias := range map[string]bool{
+		"board_create_task": true, "board_task_verdicts": true, "board_task_events": true,
+		"board_start_task": true, "board_start_tasks": true, "board_delete_tasks": true,
+		"board_rearm_task": true, "board_pause_task": true, "board_resume_task": true,
+	} {
+		tool, ok := toolSchemas[alias]
+		require.True(t, ok, "deprecated alias %s must stay registered through the alias window", alias)
+		assert.Contains(t, tool.Description, "DEPRECATED ALIAS of board_",
+			"%s's description must name the rename and point at the canonical tool", alias)
 	}
 
 	// #880/#905 schema pin: workspace_create must REQUIRE name — the API
