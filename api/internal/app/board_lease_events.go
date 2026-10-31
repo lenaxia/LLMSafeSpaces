@@ -44,26 +44,12 @@ import (
 	"expvar"
 	"log/slog"
 	"strings"
-	"time"
 
 	"github.com/go-redis/redis/v8"
 
 	"github.com/lenaxia/llmsafespaces/pkg/board"
 	"github.com/lenaxia/llmsafespaces/pkg/eventbus"
 )
-
-// boardLeasePublishBudget bounds one publish and one bus (re)wire:
-// fail-open means a slow or dead Redis costs at most one budget before
-// the breaker (below) gates the rest — a stalled sweep is never an
-// acceptable observability bill.
-const boardLeasePublishBudget = 2 * time.Second
-
-// boardLeaseBreakerPause gates re-attempts after a publish failure:
-// the sweep's own cadence (30s default) — one bounded failure per
-// window, then fail-fast until the window turns. The nudge path's v1
-// fallback answers immediately in that window (a dead bus must not add
-// a 2s tax to every sentinel).
-const boardLeaseBreakerPause = 30 * time.Second
 
 // The API-side visibility (expvar on /debug/vars — the
 // boardLivenessDegraded precedent; agentd's S3 prometheus surface

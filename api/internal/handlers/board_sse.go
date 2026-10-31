@@ -132,7 +132,7 @@ func (h *ProxyHandler) boardEventDeliver(pool *pgxpool.Pool, log warnLogger, evt
 	// is never rewritten; the degraded shapes are markDeprecatedSession-
 	// ID's (raw + session_id_deprecated) and its task-field twin
 	// (raw + assignee_session_deprecated).
-	evt.Actor, evt.Payload = translateBoardEventIDs(pool, workspaceID, evt.Actor, evt.Payload)
+	evt.Actor, evt.Payload = translateBoardEventIDs(ctx, pool, workspaceID, evt.Actor, evt.Payload)
 	h.publishBoardFanout(owner, workspaceID, evt)
 }
 
@@ -140,7 +140,7 @@ func (h *ProxyHandler) boardEventDeliver(pool *pgxpool.Pool, log warnLogger, evt
 // actor blob and the payload's assignee keys, resolve them against the
 // project's target workspace in ONE session_index consult, translate
 // both. Failures degrade raw (the translators never break a read).
-func translateBoardEventIDs(pool *pgxpool.Pool, workspaceID string, actor, payload []byte) ([]byte, []byte) {
+func translateBoardEventIDs(ctx context.Context, pool *pgxpool.Pool, workspaceID string, actor, payload []byte) ([]byte, []byte) {
 	if workspaceID == "" || pool == nil {
 		// No workspace scope or no pool (the bus join's tests mount the
 		// broker without one): degrade raw — the translators never
@@ -160,9 +160,9 @@ func translateBoardEventIDs(pool *pgxpool.Pool, workspaceID string, actor, paylo
 	if len(ids) == 0 {
 		return actor, payload
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	tctx, cancel := context.WithTimeout(ctx, 2*time.Second)
 	defer cancel()
-	phrases := board.LookupSessionPhrases(ctx, pool, workspaceID, ids)
+	phrases := board.LookupSessionPhrases(tctx, pool, workspaceID, ids)
 	return board.TranslateActorSessionPhrase(actor, phrases),
 		board.TranslatePayloadAssignees(payload, phrases)
 }
@@ -210,7 +210,7 @@ func BoardEventBusHandler(broker boardFanoutBroker, pool *pgxpool.Pool, log warn
 			// Always-ACK: an advisory projection never wedges the group.
 			return nil
 		}
-		deliverBoardBusMessage(broker, pool, log, msg)
+		deliverBoardBusMessage(ctx, broker, pool, log, msg)
 		return nil
 	}
 }
@@ -225,7 +225,7 @@ func (h *ProxyHandler) BoardEventBusHandler(pool *pgxpool.Pool, log warnLogger) 
 }
 
 // deliverBoardBusMessage is one entry's render+fan-out.
-func deliverBoardBusMessage(broker boardFanoutBroker, pool *pgxpool.Pool, log warnLogger, msg eventbus.Message) {
+func deliverBoardBusMessage(ctx context.Context, broker boardFanoutBroker, pool *pgxpool.Pool, log warnLogger, msg eventbus.Message) {
 	p := msg.Event.Payload
 	if projectID, ok := eventbus.ParseBoardEvent(msg.Event.Topic); ok {
 		createdAt, err := time.Parse(time.RFC3339Nano, p[eventbus.FieldBoardCreatedAt])
@@ -244,7 +244,7 @@ func deliverBoardBusMessage(broker boardFanoutBroker, pool *pgxpool.Pool, log wa
 			Payload:   []byte(p[eventbus.FieldBoardPayload]),
 			CreatedAt: createdAt,
 		}
-		fanOutBoardEvent(broker, pool, log, evt, p[eventbus.FieldBoardOwner], p[eventbus.FieldBoardWorkspace])
+		fanOutBoardEvent(ctx, broker, pool, log, evt, p[eventbus.FieldBoardOwner], p[eventbus.FieldBoardWorkspace])
 		return
 	}
 	if taskID, arm, ok := eventbus.ParseTask(msg.Event.Topic); ok && arm == "stamped" {
@@ -272,7 +272,7 @@ func deliverBoardBusMessage(broker boardFanoutBroker, pool *pgxpool.Pool, log wa
 			Payload:   inner,
 			CreatedAt: msg.Event.At,
 		}
-		fanOutBoardEvent(broker, pool, log, evt, p[eventbus.FieldBoardOwner], p[eventbus.FieldBoardWorkspace])
+		fanOutBoardEvent(ctx, broker, pool, log, evt, p[eventbus.FieldBoardOwner], p[eventbus.FieldBoardWorkspace])
 		return
 	}
 	// Unknown shape: the vocabulary is a convention — log and move on.
@@ -283,8 +283,8 @@ func deliverBoardBusMessage(broker boardFanoutBroker, pool *pgxpool.Pool, log wa
 // phrase translation and dual-channel fan-out the v1 leg runs at
 // emission, with the scope from the payload instead of a project
 // lookup.
-func fanOutBoardEvent(broker boardFanoutBroker, pool *pgxpool.Pool, log warnLogger, evt board.Event, owner, workspaceID string) {
-	evt.Actor, evt.Payload = translateBoardEventIDs(pool, workspaceID, evt.Actor, evt.Payload)
+func fanOutBoardEvent(ctx context.Context, broker boardFanoutBroker, pool *pgxpool.Pool, log warnLogger, evt board.Event, owner, workspaceID string) {
+	evt.Actor, evt.Payload = translateBoardEventIDs(ctx, pool, workspaceID, evt.Actor, evt.Payload)
 	if workspaceID != "" {
 		broker.PublishToWorkspace(workspaceID, boardSSEEvent(evt))
 	}

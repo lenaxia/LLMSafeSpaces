@@ -155,15 +155,15 @@ func (b *boardBusClient) breakerOpen() bool {
 
 // busFor returns the workspace's bus, wiring it on first use (the
 // constructor pings, so an evicted bus re-proves the transport).
-func (b *boardBusClient) busFor(workspaceID string) (*eventbus.RedisBus, error) {
+func (b *boardBusClient) busFor(ctx context.Context, workspaceID string) (*eventbus.RedisBus, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	if bus, ok := b.buses[workspaceID]; ok {
 		return bus, nil
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), boardBusPublishBudget)
+	wctx, cancel := context.WithTimeout(ctx, boardBusPublishBudget)
 	defer cancel()
-	bus, err := eventbus.NewRedisBus(ctx, b.client, eventbus.StreamKey(workspaceID), 0)
+	bus, err := eventbus.NewRedisBus(wctx, b.client, eventbus.StreamKey(workspaceID), 0)
 	if err != nil {
 		return nil, fmt.Errorf("board: event bus (%s) for workspace %s: %w", b.name, workspaceID, err)
 	}
@@ -190,7 +190,7 @@ func (b *boardBusClient) publish(ctx context.Context, workspaceID, topic string,
 		failed.Add(1)
 		return errors.New("board: event bus paused after a failed publish")
 	}
-	bus, err := b.busFor(workspaceID)
+	bus, err := b.busFor(ctx, workspaceID)
 	if err != nil {
 		b.trip(failed)
 		return err
@@ -564,8 +564,9 @@ func (j *boardSSEJoin) Start(ctx context.Context) {
 	if j == nil {
 		return
 	}
+	baseCtx := ctx
 	ctx, j.stop = context.WithCancel(ctx)
-	defer j.teardown()
+	defer j.teardown(baseCtx)
 	j.syncOnce(ctx)
 	ticker := time.NewTicker(boardSSEJoinInterval)
 	defer ticker.Stop()
@@ -605,7 +606,7 @@ func (j *boardSSEJoin) syncOnce(ctx context.Context) {
 		j.wg.Add(1)
 		go func(workspaceID string) {
 			defer j.wg.Done()
-			bus, err := j.tr.busFor(workspaceID)
+			bus, err := j.tr.busFor(cctx, workspaceID)
 			if err != nil {
 				slog.Warn("board: SSE join — stream unwireable, consumer parked for this workspace",
 					"workspace", workspaceID, "err", err.Error())
@@ -638,7 +639,7 @@ func (j *boardSSEJoin) syncOnce(ctx context.Context) {
 // on every stream it touched — a graceful shutdown leaves no stalled
 // sse-* group for S3's detector to flag (a crashed replica's leftover
 // IS flagged; that is the detector doing its job).
-func (j *boardSSEJoin) teardown() {
+func (j *boardSSEJoin) teardown(ctx context.Context) {
 	j.mu.Lock()
 	for _, cancel := range j.live {
 		cancel()
@@ -647,10 +648,13 @@ func (j *boardSSEJoin) teardown() {
 	j.closed = true
 	j.mu.Unlock()
 	j.wg.Wait()
-	ctx, cancel := context.WithTimeout(context.Background(), boardBusPublishBudget)
+	// The caller's ctx is canceled by the time teardown runs (Start's
+	// defer fires after ctx ends) — the destroy keeps the ctx's VALUES
+	// but strips its cancellation, bounded by one budget.
+	dctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), boardBusPublishBudget)
 	defer cancel()
 	for _, ws := range j.tr.streams() {
-		if err := j.tr.client.XGroupDestroy(ctx, eventbus.StreamKey(ws), j.group).Err(); err != nil {
+		if err := j.tr.client.XGroupDestroy(dctx, eventbus.StreamKey(ws), j.group).Err(); err != nil {
 			slog.Warn("board: SSE join group destroy failed (a leftover sse group will be flagged by the bus-health detector)",
 				"workspace", ws, "group", j.group, "err", err.Error())
 		}
