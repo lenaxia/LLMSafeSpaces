@@ -344,6 +344,20 @@ func boardManagerTools() []mcpTool {
 			}, "required": []string{"storyId"}},
 		},
 		{
+			Name:        "board_depose_story",
+			Description: "Depose a LAPSED claim on a story (the REST wire term is 'task'; S5, the DEPOSED directive — 2026-10-30 incident remediation): record the salvage pointer — branch, PR number, last known state — on the row so the NEXT claim's charter embeds it automatically (inherit, don't restart; no more hand-written salvage notes). An in_progress lapsed claim is requeued exactly as the reclaim would (failure overlay + backoff cooldown) and the stale session receives a DEPOSED directive (stop working; your token is revoked); a backlog row takes the pointer alone (the reclaim already ran). GUARDS: a live healthy claim refuses (409 claim_live — an unexpired lease, or life evidence on the expired one: movement, mid-turn busy under the ladder's cap, post-sentinel reaction, or a post-nudge heartbeat); done/failed/in_review rows refuse; every deposition is audit-logged (action 'depose', payload = the pointer). At least one of branch/pr/head/state/note is required. Open to any in-workspace session (the manager-grant gate is repealed, ruling 2026-10-27).",
+			InputSchema: map[string]any{"type": "object", "properties": map[string]any{
+				"storyId": map[string]any{"type": "string", "description": "Story short id (phrase form tsk-crimson-finch-blooms, legacy tsk-XXXXXXXX forms still resolve, or UUID)"},
+				"branch":  map[string]any{"type": "string", "description": "The pushed branch name the deposed attempt left behind"},
+				"pr":      map[string]any{"type": "string", "description": "The open pull request's number or URL"},
+				"head":    map[string]any{"type": "string", "description": "The last known commit SHA on the branch"},
+				"state":   map[string]any{"type": "string", "description": "Last known state, free text: what was done, what gates ran, what remains"},
+				"note":    map[string]any{"type": "string", "description": "Guidance for the inheriting worker (verify-first, what to build on)"},
+				"requestId": map[string]any{"type": "string",
+					"description": "Optional idempotency key: reuse ONE id per logical operation across retries"},
+			}, "required": []string{"storyId"}},
+		},
+		{
 			// #1836: the bulk complete — the review-settlement sweep in
 			// one call (the #1832 WS2 manager move's batch twin). The
 			// bulk CLAIM variant deliberately does not exist on this
@@ -719,6 +733,7 @@ func mcpToolCatalog() []mcpTool {
 			InputSchema: map[string]any{"type": "object", "properties": map[string]any{
 				"claimToken":         map[string]any{"type": "string", "description": "The claim token from your charter envelope (the in-flight guard)"},
 				"observedProgressAt": map[string]any{"type": "string", "description": "RFC 3339 timestamp of your latest progress (last message/tool activity) — the response's stamp; the server clamps future stamps"},
+				"sessionId":          map[string]any{"type": "string", "description": "Optional: your own session id — self-identification for the assignee-stamp back-fill (RC-B): when your row's assignee stamp was lost, a token-carrying call that names its session re-stamps it, making the claim observable again"},
 				"shortId":            map[string]any{"type": "string", "description": "The story's short id (word-phrase form) — alternative to storyId"},
 				"storyId":            map[string]any{"type": "string", "description": "The story's UUID — alternative to shortId"},
 			}, "required": []string{"claimToken"}},
@@ -741,6 +756,7 @@ func mcpToolCatalog() []mcpTool {
 				"toStage":     map[string]any{"type": "string", "description": "Target stage: in_review (work done), in_progress (re-work / the pending_input re-claim exit), done, pending_input (SET the awaiting-input flag — the row keeps its real stage, 000050), backlog (the pending_input re-queue exit clears the flag), failed (the failure terminus)"},
 				"evidenceUrl": map[string]any{"type": "string", "description": "The artifact link for this transition (PR, build, doc) — required for → done, good practice for → in_review"},
 				"requestId":   map[string]any{"type": "string", "description": "Optional idempotency key (UUID): reuse it on retry of the SAME logical move — a replay returns the original outcome, never a duplicate"},
+				"sessionId":   map[string]any{"type": "string", "description": "Optional: your own session id — self-identification for the assignee-stamp back-fill (RC-B), same as board_heartbeat's"},
 				"shortId":     map[string]any{"type": "string", "description": "The story's short id (word-phrase form) — alternative to storyId"},
 				"storyId":     map[string]any{"type": "string", "description": "The story's UUID — alternative to shortId"},
 			}, "required": []string{"toStage"}},
@@ -755,6 +771,7 @@ func mcpToolCatalog() []mcpTool {
 				"evidenceUrl": map[string]any{"type": "string", "description": "The artifact link the verdict certifies (required for approve)"},
 				"findings":    map[string]any{"type": "array", "description": "fail findings: [{severity, pointer, criterionIndex?}]", "items": map[string]any{"type": "object"}},
 				"requestId":   map[string]any{"type": "string", "description": "Optional idempotency key (UUID): reuse it on retry of the SAME logical verdict"},
+				"sessionId":   map[string]any{"type": "string", "description": "Optional: your own session id — self-identification for the assignee-stamp back-fill (RC-B), same as board_heartbeat's"},
 				"shortId":     map[string]any{"type": "string", "description": "The story's short id (word-phrase form) — alternative to storyId"},
 				"storyId":     map[string]any{"type": "string", "description": "The story's UUID — alternative to shortId"},
 			}, "required": []string{"claimToken", "verdict", "reviewer"}},
@@ -1308,7 +1325,7 @@ func callMCPTool(ctx context.Context, password, name string, args map[string]any
 		"board_delete_epic",
 		"board_create_story", "board_update_story",
 		"board_add_dependency", "board_remove_dependency",
-		"board_delete_story", "board_pause_story", "board_resume_story", "board_rearm_story",
+		"board_delete_story", "board_pause_story", "board_resume_story", "board_rearm_story", "board_depose_story",
 		"board_move_stage_bulk",
 		"board_delete_stories",
 		"board_import_plan",

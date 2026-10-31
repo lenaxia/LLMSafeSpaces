@@ -619,6 +619,14 @@ func TestBoardEnvOverrides_R6(t *testing.T) {
 		MaxNodesPerEpic        int  `mapstructure:"maxNodesPerEpic"`
 		WorkerSessionCap       int  `mapstructure:"workerSessionCap"`
 		WorkerSessionGraceSecs int  `mapstructure:"workerSessionGraceSeconds"`
+		LeaseEventbus          struct {
+			Addr     string `mapstructure:"addr"`
+			Password string `mapstructure:"password"`
+		} `mapstructure:"leaseEventbus"`
+		Eventbus struct {
+			Addr     string `mapstructure:"addr"`
+			Password string `mapstructure:"password"`
+		} `mapstructure:"eventbus"`
 	}{Enabled: true, AttemptsCap: 3, LeaseSeconds: 900, ThrottleBackoffSeconds: 300, FailureBackoffSeconds: 60, DRRQuantum: 1, SweepSeconds: 30,
 		UserClaimCap: 8, GlobalClaimCap: 64, MaxEdgesPerNode: 16, MaxNodesPerEpic: 64,
 		WorkerSessionCap: 50, WorkerSessionGraceSecs: 3600}}
@@ -630,6 +638,33 @@ func TestBoardEnvOverrides_R6(t *testing.T) {
 		cfg.Board.MaxEdgesPerNode != 20 || cfg.Board.MaxNodesPerEpic != 80 ||
 		cfg.Board.WorkerSessionCap != 25 || cfg.Board.WorkerSessionGraceSecs != 1800 {
 		t.Fatalf("board env overrides not applied: %+v", cfg.Board)
+	}
+}
+
+// TestBoardEnvOverrides_LeaseEventbus: design 0072 S4's publisher knob
+// — the addr/password spellings land, and the EMPTY default (unset)
+// leaves the v1-only posture intact.
+func TestBoardEnvOverrides_LeaseEventbus(t *testing.T) {
+	cfg := &Config{}
+	applyBoardEnvOverrides(cfg)
+	if cfg.Board.LeaseEventbus.Addr != "" || cfg.Board.LeaseEventbus.Password != "" {
+		t.Fatalf("unset lease-eventbus env must keep the OFF posture: %+v", cfg.Board.LeaseEventbus)
+	}
+
+	t.Setenv("LLMSAFESPACES_BOARD_LEASEEVENTBUS_ADDR", "llmsafespaces-valkey.llmsafespaces.svc.cluster.local:6379")
+	t.Setenv("LLMSAFESPACES_BOARD_LEASEEVENTBUS_PASSWORD", "  ") // blank trims to unset
+	applyBoardEnvOverrides(cfg)
+	if cfg.Board.LeaseEventbus.Addr != "llmsafespaces-valkey.llmsafespaces.svc.cluster.local:6379" {
+		t.Fatalf("lease-eventbus addr not applied: %+v", cfg.Board.LeaseEventbus)
+	}
+	if cfg.Board.LeaseEventbus.Password != "" {
+		t.Fatalf("a blank password env must not overwrite: %+v", cfg.Board.LeaseEventbus)
+	}
+
+	t.Setenv("LLMSAFESPACES_BOARD_LEASEEVENTBUS_PASSWORD", "sekrit")
+	applyBoardEnvOverrides(cfg)
+	if cfg.Board.LeaseEventbus.Password != "sekrit" {
+		t.Fatalf("lease-eventbus password not applied: %+v", cfg.Board.LeaseEventbus)
 	}
 }
 
@@ -652,11 +687,52 @@ func TestBoardEnvOverrides_R6_InvalidIgnored(t *testing.T) {
 		MaxNodesPerEpic        int  `mapstructure:"maxNodesPerEpic"`
 		WorkerSessionCap       int  `mapstructure:"workerSessionCap"`
 		WorkerSessionGraceSecs int  `mapstructure:"workerSessionGraceSeconds"`
+		LeaseEventbus          struct {
+			Addr     string `mapstructure:"addr"`
+			Password string `mapstructure:"password"`
+		} `mapstructure:"leaseEventbus"`
+		Eventbus struct {
+			Addr     string `mapstructure:"addr"`
+			Password string `mapstructure:"password"`
+		} `mapstructure:"eventbus"`
 	}{Enabled: true, AttemptsCap: 3, LeaseSeconds: 900, ThrottleBackoffSeconds: 300, FailureBackoffSeconds: 60, DRRQuantum: 1, SweepSeconds: 30,
 		UserClaimCap: 8, GlobalClaimCap: 64, MaxEdgesPerNode: 16, MaxNodesPerEpic: 64,
 		WorkerSessionCap: 50, WorkerSessionGraceSecs: 3600}}
 	applyBoardEnvOverrides(cfg)
 	if cfg.Board.AttemptsCap != 3 || cfg.Board.LeaseSeconds != 900 {
 		t.Fatalf("invalid env must not clobber the base: %+v", cfg.Board)
+	}
+}
+
+// TestBoardEnvOverrides_Eventbus: design 0072 S6's knob — the
+// addr/password spellings land, and the FALLBACK to the S4
+// leaseEventbus values keeps one Redis/one posture when only the S4
+// knob is set.
+func TestBoardEnvOverrides_Eventbus(t *testing.T) {
+	cfg := &Config{}
+	applyBoardEnvOverrides(cfg)
+	if cfg.Board.Eventbus.Addr != "" || cfg.Board.Eventbus.Password != "" {
+		t.Fatalf("unset eventbus env must keep the OFF posture: %+v", cfg.Board.Eventbus)
+	}
+
+	// The S4 knob alone arms S6's legs too (one Redis, one posture).
+	t.Setenv("LLMSAFESPACES_BOARD_LEASEEVENTBUS_ADDR", "lease-redis:6379")
+	t.Setenv("LLMSAFESPACES_BOARD_LEASEEVENTBUS_PASSWORD", "s4-pass")
+	cfg = &Config{}
+	applyBoardEnvOverrides(cfg)
+	if cfg.Board.Eventbus.Addr != "lease-redis:6379" || cfg.Board.Eventbus.Password != "s4-pass" {
+		t.Fatalf("the S6 knob must fall back to the S4 values: %+v", cfg.Board.Eventbus)
+	}
+
+	// The canonical knob wins over the fallback.
+	t.Setenv("LLMSAFESPACES_BOARD_EVENTBUS_ADDR", "board-redis:6379")
+	t.Setenv("LLMSAFESPACES_BOARD_EVENTBUS_PASSWORD", "  ") // blank trims to unset
+	cfg = &Config{}
+	applyBoardEnvOverrides(cfg)
+	if cfg.Board.Eventbus.Addr != "board-redis:6379" {
+		t.Fatalf("the canonical knob wins: %+v", cfg.Board.Eventbus)
+	}
+	if cfg.Board.Eventbus.Password != "s4-pass" {
+		t.Fatalf("a blank canonical password must not clobber the fallback: %+v", cfg.Board.Eventbus)
 	}
 }

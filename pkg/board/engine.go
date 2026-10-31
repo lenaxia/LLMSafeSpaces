@@ -497,6 +497,18 @@ func (s *Service) spawnAfter(ctx context.Context, claim *Claim) {
 	if len(claim.VerdictChain) == 0 {
 		claim.VerdictChain = s.claimVerdictChain(ctx, claim.ProjectID, claim.TaskID)
 	}
+	// S5 (the DEPOSED directive): the salvage pointer rides EVERY
+	// spawn the same way — the next claimant after a deposed lapse
+	// inherits the recorded handoff (branch/PR/state) in its charter,
+	// never a cold restart. Best-effort read; a failure degrades to a
+	// pointer-less charter, never a failed spawn.
+	if claim.Salvage == nil {
+		if claim.Task != nil && claim.Task.Salvage != nil {
+			claim.Salvage = claim.Task.Salvage
+		} else {
+			claim.Salvage = s.claimSalvage(ctx, claim.TaskID)
+		}
+	}
 	// Stage-persona claim-then-spawn: a grant lands the row in
 	// in_progress — the implementer persona (when configured) rides
 	// the charter. nil (the default config) leaves the charter
@@ -547,26 +559,64 @@ func (s *Service) spawnSync(ctx context.Context, claim *Claim) {
 	if stage == "" {
 		stage = StageInProgress
 	}
-	tag, err := s.q().Exec(ctx, `
-		UPDATE tasks SET assignee_session=$2,
-			lease_expires_at=now()+make_interval(secs=>$4::float8)
-		WHERE id=$1 AND claim_token=$3 AND stage=$5`,
-		claim.TaskID, sessionID, claim.ClaimToken, s.cfg.LeaseDuration.Seconds(), stage)
-	if err != nil {
-		slog.WarnContext(ctx, "board: assignee record failed", "task_id", claim.TaskID, "err", err.Error())
+	// RC-B S1: the stamp write is a RETRYING, OBSERVED write — a
+	// transient DB failure no longer silently loses the assignee
+	// identity (writeAssigneeStamp retries with backoff, emits
+	// stamp_lag, and fails LOUD on every attempt). landed=false means
+	// the guard lost the race (the claim moved while the spawn was in
+	// flight) OR retries exhausted — the back-fill belt (Heartbeat's
+	// claim-evidence re-stamp) owns the lost-stamp recovery.
+	if !s.writeAssigneeStamp(ctx, claim, sessionID, stage) {
+		// The guarded stamp lost the race (deleted, lapsed, or
+		// re-claimed while the spawn was in flight): the just-spawned
+		// session holds a dead charter — abort it (the merged design's
+		// spawn-stamp guard; the same interrupt seam as
+		// delete/reclaim). A retried-out write ALSO lands here: the
+		// session runs un-stamped until the claim's next evidence
+		// back-fills — aborting would kill a live worker over a stamp
+		// it never asked to lose, so the abort stays gated on the
+		// claim having actually moved.
+		if s.claimStillLive(ctx, claim.TaskID, claim.ClaimToken) {
+			slog.WarnContext(ctx, "board: assignee stamp did not land but the claim is live — running un-stamped until back-fill (the next claim evidence re-stamps)",
+				"task_id", claim.TaskID, "session_id", sessionID)
+			return
+		}
+		if s.aborter != nil {
+			_ = s.aborter(ctx, claim.TaskID, sessionID)
+		}
 		return
 	}
-	if tag.RowsAffected() > 0 {
-		claim.Assignee = sessionID
-		return
+	claim.Assignee = sessionID
+}
+
+// claimStillLive re-checks the spawn-stamp guard's loss: whether the
+// claim token still arbitrates the row. A stamp write that exhausted
+// retries on a STILL-LIVE claim leaves the worker running (the
+// back-fill heals); a stamp that lost the RACE (token moved) aborts
+// the dead charter. A query ERROR answers true (live): the DB that
+// just ate four stamp attempts cannot arbitrate an abort either — the
+// safe direction is a running worker healed by back-fill, never a
+// live worker killed on an unanswerable question.
+func (s *Service) claimStillLive(ctx context.Context, taskID, token string) bool {
+	var n int
+	// The fault seam (kill-pins): an armed failpoint fails the re-check
+	// like a DB error — the b1a73e79c regression (error → LIVE, never
+	// an abort on an unanswerable question) is pinnable only through
+	// an injectable error on exactly this query.
+	if s.failpoint != nil {
+		if ferr := s.failpoint("stamp.liveness_recheck"); ferr != nil {
+			slog.WarnContext(ctx, "board: spawn-stamp liveness re-check unreadable — treating the claim as live (no abort on an unanswerable question)",
+				"task_id", taskID, "err", ferr.Error())
+			return true
+		}
 	}
-	// The guarded stamp lost the race (deleted, lapsed, or re-claimed
-	// while the spawn was in flight): the just-spawned session holds a
-	// dead charter — abort it (the merged design's spawn-stamp guard; the
-	// same interrupt seam as delete/reclaim).
-	if s.aborter != nil {
-		_ = s.aborter(ctx, claim.TaskID, sessionID)
+	if err := s.q().QueryRow(ctx,
+		`SELECT count(*) FROM tasks WHERE id=$1 AND claim_token=$2`, taskID, token).Scan(&n); err != nil {
+		slog.WarnContext(ctx, "board: spawn-stamp liveness re-check unreadable — treating the claim as live (no abort on an unanswerable question)",
+			"task_id", taskID, "err", err.Error())
+		return true
 	}
+	return n > 0
 }
 
 // WithAsyncSpawn installs the production spawn mode: pod activation +
@@ -618,6 +668,10 @@ func (s *Service) spawnFor(ctx context.Context, taskID, token string) {
 	// #1832 item 5 (2/2): the verdict chain rides the re-arm's charter
 	// too (the bounced assignee is the FIRST to see the findings).
 	c.VerdictChain = s.claimVerdictChain(ctx, t.ProjectID, t.ID)
+	// S5: the salvage pointer rides the re-fed spawn too (mustTask
+	// already loaded it onto t; the inherit-not-restart contract holds
+	// on every claim path).
+	c.Salvage = t.Salvage
 	if s.asyncSpawn {
 		go func() { //nolint:gosec,contextcheck // G118/contextcheck: deliberate — delivery outlives the caller's context (same rationale as the claim spawn); failures heal by lease lapse
 			sctx := context.Background()

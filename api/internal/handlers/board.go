@@ -70,6 +70,10 @@ type boardManager interface {
 	TaskVerdicts(ctx context.Context, actor board.Actor, taskID, shortIDOrID string) ([]board.Verdict, error)
 	TaskStart(ctx context.Context, actor board.Actor, taskID, shortIDOrID, requestID string) (*board.Claim, error)
 	RearmTask(ctx context.Context, actor board.Actor, taskID, shortIDOrID, requestID string) (*board.Task, error)
+	// DeposeTask is S5's DEPOSED directive: depose a LAPSED claim,
+	// recording the salvage pointer (branch/PR/state) on the row for the
+	// next claim's charter.
+	DeposeTask(ctx context.Context, actor board.Actor, taskID, shortIDOrID string, ptr board.SalvagePointer, requestID string) (*board.Task, error)
 	DeleteTask(ctx context.Context, actor board.Actor, taskID, shortIDOrID string, reconnect bool, requestID string) (*board.DeleteResult, error)
 	PauseTask(ctx context.Context, actor board.Actor, taskID, shortIDOrID, requestID string) (*board.Task, error)
 	ResumeTask(ctx context.Context, actor board.Actor, taskID, shortIDOrID, requestID string) (*board.Task, error)
@@ -794,6 +798,40 @@ func (h *BoardHandler) RearmTask(c *gin.Context) {
 		}
 	}
 	t, err := h.board.RearmTask(c.Request.Context(), h.boardActor(c), c.Param("id"), "", req.RequestID)
+	if err != nil {
+		renderBoardError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, t)
+}
+
+// boardDeposeRequest is the DEPOSED directive's body (S5): the salvage
+// pointer the row records — at least one field non-empty (the service
+// validates).
+type boardDeposeRequest struct {
+	Branch    string `json:"branch"`
+	PR        string `json:"pr"`
+	Head      string `json:"head"`
+	State     string `json:"state"`
+	Note      string `json:"note"`
+	RequestID string `json:"requestId"`
+}
+
+// DeposeTask is S5's DEPOSED directive: depose a LAPSED claim, record
+// the salvage pointer (branch/PR/last known state) on the row, deliver
+// the deposed directive to the stale session, and hand the pointer to
+// the next claim's charter (inherit, don't restart). A live healthy
+// claim refuses (409 claim_live); every deposition is audit-logged.
+func (h *BoardHandler) DeposeTask(c *gin.Context) {
+	var req boardDeposeRequest
+	if c.Request.Body != nil {
+		if err := c.ShouldBindJSON(&req); err != nil && !errors.Is(err, io.EOF) {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request body: " + err.Error()})
+			return
+		}
+	}
+	ptr := board.SalvagePointer{Branch: req.Branch, PR: req.PR, Head: req.Head, State: req.State, Note: req.Note}
+	t, err := h.board.DeposeTask(c.Request.Context(), h.boardActor(c), c.Param("id"), "", ptr, req.RequestID)
 	if err != nil {
 		renderBoardError(c, err)
 		return

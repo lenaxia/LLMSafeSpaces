@@ -65,6 +65,7 @@ import (
 
 	abiv1 "github.com/lenaxia/llmsafespaces/pkg/abi/v1"
 	"github.com/lenaxia/llmsafespaces/pkg/board"
+	"github.com/lenaxia/llmsafespaces/pkg/eventbus"
 	"github.com/lenaxia/llmsafespaces/pkg/shortid"
 )
 
@@ -485,17 +486,32 @@ func leaseNudgeText(shortID string, p board.NudgePayload) string {
 
 // newBoardNudger builds the production NudgeSender: resolve the task's
 // scope, mark the sentinel's ordinal anchor (BEFORE delivery — a mark
-// racing its sentinel can only err false-alive), and deliver over the
-// V1 route with the bounce seam's fast-fail window so a DEAD session's
+// racing its sentinel can only err false-alive), then deliver — over
+// the WORKSPACE EVENT BUS first when armed (design 0072 S4 §9.3:
+// agentd's lease consumer group is the delivery leg; a failed or
+// unarmed bus falls back to the V1 route verbatim), and over the V1
+// route with the bounce seam's fast-fail window so a DEAD session's
 // 4xx returns synchronously (the engine falls to the wall-clock arm
 // this sweep instead of waiting out a nudge no one will ever see).
-func newBoardNudger(scope boardScopeResolver, sender boardV1Sender, hub *boardLivenessHub) board.NudgeSender {
+func newBoardNudger(scope boardScopeResolver, sender boardV1Sender, hub *boardLivenessHub, bus *boardLeaseEventbus) board.NudgeSender {
 	return func(ctx context.Context, sessionID string, p board.NudgePayload) error {
 		userID, workspaceID, err := scope(ctx, p.TaskID)
 		if err != nil {
 			return fmt.Errorf("board: lease nudge scope: %w", err)
 		}
 		hub.markNudge(ctx, p.NudgeID, sessionID)
+		// The bus leg: publish nudged onto the workspace stream — the
+		// consumer group composes and delivers the sentinel (at-least-
+		// once; a redelivered sentinel is a benign duplicate, the
+		// ordinal anchor latest-only). A publish failure falls back to
+		// the v1 direct send BELOW, never a phantom nudge: the engine's
+		// undecidable-delivery contract keys on this return.
+		if bus != nil {
+			if pubErr := bus.publish(ctx, workspaceID, eventbus.LeaseNudgeTopic(p.TaskID),
+				eventbus.LeaseNudgePayload(p.TaskID, p.TaskShortID, p.NudgeID, sessionID)); pubErr == nil {
+				return nil // in the group's hands
+			}
+		}
 		return deliverBoardTextV1(ctx, sender, "lease nudge", userID, workspaceID, sessionID,
 			leaseNudgeText(p.TaskShortID, p), boardV1FastFail)
 	}

@@ -329,6 +329,33 @@ func TestBoardWorkerComms_Messenger_HaltAndResume_RideV1Detached(t *testing.T) {
 	assert.Contains(t, texts[1], wireShortID)
 }
 
+// TestBoardWorkerComms_Messenger_Deposed_RideV1Detached pins the S5
+// DEPOSED directive's transport: the same V1 detached seam as
+// halt/resume (the HALT/RESUME family — the transport precedent), with
+// the deposed text carrying the stop contract (the token is revoked;
+// the salvage pointer lives on the row for the inheritor).
+func TestBoardWorkerComms_Messenger_Deposed_RideV1Detached(t *testing.T) {
+	stub := newStubOpencode(t)
+	adapter := newBoardCommsAdapter(t, stub.Server)
+	scope := &stubScope{}
+	messenger := newBoardMessenger(scope.resolve, newBoardTestSender(adapter))
+
+	require.NoError(t, messenger(context.Background(), "ses_worker", "deposed", wireShortID))
+	require.Eventually(t, func() bool {
+		v1, _, _ := stub.counts()
+		return v1 >= 1
+	}, 5*time.Second, 20*time.Millisecond, "the deposed directive must be delivered over V1")
+
+	v1, v2, texts := stub.counts()
+	assert.Equal(t, 1, v1, "the deposed directive lands on V1 POST /session/:id/message")
+	assert.Equal(t, 0, v2, "no directive may touch the dead V2 route (#755)")
+	require.Len(t, texts, 1)
+	assert.Contains(t, texts[0], "BOARD DEPOSED DIRECTIVE", "the deposed text must carry the deposed contract")
+	assert.Contains(t, texts[0], wireShortID)
+	assert.Contains(t, texts[0], "salvage pointer", "the text names what was recorded for the inheritor")
+	assert.Contains(t, texts[0], "409 claim_token", "the deposed worker is told its writes now refuse")
+}
+
 // TestBoardWorkerComms_ScopeErrorPropagatesToFallback: an unresolvable
 // task scope is a synchronous seam error — pkg/board's fallback arm.
 func TestBoardWorkerComms_ScopeErrorPropagatesToFallback(t *testing.T) {

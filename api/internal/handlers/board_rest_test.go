@@ -57,6 +57,7 @@ type fakeBoardManager struct {
 	// #1832 WS2: the manager move-stage capture arms.
 	lastMoveStageTo       string
 	lastMoveStageEvidence string
+	lastSalvage           board.SalvagePointer
 
 	errFor map[string]error
 
@@ -527,6 +528,20 @@ func (f *fakeBoardManager) RearmTask(_ context.Context, actor board.Actor, taskI
 	return &board.Task{ID: "t1", ShortID: "tsk-cccc3333", ProjectID: "p1", EpicID: "e1", Stage: board.StageBacklog, Attempts: 0, Tags: []string{}}, nil
 }
 
+// DeposeTask is the S5 capture (depose a lapsed claim, record the
+// salvage pointer).
+func (f *fakeBoardManager) DeposeTask(_ context.Context, actor board.Actor, taskID, shortIDOrID string, ptr board.SalvagePointer, requestID string) (*board.Task, error) {
+	f.call("depose_task")
+	f.lastActor, f.lastRequestID = actor, requestID
+	f.lastSalvage = ptr
+	_ = taskID
+	_ = shortIDOrID
+	if err := f.errFor["depose_task"]; err != nil {
+		return nil, err
+	}
+	return &board.Task{ID: "t1", ShortID: "tsk-cccc3333", ProjectID: "p1", EpicID: "e1", Stage: board.StageBacklog, Salvage: &ptr, Tags: []string{}}, nil
+}
+
 func (f *fakeBoardManager) RecordVerdict(_ context.Context, actor board.Actor, _, idOrShort string, in board.VerdictInput, requestID string) (*board.Task, *board.Verdict, error) {
 	f.call("record_verdict")
 	f.lastActor, f.lastRequestID = actor, requestID
@@ -631,6 +646,7 @@ func newBoardRESTRouter(t *testing.T, svc *fakeBoardManager) *gin.Engine {
 	k.GET("/:id/verdicts", h.ListTaskVerdicts)
 	k.POST("/:id/start", h.StartTask)
 	k.POST("/:id/rearm", h.RearmTask)
+	k.POST("/:id/depose", h.DeposeTask)
 	k.POST("/:id/pause", h.PauseTask)
 	k.POST("/:id/resume", h.ResumeTask)
 	k.DELETE("/:id", h.DeleteTask)

@@ -2522,7 +2522,7 @@ func mcpAutomation(ctx context.Context, password, name string, body map[string]a
 		"board_create_story",
 		"board_add_dependency", "board_remove_dependency",
 		"board_delete_story", "board_pause_story", "board_resume_story",
-		"board_rearm_story",
+		"board_rearm_story", "board_depose_story",
 		"board_move_stage_bulk",
 		"board_delete_stories",
 		"board_import_plan",

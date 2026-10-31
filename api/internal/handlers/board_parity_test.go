@@ -234,6 +234,13 @@ var boardParityMatrix = []parityRow{
 		externalMCP: liveCell, extTools: []string{"board_rearm_story", "board_rearm_task"}, agent: liveCell,
 		agentTools: []string{"board_rearm_story"},
 		denyErr:    &board.GuardError{Code: board.GuardStage, Detail: "re-arm targets attempts-exhausted rows"}, denyCode: http.StatusConflict},
+	// S5 (the DEPOSED directive): the manager route's salvage handoff —
+	// three live columns like pause/rearm (a manager action; only
+	// task_start/task_create carry the owner-only boundary).
+	{action: "depose_task", restMethods: []string{"DeposeTask"}, rest: liveCell,
+		externalMCP: liveCell, extTools: []string{"board_depose_story", "board_depose_task"}, agent: liveCell,
+		agentTools: []string{"board_depose_story"},
+		denyErr:    &board.GuardError{Code: board.GuardClaimLive, Detail: "a live claim refuses deposition — the lease has not lapsed"}, denyCode: http.StatusConflict},
 	{action: "import_plan", restMethods: []string{"ImportPlan"}, rest: liveCell,
 		externalMCP: liveCell, extTools: []string{"board_import_plan"}, agent: liveCell,
 		agentTools: []string{"board_import_plan"},
@@ -424,6 +431,8 @@ func boardParityRESTCall(t *testing.T, r *gin.Engine, action string) *httptest.R
 		return doBoardREST(t, r, http.MethodPost, "/api/v1/me/tasks/bulk-delete", `{"taskIds":["tsk-cccc3333"]}`)
 	case "rearm_task":
 		return doBoardREST(t, r, http.MethodPost, "/api/v1/me/tasks/tsk-cccc3333/rearm", `{}`)
+	case "depose_task":
+		return doBoardREST(t, r, http.MethodPost, "/api/v1/me/tasks/tsk-cccc3333/depose", `{"branch":"feat/salvage","pr":"1999","state":"pushed, CI green"}`)
 	case "delete_task":
 		return doBoardREST(t, r, http.MethodDelete, "/api/v1/me/tasks/tsk-cccc3333", "")
 	case "pause_task":
@@ -486,6 +495,7 @@ func TestBoardParity_AgentColumn(t *testing.T) {
 		"POST /internal/v1/automation/board/projects/:id/unarchive",
 		"POST /internal/v1/automation/board/resource-pressure",
 		"POST /internal/v1/automation/board/tasks/:id/dependencies",
+		"POST /internal/v1/automation/board/tasks/:id/depose",     // S5: the DEPOSED directive (salvage handoff for a lapsed claim)
 		"POST /internal/v1/automation/board/tasks/:id/move-stage", // #1832 WS2: manager-grade move (pending_input exits; open to any in-workspace session — manager-grant gate repealed, ruling 2026-10-27)
 		"POST /internal/v1/automation/board/tasks/:id/pause",
 		"POST /internal/v1/automation/board/tasks/:id/rearm", // #1832 WS3
@@ -881,6 +891,8 @@ func boardParityExtToolArgs(action string) (string, map[string]any, bool) {
 		return "board_delete_stories", map[string]any{"story_ids": []any{"tsk-cccc3333"}}, true
 	case "rearm_task":
 		return "board_rearm_story", map[string]any{"story_id": "tsk-cccc3333"}, true
+	case "depose_task":
+		return "board_depose_story", map[string]any{"story_id": "tsk-cccc3333", "branch": "feat/salvage", "state": "pushed, CI green"}, true
 	case "delete_task":
 		return "board_delete", map[string]any{"item_id": "tsk-cccc3333"}, true
 	case "pause_task":
@@ -1048,6 +1060,7 @@ func TestBoardParity_RestRouteTable(t *testing.T) {
 		"POST /api/v1/me/projects/:id/resume",
 		"POST /api/v1/me/projects/:id/unarchive",
 		"POST /api/v1/me/tasks/:id/dependencies",
+		"POST /api/v1/me/tasks/:id/depose",
 		"POST /api/v1/me/tasks/:id/move-stage",
 		"POST /api/v1/me/tasks/:id/pause",
 		"POST /api/v1/me/tasks/:id/rearm",
@@ -1234,6 +1247,9 @@ func boardParityRESTCallReqID(t *testing.T, r *gin.Engine, action, requestID str
 		return doBoardREST(t, r, http.MethodPost, "/api/v1/me/tasks/bulk-delete", `{"taskIds":["tsk-cccc3333"],"requestId":`+q(requestID)+`}`)
 	case "rearm_task":
 		return doBoardREST(t, r, http.MethodPost, "/api/v1/me/tasks/tsk-cccc3333/rearm", body)
+	case "depose_task":
+		return doBoardREST(t, r, http.MethodPost, "/api/v1/me/tasks/tsk-cccc3333/depose",
+			`{"branch":"feat/salvage","state":"pushed","requestId":`+q(requestID)+`}`)
 	case "add_dependency":
 		return doBoardREST(t, r, http.MethodPost, "/api/v1/me/tasks/tsk-cccc3333/dependencies", `{"dependsOn":"tsk-dddd4444","requestId":`+q(requestID)+`}`)
 	case "move_stage":

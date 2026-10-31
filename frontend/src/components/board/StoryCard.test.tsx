@@ -86,3 +86,32 @@ describe("StoryCard — session ref click-through (2026-10-29 owner ruling)", ()
     expect(screen.getByTestId("chat-route-probe").textContent).toBe("ws-1/ses_ed9183a46ffeRiNw2PddpL5dAA");
   });
 });
+
+describe("TaskCard — busy badge honesty (RC-C S2: the spinner tells the truth)", () => {
+  it("claimed+busy (assignee_busy=true) renders the spinning Agent working indicator", () => {
+    renderCard({ workspaceId: "ws-1", task: { ...TASK, assignee_busy: true } });
+    const el = screen.getByLabelText("Agent working");
+    expect(el.getAttribute("data-busy")).toBe("true");
+    expect(el.getAttribute("class")).toContain("animate-spin");
+  });
+
+  it("claimed+quiet (assignee_busy false/absent) renders the DISTINCT quiet marker — never a spin", () => {
+    const first = renderCard({ workspaceId: "ws-1", task: { ...TASK } });
+    const quiet = screen.getByLabelText("Agent claimed — quiet");
+    expect(quiet.getAttribute("data-busy")).toBe("false");
+    expect(quiet.getAttribute("class")).not.toContain("animate-spin");
+    expect(screen.queryByLabelText("Agent working")).toBeNull();
+    first.unmount();
+
+    // Explicit false — the same quiet shape.
+    renderCard({ workspaceId: "ws-1", task: { ...TASK, assignee_busy: false } });
+    expect(screen.getByLabelText("Agent claimed — quiet")).toBeInTheDocument();
+    expect(screen.queryByLabelText("Agent working")).toBeNull();
+  });
+
+  it("an unclaimed card renders NO badge state at all (nothing to be honest about)", () => {
+    renderCard({ workspaceId: "ws-1", task: { ...TASK, stage: "backlog", assignee_session: undefined } });
+    expect(screen.queryByLabelText("Agent working")).toBeNull();
+    expect(screen.queryByLabelText("Agent claimed — quiet")).toBeNull();
+  });
+});

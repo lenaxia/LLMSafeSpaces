@@ -5297,6 +5297,54 @@ paths:
           $ref: "#/components/responses/BoardNotFound"
         "409":
           $ref: "#/components/responses/BoardConflict"
+  /me/tasks/{id}/depose:
+    post:
+      tags: [board]
+      summary: Depose a lapsed claim (the DEPOSED directive — salvage handoff)
+      description: |
+        S5 (2026-10-30 incident remediation): the orchestrator deposes a
+        LAPSED claim and records the salvage pointer — branch, PR
+        number, last known state — on the row. The next claim's charter
+        embeds the pointer automatically (inherit, don't restart; no
+        more hand-written salvage notes). An `in_progress` lapsed claim
+        is requeued exactly as the reclaim would (failure overlay +
+        backoff cooldown) and the stale session receives a DEPOSED
+        directive over the pause-must-pause transport (stop working;
+        the token is revoked); a `backlog` row takes the pointer alone
+        (the reclaim already ran — the incident's actual shape).
+
+        GUARDS: a live healthy claim refuses (`409 claim_live` — an
+        unexpired lease, or life evidence on the expired one: movement,
+        mid-turn busy, post-sentinel reaction, or a post-nudge
+        heartbeat); `done`/`failed`/`in_review` rows refuse; a
+        `pending_input`-flagged row refuses (its exits are the
+        pending_input transitions). Every deposition is audit-logged
+        (action `depose`, payload = the pointer + the deposed session).
+      operationId: deposeBoardTask
+      parameters:
+        - $ref: "#/components/parameters/BoardTaskId"
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/BoardDeposeRequest"
+      responses:
+        "200":
+          description: The deposed story row (salvage recorded)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BoardTask"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/BoardNotFound"
+        "409":
+          $ref: "#/components/responses/BoardConflict"
   /me/tasks/{id}/start:
     post:
       tags: [board]
@@ -13128,6 +13176,11 @@ components:
           format: date-time
           nullable: true
           description: "000052: when the live sentinel was positioned (the sweep transaction's clock) — a post-nudge heartbeat or session activity answers it"
+        salvage:
+          nullable: true
+          allOf:
+            - $ref: "#/components/schemas/BoardSalvagePointer"
+          description: "S5 (the DEPOSED directive): the LAST depose's recorded pointer — what the deposed attempt had pushed when its claim lapsed (branch, PR, last known state). Latest-only (each depose overwrites; the full trail is the 'depose' audit events); the next claim's charter embeds it (inherit, don't restart)."
         paused:
           type: boolean
           description: "#1747: the scheduling lever — claim candidacy off, forward writes refused while paused"
@@ -13177,6 +13230,15 @@ components:
         assignee_session_deprecated:
           type: boolean
           description: Set when assignee_session could not be resolved to the phrase (#1922 cold window — the value is the raw harness id, still resolvable)
+        assignee_busy:
+          type: boolean
+          description: |
+            RC-C S2 (badge honesty): the assignee session is MID-TURN
+            right now (derived busy — streaming or an in-flight tool
+            call) on a LIVE lease. Absent/false = claimed-but-quiet:
+            idle, unknown, or past the lease without renewal (the busy
+            TTL — a lapsed claim never reports busy). Read-edge
+            derived per poll, never stored.
         implementer_session:
           type: string
           description: |
@@ -13883,6 +13945,50 @@ components:
     BoardRequestIdOnly:
       type: object
       properties:
+        requestId:
+          $ref: "#/components/schemas/BoardRequestId"
+    BoardSalvagePointer:
+      type: object
+      description: |
+        S5 (the DEPOSED directive): the salvage pointer a depose records
+        on the row — what the deposed attempt had pushed when its claim
+        lapsed. At least one field is present (an all-empty pointer is
+        rejected). Latest-only on the row; the full trail is the
+        'depose' audit events.
+      properties:
+        branch:
+          type: string
+          description: The pushed branch name the deposed attempt left behind
+        pr:
+          type: string
+          description: The open pull request's number or URL
+        head:
+          type: string
+          description: The last known commit SHA on the branch
+        state:
+          type: string
+          description: Last known state, free text — what was done, what gates ran, what remains (the incident's hand-written note, first-class)
+        note:
+          type: string
+          description: The orchestrator's guidance to the inheriting worker (verify-first, what to build on)
+    BoardDeposeRequest:
+      type: object
+      properties:
+        branch:
+          type: string
+          description: The pushed branch name the deposed attempt left behind
+        pr:
+          type: string
+          description: The open pull request's number or URL
+        head:
+          type: string
+          description: The last known commit SHA on the branch
+        state:
+          type: string
+          description: Last known state, free text (at least one of branch/pr/head/state/note required)
+        note:
+          type: string
+          description: Guidance for the inheriting worker
         requestId:
           $ref: "#/components/schemas/BoardRequestId"
     BoardDependencyRequest:

@@ -68,6 +68,9 @@ func TestMCPBoard_RegistryShape(t *testing.T) {
 		"board_create_story", "board_update_story", "board_add_dependency",
 		"board_remove_dependency", "board_delete_story", "board_pause_story",
 		"board_resume_story", "board_rearm_story", "board_import_plan",
+		// S5 (the DEPOSED directive): the salvage handoff for a lapsed
+		// claim — the orchestrator's manager route.
+		"board_depose_story",
 		// Manager reads (#1837 P2a): the orchestrator's overview.
 		"board_list", "board_health",
 		// Config parity (owner ruling 2026-10-28 — api/sdk/mcp/ux are
@@ -443,6 +446,30 @@ func TestMCPBoard_ManagerWireContract(t *testing.T) {
 		assert.Contains(t, rec.query, "workspaceID=ws-1")
 		assert.Contains(t, rec.query, "reconnect=true")
 		assert.Contains(t, rec.query, "sessionId=ses-1", "DELETE carries the session on the query")
+	})
+
+	t.Run("board_depose_story wire (salvage fields verbatim)", func(t *testing.T) {
+		api, rec := newAutomationAPI(t, 200, `{"stage":"backlog"}`)
+		setupRenameWorkspaceEnv(t, api)
+
+		_, err := mcpAutomation(context.Background(), mcpTestPassword, "board_depose_story", map[string]any{
+			"taskId": "tsk-cccc3333",
+			"branch": "feat/salvage", "pr": "1997", "head": "65e4d9dcd",
+			"state": "pushed, CI green", "note": "verify then build on it",
+			"requestId": "req-depose-1", "lsp_injected_session": "ses-1"})
+		require.NoError(t, err)
+		assert.Equal(t, http.MethodPost, rec.method)
+		assert.Equal(t, "/internal/v1/automation/board/tasks/tsk-cccc3333/depose", rec.path)
+		var wire map[string]json.RawMessage
+		require.NoError(t, json.Unmarshal([]byte(rec.body), &wire))
+		assert.JSONEq(t, `"feat/salvage"`, string(wire["branch"]), "the salvage fields reach the wire verbatim (agentd re-models nothing)")
+		assert.JSONEq(t, `"1997"`, string(wire["pr"]))
+		assert.JSONEq(t, `"65e4d9dcd"`, string(wire["head"]))
+		assert.JSONEq(t, `"pushed, CI green"`, string(wire["state"]))
+		assert.JSONEq(t, `"verify then build on it"`, string(wire["note"]))
+		assert.JSONEq(t, `"req-depose-1"`, string(wire["requestId"]))
+		assert.JSONEq(t, `"ws-1"`, string(wire["workspaceID"]), "the workspace stamp")
+		assert.JSONEq(t, `"ses-1"`, string(wire["sessionId"]), "the injected session identity (audit attribution)")
 	})
 
 	t.Run("board_delete_epic wire (force query)", func(t *testing.T) {
