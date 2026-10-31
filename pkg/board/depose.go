@@ -110,9 +110,10 @@ func (s *Service) DeposeTask(ctx context.Context, actor Actor, taskID, shortIDOr
 
 	// deposedSession carries the pre-write assignee out of the
 	// transaction for the post-commit DEPOSED directive (the UPDATE
-	// nulls the row's copy).
+	// nulls the row's copy); failureCountAfter feeds the lease event.
 	var deposedSession string
 	var requeued bool
+	var failureCountAfter int32
 
 	ew := &eventWriter{svc: s, projectID: p.ID, requestID: requestID,
 		action: "depose", itemKind: "task", itemID: t.ID, actor: actor}
@@ -183,6 +184,7 @@ func (s *Service) DeposeTask(ctx context.Context, actor Actor, taskID, shortIDOr
 				return nil, err
 			}
 			requeued = true
+			failureCountAfter = int32(cur.FailureCount + 1) //#nosec G115 -- FailureCount is a small consecutive-failure counter (backoff-capped); overflow is unreachable
 		case StageBacklog:
 			// The reclaim already ran (the incident's shape: the
 			// orchestrator notices post-reclaim): record the pointer
@@ -216,6 +218,14 @@ func (s *Service) DeposeTask(ctx context.Context, actor Actor, taskID, shortIDOr
 	}
 	_ = dup
 	if requeued {
+		// S4/S5: the depose IS a reclaim the observation plane reports
+		// (which claim went away and why — the invisible-lapse class
+		// depose exists to handle; review r6's contract-gap finding).
+		// Post-commit, fail-open — the containment is emitLease's.
+		s.emitLease(ctx, LeaseEvent{
+			Kind: LeaseEventReclaimed, TaskID: t.ID, TaskShortID: t.ShortID, ProjectID: p.ID,
+			Assignee: deposedSession, Reason: ReclaimReasonDeposed, FailureCount: failureCountAfter,
+		})
 		// The DEPOSED directive to the stale session: best-effort,
 		// post-commit (the HALT/RESUME transport precedent — the
 		// turn-boundary message, never an abort). The row no longer
