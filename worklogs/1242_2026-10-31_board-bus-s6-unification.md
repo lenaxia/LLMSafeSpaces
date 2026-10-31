@@ -81,3 +81,7 @@ Process notes: the round-1 scripted-edit failure mode is now banished — every 
 - **The empty-source pin**: `TestBoardBusPublisher_StageChangedHonesty` now publishes a move_stage with an unparseable actor and asserts the stage entry carries `source=""` — the defaulted-attribution defect can no longer return silently.
 - **The drainers' scope reads are bounded**: `boardBusScopeBudget = 5s` (the v1 leg's lookup bound, mirrored) wraps each delivery — a hung DB wedges ONE delivery, never the drainer (behind a wedged drainer the queues overflow: events divert to v1, but stamps have NO fallback — the r3 finding's silent starvation).
 - Reviewer's non-blocking notes left as-is with their reasoning (busFor's mutex-held ping + breaker-less join call: the S4-inherited shape approved in #2003; the retire guard's presence-not-identity: unreachable ABA given ms retire vs 30s cadence and Consume's nil-on-cancel; wall-clock breaker: accepted).
+
+## AI review round 4 (one finding) → addressed
+
+- **The 5s budget is now guarded**: `TestBoardBusPublisher_ScopeBudgetBoundsAWedgedDelivery` — a ctx-aware fake scope parks the task-leg query until the ctx dies (a hung DB); the pin asserts the wedged delivery costs exactly ONE budget (the stamp drop counted in `board_bus_stamps_failed_total`) AND the drainer survives to deliver the next healthy stamp onto the stream. Mutation-checked: with the `WithTimeout` removed the pin FAILS (the wedged delivery never resolves) — the starvation defect cannot return silently.

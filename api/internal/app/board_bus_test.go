@@ -14,6 +14,7 @@ import (
 	"encoding/json"
 	"errors"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -591,4 +592,68 @@ func TestBoardSSEJoin_ConsumerRetiresOnWireFailure(t *testing.T) {
 	join.syncOnce(ctx)
 	require.Eventually(t, func() bool { return joinGroupCount(t, mr2.Addr(), "ws-1") == 1 },
 		3*time.Second, 20*time.Millisecond, "the next sync re-arms the consumer on the healed wire")
+}
+
+// blockingScope is the ctx-aware fake the r4 review asked for: the
+// task leg PARKS inside the scope query until the delivery budget
+// expires (a hung DB), then — once unblocked — answers like
+// staticScope. Its flag is mutable so one publisher can carry both
+// the wedged delivery and the recovery in a single pin.
+type blockingScope struct {
+	blockTask atomic.Bool
+}
+
+func (b *blockingScope) scopeForProject(ctx context.Context, projectID string) (boardBusScope, error) {
+	return staticScope{}.scopeForProject(ctx, projectID)
+}
+
+func (b *blockingScope) scopeForTask(ctx context.Context, taskID string) (boardBusScope, error) {
+	if b.blockTask.Load() {
+		// The hung query: it answers only when the ctx dies.
+		<-ctx.Done()
+		return boardBusScope{}, ctx.Err()
+	}
+	return staticScope{}.scopeForTask(ctx, taskID)
+}
+
+// TestBoardBusPublisher_ScopeBudgetBoundsAWedgedDelivery — r3's fix,
+// guarded (r4's blocking finding): a scope query that never returns
+// costs the drainer ONE delivery budget (the stamp drops, counted) —
+// never the drainer: the NEXT stamp on the healed scope lands on the
+// stream. Without the budget this pin hangs the suite (the wedged
+// delivery never resolves) — the starvation defect cannot return
+// silently.
+func TestBoardBusPublisher_ScopeBudgetBoundsAWedgedDelivery(t *testing.T) {
+	mr := miniredis.RunT(t)
+	tr := newBoardBusClient(mr.Addr(), "", "board events")
+	scope := blockingScope{}
+	scope.blockTask.Store(true)
+	pub := newBoardBusPublisher(tr, &scope, func(board.Event) {})
+
+	failedBefore := boardBusStampsFailed.Value()
+	pub.StampEventSink(context.Background(), board.StampEvent{
+		TaskID: "task-1", TaskShortID: "tsk-one", ProjectID: "prj-1",
+		Assignee: "sess-w", Origin: "spawn", LagSeconds: 1,
+	})
+
+	// The wedged delivery resolves through the budget: the scope read
+	// dies with the ctx, the stamp drops, the counter says so.
+	require.Eventually(t, func() bool { return boardBusStampsFailed.Value() == failedBefore+1 },
+		boardBusScopeBudget+3*time.Second, 25*time.Millisecond,
+		"the wedged scope read costs ONE budget — the stamp drop is counted")
+
+	// The drainer SURVIVES: heal the scope, the next stamp lands.
+	scope.blockTask.Store(false)
+	pub.StampEventSink(context.Background(), board.StampEvent{
+		TaskID: "task-1", TaskShortID: "tsk-one", ProjectID: "prj-1",
+		Assignee: "sess-w", Origin: "backfill", LagSeconds: 2,
+	})
+	require.Eventually(t, func() bool {
+		for _, e := range busStreamEntries(t, mr.Addr(), "ws-1") {
+			if e["topic"] == eventbus.TaskStampedTopic("task-1") && e[eventbus.FieldStampOrigin] == "backfill" {
+				return true
+			}
+		}
+		return false
+	}, 3*time.Second, 10*time.Millisecond, "the drainer delivers the next healthy stamp — no process-lifetime starvation")
 }
