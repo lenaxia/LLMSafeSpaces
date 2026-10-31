@@ -117,6 +117,10 @@ nodes:
            every condition branch and its otherwise edge present — the
            same validation workflow_create applies. Compare shapes
            against workflow_list when unsure.
+        3b. INPUT SCHEMAS — every fenced kind=input-schema block: JSON
+           well-formed, rooted at type object (or type unset), required
+           and properties shapes the create path accepts — the shape
+           workflow_create's inputSchema field demands.
         4. VOCABULARY AND NEUTRALITY — Sprint Board vocabulary holds
            (stories, never the pre-rename wording), the wire-term note
            appears at most once per catalog, and examples name artifacts

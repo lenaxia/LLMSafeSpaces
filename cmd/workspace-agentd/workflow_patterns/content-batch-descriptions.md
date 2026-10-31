@@ -62,7 +62,7 @@ The `inputSchema` is the contract the mapped document must satisfy
 (`additionalProperties: false` is the shape mapped mode exists for — a
 merged envelope would violate it; see `inputschema-gotchas.md`):
 
-```json kind=shell
+```json kind=input-schema
 {
   "type": "object",
   "additionalProperties": false,

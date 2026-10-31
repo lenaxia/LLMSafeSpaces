@@ -28,9 +28,10 @@ package main
 //	                  catalogs ship gate-script fences — the fence
 //	                  contract promises the check, so absence of the
 //	                  binary is a broken pin, not a passed one)
-//	shell, output  → not machine-validated (rendered for the human
-//	                  reader; the format pin still checks the fence's
-//	                  infostring)
+//	shell, output  → not schema-validated (rendered for the human
+//	                  reader) but structurally floored: brace/bracket
+//	                  balance, because a tool-call sketch that fails
+//	                  pasted verbatim is invalid (review r2 finding 5)
 //
 // A failing fence is reported by FILE AND SLUG (the canonical header's
 // slug == filename stem), so the failure names exactly where to fix;
@@ -107,6 +108,18 @@ func extractFences(t *testing.T) []fenceBlock {
 				} else if s == "```" {
 					out = append(out, *cur)
 					cur = nil
+				} else if strings.HasPrefix(s, "```") {
+					// An opener-looking line INSIDE an open fence means a
+					// mid-file closer went missing (the fence is silently
+					// swallowing everything after it) or a nested fence —
+					// both malformed under the convention (closers are
+					// bare ```, bodies never carry openers). EOF-only
+					// protection demonstrably missed the swallow case
+					// (review r2 finding 4).
+					t.Errorf("%s:%s: fence (infostring %q) contains an opener-like line %q — a mid-file closing ``` is missing (or a nested fence, which the convention forbids)",
+						name, slug, cur.info, s)
+					out = append(out, *cur)
+					cur = &fenceBlock{file: name, slug: slug, info: strings.TrimSpace(s[3:])}
 				} else {
 					cur.body += line + "\n"
 				}
@@ -176,10 +189,12 @@ func TestPatternDocs_FencePins_InfostringOnEveryFence(t *testing.T) {
 	// each class's floor keeps a fence of that kind from silently
 	// disappearing (review r1 missing-case 3: the sole gate-script
 	// fence once could vanish behind the combined shell/output count).
-	assert.Greater(t, kinds["board-payload"], 0, "board catalog: kind=board-payload fences must exist")
-	assert.GreaterOrEqual(t, kinds["workflow-spec"], 5, "workflow catalog: the canonical DAGs ride kind=workflow-spec fences")
-	assert.Greater(t, kinds["input-schema"], 0, "workflow catalog: the inputSchema examples ride kind=input-schema fences")
-	assert.Greater(t, kinds["gate-script"], 0, "workflow catalog: the gate-script syntax-check class must stay represented")
+	// Counts aggregate BOTH catalogs; a floor can be satisfied by
+	// either (review r2 cosmetic: the message says so).
+	assert.Greater(t, kinds["board-payload"], 0, "the catalogs (aggregate): kind=board-payload fences must exist")
+	assert.GreaterOrEqual(t, kinds["workflow-spec"], 5, "the catalogs (aggregate): the canonical DAGs ride kind=workflow-spec fences")
+	assert.Greater(t, kinds["input-schema"], 0, "the catalogs (aggregate): the inputSchema examples ride kind=input-schema fences")
+	assert.Greater(t, kinds["gate-script"], 0, "the catalogs (aggregate): the gate-script syntax-check class must stay represented")
 }
 
 // TestPatternDocs_EveryFence_PassesItsKindValidator — THE EXTRACTOR
@@ -203,19 +218,33 @@ func TestPatternDocs_EveryFence_PassesItsKindValidator(t *testing.T) {
 		case "gate-script":
 			validateGateScriptFence(t, f)
 		case "shell", "output":
-			// Not machine-validated: these fences render for the human
-			// reader (tool-call sketches, rendered output). The format
-			// pin above still checks their infostring.
+			validateRenderedSketchFence(t, f)
 		default:
 			t.Fatalf("%s: no validator dispatched for kind %q — the dispatch table is incomplete", f.location(), kind)
 		}
 	}
 	assert.Positive(t, checked["board-payload"], "the board catalogs must carry board-payload fences")
-	assert.GreaterOrEqual(t, checked["workflow-spec"], 5, "the workflow catalog carries at least five canonical DAGs")
-	assert.Greater(t, checked["input-schema"], 0, "the workflow catalog carries its inputSchema examples")
+	assert.GreaterOrEqual(t, checked["workflow-spec"], 5, "the catalogs carry at least five canonical DAGs")
+	assert.Greater(t, checked["input-schema"], 0, "the catalogs carry their inputSchema examples")
 	assert.Greater(t, checked["gate-script"], 0, "the gate-script syntax-check class must be exercised")
 	assert.NotEmpty(t, checked["shell"]+checked["output"],
 		"the catalogs carry human-rendered fences too")
+}
+
+// validateRenderedSketchFence: kind=shell / kind=output fences are not
+// schema-validated (they render for the human reader), but a tool-call
+// sketch that would fail pasted verbatim is invalid — so the structural
+// floor is brace/bracket BALANCE (review r2 finding 5: a trigger_create
+// sketch shipped 3 `{` vs 2 `}` under this no-op). Balanced-or-empty
+// passes; an unbalanced sketch reddens naming file and slug.
+func validateRenderedSketchFence(t *testing.T, f fenceBlock) {
+	t.Helper()
+	kind, _ := parseFenceInfo(t, f)
+	opens := strings.Count(f.body, "{") + strings.Count(f.body, "[")
+	closes := strings.Count(f.body, "}") + strings.Count(f.body, "]")
+	assert.Equal(t, opens, closes,
+		"%s: %s fence is brace/bracket unbalanced (%d openers vs %d closers) — a verbatim paste of the sketch cannot parse",
+		f.location(), kind, opens, closes)
 }
 
 // validateInputSchemaFence: kind=input-schema → ONE strict JSON

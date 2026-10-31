@@ -59,6 +59,17 @@ The AI reviewer independently reproduced my mutation checks (fabricated tool tok
 
 Reviewer-acknowledged minors (no action demanded): the placeholder pin is stricter than the runtime for `{{key}}` (fails safe); indented/`~~~` fences are latent-only (corpus clean, 35/35 balanced); the tool-name pin unions the two audiences (declared trade-off).
 
+### Review round 2 (CHANGES_REQUESTED) → remediated
+
+Round 2 verified round 1's findings 2/3 and the floors closed, and caught that **finding 1's remediation had landed for ONE file only**: my r1 mutation-test discipline reverted the `content-batch-descriptions.md` re-tag via `git checkout --` AFTER applying it (the checkout was meant to undo the mutation; it also undid the re-tag riding in the same working tree) — so the docs/CHANGELOG/worklog claims of "two schema fences re-tagged" were false for that file, and the reviewer's executed `"strng"` mutation on it stayed green. Record now matches the diff: BOTH fences re-tagged (verified by grep in both copies), mutation re-run RED by DIRECT `go test` invocation naming file and slug.
+
+New findings, both remediated and mutation-verified:
+
+4. **The unclosed-fence protection was EOF-only**: deleting a MID-FILE closer made the fence silently swallow the following fence and re-sync with all pins green (its executed mutation proved it). REMEDIATED: an opener-like line (```` ``` ````-prefixed, not the bare closer) INSIDE an open fence is now a per-file error naming file, slug, and the offending line — closers are bare, bodies never carry openers. Mutation re-run (mid-file closer removed): RED.
+5. **A brace-unbalanced tool-call sketch rode the shell no-op**: `weekly-research-digest.md`'s `trigger_create` sketch shipped 3 `{` vs 2 `}` — a verbatim paste cannot parse (pre-existing on the base branch, in scope here per the zero-pre-existing-errors rule). REMEDIATED: the sketch is balanced (`}}` like every sibling), and kind=shell / kind=output fences gain a structural floor — brace/bracket balance — in the dispatch. Mutation re-run (one `}` dropped): RED naming file and slug.
+
+Also: the per-kind floor messages now say "the catalogs (aggregate)" (counts span both dirs); and the Tier-2 charter gained step 3b (input schemas: JSON well-formed, rooted at type object, the create path's shape) so the extractor header's "the Tier-2 walk mirrors this dispatch" is true — the live workflow `20b66e49-11c3-4300-81c9-8e2d09e66df6` was `workflow_update`d to the amended spec (2026-10-31T03:39Z), keeping the dogfood doc byte-identical to the running workflow. Pinned example sources refreshed; the next weekly fire re-walks the amended surface (the digest moved — by design).
+
 ## 5. Run book (for whoever inherits this)
 
 - **Inspect**: `workflow_runs` (the walk), `trigger_fires` (the schedule + gate outcome). **Disarm**: `trigger_update {enabled: false}` (default: stay armed — cheap when gated). **Force a re-walk**: delete `/workspace/patterns-drift/state.txt`. **Validate a pre-merge revision**: drop both catalog dirs under `/workspace/patterns-drift/example-sources/` (wins over pod/repo until removed). **Findings**: one story in the reference epic per drifted surface, worked through the normal review flow — the validator never edits the docs.
