@@ -29,7 +29,10 @@ package main
 // alias-named manager write. Deliberate: the plugin teaches the
 // canonical vocabulary, the window only keeps pinned callers landing.
 
-import "strings"
+import (
+	"encoding/json"
+	"strings"
+)
 
 // boardStoryAliasWindow names the releases: accepted through v0.45.x,
 // removed in v0.46.0 (kept in lockstep with pkg/mcp's copy — the
@@ -87,13 +90,12 @@ func boardStoryToolCanonical(name string) (string, string) {
 
 // boardStoryToolName reports whether the name is a board story tool
 // (canonical or alias) — the input-key normalization's scope. The
-// scope is EVERY registry tool whose schema advertises a
-// storyId/storyIds key: the story-named tools (substring match), the
-// shared-literal tools (move_stage, record_verdict, the dependency
-// pair, board_read), and the two lease tools (heartbeat,
-// report_throttle — review round 1 finding 1: their schemas renamed
-// taskId→storyId with the rest, so the normalization MUST cover them
-// or the canonical key is silently dropped at the REST binding).
+// scope is derived from the CATALOG, the single source of truth: a
+// tool is in scope exactly when its InputSchema advertises a
+// storyId/storyIds key (the rename renamed the schema keys, so the
+// scope follows the schemas — immune to name-shape misses like the
+// story/stories pluralization that review round 2 caught when the
+// scope was a substring match).
 func boardStoryToolName(name string) bool {
 	if _, ok := boardStoryToolAliases[name]; ok {
 		return true
@@ -101,12 +103,38 @@ func boardStoryToolName(name string) bool {
 	if !strings.HasPrefix(name, "board_") {
 		return false
 	}
-	switch name {
-	case "board_heartbeat", "board_report_throttle", "board_read":
+	for _, tool := range mcpToolCatalog() {
+		if tool.Name != name {
+			continue
+		}
+		return boardSchemaAdvertisesStoryKeys(tool.InputSchema)
+	}
+	return false
+}
+
+// boardSchemaAdvertisesStoryKeys decodes one InputSchema (either
+// representation the catalog uses — map or raw JSON) and reports
+// whether it carries a storyId/storyIds property.
+func boardSchemaAdvertisesStoryKeys(schema any) bool {
+	var props map[string]any
+	switch s := schema.(type) {
+	case map[string]any:
+		props, _ = s["properties"].(map[string]any)
+	case json.RawMessage:
+		var decoded struct {
+			Properties map[string]any `json:"properties"`
+		}
+		if json.Unmarshal(s, &decoded) == nil {
+			props = decoded.Properties
+		}
+	default:
+		return false
+	}
+	if _, ok := props["storyId"]; ok {
 		return true
 	}
-	return strings.Contains(name, "story") || strings.Contains(name, "move_stage") ||
-		strings.Contains(name, "record_verdict") || strings.Contains(name, "dependency")
+	_, ok := props["storyIds"]
+	return ok
 }
 
 // normalizeBoardStoryArgs translates the canonical story-form INPUT

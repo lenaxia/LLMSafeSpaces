@@ -252,3 +252,69 @@ func TestBoardStoryAlias_NoticeRidesErrors(t *testing.T) {
 	assert.Contains(t, texts[1], "DEPRECATED")
 	assert.Contains(t, texts[1], "board_pause_story")
 }
+
+// TestBoardStoryAlias_BulkDeletePluralization (review round 2,
+// finding A's regression pins): "stories" does not contain the
+// substring "story" — the round-1 scope predicate (a substring match)
+// missed board_delete_stories, whose REQUIRED canonical storyIds key
+// then rode the wire untranslated into a REST DTO that binds only
+// taskIds (400 taskIds-is-required). The scope is now CATALOG-DERIVED
+// (a tool is in scope exactly when its schema advertises
+// storyId/storyIds), which this family pins from every side: the
+// canonical key through the real handler, the legacy key's notice,
+// and the alias path.
+func TestBoardStoryAlias_BulkDeletePluralization(t *testing.T) {
+	t.Run("canonical storyIds reaches the wire as taskIds", func(t *testing.T) {
+		api, rec := newAutomationAPI(t, 200, `[{"id":"tsk-aaaa1111","status":"done"}]`)
+		setupRenameWorkspaceEnv(t, api)
+
+		texts, isError := aliasWindowCall(t, "board_delete_stories", map[string]any{
+			"storyIds": []any{"tsk-aaaa1111"}, "reconnect": false})
+		require.False(t, isError)
+		assert.Contains(t, texts[0], "tsk-aaaa1111")
+		assert.NotContains(t, rec.body, "storyIds", "the canonical key translates, never rides untranslated")
+		assert.Contains(t, rec.body, `"taskIds":["tsk-aaaa1111"]`,
+			"the bulk reference rides the wire under the spelling the platform DTO binds")
+	})
+
+	t.Run("legacy taskIds carries the notice", func(t *testing.T) {
+		api, _ := newAutomationAPI(t, 200, `[{"id":"tsk-aaaa1111","status":"done"}]`)
+		setupRenameWorkspaceEnv(t, api)
+
+		texts, isError := aliasWindowCall(t, "board_delete_stories", map[string]any{
+			"taskIds": []any{"tsk-aaaa1111"}})
+		require.False(t, isError)
+		require.Len(t, texts, 2, "the legacy key spelling carries the deprecation notice")
+		assert.Contains(t, texts[1], "DEPRECATED")
+		assert.Contains(t, texts[1], "storyIds")
+	})
+
+	t.Run("alias name with canonical key lands too", func(t *testing.T) {
+		api, rec := newAutomationAPI(t, 200, `[{"id":"tsk-aaaa1111","status":"done"}]`)
+		setupRenameWorkspaceEnv(t, api)
+
+		texts, isError := aliasWindowCall(t, "board_delete_tasks", map[string]any{
+			"storyIds": []any{"tsk-aaaa1111"}})
+		require.False(t, isError)
+		require.Len(t, texts, 2, "the alias tool name carries its notice")
+		assert.Contains(t, texts[1], "board_delete_stories")
+		assert.Contains(t, rec.body, `"taskIds":["tsk-aaaa1111"]`,
+			"canonicalization precedes the scope check — the alias path translates the same way")
+	})
+}
+
+// TestBoardStoryAlias_LegacyKeyNoticeRidesErrors (review round 2's
+// remaining unhappy tier, agentd side): the CANONICAL tool name with
+// the LEGACY input key on a FAILING call still carries the key
+// notice as the second content block.
+func TestBoardStoryAlias_LegacyKeyNoticeRidesErrors(t *testing.T) {
+	api, _ := newAutomationAPI(t, 409, `{"error":"task_paused","code":"task_paused"}`)
+	setupRenameWorkspaceEnv(t, api)
+
+	texts, isError := aliasWindowCall(t, "board_move_stage", map[string]any{
+		"taskId": "tsk-paused-1", "toStage": "done"})
+	assert.True(t, isError, "the platform guard renders an error result")
+	require.Len(t, texts, 2, "the legacy-key notice rides the error envelope")
+	assert.Contains(t, texts[1], "DEPRECATED")
+	assert.Contains(t, texts[1], "storyId")
+}

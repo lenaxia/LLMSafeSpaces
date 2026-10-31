@@ -1048,3 +1048,44 @@ func TestBoardStoryRenameAliases_NoticeRidesErrors(t *testing.T) {
 	assert.Contains(t, texts[1], "board_pause_story")
 	m.AssertExpectations(t)
 }
+
+// TestBoardStoryRenameAliases_LegacyKeyNoticeRidesErrors (review
+// round 2's remaining unhappy tier, external side): the CANONICAL
+// tool name with the LEGACY input key on a FAILING call still carries
+// the key notice (the middleware appends to IsError results — pinned,
+// not assumed).
+func TestBoardStoryRenameAliases_LegacyKeyNoticeRidesErrors(t *testing.T) {
+	m := &MockAPIClient{}
+	m.On("BoardMoveStage", mock.Anything, "tsk-paused-1", "done", "", "").
+		Return("", fmt.Errorf("API error 409: task_paused"))
+
+	srv := NewServer(m, 30*time.Second)
+	cl, err := mcpgoclient.NewInProcessClient(srv)
+	require.NoError(t, err)
+	defer func() { _ = cl.Close() }()
+	ctx := context.Background()
+	require.NoError(t, cl.Start(ctx))
+	initReq := mcp.InitializeRequest{}
+	initReq.Params.ProtocolVersion = mcp.LATEST_PROTOCOL_VERSION
+	initReq.Params.ClientInfo = mcp.Implementation{Name: "legacy-err", Version: "1.0"}
+	_, err = cl.Initialize(ctx, initReq)
+	require.NoError(t, err)
+
+	req := mcp.CallToolRequest{}
+	req.Params.Name = "board_move_stage"
+	req.Params.Arguments = map[string]any{"task_id": "tsk-paused-1", "to_stage": "done"}
+	res, err := cl.CallTool(ctx, req)
+	require.NoError(t, err)
+	assert.True(t, res.IsError, "the platform guard renders an error result")
+	require.GreaterOrEqual(t, len(res.Content), 2, "the legacy-key notice rides the error envelope")
+	texts := []string{}
+	for _, c := range res.Content {
+		if tc, ok := c.(mcp.TextContent); ok {
+			texts = append(texts, tc.Text)
+		}
+	}
+	assert.Contains(t, texts[0], "API error 409")
+	assert.Contains(t, texts[1], "DEPRECATED")
+	assert.Contains(t, texts[1], "story_id")
+	m.AssertExpectations(t)
+}
