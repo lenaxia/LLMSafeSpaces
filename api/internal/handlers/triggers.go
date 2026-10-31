@@ -239,6 +239,23 @@ const transientStoreRetryDelay = 200 * time.Millisecond
 // retrying those only doubles the load. context.Canceled /
 // DeadlineExceeded are absent: the client canceled or the deadline is
 // gone, and re-running against the same dead context cannot succeed.
+//
+// Class 26 (26000 invalid_sql_statement_name) joins the retryable set
+// for the 2026-10-30 22:00-22:40 v0.44.11 live-fire (trigger 5da42f34,
+// "v04411-release-watch", created post-#1995): when the server-side
+// prepared statement vanishes behind pgx's statement cache — a
+// statement-pooler recycle or failover-side DEALLOCATE during a rollout
+// — the next execution of the cached per-id statement fails ONCE with
+// `prepared statement "stmtcache_…" does not exist`, and the immediate
+// re-run re-prepares and succeeds (pinned on real PG in
+// store_integration_test.go, TestTriggerStatementCacheRotation_Class26IsOneShot).
+// It wears a deterministic-looking SQLSTATE, so #1995's classifier let
+// it through un-retried: a per-(connection, statement) one-shot blip
+// surfaced as the hard "failed to fetch trigger"/"failed to delete
+// trigger" 500s while LIST — whose statement had already been
+// revalidated on the connections it landed on — kept working. A retry
+// is safe: for a genuinely invalid statement name it simply fails the
+// same way 200ms later.
 func isTransientStoreErr(err error) bool {
 	var pgErr *pgconn.PgError
 	if errors.As(err, &pgErr) {
@@ -247,7 +264,7 @@ func isTransientStoreErr(err error) bool {
 		// it) must classify, not panic.
 		if len(pgErr.Code) >= 2 {
 			switch pgErr.Code[:2] {
-			case "08", "53", "57", "58":
+			case "08", "26", "53", "57", "58":
 				return true
 			}
 		}
