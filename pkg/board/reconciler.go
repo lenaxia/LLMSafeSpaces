@@ -10,7 +10,6 @@ import (
 	"log/slog"
 	"strconv"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -65,6 +64,13 @@ const (
 // sweep itself is stateless between passes apart from the watermark).
 type Reconciler struct {
 	svc *Service
+	// obsPruneLast stamps the S7 observation-trail prune's last run
+	// (zero = never). Instance-scoped on purpose (review r1: no
+	// package-level mutable state — test reconcilers must not couple
+	// to one shared timestamp); touched only from Start's single
+	// sweep loop and manual Sweeps, and a racing duplicate prune is a
+	// harmless idempotent DELETE.
+	obsPruneLast time.Time
 }
 
 // NewReconciler constructs the reconciler over a Service.
@@ -84,6 +90,11 @@ func (r *Reconciler) SetEventPublisher(pub EventPublisher) { r.svc.SetEventPubli
 func (r *Reconciler) Sweep(ctx context.Context) (SweepResult, error) {
 	var res SweepResult
 	s := r.svc
+
+	// S7: the observation trail's retention pass rides the sweep ITSELF
+	// (gated hourly inside) — the Start loop simply calls Sweep; a
+	// manual sweep enforces the boundary the same way the docs promise.
+	r.maybePruneObservations(ctx)
 
 	wm, err := r.readWatermark(ctx)
 	if err != nil {
@@ -1454,23 +1465,26 @@ func (s *Service) rc4Net(ctx context.Context, cutoff time.Time) (int, error) {
 	return n, nil
 }
 
-// observationPruneLast gates the retention prune's cadence (unix nanos;
-// 0 = never run). Touched only inside Sweep — the single loop calls it
-// serially; a concurrent manual Sweep at worst runs a second, idempotent
-// prune (the DELETE converges to the same retained set).
-var observationPruneLast int64
+// observationPruneDue reports whether the S7 trail's retention pass is
+// due at now — the pure gate maybePruneObservations consults (zero
+// value = never run = due). Split out so the gate semantics are
+// directly pinnable without waiting an hour.
+func (r *Reconciler) observationPruneDue(now time.Time) bool {
+	return r.obsPruneLast.IsZero() || now.Sub(r.obsPruneLast) >= ObservationPruneInterval
+}
 
 // maybePruneObservations runs the S7 trail's retention pass at most
 // once per ObservationPruneInterval (the boundary itself is
 // observation.go's contract: per-task cap + TTL; board_events keeps
-// the permanent record). Fail-open inside pruneObservationTrail.
+// the permanent record). Fail-open inside PruneObservationTrail; the
+// stamp is written BEFORE the pass runs (a failed pass retried only
+// after the interval — the DELETE is idempotent either way).
 func (r *Reconciler) maybePruneObservations(ctx context.Context) {
-	now := time.Now().UnixNano()
-	last := atomic.LoadInt64(&observationPruneLast)
-	if last != 0 && now-last < int64(ObservationPruneInterval) {
+	now := time.Now()
+	if !r.observationPruneDue(now) {
 		return
 	}
-	atomic.StoreInt64(&observationPruneLast, now)
+	r.obsPruneLast = now
 	r.svc.PruneObservationTrail(ctx)
 }
 
@@ -1488,7 +1502,6 @@ func (r *Reconciler) Start(ctx context.Context) error {
 		case <-ctx.Done():
 			return nil
 		case <-t.C:
-			r.maybePruneObservations(ctx)
 			res, err := r.Sweep(ctx)
 			if err != nil {
 				slog.WarnContext(ctx, "board: reconciler sweep failed (next pass converges)",

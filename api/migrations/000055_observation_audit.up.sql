@@ -20,7 +20,7 @@
 -- ledger that already carries nudge/wedge/reclaim/depose actions.
 --
 -- Kinds (observation.go's constants): stamped | nudged | renewed |
--- wedge_verdict | reclaimed | deposed. detail carries the decision's
+-- lapse_verdict | reclaimed | deposed. detail carries the decision's
 -- own facts flat (lag_seconds+origin, nudge_id+rung, source, evidence,
 -- reason+failure_count, salvage pointer) — JSONB, never queried by key
 -- from Go (the read renders it verbatim).

@@ -110,8 +110,11 @@ func (s *Service) DeposeTask(ctx context.Context, actor Actor, taskID, shortIDOr
 
 	// deposedSession carries the pre-write assignee out of the
 	// transaction for the post-commit DEPOSED directive (the UPDATE
-	// nulls the row's copy).
-	var deposedSession string
+	// nulls the row's copy); fromStage carries the ROW-LOCKED stage
+	// the deposition acted on (the resolve's t.Stage can go stale in
+	// the resolve→tx window — the trail row must agree with the
+	// ledger's own payload, not contradict it).
+	var deposedSession, fromStage string
 	var requeued bool
 
 	ew := &eventWriter{svc: s, projectID: p.ID, requestID: requestID,
@@ -122,6 +125,7 @@ func (s *Service) DeposeTask(ctx context.Context, actor Actor, taskID, shortIDOr
 			return nil, err
 		}
 		deposedSession = cur.AssigneeSession
+		fromStage = cur.Stage
 		switch cur.Stage {
 		case StageDone:
 			return nil, &GuardError{Code: GuardDone, Detail: "done is immutable — nothing to depose"}
@@ -224,7 +228,7 @@ func (s *Service) DeposeTask(ctx context.Context, actor Actor, taskID, shortIDOr
 		s.recordObservation(ctx, ObservationEvent{
 			Kind: ObservationDeposed, TaskID: t.ID, Session: deposedSession,
 			Detail: map[string]any{
-				"salvage": ptr, "from_stage": t.Stage, "requeued": requeued,
+				"salvage": ptr, "from_stage": fromStage, "requeued": requeued,
 			},
 		})
 	}

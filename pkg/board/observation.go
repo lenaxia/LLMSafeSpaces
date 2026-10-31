@@ -28,8 +28,9 @@ package board
 //	renewed        — the ladder answered alive (detail: source — the
 //	                 rung: heartbeat_response|movement|
 //	                 post_nudge_reaction|busy_gate)
-//	wedge_verdict  — the machine lapse verdict (detail: evidence,
-//	                 nudge_id, failure_count)
+//	lapse_verdict  — the machine lapse verdict (detail: evidence,
+//	                 nudge_id, failure_count) — the decision S4's bus
+//	                 vocabulary calls lease wedge_verdict
 //	reclaimed      — the claim lapsed and the row re-queued (detail:
 //	                 reason, failure_count)
 //	deposed        — S5's manager deposition (detail: the salvage

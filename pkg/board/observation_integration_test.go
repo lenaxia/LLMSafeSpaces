@@ -43,14 +43,18 @@ func (s *BoardSuite) rawTrailCount(taskID string) int {
 // TestPin_ObservationTrail_StampLandsWithLag: the claim's assignee
 // stamp — the observation plane's KEY — lands on the trail with its
 // lag (S1's stamp_lag as a per-task fact, not just a histogram
-// bucket). The incident's anonymous orphans are visible HERE first.
+// bucket), and the landed counter moves with it. The incident's
+// anonymous orphans are visible HERE first.
 func (s *BoardSuite) TestPin_ObservationTrail_StampLandsWithLag() {
 	ws := s.seedWorkspace()
 	p := s.seedProject(ws, 4)
 	e := s.seedEpic(p, board.EpicActive)
 	task := s.seedTask(e, "stamped-worker", nil, false)
 
+	landedBefore := testutil.ToFloat64(board.ObservationEventsMetric().WithLabelValues(board.ObservationStamped))
 	s.claimOrFail(ws)
+	landedDelta := testutil.ToFloat64(board.ObservationEventsMetric().WithLabelValues(board.ObservationStamped)) - landedBefore
+	s.EqualValues(1, landedDelta, "the landed counter moves exactly once per trail row")
 
 	rows := s.trail(task.ID)
 	s.Require().Len(rows, 1, "the spawn stamp lands exactly one trail row")
@@ -282,9 +286,8 @@ func (s *BoardSuite) TestPin_Health_ObservationWindow() {
 }
 
 // TestPin_ObservationTrail_RetentionPrune: the boundary is ENFORCED —
-// per task the newest ObservationKeepPerTask rows stay, the TTL arm
-// ages out even under the cap, and the permanent record (board_events)
-// is untouched.
+// each arm ISOLATED (a build with either predicate deleted fails its
+// arm), and the permanent record (board_events) is untouched.
 func (s *BoardSuite) TestPin_ObservationTrail_RetentionPrune() {
 	ctx := context.Background()
 	ws := s.seedWorkspace()
@@ -292,8 +295,6 @@ func (s *BoardSuite) TestPin_ObservationTrail_RetentionPrune() {
 	e := s.seedEpic(p, board.EpicActive)
 	task := s.seedTask(e, "chatty-worker", nil, false)
 
-	// Seed past the cap: ObservationKeepPerTask + 7 rows, the OLDEST
-	// backdated past the TTL (it must age out regardless of count).
 	seed := func(n int, age time.Duration) {
 		for i := 0; i < n; i++ {
 			_, err := s.pool.Exec(ctx, `
@@ -303,14 +304,24 @@ func (s *BoardSuite) TestPin_ObservationTrail_RetentionPrune() {
 			s.Require().NoError(err)
 		}
 	}
+
+	// ARM 1 — the TTL, ISOLATED from the cap: 10 fresh + 1 aged = 11
+	// rows, UNDER the per-task cap. Without the TTL predicate the
+	// delete prunes NOTHING here (11 < 50) — the aged row's
+	// disappearance proves the TTL arm alone.
 	seed(1, board.ObservationTTL+time.Hour) // aged past the TTL
-	seed(board.ObservationKeepPerTask+6, time.Minute)
-
+	seed(10, time.Minute)
 	s.svc.PruneObservationTrail(ctx)
+	s.Equal(10, s.rawTrailCount(task.ID),
+		"under the cap, the TTL arm alone prunes the aged row (cap-only builds keep 11 — the arm is isolated)")
 
-	n := s.rawTrailCount(task.ID)
-	s.Equal(board.ObservationKeepPerTask, n,
-		"the cap keeps exactly the newest %d rows (the aged row plus the overflow prune)", board.ObservationKeepPerTask)
+	// ARM 2 — the per-task cap: 47 more fresh rows = 57 total, well
+	// past the boundary; the newest 50 stay.
+	seed(47, 30*time.Second)
+	s.Equal(57, s.rawTrailCount(task.ID))
+	s.svc.PruneObservationTrail(ctx)
+	s.Equal(board.ObservationKeepPerTask, s.rawTrailCount(task.ID),
+		"the cap keeps exactly the newest %d rows", board.ObservationKeepPerTask)
 
 	// The permanent record stays: board_events still carries its rows.
 	var evCount int
@@ -318,10 +329,67 @@ func (s *BoardSuite) TestPin_ObservationTrail_RetentionPrune() {
 		`SELECT count(*) FROM board_events WHERE item_id=$1`, task.ID).Scan(&evCount))
 	s.Greater(evCount, 0, "the idempotency ledger is never pruned by the trail's boundary")
 
-	// The newest rows are the survivors (the read's newest-first head
-	// is a fresh row, and the read never exceeds the cap).
+	// The read never exceeds the cap.
 	rows := s.trail(task.ID)
 	s.Require().Len(rows, board.ObservationKeepPerTask)
+}
+
+// TestPin_ObservationTrail_PruneRidesTheSweep: the reconciler's sweep
+// WIRING runs the retention pass (a fresh reconciler's gate is open at
+// zero — the first sweep prunes); the gate itself is unit-pinned in
+// observation_unit_test.go (inside the interval → skipped).
+func (s *BoardSuite) TestPin_ObservationTrail_PruneRidesTheSweep() {
+	ctx := context.Background()
+	ws := s.seedWorkspace()
+	p := s.seedProject(ws, 4)
+	e := s.seedEpic(p, board.EpicActive)
+	task := s.seedTask(e, "swept-worker", nil, false)
+
+	// 60 rows past the cap — nothing else interesting on the board.
+	for i := 0; i < 60; i++ {
+		_, err := s.pool.Exec(ctx, `
+			INSERT INTO task_observation_events (task_id, kind, session, detail)
+			VALUES ($1, 'renewed', 'sess', '{"source":"movement"}'::jsonb)`, task.ID)
+		s.Require().NoError(err)
+	}
+	s.Equal(60, s.rawTrailCount(task.ID))
+
+	recon := board.NewReconciler(s.pool, s.cfg,
+		board.WithLivenessSource(&fakeLiveness{}),
+		board.WithWorkerAborter(s.aborter.Abort),
+		board.WithPRDriftSource(s.drift),
+		board.WithPendingInputSource(s.pending),
+	)
+	_, err := recon.Sweep(ctx)
+	s.Require().NoError(err)
+	s.Equal(board.ObservationKeepPerTask, s.rawTrailCount(task.ID),
+		"the sweep itself enforces the boundary — the wiring is live, not just the method")
+}
+
+// TestPin_ObservationTrail_DeposeReplaySkipsTheDupRow: a replayed
+// requestId renders the original outcome (the eventWriter's contract)
+// and records NO second deposition — the trail's replay-skip, pinned
+// (a double-write regression would survive every other suite).
+func (s *BoardSuite) TestPin_ObservationTrail_DeposeReplaySkipsTheDupRow() {
+	ws := s.seedWorkspace()
+	p := s.seedProject(ws, 4)
+	e := s.seedEpic(p, board.EpicActive)
+	task := s.seedTask(e, "replayed-depose", nil, false)
+
+	s.claimOrFail(ws)
+	s.expireLease(task.ID)
+
+	const requestID = "s7-replay-pin"
+	ptr := board.SalvagePointer{Branch: "s7-replay", State: "mid-pin"}
+	for i := 0; i < 2; i++ {
+		_, err := s.svc.DeposeTask(context.Background(), s.owner(), task.ID, "", ptr, requestID)
+		s.Require().NoError(err, "call %d: the replay renders the original outcome", i+1)
+	}
+
+	var n int
+	s.Require().NoError(s.pool.QueryRow(context.Background(),
+		`SELECT count(*) FROM task_observation_events WHERE task_id=$1 AND kind='deposed'`, task.ID).Scan(&n))
+	s.Equal(1, n, "a replayed deposition records exactly one trail row")
 }
 
 // TestPin_ObservationTrail_FailOpenDeadTrail: a DEAD trail changes no

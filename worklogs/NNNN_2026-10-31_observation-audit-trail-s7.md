@@ -28,14 +28,28 @@ Depends on S4 (the events exist — the projection vocabulary, kinds, and detail
 - The FULL existing board integration suite (50.5s) unchanged-green — the ladder's decisions, clocks, and guards are untouched; the trail rides post-commit seams.
 - `pkg/mcp` (incl. the search/health tool tests against the updated descriptions), `pkg/repolint` (the docs-parity canary), `api/internal/handlers` (86s, the health shape through the REST seams) — green. `make fmt-check` green; `golangci-lint` 0 issues.
 
-## 4. What was deliberately NOT done
+## 4. Review round 1 (AI reviewer, head c1015406f) — remediated
+
+Verdict CHANGES_REQUESTED; every finding addressed:
+
+1. **contextcheck (Correctness 1)** — `board_lease_events.go`'s `busFor` built its wiring timeout off `context.Background()` while its caller held a live ctx (S4-lane content, red on this head's `golangci-lint run ./...`): threaded ctx through. Full-repo lint now 0 — verified with the exact command the reviewer ran.
+2. **Documented kind never lands (Correctness 2)** — the file-header kind list and BOTH migration headers named `wedge_verdict` while the writing constant is `lapse_verdict`: corrected the three list sites (the bus-vocabulary cross-references stay — they name S4's kind deliberately); helm mirror re-synced byte-identical.
+3. **`from_stage` could contradict the ledger (Correctness 3)** — the trail row recorded the pre-transaction resolve's `t.Stage` while the board_events payload uses the row-locked `cur.Stage`: hoisted `fromStage` alongside `deposedSession` (the same pattern).
+4. **Depose replay-skip unpinned (Tests 1)** — `TestPin_ObservationTrail_DeposeReplaySkipsTheDupRow`: same requestId twice → exactly one `deposed` trail row.
+5. **Prune gate unpinned + the package global (Tests 2/Style)** — `observationPruneLast` (package-level mutable) became the instance-scoped `Reconciler.obsPruneLast`; the gate logic split into the pure `observationPruneDue(now)`, unit-pinned in-package (`observation_unit_test.go`); and the pass moved from the Start ticker INTO `Sweep` itself (the docs say the SWEEP enforces — the first test run caught the wiring living one frame above where the docs and the pin said: a manual Sweep never pruned). `TestPin_ObservationTrail_PruneRidesTheSweep` pins the live wiring end-to-end (60 seeded rows → one full Sweep → 50).
+6. **TTL arm mutation-surviving (Tests 3)** — the retention pin's seeding reworked: ARM 1 seeds 10 fresh + 1 aged UNDER the cap (the aged row's disappearance proves the TTL predicate alone — a cap-only build keeps 11 and fails); ARM 2 seeds to 57 and pins the cap keeping exactly 50.
+7. **Landed counter unasserted (Tests 4/E4)** — the stamp pin now asserts `observation_events_total{kind=stamped}` moves exactly once per row.
+
+Re-verified at the remediation head: full pkg/board integration (45.7s), api/internal/app, pkg/mcp, `make fmt-check`, `golangci-lint run ./...` 0 issues.
+
+## 5. What was deliberately NOT done
 
 - **No per-task filter argument on `board_health`** — the charter offers "extend board_health OR a per-task audit read"; the additive window satisfies it at zero signature cost. `Service.TaskObservationTrail` is the per-task read, public for whichever surface wants it next; threading a filter arg through MCP client → loopback → REST → interface → mocks is a whole-lane blast radius for marginal gain, in exactly the files the pending merges conflict.
 - **No design-0072 amendment** — 0072's roadmap tracks bus consumers; S7 is not a consumer (it records at the decision seams the engine already owns). The plane relationship (ledger / bus / retained window) is documented in observation.go's header and monitoring.md.
 - **No frontend health-panel rendering** — the orchestrator surface is the MCP/REST read; the panel can render `observation_events` when a human asks for it.
 - **No summarization job for aged-out rows** — "older summarized or pruned per platform conventions": the summary IS the board_events ledger (already written, already permanent); a separate summarizer would duplicate it.
 
-## 5. Merge notes for the orchestrator
+## 6. Merge notes for the orchestrator
 
 - Base is the S4∪S5 union; S6 (`s6-bus-unification`) merges on top — my `emitLease` edit (trail row before bus sink) and the rc1 obsNudged loop are the only shared-region edits, both additive to what S6's stamp-events work touches (`stamp.go`'s success arm gains one call; S6's `WithStampSink` sits in the same file but different seam).
 - Migration 000055 is the next number after S5's 000054 on this line; if another lane takes 000055 first, renumber mechanically (the file references in observation.go's comments move with it via grep).
