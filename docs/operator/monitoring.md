@@ -7,6 +7,7 @@ This page covers observability for an LLMSafeSpaces deployment: the Prometheus m
 - [Enabling monitoring](#enabling-monitoring)
 - [Prerequisites](#prerequisites)
 - [Metrics exposed](#metrics-exposed)
+- [The board observation audit trail](#the-board-observation-audit-trail)
 - [Service and Pod monitors](#service-and-pod-monitors)
 - [Grafana dashboards](#grafana-dashboards)
 - [Prometheus alerting rules](#prometheus-alerting-rules)
@@ -123,6 +124,31 @@ The delivery-ledger projection exports its own health surface (design 0055 R5):
 Without the agentd PodMonitor + NetworkPolicy rule, these metrics are never scraped and do not appear in production dashboards.
 
 ---
+
+## The board observation audit trail
+
+The Sprint Board's observation plane (the lease ladder, the stamp writes, S5's depose directive) records every action it takes into the `task_observation_events` table — the durable answer to the 2026-10-30 incident's unanswerable questions ("were nudges sent? did lapse verdicts fire? who reclaimed?"). Six kinds, one row each: `stamped` (with `lag_seconds` and `origin`), `nudged` (with `nudge_id` and `rung` — `first_sentinel` or `re_anchor`), `renewed` (with `source` — which rung answered alive), `lapse_verdict` (with `evidence` and `nudge_id`), `reclaimed` (with `reason` and `failure_count`), and `deposed` (with the salvage pointer).
+
+The recent window is one read away for orchestrators: the `board_health` MCP tool (and `board_read` with `health=true`, and the REST health endpoint) renders `observation_events` — the newest actions across the caller's boards, newest first, short id attached, sessions phrase-translated with raw+flagged degrade — plus `observation_retention`, the window's self-documented boundary.
+
+**Retention boundary.** The trail is a bounded working window, not an archive:
+
+| Boundary | Value | Meaning |
+|---|---|---|
+| Per-task cap | 50 rows | the newest 50 rows per story stay; older rows are pruned |
+| TTL | 14 days | rows older than 14 days are pruned regardless of count |
+| Prune cadence | hourly | the board reconciler's sweep enforces both at most once per hour (idempotent; operators may call `Service.PruneObservationTrail` directly after an incident burst) |
+
+Older truth is not lost: the permanent record lives in the `board_events` idempotency ledger (the reconciler's `nudge`/`wedge`/`reclaim`/`depose` action rows), which is never pruned by this boundary. Renewals — deliberately kept out of the ledger to avoid flooding the SSE projection — exist only inside the retained window.
+
+Every trail write is post-commit and fail-open: a failure drops exactly one row, logs a warn, and counts `llmsafespaces_board_observation_write_failures_total`. The board's state machine never depends on the trail.
+
+| Metric | Type | Description |
+|---|---|---|
+| `llmsafespaces_board_observation_events_total` | Counter | Trail rows landed, by kind |
+| `llmsafespaces_board_observation_write_failures_total` | Counter | Failed trail writes (fail-open, by kind) |
+| `llmsafespaces_board_observation_pruned_total` | Counter | Rows pruned by the retention boundary |
+| `llmsafespaces_board_stamp_lag_seconds` | Histogram | The claim→stamp span (the trail's `stamped` rows carry the same lag per task) |
 
 ## Service and Pod monitors
 

@@ -13490,6 +13490,46 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/BoardHealthProjectSlots"
+        observation_events:
+          type: array
+          description: The observation plane's recent audit window (S7) — what the platform DID, newest first; retention-bounded, never a full history (the permanent record is board_events)
+          items:
+            $ref: "#/components/schemas/BoardHealthObservation"
+        observation_retention:
+          $ref: "#/components/schemas/BoardHealthObservationRetention"
+    BoardHealthObservation:
+      type: object
+      required: [task_id, short_id, kind, at]
+      properties:
+        task_id:
+          type: string
+        short_id:
+          type: string
+        kind:
+          type: string
+          description: stamped | nudged | renewed | lapse_verdict | reclaimed | deposed
+        session:
+          type: string
+          description: The action's subject session (phrase when known, else raw harness id + session_deprecated)
+        session_deprecated:
+          type: boolean
+        detail:
+          type: object
+          description: The action's own facts, flat (lag_seconds+origin, nudge_id+rung, source, evidence, reason+failure_count, salvage)
+          additionalProperties: true
+        at:
+          type: string
+          format: date-time
+    BoardHealthObservationRetention:
+      type: object
+      required: [per_task_events, ttl]
+      properties:
+        per_task_events:
+          type: integer
+          description: The per-task cap — the newest N rows stay, older rows pruned
+        ttl:
+          type: string
+          description: The age boundary (e.g. "336h0m0s" — 14 days); older rows pruned regardless of count
     BoardHealthLease:
       type: object
       required: [task_id, short_id, title, project_id, lease_expires_at]
