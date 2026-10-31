@@ -741,7 +741,7 @@ func TestIntegrationBoardManagerE2E(t *testing.T) {
 		WHERE id=$1`, task.ID)
 	require.NoError(t, err)
 
-	resp, err = dispatchBoardManagerTool(ctx, client, e2eMCPPassword, "board_depose_task", map[string]any{
+	_, err = dispatchBoardManagerTool(ctx, client, e2eMCPPassword, "board_depose_task", map[string]any{
 		"lsp_injected_session": mgrSession,
 		"taskId":               task.ShortID,
 		"state":                "should never land",
