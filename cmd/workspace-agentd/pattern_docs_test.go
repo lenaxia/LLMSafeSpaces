@@ -486,8 +486,9 @@ func keysOf(m map[string]bool) []string {
 // each block mechanically. Exactly ONE kind= per fence; a bare ```
 // opening fence is a pinned format violation. THE EXTRACTOR and the
 // kind→validator dispatch (board-payload → the real board_validate_file
-// pipeline; workflow-spec → the real ParseSpec+ValidateSpec; gate-script
-// → py_compile / node --check; shell/output → human-rendered) live in
+// pipeline; workflow-spec → the real ParseSpec+ValidateSpec;
+// input-schema → the real ValidateInputSchema; gate-script →
+// py_compile / node --check; shell/output → human-rendered) live in
 // pattern_fence_extractor_test.go.
 
 // --- STATIC DRIFT PINS (tsk-surging-frontier-dines, owner ruling

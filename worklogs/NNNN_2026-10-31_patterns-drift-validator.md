@@ -49,6 +49,16 @@ Walks every inventory file against LIVE reality: (1) tool-name tokens vs the CUR
 
 AI reviewer until APPROVED on the repo leg; orchestrator merges; `make fmt-check`; no sleep-polling. No behavior changes to any tool — docs + tests + platform objects only.
 
+### Review round 1 (CHANGES_REQUESTED) → remediated
+
+The AI reviewer independently reproduced my mutation checks (fabricated tool token, broken placeholder, broken python fence — all red) and demonstrated TWO green-holes plus a stale CHANGELOG claim:
+
+1. **inputSchema examples rode `kind=shell`** (the human-rendered no-op): its executed mutation (`"type": "object"` → `"strng"` in `content-batch-descriptions.md`) kept every pin green while `workflow_create` would 400. REMEDIATED: the kind vocabulary gains `kind=input-schema` → the REAL `wf.ValidateInputSchema` dispatch; the two schema fences (`content-batch-descriptions.md`, `manual-chapter-pass.md`) re-tagged from `kind=shell`; coverage floors in both fence pins (input-schema ≥1, gate-script ≥1 — the reviewer's missing-case 3: the sole gate-script fence could otherwise vanish behind the combined shell/output count). Mutation re-run: RED, naming file and slug.
+2. **An unclosed final fence silently exited all validation**: `extractFences` appended only on the closing ``` line; a dangling opener at EOF dropped the content from every check (its executed mutation — removing the last closer — kept the whole suite green). REMEDIATED: a dangling opener at EOF is now a per-file error naming file, slug, and the orphaned infostring. Mutation re-run: RED.
+3. **Stale CHANGELOG wording** ("skips loud … us70 precedent") contradicting the fail-loud flip from the self-review commit. REMEDIATED: the entry now states the fail-loud contract and the input-schema extension.
+
+Reviewer-acknowledged minors (no action demanded): the placeholder pin is stricter than the runtime for `{{key}}` (fails safe); indented/`~~~` fences are latent-only (corpus clean, 35/35 balanced); the tool-name pin unions the two audiences (declared trade-off).
+
 ## 5. Run book (for whoever inherits this)
 
 - **Inspect**: `workflow_runs` (the walk), `trigger_fires` (the schedule + gate outcome). **Disarm**: `trigger_update {enabled: false}` (default: stay armed — cheap when gated). **Force a re-walk**: delete `/workspace/patterns-drift/state.txt`. **Validate a pre-merge revision**: drop both catalog dirs under `/workspace/patterns-drift/example-sources/` (wins over pod/repo until removed). **Findings**: one story in the reference epic per drifted surface, worked through the normal review flow — the validator never edits the docs.

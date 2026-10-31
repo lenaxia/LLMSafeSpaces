@@ -18,6 +18,10 @@ package main
 //	workflow-spec  → the REAL workflow spec validation workflow_create
 //	                  applies (ParseSpec + ValidateSpec, nil predecessor
 //	                  schemas, empty defaults — never a reimplementation)
+//	input-schema   → the REAL ValidateInputSchema workflow_create
+//	                  applies to the inputSchema field (review r1
+//	                  finding 1: schema examples rode kind=shell — a
+//	                  "type": "strng" mutation stayed green)
 //	gate-script    → interpreter syntax check: python → py_compile,
 //	                  node → node --check (structural checks always run;
 //	                  a missing interpreter FAILS LOUD while the
@@ -29,10 +33,13 @@ package main
 //	                  infostring)
 //
 // A failing fence is reported by FILE AND SLUG (the canonical header's
-// slug == filename stem), so the failure names exactly where to fix.
-// The extractor is the mechanism behind the payload-validation pins of
-// Tier 1; the async Tier 2 walk (the platform patterns-drift validator
-// workflow) mirrors this dispatch against LIVE tool descriptions.
+// slug == filename stem), so the failure names exactly where to fix;
+// an UNCLOSED fence at EOF is an error, never a silent skip (review r1
+// finding 2: a dangling opener once dropped the fence's content from
+// every check). The extractor is the mechanism behind the
+// payload-validation pins of Tier 1; the async Tier 2 walk (the
+// platform patterns-drift validator workflow) mirrors this dispatch
+// against LIVE tool descriptions.
 
 import (
 	"encoding/json"
@@ -64,7 +71,7 @@ func (f fenceBlock) location() string {
 
 var validFenceKinds = map[string]bool{
 	"board-payload": true, "workflow-spec": true, "gate-script": true,
-	"shell": true, "output": true,
+	"input-schema": true, "shell": true, "output": true,
 }
 
 var validFenceOps = map[string]bool{
@@ -103,6 +110,13 @@ func extractFences(t *testing.T) []fenceBlock {
 				} else {
 					cur.body += line + "\n"
 				}
+			}
+			// An opener that never sees its closer is an ERROR, never a
+			// silent drop: a dangling fence at EOF once escaped every
+			// check with all pins green (review r1 finding 2).
+			if cur != nil {
+				t.Errorf("%s:%s: unclosed fence — the opening ``` (infostring %q) never sees its closer; its content escapes validation",
+					name, slug, cur.info)
 			}
 			return nil
 		})
@@ -158,10 +172,14 @@ func TestPatternDocs_FencePins_InfostringOnEveryFence(t *testing.T) {
 				"%s: gate-script fences carry the interpreter as the language token (python|node), got %q", f.location(), lang)
 		}
 	}
-	// The catalogs' machine-validated classes exist at all: board
-	// payloads to validate, workflow specs to validate.
+	// The catalogs' machine-validated classes exist at all — and stay:
+	// each class's floor keeps a fence of that kind from silently
+	// disappearing (review r1 missing-case 3: the sole gate-script
+	// fence once could vanish behind the combined shell/output count).
 	assert.Greater(t, kinds["board-payload"], 0, "board catalog: kind=board-payload fences must exist")
 	assert.GreaterOrEqual(t, kinds["workflow-spec"], 5, "workflow catalog: the canonical DAGs ride kind=workflow-spec fences")
+	assert.Greater(t, kinds["input-schema"], 0, "workflow catalog: the inputSchema examples ride kind=input-schema fences")
+	assert.Greater(t, kinds["gate-script"], 0, "workflow catalog: the gate-script syntax-check class must stay represented")
 }
 
 // TestPatternDocs_EveryFence_PassesItsKindValidator — THE EXTRACTOR
@@ -180,6 +198,8 @@ func TestPatternDocs_EveryFence_PassesItsKindValidator(t *testing.T) {
 			validateBoardPayloadFence(t, f)
 		case "workflow-spec":
 			validateWorkflowSpecFence(t, f)
+		case "input-schema":
+			validateInputSchemaFence(t, f)
 		case "gate-script":
 			validateGateScriptFence(t, f)
 		case "shell", "output":
@@ -192,8 +212,25 @@ func TestPatternDocs_EveryFence_PassesItsKindValidator(t *testing.T) {
 	}
 	assert.Positive(t, checked["board-payload"], "the board catalogs must carry board-payload fences")
 	assert.GreaterOrEqual(t, checked["workflow-spec"], 5, "the workflow catalog carries at least five canonical DAGs")
-	assert.NotEmpty(t, checked["gate-script"]+checked["shell"]+checked["output"],
+	assert.Greater(t, checked["input-schema"], 0, "the workflow catalog carries its inputSchema examples")
+	assert.Greater(t, checked["gate-script"], 0, "the gate-script syntax-check class must be exercised")
+	assert.NotEmpty(t, checked["shell"]+checked["output"],
 		"the catalogs carry human-rendered fences too")
+}
+
+// validateInputSchemaFence: kind=input-schema → ONE strict JSON
+// document that passes the REAL ValidateInputSchema workflow_create
+// applies to the inputSchema field — a schema example that would 400
+// at create time is invalid (review r1 finding 1: these examples once
+// rode kind=shell, and a "type": "strng" mutation stayed green).
+func validateInputSchemaFence(t *testing.T, f fenceBlock) {
+	t.Helper()
+	schema, err := decodeBoardPayloadJSON([]byte(f.body))
+	require.NoError(t, err, "%s: fence body must be ONE strict JSON object", f.location())
+	raw, err := json.Marshal(schema)
+	require.NoError(t, err)
+	assert.NoError(t, wf.ValidateInputSchema(json.RawMessage(raw)),
+		"%s: input-schema must pass the real ValidateInputSchema workflow_create applies", f.location())
 }
 
 // validateBoardPayloadFence: kind=board-payload → ONE strict JSON

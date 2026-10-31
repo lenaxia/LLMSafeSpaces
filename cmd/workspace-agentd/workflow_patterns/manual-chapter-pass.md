@@ -102,7 +102,7 @@ edges:
 The `inputSchema` is the run's contract — manual runs are validated against
 it (`inputschema-gotchas.md`):
 
-```json kind=shell
+```json kind=input-schema
 {
   "type": "object",
   "additionalProperties": false,
