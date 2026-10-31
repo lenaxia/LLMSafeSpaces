@@ -30,11 +30,11 @@ import (
 //	         platform/.
 //
 // Cross-uid behavior itself (gid 1000 group-write across uid 1000/2000,
-// the real uid-1000-create → uid-2000-unlink mechanism) is executed at
-// the kind layer by local/exchange-dir-e2e.sh (nightly, sidecar
-// topology); these tests pin the script contract, the mode, and the
-// cross-uid TOLERANCE (no chmod when the mode is already exact — the
-// other mode's init owns the dir on a flipped PVC and a chmod would
+// the real uid-1000-create → uid-2000-unlink mechanism) executes in the
+// kind layer's design-0070 §2.4a rows: local/exchange-dir-e2e.sh, wired
+// into e2e-nightly.yml; these tests pin the script contract, the mode,
+// and the cross-uid TOLERANCE (no chmod when the mode is already exact —
+// the other mode's init owns the dir on a flipped PVC and a chmod would
 // EPERM).
 
 func TestInitFS_ExchangeSubPath_Create(t *testing.T) {

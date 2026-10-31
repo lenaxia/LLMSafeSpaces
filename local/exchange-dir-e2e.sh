@@ -44,7 +44,10 @@ source "${SCRIPT_DIR}/lib/us70-common.sh"
 
 harness_start
 
-WS_BASE="e2e070x0-0000-4000-8000-000000000000"
+# Hex-only UUID workspace prefix (review r2 finding 1: the first cut
+# carried a literal 'x' — ws_id seeds it into workspaces.id, a uuid
+# column, and ON_ERROR_STOP killed the script at X1 before any row).
+WS_BASE="e2e070e0-0000-4000-8000-000000000000"
 WS="$(ws_id 1)"
 TOOL_PF_PORT="${TOOL_PF_PORT:-18220}"
 failures=0

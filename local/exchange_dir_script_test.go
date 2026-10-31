@@ -20,8 +20,11 @@ package local_test
 import (
 	"os"
 	"os/exec"
+	"regexp"
 	"strings"
 	"testing"
+
+	"github.com/google/uuid"
 )
 
 func exchangeDirScript(t *testing.T) string {
@@ -82,5 +85,27 @@ func TestExchangeDirScript_MuxPortIsTheUserMux(t *testing.T) {
 	}
 	if !strings.Contains(string(body), `"${pfport}:4097"`) {
 		t.Error("mcp_call must port-forward to the user mux on 4097")
+	}
+}
+
+func TestExchangeDirScript_WorkspaceBaseIsAValidUUIDPrefix(t *testing.T) {
+	// Review r2 finding 1: the first cut carried a literal 'x' in the
+	// WS_BASE prefix — ws_id seeds it into workspaces.id (a uuid
+	// column) under ON_ERROR_STOP, and the script died at X1 seeding
+	// before ANY row executed. The whole prefix must be hex so every
+	// derived id is a valid UUID.
+	body, err := os.ReadFile(exchangeDirScript(t))
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	re := regexp.MustCompile(`WS_BASE="([0-9a-fA-F-]+)"`)
+	m := re.FindStringSubmatch(string(body))
+	if m == nil {
+		t.Fatal("WS_BASE literal not found")
+	}
+	// Substitute the ws_id counter tail (…0001) and validate as a UUID.
+	variant := m[1][:len(m[1])-4] + "0001"
+	if _, err := uuid.Parse(variant); err != nil {
+		t.Fatalf("WS_BASE prefix %q yields an invalid workspace UUID %q: %v — the script would die at X1 seeding (SQLSTATE 22P02, the r2 finding)", m[1], variant, err)
 	}
 }

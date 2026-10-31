@@ -136,6 +136,31 @@ package (68s) ; gofmt clean. (Remaining gates in CI.)
 - Probe-oracle note added to §3a's threat model (pre-existing,
   closes with the compat arm).
 
+## 6b. AI review round 2 (CHANGES_REQUESTED) — remediated
+
+- **F1 (seed crash)**: the WS_BASE prefix carried a literal 'x' —
+  ws_id seeds it into workspaces.id (uuid column) and ON_ERROR_STOP
+  killed the script at X1 before any row. Fixed (hex-only
+  e2e070e0-…) AND pinned: TestExchangeDirScript_WorkspaceBaseIsAValid
+  UUIDPrefix parses the prefix and uuid.Parse()s the derived id —
+  verified RED against the broken literal.
+- **F2 (wired into nothing + false execution claims)**: the script is
+  now wired into e2e-nightly.yml as its own step, sited BEFORE the
+  secret-delivery rows whose pre-existing six-day failure
+  (2026-10-25..30, infra) aborts the job — the step comment records
+  the placement rationale. Every committed "executed at the kind
+  layer" claim reworded to the precise truth: the mechanism EXECUTES
+  in the nightly's design-0070 §2.4a rows (a wiring statement); the
+  green-run LINK is PR-comment evidence, not committed prose.
+- **F3 (flat-symlink edge)**: documented in §3a's threat model — a
+  flat symlink at the exchange root lets a caller consume a file
+  outside the tree (the read follows the link; the cleanup unlinks
+  the LINK only) — same class as the one-release read oracle, same
+  closure (the compat arm's removal).
+- First green execution linked in the PR (workflow_dispatch of the
+  nightly on this branch — my step runs before the pre-existing
+  failure point).
+
 ## 7. Gates (post-r1)
 
 go build ./… ; full `cmd/workspace-agentd` suite ; full
