@@ -169,3 +169,40 @@ this lane's block/row/files removed from their tree and index before
 their commit landed — verified their commit contains zero eventbus
 files and zero bus-health text). No work was lost on either side.
 Lesson applied: lanes take their own worktree from the START.
+
+## Review round 1 (AI reviewer, CHANGES_REQUESTED → remediated)
+
+Two REAL bugs found, both mine, both reproduced by the reviewer before
+I saw them:
+
+1. **Pending idle inflated ×10⁶** (`health.go` probePending):
+   go-redis v8's `XPendingExt.Idle` is already a `time.Duration`
+   (converted from wire ms at the reply boundary); my
+   `time.Duration(p.Idle) * time.Millisecond` re-multiplied it — true
+   2m idle reported as ~3.8 years, the `oldest_pending_idle` gauge
+   worthless, and `classifyGroupStall` tripped on any non-empty PEL
+   (threshold 5m = 3e11ns ÷ 1e6 = 0.3ms true idle). The exact
+   wedged-group signal this PR exists for was a false-positive
+   generator. Fixed: `p.Idle` verbatim.
+2. **MaxPendingAttempts off-by-one**: Redis's XPENDING delivery count
+   is 1-based; my `RetryCount+1` made a first delivery report 2,
+   contradicting the DeliveryEvent.Attempts vocabulary. Fixed: verbatim.
+
+**Why my own suite missed both (the reviewer's meta-finding, accepted)**:
+the idle pins asserted LOWER bounds only (trivially satisfied by
+inflation) and the "healthy fresh pending" row was vacuous — frozen
+clock made idle exactly 0 (0×10⁶ = 0). Remediation: the wedged pin is
+now ABSOLUTE (2m clock jump → idle ∈ [2m, 2m+30s], upper bound catches
+any unit inflation), the healthy row carries NONZERO idle (30s < 5m
+horizon → unstalled, with a lower bound > 1s), attempts==1 is pinned
+after exactly one raw delivery, and the two dispatch edges live
+miniredis cannot reach deterministically are pinned directly
+(DeliveryAckError via a forced command error; nil OnDelivery
+behavior-preserving). Plus the reviewer's minor: the deliveries help
+text now states outcomes count per dispatch pass (a redelivered
+filtered/poison entry re-counts).
+
+Reviewer's non-blocking notes, taken as documented: SetPublishObserver
+is not called on the unreachable "bus unwired" branch; vanished groups
+hold stale gauge series until restart (groups are never destroyed in
+this system).

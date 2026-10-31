@@ -279,12 +279,19 @@ func (b *RedisBus) probePending(ctx context.Context, g *GroupHealth) error {
 		}
 		return fmt.Errorf("eventbus: health XPENDING %s/%s: %w", b.key, g.Name, err)
 	}
+	// go-redis's XPendingExt.Idle is ALREADY a time.Duration (the wire
+	// milliseconds converted at the reply boundary — command.go's
+	// `Idle: time.Duration(idle) * time.Millisecond`), and RetryCount
+	// is Redis's 1-based delivery count (1 = first delivery, the same
+	// vocabulary as DeliveryEvent.Attempts). Neither needs conversion
+	// here — the review round-1 bugs were re-multiplying idle ×10⁶ and
+	// double-counting attempts.
 	for _, p := range pend {
-		if idle := time.Duration(p.Idle) * time.Millisecond; idle > g.OldestPendingIdle {
-			g.OldestPendingIdle = idle
+		if p.Idle > g.OldestPendingIdle {
+			g.OldestPendingIdle = p.Idle
 		}
-		if p.RetryCount+1 > g.MaxPendingAttempts {
-			g.MaxPendingAttempts = p.RetryCount + 1
+		if p.RetryCount > g.MaxPendingAttempts {
+			g.MaxPendingAttempts = p.RetryCount
 		}
 	}
 	return nil

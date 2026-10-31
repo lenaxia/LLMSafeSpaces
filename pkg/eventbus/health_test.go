@@ -107,49 +107,52 @@ func TestHealthLiveGroupDrains(t *testing.T) {
 // whose handler never succeeds (or whose consumers all died holding
 // deliveries) shows the pending entry's idle GROWING past every
 // reclaim threshold. The miniredis clock advances deterministically —
-// no sleeps.
+// no sleeps. The idle pin is ABSOLUTE (review r1: a unit-conversion
+// bug shipped green under a lower-bound-only assertion), and
+// MaxPendingAttempts is pinned to 1 after exactly one delivery
+// (Redis's delivery count is 1-based).
 func TestHealthWedgedGroupPendingIdle(t *testing.T) {
 	bus, mr := newTestBus(t)
 	mr.SetTime(time.Now().UTC()) // freeze: idle is now clock arithmetic
 	t.Cleanup(func() { mr.SetTime(time.Time{}) })
 	mustPublish(t, bus, "session.ses_1.idle")
-	var mu sync.Mutex
-	deliveries := 0
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		_ = bus.Consume(ctx, testReplayOpts("g", "c"), func(context.Context, Message) error {
-			mu.Lock()
-			deliveries++
-			mu.Unlock()
-			return errors.New("wedged handler")
-		})
-	}()
-	// Wait for the entry to be delivered (and left pending).
-	require.Eventually(t, func() bool {
-		mu.Lock()
-		defer mu.Unlock()
-		return deliveries >= 1
-	}, 5*time.Second, 5*time.Millisecond)
-	cancel()
-	<-done
+
+	// Deliver RAW (one XREADGROUP, no ack): exactly one delivery, no
+	// reclaim loop racing the clock — RetryCount 1 and lastDelivery at
+	// the frozen T0, both deterministic.
+	ctx := context.Background()
+	require.NoError(t, bus.client.XGroupCreateMkStream(ctx, bus.key, "g", "0-0").Err())
+	res, err := bus.client.XReadGroup(ctx, &redis.XReadGroupArgs{
+		Group: "g", Consumer: "c", Streams: []string{bus.key, ">"},
+		Count: 8, Block: 50 * time.Millisecond,
+	}).Result()
+	require.NoError(t, err)
+	require.Len(t, res[0].Messages, 1)
 
 	h := healthOf(t, bus)
 	g := groupOf(t, h, "g")
-	require.EqualValues(t, 1, g.Pending, "the failed delivery must sit on the PEL")
-	require.GreaterOrEqual(t, g.MaxPendingAttempts, int64(1))
+	require.EqualValues(t, 1, g.Pending, "the delivered-unacked entry must sit on the PEL")
+	require.EqualValues(t, 1, g.MaxPendingAttempts, "one delivery = attempts 1 (Redis's delivery count is 1-based — no off-by-one)")
 	require.Zero(t, g.Lag, "the entry WAS delivered (cursor advanced) — it is pending, not lagging")
+	require.EqualValues(t, 1, g.Consumers)
 
-	// Advance the wall clock: the pending entry's idle must grow with
-	// it — the wedged-group signal an operator alerts on.
-	mr.SetTime(time.Now().UTC().Add(10 * time.Minute))
+	// Advance the wall clock by EXACTLY 2 minutes: the pending entry's
+	// idle must be 2 minutes — an absolute pin (± a small ε), not a
+	// lower bound.
+	mr.SetTime(time.Now().UTC().Add(2 * time.Minute))
 	h = healthOf(t, bus)
 	g = groupOf(t, h, "g")
-	require.EqualValues(t, 1, g.Pending)
-	require.GreaterOrEqual(t, g.OldestPendingIdle, 10*time.Minute,
+	require.GreaterOrEqual(t, g.OldestPendingIdle, 2*time.Minute,
 		"pending idle must track the clock — the stalled-group signal")
+	require.LessOrEqual(t, g.OldestPendingIdle, 2*time.Minute+30*time.Second,
+		"pending idle must not be inflated (a unit bug reads as years — review r1's finding)")
+
+	// A live consumer reclaims past MinIdle and acks: the healthy
+	// resolution of a pending episode.
+	got := consumeUntil(t, bus, testOpts("g", "c"), oneMessage)
+	require.Len(t, got, 1)
+	h = healthOf(t, bus)
+	require.Zero(t, groupOf(t, h, "g").Pending, "the reclaimed+acked entry leaves the PEL")
 }
 
 // TestHealthLagCappedAtProbeBound — a backlog past HealthMaxLag
@@ -362,4 +365,42 @@ func TestOnDeliverySeesPoison(t *testing.T) {
 	}, 5*time.Second, 5*time.Millisecond)
 	cancel()
 	<-done
+}
+
+// TestOnDeliveryAckErrorAndNilObserver — the two dispatch edges the
+// e2e paths cannot reach deterministically over live miniredis
+// (review r1's missing cases): an ACK failure observes
+// DeliveryAckError alongside OnError, and a nil OnDelivery leaves the
+// pre-S3 dispatch behavior intact (no observation, no panic, same
+// outcome).
+func TestOnDeliveryAckErrorAndNilObserver(t *testing.T) {
+	bus, mr := newTestBus(t)
+	ctx := context.Background()
+	msg := Message{ID: mustPublish(t, bus, "session.ses_1.idle"), Event: Event{Topic: "session.ses_1.idle"}, Attempts: 1}
+
+	// Force EVERY command to fail: the handler succeeds, the XAck
+	// inside dispatch fails → DeliveryAckError.
+	mr.SetError("LOADING redis is loading the dataset in memory")
+	t.Cleanup(func() { mr.SetError("") })
+	var mu sync.Mutex
+	var got []DeliveryEvent
+	var onErr error
+	opts := testOpts("g", "c")
+	opts.OnDelivery = func(ev DeliveryEvent) { mu.Lock(); got = append(got, ev); mu.Unlock() }
+	opts.OnError = func(_ Message, err error) { onErr = err }
+	bus.dispatch(ctx, &opts, func(context.Context, Message) error { return nil }, msg)
+	mu.Lock()
+	require.Len(t, got, 1, "the failed ack must observe exactly one outcome")
+	require.Equal(t, DeliveryAckError, got[0].Outcome)
+	require.Error(t, onErr, "OnError still carries the ack failure")
+	mu.Unlock()
+
+	// nil OnDelivery: identical flow, no observation, no panic.
+	opts2 := testOpts("g", "c") // OnDelivery nil
+	require.NotPanics(t, func() {
+		bus.dispatch(ctx, &opts2, func(context.Context, Message) error { return nil }, msg)
+	})
+	mu.Lock()
+	require.Len(t, got, 1, "a nil observer must not add observations")
+	mu.Unlock()
 }

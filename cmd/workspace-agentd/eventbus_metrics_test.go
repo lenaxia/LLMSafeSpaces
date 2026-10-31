@@ -201,9 +201,14 @@ func TestCollectEventbusHealth_WedgedGroupPendingIdle(t *testing.T) {
 	state := newEventbusHealthState()
 	errStreak := 0
 
-	// Fresh pending: visible, not yet stalled.
+	// Pending idle 30s (nonzero, below the 5m horizon): a healthy
+	// group holding un-acked work briefly must NOT stall — the
+	// false-positive guard with a real, nonzero idle (review r1: the
+	// frozen-clock zero-idle row was vacuous).
+	mr.SetTime(time.Now().UTC().Add(30 * time.Second))
 	collectEventbusHealth(ctx, bus, ws, logger, state, &errStreak)
 	require.Equal(t, 0.0, testutil.ToFloat64(eventbusMetrics.groupStalled.WithLabelValues(ws, "notifier")))
+	require.GreaterOrEqual(t, testutil.ToFloat64(eventbusMetrics.groupOldestPendingIdle.WithLabelValues(ws, "notifier")), 1.0)
 	require.GreaterOrEqual(t, testutil.ToFloat64(eventbusMetrics.groupPending.WithLabelValues(ws, "notifier")), 1.0)
 
 	// Advance the clock past the reclaim horizon: stalled, reason
@@ -213,6 +218,8 @@ func TestCollectEventbusHealth_WedgedGroupPendingIdle(t *testing.T) {
 	require.Equal(t, 1.0, testutil.ToFloat64(eventbusMetrics.groupStalled.WithLabelValues(ws, "notifier")))
 	idle := testutil.ToFloat64(eventbusMetrics.groupOldestPendingIdle.WithLabelValues(ws, "notifier"))
 	require.GreaterOrEqual(t, idle, eventbusStallPendingIdle.Seconds())
+	require.LessOrEqual(t, idle, eventbusStallPendingIdle.Seconds()+float64((10*time.Minute).Seconds()),
+		"the idle gauge must read true seconds, not an inflated unit (review r1)")
 	warns := logs.FilterMessage("event bus: consumer group STALLED").All()
 	require.Len(t, warns, 1)
 	require.Equal(t, string(stallStalePending), warns[0].ContextMap()["reason"])

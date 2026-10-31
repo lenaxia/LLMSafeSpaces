@@ -88,7 +88,7 @@ var eventbusMetrics = struct {
 	}, []string{"workspace_id", "topic_family", "outcome"}),
 	deliveries: promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "workspace_agentd_eventbus_deliveries_total",
-		Help: "Event bus consumer-group dispatch outcomes by group and outcome (delivered, filtered, poison, handler_error, ack_error). handler_error/poison rising means the group is failing its work while staying alive.",
+		Help: "Event bus consumer-group dispatch outcomes by group and outcome (delivered, filtered, poison, handler_error, ack_error). handler_error/poison rising means the group is failing its work while staying alive. Counted per dispatch pass: an entry that redelivers re-counts its outcome (a repeatedly failing handler ticks handler_error per attempt).",
 	}, []string{"workspace_id", "group", "outcome"}),
 	redeliveries: promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "workspace_agentd_eventbus_redeliveries_total",
