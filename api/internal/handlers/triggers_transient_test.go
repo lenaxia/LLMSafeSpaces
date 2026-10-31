@@ -232,6 +232,14 @@ func TestIsTransientStoreErr(t *testing.T) {
 		{"pg crash shutdown 57P02", &pgconn.PgError{Code: "57P02"}, true},
 		{"pg too many connections 53300", &pgconn.PgError{Code: "53300"}, true},
 		{"pg system error 58000", &pgconn.PgError{Code: "58000"}, true},
+		// The 2026-10-30 22:00-22:40 v0.44.11 live-fire class: the cached
+		// per-id statement rotated away server-side (pooler recycle /
+		// failover DEALLOCATE) — one-shot per (connection, statement),
+		// healed by the immediate re-run; retried like every other
+		// connection-lifecycle fault (pins in triggers_stmtcache_test.go
+		// and store_integration_test.go).
+		{"pg statement-cache miss 26000", errStmtCacheGone, true},
+		{"wrapped pg statement-cache miss", errors.Join(errors.New("query: "), errStmtCacheGone), true},
 		{"wrapped pg connection fault", errors.Join(errors.New("query: "), errConnDown), true},
 		{"net op error", netErr, true},
 		{"pg unique violation 23505", errUniqueViolation, false},
