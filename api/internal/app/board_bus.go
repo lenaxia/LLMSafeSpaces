@@ -88,6 +88,13 @@ const (
 	// boardSSEJoinInterval is the discovery cadence for the consumer
 	// set (which workspaces carry board projects).
 	boardSSEJoinInterval = 30 * time.Second
+	// boardBusScopeBudget bounds one delivery's scope reads (the v1
+	// leg's 5s lookup bound, mirrored): a hung DB must wedge ONE
+	// delivery, never the drainer — the queues behind a wedged
+	// drainer overflow, and the stamp leg has no v1 fallback to
+	// divert to (r3 review: the stamp plane would go silent for the
+	// process lifetime).
+	boardBusScopeBudget = 5 * time.Second
 )
 
 // The API-side visibility (expvar on /debug/vars, the S4 precedent).
@@ -436,6 +443,8 @@ func (p *boardBusPublisher) drainEvents() {
 }
 
 func (p *boardBusPublisher) deliverEvent(ctx context.Context, evt board.Event) {
+	ctx, cancel := context.WithTimeout(ctx, boardBusScopeBudget)
+	defer cancel()
 	scope, err := p.scope.scopeForProject(ctx, evt.ProjectID)
 	if err != nil {
 		// Scope unresolved (project deleted, DB blip): the v1 leg's
@@ -524,6 +533,8 @@ func (p *boardBusPublisher) drainStamps() {
 }
 
 func (p *boardBusPublisher) deliverStamp(ctx context.Context, ev board.StampEvent) {
+	ctx, cancel := context.WithTimeout(ctx, boardBusScopeBudget)
+	defer cancel()
 	scope, err := p.scope.scopeForTask(ctx, ev.TaskID)
 	if err != nil {
 		boardBusStampsFailed.Add(1)

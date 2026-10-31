@@ -517,6 +517,23 @@ func TestBoardBusPublisher_StageChangedHonesty(t *testing.T) {
 		}
 	}
 
+	// An absent/unparseable actor attests NOTHING: the stage entry
+	// carries an EMPTY source — never a defaulted attribution (r3
+	// review's missing pin: the defaulted-user defect could silently
+	// return without this).
+	noActor := testEvent("move_stage")
+	noActor.ID = "evt-noactor"
+	noActor.Actor = []byte(`{not json`)
+	publisher(noActor)
+	require.Eventually(t, func() bool {
+		for _, e := range busStreamEntries(t, mr.Addr(), "ws-1") {
+			if e["topic"] == eventbus.TaskStageTopic("task-1") && e[eventbus.FieldBoardEventID] == "evt-noactor" {
+				return e[eventbus.FieldStageSource] == ""
+			}
+		}
+		return false
+	}, 2*time.Second, 10*time.Millisecond, "an unparseable actor publishes an EMPTY source")
+
 	// An unparseable committed payload skips the vocabulary entry (the
 	// board.event entry still lands — it IS the row).
 	stageNow := boardBusStagePublished.Value()

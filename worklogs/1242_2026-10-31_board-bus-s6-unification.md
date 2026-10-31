@@ -75,3 +75,9 @@ Round-2 fixes (each verified landed before the claim, this time):
 6. **The phrase-parity pin joins the CI filter by name**: renamed to `TestIntegrationBoardSSELiveProjectionBusJoinPhraseParity` (the secrets-integration `-run` prefix).
 
 Process notes: the round-1 scripted-edit failure mode is now banished — every scripted edit asserts its match (or uses the edit tool, which fails loudly). Also: the shared PG at :5433 died mid-verification (sibling lane's portable server, OOM-shaped); restarted from the surviving cluster (`/tmp/opencode/pgdist` + `/tmp/opencode/pgdata`), the private DB intact, and the FULL integration battery re-ran serially (board 41s, handlers 87s, app 33s — real runs, not skips; the combined-package invocation is a truncation race, serial per package per the S2 lane's lesson).
+
+## AI review round 3 (CHANGES_REQUESTED — two one-liners) → addressed
+
+- **The empty-source pin**: `TestBoardBusPublisher_StageChangedHonesty` now publishes a move_stage with an unparseable actor and asserts the stage entry carries `source=""` — the defaulted-attribution defect can no longer return silently.
+- **The drainers' scope reads are bounded**: `boardBusScopeBudget = 5s` (the v1 leg's lookup bound, mirrored) wraps each delivery — a hung DB wedges ONE delivery, never the drainer (behind a wedged drainer the queues overflow: events divert to v1, but stamps have NO fallback — the r3 finding's silent starvation).
+- Reviewer's non-blocking notes left as-is with their reasoning (busFor's mutex-held ping + breaker-less join call: the S4-inherited shape approved in #2003; the retire guard's presence-not-identity: unreachable ABA given ms retire vs 30s cadence and Consume's nil-on-cancel; wall-clock breaker: accepted).
