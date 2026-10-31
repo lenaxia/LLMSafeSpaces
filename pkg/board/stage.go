@@ -739,6 +739,16 @@ func (s *Service) Heartbeat(ctx context.Context, actor Actor, taskID, shortIDOrI
 	if !claimStage || actor.ClaimToken == "" || actor.ClaimToken != t.ClaimToken {
 		return HeartbeatResult{}, &GuardError{Code: GuardClaimToken, Detail: "heartbeat requires a live claim (stage + token)"}
 	}
+	// RC-B S1 back-fill: a heartbeat is SUBSEQUENT EVIDENCE OF THE
+	// CLAIM — the caller holds the live token only the chartered
+	// session possesses. When the row's assignee stamp is missing
+	// (lost write, exhausted retries) and the caller carries a session
+	// identity, the stamp is re-filled HERE: the observation plane
+	// (ladder refs, nudges, badge) keys on assignee_session, so this
+	// one write turns a lost stamp from permanent blindness into a
+	// bounded gap — eventually-true, never write-once. Best-effort by
+	// design: the back-fill's failure never fails the heartbeat.
+	s.backfillAssigneeStamp(ctx, t, actor)
 	serverNow := time.Now().UTC()
 	switch {
 	case observedProgressAt.After(serverNow.Add(heartbeatFutureTolerance)):

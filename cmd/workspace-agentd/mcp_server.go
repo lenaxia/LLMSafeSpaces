@@ -719,6 +719,7 @@ func mcpToolCatalog() []mcpTool {
 			InputSchema: map[string]any{"type": "object", "properties": map[string]any{
 				"claimToken":         map[string]any{"type": "string", "description": "The claim token from your charter envelope (the in-flight guard)"},
 				"observedProgressAt": map[string]any{"type": "string", "description": "RFC 3339 timestamp of your latest progress (last message/tool activity) — the response's stamp; the server clamps future stamps"},
+				"sessionId":          map[string]any{"type": "string", "description": "Optional: your own session id — self-identification for the assignee-stamp back-fill (RC-B): when your row's assignee stamp was lost, a token-carrying call that names its session re-stamps it, making the claim observable again"},
 				"shortId":            map[string]any{"type": "string", "description": "The story's short id (word-phrase form) — alternative to taskId"},
 				"taskId":             map[string]any{"type": "string", "description": "The story's UUID — alternative to shortId"},
 			}, "required": []string{"claimToken"}},
@@ -741,6 +742,7 @@ func mcpToolCatalog() []mcpTool {
 				"toStage":     map[string]any{"type": "string", "description": "Target stage: in_review (work done), in_progress (re-work / the pending_input re-claim exit), done, pending_input (SET the awaiting-input flag — the row keeps its real stage, 000050), backlog (the pending_input re-queue exit clears the flag), failed (the failure terminus)"},
 				"evidenceUrl": map[string]any{"type": "string", "description": "The artifact link for this transition (PR, build, doc) — required for → done, good practice for → in_review"},
 				"requestId":   map[string]any{"type": "string", "description": "Optional idempotency key (UUID): reuse it on retry of the SAME logical move — a replay returns the original outcome, never a duplicate"},
+				"sessionId":   map[string]any{"type": "string", "description": "Optional: your own session id — self-identification for the assignee-stamp back-fill (RC-B), same as board_heartbeat's"},
 				"shortId":     map[string]any{"type": "string", "description": "The story's short id (word-phrase form) — alternative to taskId"},
 				"taskId":      map[string]any{"type": "string", "description": "The story's UUID — alternative to shortId"},
 			}, "required": []string{"toStage"}},
@@ -755,6 +757,7 @@ func mcpToolCatalog() []mcpTool {
 				"evidenceUrl": map[string]any{"type": "string", "description": "The artifact link the verdict certifies (required for approve)"},
 				"findings":    map[string]any{"type": "array", "description": "fail findings: [{severity, pointer, criterionIndex?}]", "items": map[string]any{"type": "object"}},
 				"requestId":   map[string]any{"type": "string", "description": "Optional idempotency key (UUID): reuse it on retry of the SAME logical verdict"},
+				"sessionId":   map[string]any{"type": "string", "description": "Optional: your own session id — self-identification for the assignee-stamp back-fill (RC-B), same as board_heartbeat's"},
 				"shortId":     map[string]any{"type": "string", "description": "The story's short id (word-phrase form) — alternative to taskId"},
 				"taskId":      map[string]any{"type": "string", "description": "The story's UUID — alternative to shortId"},
 			}, "required": []string{"claimToken", "verdict", "reviewer"}},

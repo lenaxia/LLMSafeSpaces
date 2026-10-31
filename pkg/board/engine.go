@@ -547,26 +547,48 @@ func (s *Service) spawnSync(ctx context.Context, claim *Claim) {
 	if stage == "" {
 		stage = StageInProgress
 	}
-	tag, err := s.q().Exec(ctx, `
-		UPDATE tasks SET assignee_session=$2,
-			lease_expires_at=now()+make_interval(secs=>$4::float8)
-		WHERE id=$1 AND claim_token=$3 AND stage=$5`,
-		claim.TaskID, sessionID, claim.ClaimToken, s.cfg.LeaseDuration.Seconds(), stage)
-	if err != nil {
-		slog.WarnContext(ctx, "board: assignee record failed", "task_id", claim.TaskID, "err", err.Error())
+	// RC-B S1: the stamp write is a RETRYING, OBSERVED write — a
+	// transient DB failure no longer silently loses the assignee
+	// identity (writeAssigneeStamp retries with backoff, emits
+	// stamp_lag, and fails LOUD on every attempt). landed=false means
+	// the guard lost the race (the claim moved while the spawn was in
+	// flight) OR retries exhausted — the back-fill belt (Heartbeat's
+	// claim-evidence re-stamp) owns the lost-stamp recovery.
+	if !s.writeAssigneeStamp(ctx, claim.TaskID, claim.ClaimToken, sessionID, stage) {
+		// The guarded stamp lost the race (deleted, lapsed, or
+		// re-claimed while the spawn was in flight): the just-spawned
+		// session holds a dead charter — abort it (the merged design's
+		// spawn-stamp guard; the same interrupt seam as
+		// delete/reclaim). A retried-out write ALSO lands here: the
+		// session runs un-stamped until the claim's next evidence
+		// back-fills — aborting would kill a live worker over a stamp
+		// it never asked to lose, so the abort stays gated on the
+		// claim having actually moved.
+		if s.claimStillLive(ctx, claim.TaskID, claim.ClaimToken) {
+			slog.WarnContext(ctx, "board: assignee stamp did not land but the claim is live — running un-stamped until back-fill (the next claim evidence re-stamps)",
+				"task_id", claim.TaskID, "session_id", sessionID)
+			return
+		}
+		if s.aborter != nil {
+			_ = s.aborter(ctx, claim.TaskID, sessionID)
+		}
 		return
 	}
-	if tag.RowsAffected() > 0 {
-		claim.Assignee = sessionID
-		return
+	claim.Assignee = sessionID
+}
+
+// claimStillLive re-checks the spawn-stamp guard's loss: whether the
+// claim token still arbitrates the row. A stamp write that exhausted
+// retries on a STILL-LIVE claim leaves the worker running (the
+// back-fill heals); a stamp that lost the RACE (token moved) aborts
+// the dead charter.
+func (s *Service) claimStillLive(ctx context.Context, taskID, token string) bool {
+	var n int
+	if err := s.q().QueryRow(ctx,
+		`SELECT count(*) FROM tasks WHERE id=$1 AND claim_token=$2`, taskID, token).Scan(&n); err != nil {
+		return false
 	}
-	// The guarded stamp lost the race (deleted, lapsed, or re-claimed
-	// while the spawn was in flight): the just-spawned session holds a
-	// dead charter — abort it (the merged design's spawn-stamp guard; the
-	// same interrupt seam as delete/reclaim).
-	if s.aborter != nil {
-		_ = s.aborter(ctx, claim.TaskID, sessionID)
-	}
+	return n > 0
 }
 
 // WithAsyncSpawn installs the production spawn mode: pod activation +
