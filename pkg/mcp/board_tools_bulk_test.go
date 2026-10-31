@@ -4,7 +4,7 @@
 package mcp
 
 // board_tools_bulk_test.go — #1836's external bulk pair, red-first:
-// board_start_tasks (bulk claim) and board_move_stage_bulk (bulk
+// board_start_stories (bulk claim) and board_move_stage_bulk (bulk
 // complete) ride the REST bulk routes through the client, validate
 // adapter-owned arguments BEFORE any wire call (required task_ids,
 // non-empty, the five-stage vocabulary, the batch cap front-run — the
@@ -31,10 +31,10 @@ func TestBoardTools_BulkAllowArms(t *testing.T) {
 		mock func(m *MockAPIClient)
 	}{
 		{
-			name: "board_start_tasks", tool: "board_start_tasks",
+			name: "board_start_stories", tool: "board_start_stories",
 			args: map[string]any{"task_ids": []any{"tsk-aaaa1111", "tsk-bbbb2222"}, "request_id": "br-1"},
 			mock: func(m *MockAPIClient) {
-				m.On("BoardStartTasks", mock.Anything, []string{"tsk-aaaa1111", "tsk-bbbb2222"}, "br-1").
+				m.On("BoardStartStories", mock.Anything, []string{"tsk-aaaa1111", "tsk-bbbb2222"}, "br-1").
 					Return(`{"results":[{"id":"tsk-aaaa1111","status":"done"}],"count":1}`, nil)
 			},
 		},
@@ -71,9 +71,9 @@ func TestBoardTools_BulkRequiredArgs(t *testing.T) {
 		tool string
 		args map[string]any
 	}{
-		{"start_no_ids", "board_start_tasks", map[string]any{}},
-		{"start_empty_ids", "board_start_tasks", map[string]any{"task_ids": []any{}}},
-		{"start_over_cap", "board_start_tasks", map[string]any{"task_ids": many}},
+		{"start_no_ids", "board_start_stories", map[string]any{}},
+		{"start_empty_ids", "board_start_stories", map[string]any{"task_ids": []any{}}},
+		{"start_over_cap", "board_start_stories", map[string]any{"task_ids": many}},
 		{"move_no_ids", "board_move_stage_bulk", map[string]any{"to_stage": "done"}},
 		{"move_empty_ids", "board_move_stage_bulk", map[string]any{"task_ids": []any{}, "to_stage": "done"}},
 		{"move_over_cap", "board_move_stage_bulk", map[string]any{"task_ids": many, "to_stage": "done"}},
@@ -88,7 +88,7 @@ func TestBoardTools_BulkRequiredArgs(t *testing.T) {
 			require.NoError(t, err)
 			require.NotNil(t, res)
 			assert.True(t, res.IsError, "%s: the doomed call refuses at the tool tier", tc.name)
-			m.AssertNotCalled(t, "BoardStartTasks", mock.Anything, mock.Anything, mock.Anything)
+			m.AssertNotCalled(t, "BoardStartStories", mock.Anything, mock.Anything, mock.Anything)
 			m.AssertNotCalled(t, "BoardMoveStageBulk", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything)
 		})
 	}
@@ -102,10 +102,10 @@ func TestBoardTools_BulkRequiredArgs(t *testing.T) {
 // (missing/empty/over-cap/malformed entries) front-run any wire call.
 func TestBoardTools_BulkDeleteAllowArm(t *testing.T) {
 	m := &MockAPIClient{}
-	m.On("BoardDeleteTasksBulk", mock.Anything, []string{"tsk-aaaa1111", "tsk-bbbb2222"}, true, "br-del-1").
+	m.On("BoardDeleteStoriesBulk", mock.Anything, []string{"tsk-aaaa1111", "tsk-bbbb2222"}, true, "br-del-1").
 		Return(`{"results":[{"id":"tsk-aaaa1111","status":"done","orphaned_dependents":["tsk-orph"]}],"count":1}`, nil)
 	h := &handlers{client: m, timeout: 0}
-	res, err := callBoardTool(t, h, "board_delete_tasks",
+	res, err := callBoardTool(t, h, "board_delete_stories",
 		map[string]any{"task_ids": []any{"tsk-aaaa1111", "tsk-bbbb2222"}, "reconnect": true, "request_id": "br-del-1"})
 	require.NoError(t, err)
 	require.NotNil(t, res)
@@ -132,11 +132,11 @@ func TestBoardTools_BulkDeleteRequiredArgs(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			m := &MockAPIClient{} // no expectations: any wire call is a failure
 			h := &handlers{client: m, timeout: 0}
-			res, err := callBoardTool(t, h, "board_delete_tasks", tc.args)
+			res, err := callBoardTool(t, h, "board_delete_stories", tc.args)
 			require.NoError(t, err)
 			require.NotNil(t, res)
 			assert.True(t, res.IsError, "%s: the doomed call refuses at the tool tier", tc.name)
-			m.AssertNotCalled(t, "BoardDeleteTasksBulk", mock.Anything, mock.Anything, mock.Anything, mock.Anything)
+			m.AssertNotCalled(t, "BoardDeleteStoriesBulk", mock.Anything, mock.Anything, mock.Anything, mock.Anything)
 		})
 	}
 }

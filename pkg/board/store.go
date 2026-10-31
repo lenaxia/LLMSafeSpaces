@@ -3,6 +3,20 @@
 
 package board
 
+// STORAGE NAMING — documented keep (owner ruling 2026-10-30 phase 2,
+// the Sprint Board story rename): the tables and columns KEEP their
+// task spellings — `tasks`, `task_dependencies`, `task_id` FKs, the
+// `tsk-` short-id prefix, and the board_events action vocabulary
+// (`create_task`, `delete_task`, `task_start`, …). Renaming the schema
+// would be a data migration with zero user-facing gain: the DB is the
+// platform's private wire term (the ruling's phase 1 note — "story
+// (the wire-term is 'task')" — names exactly this layer), every SQL
+// site here and in api/internal/handlers would churn, and the
+// board_events audit history would carry both vocabularies forever.
+// The user-facing vocabulary (UI, MCP tool names + input keys) says
+// story; the engine and storage say task. Decision recorded in the
+// CHANGELOG under the rename's breaking-change entry.
+
 import (
 	"context"
 	"encoding/json"

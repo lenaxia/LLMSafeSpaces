@@ -538,7 +538,7 @@ func TestIntegrationBoardManagerE2E(t *testing.T) {
 	}
 	require.NoError(t, json.Unmarshal([]byte(resp.Body), &epic))
 
-	resp, err = dispatchBoardManagerTool(ctx, client, e2eMCPPassword, "board_create_task", map[string]any{
+	resp, err = dispatchBoardManagerTool(ctx, client, e2eMCPPassword, "board_create_story", map[string]any{
 		"lsp_injected_session": mgrSession,
 		"epicId":               epic.ShortID,
 		"bodyFile": e2ePayloadFile(t, `{"title":"E2E Task","description":"charter",`+
@@ -595,7 +595,7 @@ func TestIntegrationBoardManagerE2E(t *testing.T) {
 	require.NotNil(t, claim)
 	require.Equal(t, task.ID, claim.TaskID)
 
-	resp, err = dispatchBoardManagerTool(ctx, client, e2eMCPPassword, "board_create_task", map[string]any{
+	resp, err = dispatchBoardManagerTool(ctx, client, e2eMCPPassword, "board_create_story", map[string]any{
 		"lsp_injected_session": claim.Assignee,
 		"epicId":               epic.ShortID,
 		"bodyFile": e2ePayloadFile(t, `{"title":"worker manager call","description":"seeded charter",`+
@@ -645,7 +645,7 @@ func TestIntegrationBoardManagerE2E(t *testing.T) {
 		WHERE id=$1`, task.ID)
 	require.NoError(t, err)
 
-	resp, err = dispatchBoardManagerTool(ctx, client, e2eMCPPassword, "board_rearm_task", map[string]any{
+	resp, err = dispatchBoardManagerTool(ctx, client, e2eMCPPassword, "board_rearm_story", map[string]any{
 		"lsp_injected_session": mgrSession,
 		"taskId":               task.ShortID,
 	}, "sa-token", wsPod)
@@ -693,7 +693,7 @@ func e2eFileBackedCharterSections(t *testing.T, ctx context.Context, client *ope
 	charterJSON, err := json.Marshal(content)
 	require.NoError(t, err)
 
-	resp, err := dispatchBoardManagerTool(ctx, client, e2eMCPPassword, "board_create_task", map[string]any{
+	resp, err := dispatchBoardManagerTool(ctx, client, e2eMCPPassword, "board_create_story", map[string]any{
 		"lsp_injected_session": mgrSession,
 		"epicId":               epic.ShortID,
 		"bodyFile": e2ePayloadFile(t, `{"title":"file-backed charter","description":`+string(charterJSON)+`,`+
@@ -715,7 +715,7 @@ func e2eFileBackedCharterSections(t *testing.T, ctx context.Context, client *ope
 	// dispatch chain now refuses LOCALLY at the CRUD-time validation
 	// gate — the same findings board_validate_file returns; nothing
 	// reaches the engine.
-	_, err = dispatchBoardManagerTool(ctx, client, e2eMCPPassword, "board_create_task", map[string]any{
+	_, err = dispatchBoardManagerTool(ctx, client, e2eMCPPassword, "board_create_story", map[string]any{
 		"lsp_injected_session": mgrSession,
 		"epicId":               epic.ShortID,
 		"bodyFile":             e2ePayloadFile(t, `{"title":"seedless"}`),
@@ -730,7 +730,7 @@ func e2eFileBackedCharterSections(t *testing.T, ctx context.Context, client *ope
 	before := boardE2EEventCount(t, ctx, pool)
 	corruptJSON, err := json.Marshal("prefix " + strings.Repeat("Retry the loop step and continue. ", 50) + " suffix")
 	require.NoError(t, err)
-	_, err = dispatchBoardManagerTool(ctx, client, e2eMCPPassword, "board_create_task", map[string]any{
+	_, err = dispatchBoardManagerTool(ctx, client, e2eMCPPassword, "board_create_story", map[string]any{
 		"lsp_injected_session": mgrSession,
 		"epicId":               epic.ShortID,
 		"bodyFile": e2ePayloadFile(t, `{"title":"corrupted","description":`+string(corruptJSON)+`,`+

@@ -82,10 +82,10 @@ func logBoardAttributionLoss(name, ref string, err error) {
 // in-workspace session, spawned workers included — EXCEPT the
 // reviewer-grant widening this pin refuses: a spawned board worker
 // self-certifying its own work through ANY manager shape that writes
-// met flags — the board_update_task inline setCriteriaMet check-off,
-// a board_update_task patchFile acceptanceCriteria replace (met flags
+// met flags — the board_update_story inline setCriteriaMet check-off,
+// a board_update_story patchFile acceptanceCriteria replace (met flags
 // ride the replace; Service.UpdateTask rewrites the set wholesale
-// with no persona guard), and the CREATE shapes (board_create_task
+// with no persona guard), and the CREATE shapes (board_create_story
 // bodyFile, board_import_plan planFile task items) whose pre-met
 // criteria would author done-ready rows with zero reviewer
 // involvement (PR review rounds r2–r4: the pin must watch every
@@ -105,14 +105,14 @@ func boardWorkerSelfCertificationPin(name, sid string, args map[string]any) erro
 		return nil
 	}
 	switch name {
-	case "board_update_task":
+	case "board_update_story":
 		if _, ok := args["setCriteriaMet"]; ok {
 			return fmt.Errorf("%s failed: task-worker self-certification stays refused — criteria-met recording is the reviewer-persona claim's scoped grant (issue #1946); a spawned board worker may not check off its own work through the manager shape (ruling 2026-10-27, tsk-copper-refectory-generates)", name)
 		}
 		if _, ok := args["acceptanceCriteria"]; ok {
 			return fmt.Errorf("%s failed: task-worker self-certification stays refused — a patchFile acceptanceCriteria replace rewrites met flags with no persona guard (issue #1946); a spawned board worker may not re-write its own criteria through the manager shape (ruling 2026-10-27, tsk-copper-refectory-generates)", name)
 		}
-	case "board_create_task":
+	case "board_create_story":
 		if anyCriterionMetTrue(args["acceptanceCriteria"]) {
 			return fmt.Errorf("%s failed: task-worker self-certification stays refused — a pre-met criterion authors a done-ready row with no reviewer involvement (issue #1946); a spawned board worker may not create its own work pre-certified (ruling 2026-10-27, tsk-copper-refectory-generates)", name)
 		}
@@ -221,11 +221,11 @@ var boardIdentityInlineKeys = []string{"lsp_injected_session", "sessionId", "ses
 // reads, the exact silent-drop class this resolver refuses.
 func boardToolFileSpec(name string) boardFileSpec {
 	switch name {
-	case "board_create_task":
+	case "board_create_story":
 		return boardFileSpec{fileKey: "bodyFile", inline: []string{"epicId"}}
 	case "board_create_epic":
 		return boardFileSpec{fileKey: "bodyFile", inline: []string{"projectId"}}
-	case "board_update_task":
+	case "board_update_story":
 		return boardFileSpec{fileKey: "patchFile", inline: []string{"taskId", "shortId", "claimToken", "setCriteriaMet"}}
 	case "board_update_epic":
 		return boardFileSpec{fileKey: "patchFile", inline: []string{"epicId"}}
@@ -292,9 +292,9 @@ func resolveBoardToolFileArgs(name string, args map[string]any) (string, error) 
 	raw, present := args[spec.fileKey]
 	// The bare criteria check-off is the one inline write that is NOT
 	// payload structure (#1946/#1837 P2b: {index, met} is small,
-	// index-addressed control-plane) — board_update_task admits it
+	// index-addressed control-plane) — board_update_story admits it
 	// without a patch file; every other call needs the file.
-	controlPlaneOnly := name == "board_update_task" && args["setCriteriaMet"] != nil
+	controlPlaneOnly := name == "board_update_story" && args["setCriteriaMet"] != nil
 	if !present || raw == nil {
 		if controlPlaneOnly {
 			return "", nil
@@ -434,15 +434,15 @@ func boardManagerWireCall(ctx context.Context, client *opencode.Client, name, sa
 		return client.BoardManagerEpicAction(ctx, saToken, workspaceID, sessionID, boardRefArg(args, "epicId"), "unarchive", wire)
 	case "board_delete_epic":
 		return client.BoardDeleteEpic(ctx, saToken, workspaceID, sessionID, boardRefArg(args, "epicId"), boardBoolArg(args, "force"))
-	case "board_create_task":
+	case "board_create_story":
 		return client.BoardCreateTask(ctx, saToken, workspaceID, sessionID, boardRefArg(args, "epicId"), wire)
-	case "board_update_task":
+	case "board_update_story":
 		return client.BoardUpdateTask(ctx, saToken, workspaceID, sessionID, boardRefArg(args, "taskId"), wire)
 	case "board_add_dependency":
 		return client.BoardAddDependency(ctx, saToken, workspaceID, sessionID, boardRefArg(args, "taskId"), wire)
 	case "board_remove_dependency":
 		return client.BoardRemoveDependency(ctx, saToken, workspaceID, sessionID, boardRefArg(args, "taskId"), boardRefArg(args, "dependsOn"))
-	case "board_delete_task":
+	case "board_delete_story":
 		return client.BoardDeleteTask(ctx, saToken, workspaceID, sessionID, boardRefArg(args, "taskId"), boardBoolArg(args, "reconnect"))
 	case "board_move_stage":
 		// #1832 WS2: the manager-grade move. The task ref rides the
@@ -459,24 +459,26 @@ func boardManagerWireCall(ctx context.Context, client *opencode.Client, name, sa
 		// requestId} ride the body verbatim (the platform validates;
 		// agentd re-models nothing).
 		return client.BoardManagerMoveStageBulk(ctx, saToken, workspaceID, sessionID, wire)
-	case "board_delete_tasks":
+	case "board_delete_stories":
 		// #1836 sibling: the bulk delete — {taskIds, reconnect,
 		// requestId} ride the body verbatim (the platform validates;
 		// agentd re-models nothing).
 		return client.BoardManagerDeleteTasksBulk(ctx, saToken, workspaceID, sessionID, wire)
-	case "board_rearm_task":
+	case "board_rearm_story":
 		// #1832 WS3: the attempts-exhaustion re-pool.
 		return client.BoardRearmTask(ctx, saToken, workspaceID, sessionID, boardRefArg(args, "taskId"), wire)
-	case "board_depose_task":
+	case "board_depose_story":
 		// S5 (the DEPOSED directive): depose a LAPSED claim, recording
 		// the salvage pointer — {branch, pr, head, state, note,
 		// requestId} ride the body verbatim (the platform validates the
 		// guard and the pointer's non-emptiness; agentd re-models
-		// nothing).
+		// nothing). The wire ref key stays taskId (the REST wire keeps
+		// its task spelling; normalizeBoardStoryArgs translated the
+		// storyId input key before dispatch).
 		return client.BoardDeposeTask(ctx, saToken, workspaceID, sessionID, boardRefArg(args, "taskId"), wire)
-	case "board_pause_task":
+	case "board_pause_story":
 		return client.BoardManagerTaskAction(ctx, saToken, workspaceID, sessionID, boardRefArg(args, "taskId"), "pause")
-	case "board_resume_task":
+	case "board_resume_story":
 		return client.BoardManagerTaskAction(ctx, saToken, workspaceID, sessionID, boardRefArg(args, "taskId"), "resume")
 	case "board_import_plan":
 		return client.BoardImportPlan(ctx, saToken, workspaceID, sessionID, boardRefArg(args, "projectId"), wire)

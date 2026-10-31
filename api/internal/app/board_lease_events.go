@@ -162,16 +162,18 @@ func (b *boardLeaseEventbus) breakerOpen() bool {
 // busFor returns the workspace's bus, wiring it on first use. The
 // constructor pings, so a workspace whose bus was evicted after a
 // failure re-proves the transport here — one budget, then the breaker
-// owns the pause.
-func (b *boardLeaseEventbus) busFor(workspaceID string) (*eventbus.RedisBus, error) {
+// owns the pause. The ping rides the CALLER's context (bounded below
+// by the publish budget): a caller already past its deadline fails the
+// wire fast instead of minting a fresh Background window.
+func (b *boardLeaseEventbus) busFor(ctx context.Context, workspaceID string) (*eventbus.RedisBus, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	if bus, ok := b.buses[workspaceID]; ok {
 		return bus, nil
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), boardLeasePublishBudget)
+	wctx, cancel := context.WithTimeout(ctx, boardLeasePublishBudget)
 	defer cancel()
-	bus, err := eventbus.NewRedisBus(ctx, b.client, eventbus.StreamKey(workspaceID), 0)
+	bus, err := eventbus.NewRedisBus(wctx, b.client, eventbus.StreamKey(workspaceID), 0)
 	if err != nil {
 		return nil, fmt.Errorf("board: lease event bus for workspace %s: %w", workspaceID, err)
 	}
@@ -199,7 +201,7 @@ func (b *boardLeaseEventbus) publish(ctx context.Context, workspaceID, topic str
 		boardLeaseEventsFailed.Add(1)
 		return errors.New("board: lease event bus paused after a failed publish")
 	}
-	bus, err := b.busFor(workspaceID)
+	bus, err := b.busFor(ctx, workspaceID)
 	if err != nil {
 		b.trip()
 		return err

@@ -19,9 +19,9 @@ package mcp
 // manager action under the owner's authority.
 //
 // Naming: design 0067 §4.3b names board_list_projects, board_get,
-// board_update_item, board_move_stage, board_start_task, the
+// board_update_item, board_move_stage, board_start_story, the
 // epic/project lifecycle pairs, the dependency pair, and board_read
-// (cancel was eliminated — board_delete_task/board_delete_epic replace
+// (cancel was eliminated — board_delete_story/board_delete_epic replace
 // it). The design's board_create_* wildcard expands to
 // board_create_project/epic/task (REST vocabulary); board_read is the
 // tasks-listing reader (search/health join when the engine seams land,
@@ -82,7 +82,7 @@ var boardListProjectsTool = mcp.NewTool("board_list_projects",
 var boardGetTool = mcp.NewTool("board_get",
 	mcp.WithDescription("Get one board item by short id. The prefix selects the kind: prj- a project, "+
 		"epc- an epic (with derived progress), tsk- a story (with blocked-by derivation; "+
-		"the wire/API term is 'task'). "+
+		"the REST wire term is 'task'). "+
 		"Ids are word phrases — tsk-crimson-finch-blooms (#1831, session-ID playbook); a near-miss "+
 		"returns 404 with did-you-mean suggestions ranked over WORDS. Short-id addressing is the "+
 		"surface's contract (design 0067 §4.3a)."),
@@ -122,14 +122,14 @@ var boardHealthTool = mcp.NewTool("board_health",
 )
 
 var boardRecordVerdictTool = mcp.NewTool("board_record_verdict",
-	mcp.WithDescription("Record a structured review verdict on a story (the wire/API term is 'task') and "+
+	mcp.WithDescription("Record a structured review verdict on a story (the REST wire term is 'task') and "+
 		"apply its transition through the guarded stage machine (#1832 item 5 — the forge-agnostic "+
 		"verdict core; forge adapters map "+
 		"INTO it, never re-implement it). approve → done STILL passes the Done guard (ALL criteria met + "+
 		"evidence_url); a refused transition is a RECORDED outcome (applied=false, transition=\"refused:"+
 		"<code>\"), not an error. fail → in_progress rides the bounce: fresh claim minted, attempts "+
 		"UNCHANGED (a bounce is an iteration inside the verdict chain, never a failure-ledger entry)."),
-	mcp.WithString("task_id", mcp.Required(), mcp.Description("Story short id (tsk-XXXXXXXX)")),
+	mcp.WithString("story_id", mcp.Required(), mcp.Description("Story short id (tsk-XXXXXXXX)")),
 	mcp.WithString("verdict", mcp.Required(), mcp.Description("approve or fail")),
 	mcp.WithString("reviewer", mcp.Required(), mcp.Description("Reviewer identity (the record's author)")),
 	mcp.WithString("evidence_url", mcp.Description("Artifact link for the approve transition (required by the Done guard)")),
@@ -147,20 +147,20 @@ var boardRecordVerdictTool = mcp.NewTool("board_record_verdict",
 	mcp.WithString("request_id", mcp.Description("Idempotency key (one per logical operation)")),
 )
 
-var boardTaskVerdictsTool = mcp.NewTool("board_task_verdicts",
+var boardStoryVerdictsTool = mcp.NewTool("board_story_verdicts",
 	mcp.WithDescription("A story's ordered verdict chain (#1832 item 5): every recorded verdict with its "+
 		"findings, reviewer, and whether its transition applied — the record the next claimant's charter "+
 		"envelope embeds after a fail-bounce."),
-	mcp.WithString("task_id", mcp.Required(), mcp.Description("Story short id (tsk-XXXXXXXX)")),
+	mcp.WithString("story_id", mcp.Required(), mcp.Description("Story short id (tsk-XXXXXXXX)")),
 	mcp.WithReadOnlyHintAnnotation(true),
 )
 
-var boardTaskEventsTool = mcp.NewTool("board_task_events",
+var boardStoryEventsTool = mcp.NewTool("board_story_events",
 	mcp.WithDescription("A story's FULL audit timeline (#1832 item 4): every board_events row scoped to "+
 		"the story — stage transitions, claims (who/when), review verdicts when present, dependency-graph "+
 		"changes, orphan/unblock events — chronologically, behind the same owner perimeter as board_get "+
 		"(foreign rows are plain misses). Optional limit keeps the newest N rows (default 200, max 500)."),
-	mcp.WithString("task_id", mcp.Required(), mcp.Description("Story short id (tsk-XXXXXXXX)")),
+	mcp.WithString("story_id", mcp.Required(), mcp.Description("Story short id (tsk-XXXXXXXX)")),
 	mcp.WithInteger("limit", mcp.Description("Keep the newest N rows (default 200, max 500)")),
 	mcp.WithReadOnlyHintAnnotation(true),
 )
@@ -189,8 +189,8 @@ var boardCreateEpicTool = mcp.NewTool("board_create_epic",
 	mcp.WithString("request_id", mcp.Description("Idempotency key (one per logical operation)")),
 )
 
-var boardCreateTaskTool = mcp.NewTool("board_create_task",
-	mcp.WithDescription("Create one story (the wire/API term is 'task') in an epic's backlog. TERMINAL-TARGET GUARD (#1948): creating into a "+
+var boardCreateStoryTool = mcp.NewTool("board_create_story",
+	mcp.WithDescription("Create one story (the REST wire term is 'task') in an epic's backlog. TERMINAL-TARGET GUARD (#1948): creating into a "+
 		"completed or archived epic (or an archived project) is REFUSED loud — the row would sit silently "+
 		"unfed outside the claimable set; reopen (epic_activate) or unarchive first. Paused epics still "+
 		"accept creates (pause is a scheduling lever; resume re-feeds), as do draft ones (activate to feed). "+
@@ -230,7 +230,7 @@ var boardUpdateItemTool = mcp.NewTool("board_update_item",
 	mcp.WithDescription("Patch a board item by short id; only fields applying to the addressed kind are "+
 		"accepted (a field for another kind is an error, not a silent drop). Omitted scalar fields keep "+
 		"existing values. TAGS semantics differ by kind (engine rules, REST-identical): on a story "+
-		"(the wire/API term is 'task'), omitted "+
+		"(the REST wire term is 'task'), omitted "+
 		"tags KEEP the existing set and an explicit [] CLEARS it; on a project or epic, tags are written "+
 		"unconditionally — OMITTING THEM CLEARS the set (send the full set to keep it). Acceptance criteria "+
 		"REPLACE when present. set_criteria_met is {index, met} — the "+
@@ -270,42 +270,42 @@ var boardUpdateItemTool = mcp.NewTool("board_update_item",
 )
 
 var boardMoveStageTool = mcp.NewTool("board_move_stage",
-	mcp.WithDescription("Move a story (the wire/API term is 'task') to another stage (server-arbitrated; a drag that loses a race "+
+	mcp.WithDescription("Move a story (the REST wire term is 'task') to another stage (server-arbitrated; a drag that loses a race "+
 		"returns the authoritative guard error). Legal manager moves: in_progress→{in_review, done, "+
 		"pending_input, failed}, in_review→{in_progress (the review bounce), done, pending_input, failed}, "+
 		"and the pending_input human exits →{in_progress, backlog} — 000050: pending_input is a FLAG "+
 		"not a stage; the move literal SETS the flag (the row keeps its real stage) and the exits "+
 		"CLEAR it. failed is the failure terminus (attempts exhaustion + the lease wedge verdict). "+
-		"Entering the pipeline from backlog is claim-only (board_start_task — no manager "+
+		"Entering the pipeline from backlog is claim-only (board_start_story — no manager "+
 		"write exists); removal is board_delete, never a stage move (#1747). done requires ALL acceptance "+
 		"criteria met + evidence_url (ruling R2). Forward moves refuse on a paused story (409 task_paused)."),
-	mcp.WithString("task_id", mcp.Required(), mcp.Description("Story short id, phrase form (tsk-crimson-finch-blooms; legacy tsk-XXXXXXXX still resolves, deprecated)")),
+	mcp.WithString("story_id", mcp.Required(), mcp.Description("Story short id, phrase form (tsk-crimson-finch-blooms; legacy tsk-XXXXXXXX still resolves, deprecated)")),
 	mcp.WithString("to_stage", mcp.Required(), mcp.Enum(boardMoveTargets...), mcp.Description("Target stage")),
 	mcp.WithString("evidence_url", mcp.Description("Artifact link for THIS transition (required for done)")),
 	mcp.WithString("request_id", mcp.Description("Idempotency key (one per logical operation)")),
 )
 
-var boardStartTaskTool = mcp.NewTool("board_start_task",
+var boardStartStoryTool = mcp.NewTool("board_start_story",
 	mcp.WithDescription("Manual one-off dispatch (task_start): claim + fresh-charter worker spawn into "+
 		"the project's target workspace (R9). Explicitly allowed in draft epics; paused/completed/archived "+
 		"epics and archived projects refuse it. No caller-supplied worker identity exists on any surface."),
-	mcp.WithString("task_id", mcp.Required(), mcp.Description("Story short id, phrase form (tsk-crimson-finch-blooms; legacy tsk-XXXXXXXX still resolves, deprecated)")),
+	mcp.WithString("story_id", mcp.Required(), mcp.Description("Story short id, phrase form (tsk-crimson-finch-blooms; legacy tsk-XXXXXXXX still resolves, deprecated)")),
 	mcp.WithString("request_id", mcp.Description("Idempotency key (one per logical operation)")),
 )
 
 // #1836: the bulk claim/complete pair — per-item result arrays, partial
-// failures included; the batch cap is 50. board_start_tasks is the
+// failures included; the batch cap is 50. board_start_stories is the
 // plural claim form; board_move_stage_bulk is the batch stage move
 // (one shared target stage — per-item stages would be N single calls).
-var boardStartTasksTool = mcp.NewTool("board_start_tasks",
-	mcp.WithDescription("Bulk claim (#1836): dispatch up to 50 stories (the wire/API term is 'task') in one call — each item is one full "+
+var boardStartStoriesTool = mcp.NewTool("board_start_stories",
+	mcp.WithDescription("Bulk claim (#1836): dispatch up to 50 stories (the REST wire term is 'task') in one call — each item is one full "+
 		"task_start (claim + fresh-charter worker spawn; draft∪active epics; every guard identical to the "+
 		"single form). Response is a per-item result array [{id, status: done|failed, escalated?, error?}] — "+
 		"partial failures are reported per item, never all-or-nothing; re-submitting the batch (same "+
 		"request_id) is safe: an item already claimed (in_progress) returns done, not conflict. NO claim "+
 		"tokens render on the bulk projection (#1864 ruling) — the spawned workers receive theirs in their "+
-		"charters. Prefer this over N board_start_task calls whenever the dispatch set is known up front."),
-	mcp.WithArray("task_ids", mcp.Required(), mcp.WithStringItems(),
+		"charters. Prefer this over N board_start_story calls whenever the dispatch set is known up front."),
+	mcp.WithArray("story_ids", mcp.Required(), mcp.WithStringItems(),
 		mcp.Description("Story short ids (phrase form preferred; legacy forms resolve) — 1 to 50 items")),
 	mcp.WithString("request_id", mcp.Description("Idempotency key: ONE per logical batch, reused across retries of the same batch — "+
 		"reusing a batch's key for a DIFFERENT batch replays the first batch's recorded outcomes (stale done items)")),
@@ -313,12 +313,12 @@ var boardStartTasksTool = mcp.NewTool("board_start_tasks",
 
 var boardMoveStageBulkTool = mcp.NewTool("board_move_stage_bulk",
 	mcp.WithDescription("Bulk stage move (#1836): one shared target stage + evidence across up to 50 stories "+
-		"(the wire/API term is 'task') in one call — each item is one full server-arbitrated board_move_stage (the Done guard, pause guards, "+
+		"(the REST wire term is 'task') in one call — each item is one full server-arbitrated board_move_stage (the Done guard, pause guards, "+
 		"claim-token rule, auto-review on →in_review, and the →done settle cascade all apply per item). "+
 		"Response is a per-item result array [{id, status: done|failed, error?}] — partial failures per item, "+
 		"never all-or-nothing; re-submitting the batch (same request_id) is safe: an item already at the "+
 		"target stage returns done, not conflict. The canonical use: completing review sets (in_review → done)."),
-	mcp.WithArray("task_ids", mcp.Required(), mcp.WithStringItems(),
+	mcp.WithArray("story_ids", mcp.Required(), mcp.WithStringItems(),
 		mcp.Description("Story short ids (phrase form preferred; legacy forms resolve) — 1 to 50 items")),
 	mcp.WithString("to_stage", mcp.Required(), mcp.Enum(boardMoveTargets...),
 		mcp.Description("The ONE target stage every item moves to (per-item from-stage legality stays server-arbitrated)")),
@@ -326,41 +326,41 @@ var boardMoveStageBulkTool = mcp.NewTool("board_move_stage_bulk",
 	mcp.WithString("request_id", mcp.Description("Idempotency key: ONE per logical batch, reused across retries of the same batch — "+
 		"reusing a batch's key for a DIFFERENT batch replays the first batch's recorded outcomes (stale done items)")),
 )
-var boardDeleteTasksTool = mcp.NewTool("board_delete_tasks",
+var boardDeleteStoriesTool = mcp.NewTool("board_delete_stories",
 	mcp.WithDescription("Bulk delete (#1836): the story-delete batch (wire: delete_task) — up to 50 destructive removals in one call, "+
-		"ONE shared reconnect flag. Each item is one full board_delete_task (its own snapshot-bearing audit event, "+
+		"ONE shared reconnect flag. Each item is one full board_delete_story (its own snapshot-bearing audit event, "+
 		"orphan events, post-commit worker abort for an in-flight row). Response is a per-item result array "+
 		"[{id, status: done|failed, orphaned_dependents?, reconnected?, error?}] — partial failures per item, never "+
 		"all-or-nothing; one malformed id sinks only its own item. Idempotent retry for a destructive variant: "+
 		"re-submitting the batch is safe, and a miss, a foreign row, and an already-deleted row all render the SAME "+
 		"not_found item (absence is the done state — rendering it done would fabricate outcomes for foreign probes "+
 		"and leak foreign existence; never a conflict). Canonical use: cleanup sweeps after re-planning."),
-	mcp.WithArray("task_ids", mcp.Required(), mcp.WithStringItems(),
+	mcp.WithArray("story_ids", mcp.Required(), mcp.WithStringItems(),
 		mcp.Description("Story short ids (phrase form preferred; legacy forms resolve) — 1 to 50 items")),
 	mcp.WithBoolean("reconnect", mcp.Description("The ONE shared reconnect flag: orphans of every deleted item inherit that item's direct upstream edges (deduplicated, cycle-guarded) — default off")),
 	mcp.WithString("request_id", mcp.Description("Idempotency key: ONE per logical batch, reused across retries of the same batch — "+
 		"reusing a batch's key for a DIFFERENT batch replays the first batch's recorded outcomes (stale done items)")),
 )
 
-var boardRearmTaskTool = mcp.NewTool("board_rearm_task",
-	mcp.WithDescription("Re-pool an attempts-exhausted story (the wire/API term is 'task'; #1832 WS3, 000050-shaped): a escalated "+
+var boardRearmStoryTool = mcp.NewTool("board_rearm_story",
+	mcp.WithDescription("Re-pool an attempts-exhausted story (the REST wire term is 'task'; #1832 WS3, 000050-shaped): a escalated "+
 		"row (stage=failed, pending_origin=escalated — attempts at the cap) "+
 		"returns to backlog with attempts reset to 0 — a fresh-judgment ledger (the pre-reset count rides the rearm audit event). "+
 		"The re-pooled row is claimable immediately. Only failed/escalated rows; other stages and origins keep their "+
 		"enumerated transitions."),
-	mcp.WithString("task_id", mcp.Required(), mcp.Description("Story short id (tsk-…, phrase or legacy form)")),
+	mcp.WithString("story_id", mcp.Required(), mcp.Description("Story short id (tsk-…, phrase or legacy form)")),
 	mcp.WithString("request_id", mcp.Description("Idempotency key (one per logical operation)")),
 )
 
-var boardDeposeTaskTool = mcp.NewTool("board_depose_task",
-	mcp.WithDescription("Depose a LAPSED claim on a story (the wire/API term is 'task'; S5, the DEPOSED directive — 2026-10-30 "+
+var boardDeposeStoryTool = mcp.NewTool("board_depose_story",
+	mcp.WithDescription("Depose a LAPSED claim on a story (the REST wire term is 'task'; S5, the DEPOSED directive — 2026-10-30 "+
 		"incident remediation): the orchestrator records the salvage pointer — branch, PR number, last known state — on the row, "+
 		"requeues an in_progress lapsed claim exactly as the reclaim would (failure overlay + backoff), delivers the DEPOSED "+
 		"directive to the stale session, and the NEXT claim's charter embeds the pointer automatically (inherit, don't restart). "+
 		"A backlog row takes the pointer alone (the reclaim already ran). GUARDS: a live healthy claim refuses (409 claim_live — "+
 		"unexpired lease, or life evidence on the expired one: movement/mid-turn busy/post-sentinel reaction/post-nudge heartbeat); "+
 		"done/failed/in_review rows refuse; every deposition is audit-logged (action 'depose')"),
-	mcp.WithString("task_id", mcp.Required(), mcp.Description("Story short id (tsk-…, phrase or legacy form)")),
+	mcp.WithString("story_id", mcp.Required(), mcp.Description("Story short id (tsk-…, phrase or legacy form)")),
 	mcp.WithString("branch", mcp.Description("The pushed branch name the deposed attempt left behind")),
 	mcp.WithString("pr", mcp.Description("The open pull request's number or URL")),
 	mcp.WithString("head", mcp.Description("The last known commit SHA on the branch")),
@@ -424,17 +424,17 @@ var boardProjectResumeTool = mcp.NewTool("board_project_resume",
 	mcp.WithString("project_id", mcp.Required(), mcp.Description("Project short id, phrase form (prj-amber-lantern-ambles; legacy prj-XXXXXXXX still resolves, deprecated)")),
 )
 
-var boardPauseTaskTool = mcp.NewTool("board_pause_task",
-	mcp.WithDescription("Pause a story (the wire/API term is 'task'; #1747): parks it — claim candidacy off, forward stage-writes "+
+var boardPauseStoryTool = mcp.NewTool("board_pause_story",
+	mcp.WithDescription("Pause a story (the REST wire term is 'task'; #1747): parks it — claim candidacy off, forward stage-writes "+
 		"refused (409 task_paused), HALT directive to the in-flight worker (lands at the turn boundary; "+
 		"the lease keeps running — LAPSE accounting, never frozen). Dependencies stay blocking."),
-	mcp.WithString("task_id", mcp.Required(), mcp.Description("Story short id, phrase form (tsk-crimson-finch-blooms; legacy tsk-XXXXXXXX still resolves, deprecated)")),
+	mcp.WithString("story_id", mcp.Required(), mcp.Description("Story short id, phrase form (tsk-crimson-finch-blooms; legacy tsk-XXXXXXXX still resolves, deprecated)")),
 )
 
-var boardResumeTaskTool = mcp.NewTool("board_resume_task",
+var boardResumeStoryTool = mcp.NewTool("board_resume_story",
 	mcp.WithDescription("Resume a paused story: clears the flag, delivers the RESUME directive — the held "+
 		"session continues if its lease survived; a lapsed one re-enters the FIFO pool (fresh worker)."),
-	mcp.WithString("task_id", mcp.Required(), mcp.Description("Story short id, phrase form (tsk-crimson-finch-blooms; legacy tsk-XXXXXXXX still resolves, deprecated)")),
+	mcp.WithString("story_id", mcp.Required(), mcp.Description("Story short id, phrase form (tsk-crimson-finch-blooms; legacy tsk-XXXXXXXX still resolves, deprecated)")),
 )
 
 var boardDeleteTool = mcp.NewTool("board_delete",
@@ -451,7 +451,7 @@ var boardDeleteTool = mcp.NewTool("board_delete",
 )
 
 var boardImportPlanTool = mcp.NewTool("board_import_plan",
-	mcp.WithDescription("Materialize an entire plan atomically (#1747): one epic + its stories (the wire/API term is 'task'; the plan payload key is 'tasks') + dependency "+
+	mcp.WithDescription("Materialize an entire plan atomically (#1747): one epic + its stories (the REST wire term is 'task'; the plan payload key is 'tasks') + dependency "+
 		"edges from a single payload, all-or-nothing. TERMINAL-TARGET GUARD (#1948): an ARCHIVED project "+
 		"refuses the import whole — the fresh epic and every node would sit silently unfed outside the "+
 		"claimable set; unarchive first (the minted epic itself is always draft, never terminal). "+
@@ -484,7 +484,7 @@ var boardAddDependencyTool = mcp.NewTool("board_add_dependency",
 		"blocking mechanism): N-ary task→task within a WORKSPACE (cross-epic allowed, never cross-"+
 		"workspace); cycles are rejected with did-you-mean suggestions (409); duplicate edges are "+
 		"idempotent no-ops; edges per node are capped (blast-radius bound). Unblocks when ALL targets are Done."),
-	mcp.WithString("task_id", mcp.Required(), mcp.Description("Dependent story short id (tsk-…, phrase or legacy form)")),
+	mcp.WithString("story_id", mcp.Required(), mcp.Description("Dependent story short id (tsk-…, phrase or legacy form)")),
 	mcp.WithString("depends_on", mcp.Required(), mcp.Description("Prerequisite story short id (tsk-…, phrase or legacy form)")),
 	mcp.WithString("request_id", mcp.Description("Idempotency key (one per logical operation)")),
 )
@@ -492,10 +492,135 @@ var boardAddDependencyTool = mcp.NewTool("board_add_dependency",
 var boardRemoveDependencyTool = mcp.NewTool("board_remove_dependency",
 	mcp.WithDescription("Remove a dependency edge — one of the pending_input resolutions (removing an "+
 		"abandoned prerequisite's edge unblocks the row; the human re-queue stays a move-stage write)."),
-	mcp.WithString("task_id", mcp.Required(), mcp.Description("Dependent story short id (tsk-…, phrase or legacy form)")),
+	mcp.WithString("story_id", mcp.Required(), mcp.Description("Dependent story short id (tsk-…, phrase or legacy form)")),
 	mcp.WithString("depends_on", mcp.Required(), mcp.Description("Prerequisite story short id (tsk-…, phrase or legacy form)")),
 	mcp.WithString("request_id", mcp.Description("Idempotency key (one per logical operation)")),
 )
+
+// --- the story rename's one-release compatibility window ---
+//
+// Owner ruling 2026-10-30 phase 2 ("the machinery follows the prose"):
+// every task-specific board_* tool name and its story-reference INPUT
+// KEYS say story (board_create_story, story_id, story_ids). The
+// pre-rename spellings — tool names board_*_task(s) and input keys
+// task_id / task_ids — resolve as DEPRECATED ALIASES through ONE
+// release window (v0.45.x), every such answer carrying the notice
+// below; the removal ships in v0.46.0 with the CHANGELOG breaking
+// entry. The REST wire beneath (paths, DTO fields, the plan payload's
+// "tasks" key, the board_events action vocabulary) keeps its task
+// spelling deliberately — that is the platform's wire term, not an
+// MCP name (documented in the rename PR).
+
+// boardStoryAliasWindow names the releases the deprecated spellings
+// live: accepted through v0.45.x, removed in v0.46.0.
+const boardStoryAliasWindow = "accepted through v0.45.x, removed in v0.46.0"
+
+// boardStoryAliasNotice is appended to every answer served under a
+// deprecated alias TOOL NAME.
+func boardStoryAliasNotice(alias, canonical string) string {
+	return fmt.Sprintf("DEPRECATED: %s is the pre-rename name of %s (the Sprint Board story rename, phase 2 — owner ruling 2026-10-30). "+
+		"It behaves identically (%s); call %s — with story_id/story_ids input keys — instead.",
+		alias, canonical, boardStoryAliasWindow, canonical)
+}
+
+// boardStoryLegacyKeyNotice is appended when a call carried the
+// pre-rename INPUT-KEY spellings (task_id/task_ids).
+const boardStoryLegacyKeyNotice = "DEPRECATED: the task_id/task_ids argument keys are the pre-rename spellings of " +
+	"story_id/story_ids (the Sprint Board story rename, phase 2 — owner ruling 2026-10-30). " +
+	"They resolve identically (" + boardStoryAliasWindow + "); send story_id/story_ids instead."
+
+// storyRefArg reads the story reference under the canonical story_id
+// key, falling back to the one-release legacy task_id spelling.
+func storyRefArg(args map[string]any) string {
+	if v := strArg(args, "story_id"); v != "" {
+		return v
+	}
+	return strArg(args, "task_id")
+}
+
+// storyRefIDsArg reads the bulk story-reference array under the
+// canonical story_ids key, falling back to legacy task_ids.
+func storyRefIDsArg(args map[string]any) ([]any, bool) {
+	if v, ok := args["story_ids"].([]any); ok {
+		return v, true
+	}
+	v, ok := args["task_ids"].([]any)
+	return v, ok
+}
+
+// boardStoryLegacyKeysPresent reports whether the call used the
+// pre-rename input-key spellings.
+func boardStoryLegacyKeysPresent(args map[string]any) bool {
+	if _, ok := args["task_id"]; ok {
+		return true
+	}
+	_, ok := args["task_ids"]
+	return ok
+}
+
+// boardStoryToolAliases maps every deprecated alias tool name to its
+// canonical rename (registration order = tools/list order).
+var boardStoryToolAliases = map[string]string{
+	"board_create_task":   "board_create_story",
+	"board_task_verdicts": "board_story_verdicts",
+	"board_task_events":   "board_story_events",
+	"board_start_tasks":   "board_start_stories",
+	"board_start_task":    "board_start_story",
+	"board_delete_tasks":  "board_delete_stories",
+	"board_rearm_task":    "board_rearm_story",
+	"board_pause_task":    "board_pause_story",
+	"board_resume_task":   "board_resume_story",
+	// The S5 depose tool shipped (v0.44.x, the integration branch)
+	// under its task name — same one-release window as the fleet.
+	"board_depose_task": "board_depose_story",
+}
+
+// storyDeprecationMiddleware is the notice carrier for the alias
+// window: a call served under a deprecated alias TOOL NAME gets the
+// alias notice, and a call (under any board tool) carrying the legacy
+// INPUT-KEY spellings gets the key notice — both appended as a second
+// content block on the result, error results included (the #1816 §2
+// discipline: a deprecated form that fails still says it is going
+// away). mcp-go resolves the tool BEFORE middleware runs, so the
+// aliases are REGISTERED tools whose handlers are the canonical ones;
+// this middleware adds only the notices.
+func storyDeprecationMiddleware(next server.ToolHandlerFunc) server.ToolHandlerFunc {
+	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		res, err := next(ctx, req)
+		if err != nil || res == nil {
+			return res, err
+		}
+		var notice string
+		if canonical, ok := boardStoryToolAliases[req.Params.Name]; ok {
+			notice = boardStoryAliasNotice(req.Params.Name, canonical)
+		}
+		if notice == "" && strings.HasPrefix(req.Params.Name, "board_") &&
+			boardStoryLegacyKeysPresent(req.GetArguments()) {
+			notice = boardStoryLegacyKeyNotice
+		}
+		if notice == "" {
+			return res, nil
+		}
+		res.Content = append(res.Content, mcp.NewTextContent(notice))
+		return res, nil
+	}
+}
+
+// sortedStoryAliases returns the alias→canonical pairs in
+// deterministic (sorted by alias) order so registration — and thus
+// tools/list ordering — is stable.
+func sortedStoryAliases() []struct{ alias, canonical string } {
+	names := make([]string, 0, len(boardStoryToolAliases))
+	for a := range boardStoryToolAliases {
+		names = append(names, a)
+	}
+	sort.Strings(names)
+	out := make([]struct{ alias, canonical string }, 0, len(names))
+	for _, a := range names {
+		out = append(out, struct{ alias, canonical string }{a, boardStoryToolAliases[a]})
+	}
+	return out
+}
 
 // --- Tool handlers ---
 
@@ -524,7 +649,7 @@ func (h *handlers) boardGet(ctx context.Context, req mcp.CallToolRequest) (*mcp.
 	case "epic":
 		resp, err = h.client.BoardGetEpic(ctx, id)
 	case "task":
-		resp, err = h.client.BoardGetTask(ctx, id)
+		resp, err = h.client.BoardGetStory(ctx, id)
 	}
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("failed to get %s %s: %v", kind, id, err)), nil
@@ -532,14 +657,14 @@ func (h *handlers) boardGet(ctx context.Context, req mcp.CallToolRequest) (*mcp.
 	return mcp.NewToolResultText(string(resp)), nil
 }
 
-func (h *handlers) boardTaskEvents(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+func (h *handlers) boardStoryEvents(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	args := req.GetArguments()
-	id := strArg(args, "task_id")
+	id := storyRefArg(args)
 	if id == "" {
-		return mcp.NewToolResultError("task_id is required"), nil
+		return mcp.NewToolResultError("story_id is required"), nil
 	}
 	limit := intArg(args, "limit")
-	resp, err := h.client.BoardTaskEvents(ctx, id, limit)
+	resp, err := h.client.BoardStoryEvents(ctx, id, limit)
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("failed to read task events for %s: %v", id, err)), nil
 	}
@@ -638,7 +763,7 @@ func (h *handlers) boardCreateEpic(ctx context.Context, req mcp.CallToolRequest)
 	return mcp.NewToolResultText(string(resp)), nil
 }
 
-func (h *handlers) boardCreateTask(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+func (h *handlers) boardCreateStory(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	args := req.GetArguments()
 	epicID := strArg(args, "epic_id")
 	title := strArg(args, "title")
@@ -654,7 +779,7 @@ func (h *handlers) boardCreateTask(ctx context.Context, req mcp.CallToolRequest)
 	if err != nil {
 		return mcp.NewToolResultError(err.Error()), nil
 	}
-	resp, err := h.client.BoardCreateTask(ctx, epicID, BoardTaskBody{
+	resp, err := h.client.BoardCreateStory(ctx, epicID, BoardStoryBody{
 		Title: title, Description: strArg(args, "description"),
 		Tags: stringSlicePtrArg(args, "tags"), AcceptanceCriteria: criteria,
 		DependsOn: stringSliceArg(args, "depends_on"), RequestID: strArg(args, "request_id"),
@@ -731,7 +856,7 @@ func (h *handlers) boardUpdateItem(ctx context.Context, req mcp.CallToolRequest)
 		if cerr != nil {
 			return mcp.NewToolResultError(cerr.Error()), nil
 		}
-		resp, err = h.client.BoardUpdateTask(ctx, id, BoardTaskBody{
+		resp, err = h.client.BoardUpdateStory(ctx, id, BoardStoryBody{
 			Title: strArg(args, "title"), Description: strArg(args, "description"),
 			Tags:               stringSlicePtrArg(args, "tags"),
 			AcceptanceCriteria: criteria, SetCriteriaMet: check,
@@ -746,14 +871,14 @@ func (h *handlers) boardUpdateItem(ctx context.Context, req mcp.CallToolRequest)
 
 func (h *handlers) boardMoveStage(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	args := req.GetArguments()
-	taskID := strArg(args, "task_id")
+	taskID := storyRefArg(args)
 	toStage := strArg(args, "to_stage")
 	if taskID == "" || toStage == "" {
-		return mcp.NewToolResultError("task_id and to_stage are required"), nil
+		return mcp.NewToolResultError("story_id and to_stage are required"), nil
 	}
 	if !boardMoveTargetSet()[toStage] {
 		return mcp.NewToolResultError("to_stage must be a legal manager move target: " + strings.Join(boardMoveTargets, ", ") +
-			" (removal is board_delete — never a stage move; entering the pipeline from backlog is claim-only — board_start_task)"), nil
+			" (removal is board_delete — never a stage move; entering the pipeline from backlog is claim-only — board_start_story)"), nil
 	}
 	resp, err := h.client.BoardMoveStage(ctx, taskID, toStage, strArg(args, "evidence_url"), strArg(args, "request_id"))
 	if err != nil {
@@ -814,11 +939,11 @@ func verdictFindingsArg(args map[string]any) ([]BoardVerdictFinding, error) {
 
 func (h *handlers) boardRecordVerdict(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	args := req.GetArguments()
-	taskID := strArg(args, "task_id")
+	taskID := storyRefArg(args)
 	verdict := strArg(args, "verdict")
 	reviewer := strArg(args, "reviewer")
 	if taskID == "" || verdict == "" || reviewer == "" {
-		return mcp.NewToolResultError("task_id, verdict, and reviewer are required"), nil
+		return mcp.NewToolResultError("story_id, verdict, and reviewer are required"), nil
 	}
 	if verdict != "approve" && verdict != "fail" {
 		return mcp.NewToolResultError("verdict must be approve or fail"), nil
@@ -837,26 +962,26 @@ func (h *handlers) boardRecordVerdict(ctx context.Context, req mcp.CallToolReque
 	return mcp.NewToolResultText(string(resp)), nil
 }
 
-func (h *handlers) boardTaskVerdicts(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+func (h *handlers) boardStoryVerdicts(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	args := req.GetArguments()
-	taskID := strArg(args, "task_id")
+	taskID := storyRefArg(args)
 	if taskID == "" {
-		return mcp.NewToolResultError("task_id is required"), nil
+		return mcp.NewToolResultError("story_id is required"), nil
 	}
-	resp, err := h.client.BoardTaskVerdicts(ctx, taskID)
+	resp, err := h.client.BoardStoryVerdicts(ctx, taskID)
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("failed to read verdict chain: %v", err)), nil
 	}
 	return mcp.NewToolResultText(string(resp)), nil
 }
 
-func (h *handlers) boardStartTask(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+func (h *handlers) boardStartStory(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	args := req.GetArguments()
-	taskID := strArg(args, "task_id")
+	taskID := storyRefArg(args)
 	if taskID == "" {
-		return mcp.NewToolResultError("task_id is required"), nil
+		return mcp.NewToolResultError("story_id is required"), nil
 	}
-	resp, err := h.client.BoardStartTask(ctx, taskID, strArg(args, "request_id"))
+	resp, err := h.client.BoardStartStory(ctx, taskID, strArg(args, "request_id"))
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("failed to start task: %v", err)), nil
 	}
@@ -867,13 +992,9 @@ func (h *handlers) boardStartTask(ctx context.Context, req mcp.CallToolRequest) 
 // non-empty, under the cap. Front-running a doomed wire call at the
 // tier that can is the #1904 discipline.
 func bulkIDsArg(args map[string]any) ([]string, error) {
-	ids, ok := args["task_ids"]
-	if !ok || ids == nil {
-		return nil, fmt.Errorf("task_ids is required (1 to %d task ids)", board.BulkMaxItems)
-	}
-	raw, ok := ids.([]any)
+	raw, ok := storyRefIDsArg(args)
 	if !ok || len(raw) == 0 {
-		return nil, fmt.Errorf("task_ids is required (1 to %d task ids)", board.BulkMaxItems)
+		return nil, fmt.Errorf("story_ids is required (1 to %d story ids)", board.BulkMaxItems)
 	}
 	if len(raw) > board.BulkMaxItems {
 		return nil, fmt.Errorf("bulk batch capped at %d items (got %d) — split the batch", board.BulkMaxItems, len(raw))
@@ -882,20 +1003,20 @@ func bulkIDsArg(args map[string]any) ([]string, error) {
 	for _, e := range raw {
 		s, ok := e.(string)
 		if !ok || s == "" {
-			return nil, fmt.Errorf("task_ids entries must be non-empty task id strings")
+			return nil, fmt.Errorf("story_ids entries must be non-empty story id strings")
 		}
 		out = append(out, s)
 	}
 	return out, nil
 }
 
-func (h *handlers) boardStartTasks(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+func (h *handlers) boardStartStories(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	args := req.GetArguments()
 	ids, err := bulkIDsArg(args)
 	if err != nil {
 		return mcp.NewToolResultError(err.Error()), nil
 	}
-	resp, err := h.client.BoardStartTasks(ctx, ids, strArg(args, "request_id"))
+	resp, err := h.client.BoardStartStories(ctx, ids, strArg(args, "request_id"))
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("failed to bulk start tasks: %v", err)), nil
 	}
@@ -914,7 +1035,7 @@ func (h *handlers) boardMoveStageBulk(ctx context.Context, req mcp.CallToolReque
 	}
 	if !boardMoveTargetSet()[toStage] {
 		return mcp.NewToolResultError("to_stage must be a legal manager move target: " + strings.Join(boardMoveTargets, ", ") +
-			" (removal is board_delete — never a stage move; entering the pipeline from backlog is claim-only — board_start_task)"), nil
+			" (removal is board_delete — never a stage move; entering the pipeline from backlog is claim-only — board_start_story)"), nil
 	}
 	resp, err := h.client.BoardMoveStageBulk(ctx, ids, toStage, strArg(args, "evidence_url"), strArg(args, "request_id"))
 	if err != nil {
@@ -923,38 +1044,38 @@ func (h *handlers) boardMoveStageBulk(ctx context.Context, req mcp.CallToolReque
 	return mcp.NewToolResultText(string(resp)), nil
 }
 
-func (h *handlers) boardDeleteTasks(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+func (h *handlers) boardDeleteStories(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	args := req.GetArguments()
 	ids, err := bulkIDsArg(args)
 	if err != nil {
 		return mcp.NewToolResultError(err.Error()), nil
 	}
 	reconnect, _ := args["reconnect"].(bool)
-	resp, err := h.client.BoardDeleteTasksBulk(ctx, ids, reconnect, strArg(args, "request_id"))
+	resp, err := h.client.BoardDeleteStoriesBulk(ctx, ids, reconnect, strArg(args, "request_id"))
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("failed to bulk delete tasks: %v", err)), nil
 	}
 	return mcp.NewToolResultText(string(resp)), nil
 }
 
-func (h *handlers) boardRearmTask(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+func (h *handlers) boardRearmStory(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	args := req.GetArguments()
-	taskID := strArg(args, "task_id")
+	taskID := storyRefArg(args)
 	if taskID == "" {
-		return mcp.NewToolResultError("task_id is required"), nil
+		return mcp.NewToolResultError("story_id is required"), nil
 	}
-	resp, err := h.client.BoardRearmTask(ctx, taskID, strArg(args, "request_id"))
+	resp, err := h.client.BoardRearmStory(ctx, taskID, strArg(args, "request_id"))
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("failed to re-arm task: %v", err)), nil
 	}
 	return mcp.NewToolResultText(string(resp)), nil
 }
 
-func (h *handlers) boardDeposeTask(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+func (h *handlers) boardDeposeStory(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	args := req.GetArguments()
-	taskID := strArg(args, "task_id")
+	taskID := storyRefArg(args)
 	if taskID == "" {
-		return mcp.NewToolResultError("task_id is required"), nil
+		return mcp.NewToolResultError("story_id is required"), nil
 	}
 	ptr := board.SalvagePointer{
 		Branch: strArg(args, "branch"),
@@ -966,9 +1087,9 @@ func (h *handlers) boardDeposeTask(ctx context.Context, req mcp.CallToolRequest)
 	if ptr.Empty() {
 		return mcp.NewToolResultError("the salvage pointer is empty — provide at least one of branch, pr, head, state, note"), nil
 	}
-	resp, err := h.client.BoardDeposeTask(ctx, taskID, ptr, strArg(args, "request_id"))
+	resp, err := h.client.BoardDeposeStory(ctx, taskID, ptr, strArg(args, "request_id"))
 	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("failed to depose task: %v", err)), nil
+		return mcp.NewToolResultError(fmt.Sprintf("failed to depose story: %v", err)), nil
 	}
 	return mcp.NewToolResultText(string(resp)), nil
 }
@@ -1043,26 +1164,26 @@ func (h *handlers) boardProjectResume(ctx context.Context, req mcp.CallToolReque
 	return h.boardProjectLifecycle(ctx, req, h.client.BoardProjectResume, "resume")
 }
 
-func (h *handlers) boardPauseTask(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+func (h *handlers) boardPauseStory(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	args := req.GetArguments()
-	taskID := strArg(args, "task_id")
+	taskID := storyRefArg(args)
 	if taskID == "" {
-		return mcp.NewToolResultError("task_id is required"), nil
+		return mcp.NewToolResultError("story_id is required"), nil
 	}
-	resp, err := h.client.BoardPauseTask(ctx, taskID, strArg(args, "request_id"))
+	resp, err := h.client.BoardPauseStory(ctx, taskID, strArg(args, "request_id"))
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("failed to pause task: %v", err)), nil
 	}
 	return mcp.NewToolResultText(string(resp)), nil
 }
 
-func (h *handlers) boardResumeTask(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+func (h *handlers) boardResumeStory(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	args := req.GetArguments()
-	taskID := strArg(args, "task_id")
+	taskID := storyRefArg(args)
 	if taskID == "" {
-		return mcp.NewToolResultError("task_id is required"), nil
+		return mcp.NewToolResultError("story_id is required"), nil
 	}
-	resp, err := h.client.BoardResumeTask(ctx, taskID, strArg(args, "request_id"))
+	resp, err := h.client.BoardResumeStory(ctx, taskID, strArg(args, "request_id"))
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("failed to resume task: %v", err)), nil
 	}
@@ -1087,7 +1208,7 @@ func (h *handlers) boardDelete(ctx context.Context, req mcp.CallToolRequest) (*m
 	case "epic":
 		resp, err = h.client.BoardDeleteEpic(ctx, id, force)
 	case "task":
-		resp, err = h.client.BoardDeleteTask(ctx, id, reconnect)
+		resp, err = h.client.BoardDeleteStory(ctx, id, reconnect)
 	case "project":
 		return mcp.NewToolResultError("projects are not deleted — archive them (reversible storage); delete is for epics and tasks"), nil
 	}
@@ -1112,7 +1233,7 @@ func (h *handlers) boardImportPlan(ctx context.Context, req mcp.CallToolRequest)
 			if !ok {
 				return mcp.NewToolResultError("tasks entries must be objects"), nil
 			}
-			t := BoardPlanTaskBody{}
+			t := BoardPlanStoryBody{}
 			t.Key, _ = m["key"].(string)
 			t.Title, _ = m["title"].(string)
 			t.Description, _ = m["description"].(string)
@@ -1163,10 +1284,10 @@ func (h *handlers) boardImportPlan(ctx context.Context, req mcp.CallToolRequest)
 
 func (h *handlers) boardAddDependency(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	args := req.GetArguments()
-	taskID := strArg(args, "task_id")
+	taskID := storyRefArg(args)
 	dependsOn := strArg(args, "depends_on")
 	if taskID == "" || dependsOn == "" {
-		return mcp.NewToolResultError("task_id and depends_on are required"), nil
+		return mcp.NewToolResultError("story_id and depends_on are required"), nil
 	}
 	resp, err := h.client.BoardAddDependency(ctx, taskID, dependsOn, strArg(args, "request_id"))
 	if err != nil {
@@ -1177,10 +1298,10 @@ func (h *handlers) boardAddDependency(ctx context.Context, req mcp.CallToolReque
 
 func (h *handlers) boardRemoveDependency(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	args := req.GetArguments()
-	taskID := strArg(args, "task_id")
+	taskID := storyRefArg(args)
 	dependsOn := strArg(args, "depends_on")
 	if taskID == "" || dependsOn == "" {
-		return mcp.NewToolResultError("task_id and depends_on are required"), nil
+		return mcp.NewToolResultError("story_id and depends_on are required"), nil
 	}
 	if err := h.client.BoardRemoveDependency(ctx, taskID, dependsOn, strArg(args, "request_id")); err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("failed to remove dependency: %v", err)), nil
@@ -1335,25 +1456,26 @@ func boardCriteriaArg(args map[string]any, key string) ([]BoardCriterion, error)
 // AddBoardTools registers the external board_* tools (design 0067 §4.3b)
 // on an existing MCPServer. Called by NewServer after the Epic 64 tools.
 func AddBoardTools(srv *server.MCPServer, h *handlers) {
+	srv.Use(storyDeprecationMiddleware)
 	srv.AddTools(
 		server.ServerTool{Tool: boardListProjectsTool, Handler: h.boardListProjects},
 		server.ServerTool{Tool: boardGetTool, Handler: h.boardGet},
 		server.ServerTool{Tool: boardReadTool, Handler: h.boardRead},
-		server.ServerTool{Tool: boardTaskEventsTool, Handler: h.boardTaskEvents},
+		server.ServerTool{Tool: boardStoryEventsTool, Handler: h.boardStoryEvents},
 		server.ServerTool{Tool: boardHealthTool, Handler: h.boardHealth},
 		server.ServerTool{Tool: boardCreateProjectTool, Handler: h.boardCreateProject},
 		server.ServerTool{Tool: boardCreateEpicTool, Handler: h.boardCreateEpic},
-		server.ServerTool{Tool: boardCreateTaskTool, Handler: h.boardCreateTask},
+		server.ServerTool{Tool: boardCreateStoryTool, Handler: h.boardCreateStory},
 		server.ServerTool{Tool: boardUpdateItemTool, Handler: h.boardUpdateItem},
 		server.ServerTool{Tool: boardMoveStageTool, Handler: h.boardMoveStage},
 		server.ServerTool{Tool: boardRecordVerdictTool, Handler: h.boardRecordVerdict},
-		server.ServerTool{Tool: boardTaskVerdictsTool, Handler: h.boardTaskVerdicts},
-		server.ServerTool{Tool: boardStartTaskTool, Handler: h.boardStartTask},
-		server.ServerTool{Tool: boardStartTasksTool, Handler: h.boardStartTasks},
+		server.ServerTool{Tool: boardStoryVerdictsTool, Handler: h.boardStoryVerdicts},
+		server.ServerTool{Tool: boardStartStoryTool, Handler: h.boardStartStory},
+		server.ServerTool{Tool: boardStartStoriesTool, Handler: h.boardStartStories},
 		server.ServerTool{Tool: boardMoveStageBulkTool, Handler: h.boardMoveStageBulk},
-		server.ServerTool{Tool: boardDeleteTasksTool, Handler: h.boardDeleteTasks},
-		server.ServerTool{Tool: boardRearmTaskTool, Handler: h.boardRearmTask},
-		server.ServerTool{Tool: boardDeposeTaskTool, Handler: h.boardDeposeTask},
+		server.ServerTool{Tool: boardDeleteStoriesTool, Handler: h.boardDeleteStories},
+		server.ServerTool{Tool: boardRearmStoryTool, Handler: h.boardRearmStory},
+		server.ServerTool{Tool: boardDeposeStoryTool, Handler: h.boardDeposeStory},
 		server.ServerTool{Tool: boardEpicActivateTool, Handler: h.boardEpicActivate},
 		server.ServerTool{Tool: boardEpicPauseTool, Handler: h.boardEpicPause},
 		server.ServerTool{Tool: boardEpicArchiveTool, Handler: h.boardEpicArchive},
@@ -1362,11 +1484,51 @@ func AddBoardTools(srv *server.MCPServer, h *handlers) {
 		server.ServerTool{Tool: boardProjectUnarchiveTool, Handler: h.boardProjectUnarchive},
 		server.ServerTool{Tool: boardProjectPauseTool, Handler: h.boardProjectPause},
 		server.ServerTool{Tool: boardProjectResumeTool, Handler: h.boardProjectResume},
-		server.ServerTool{Tool: boardPauseTaskTool, Handler: h.boardPauseTask},
-		server.ServerTool{Tool: boardResumeTaskTool, Handler: h.boardResumeTask},
+		server.ServerTool{Tool: boardPauseStoryTool, Handler: h.boardPauseStory},
+		server.ServerTool{Tool: boardResumeStoryTool, Handler: h.boardResumeStory},
 		server.ServerTool{Tool: boardDeleteTool, Handler: h.boardDelete},
 		server.ServerTool{Tool: boardImportPlanTool, Handler: h.boardImportPlan},
 		server.ServerTool{Tool: boardAddDependencyTool, Handler: h.boardAddDependency},
 		server.ServerTool{Tool: boardRemoveDependencyTool, Handler: h.boardRemoveDependency},
 	)
+	// The one-release deprecated alias names (story rename phase 2):
+	// mcp-go resolves tools by name BEFORE middleware runs, so an alias
+	// must be a REGISTERED tool — same input schema as its canonical
+	// twin, same handler, a description that names the rename and the
+	// removal release. storyDeprecationMiddleware (installed above)
+	// appends the per-call deprecation notice.
+	boardStoryAliasRegistrations(srv, h)
+}
+
+// boardStoryAliasRegistrations registers every deprecated alias name
+// against its canonical tool + handler (the alias table lives in
+// boardStoryToolAliases; this wires the Go side).
+func boardStoryAliasRegistrations(srv *server.MCPServer, h *handlers) {
+	type aliasReg struct {
+		tool    mcp.Tool
+		handler server.ToolHandlerFunc
+	}
+	canonical := map[string]aliasReg{
+		"board_create_story":   {boardCreateStoryTool, h.boardCreateStory},
+		"board_story_verdicts": {boardStoryVerdictsTool, h.boardStoryVerdicts},
+		"board_story_events":   {boardStoryEventsTool, h.boardStoryEvents},
+		"board_start_stories":  {boardStartStoriesTool, h.boardStartStories},
+		"board_start_story":    {boardStartStoryTool, h.boardStartStory},
+		"board_delete_stories": {boardDeleteStoriesTool, h.boardDeleteStories},
+		"board_rearm_story":    {boardRearmStoryTool, h.boardRearmStory},
+		"board_pause_story":    {boardPauseStoryTool, h.boardPauseStory},
+		"board_resume_story":   {boardResumeStoryTool, h.boardResumeStory},
+		"board_depose_story":   {boardDeposeStoryTool, h.boardDeposeStory},
+	}
+	for _, pair := range sortedStoryAliases() {
+		reg, ok := canonical[pair.canonical]
+		if !ok {
+			continue
+		}
+		aliasTool := reg.tool
+		aliasTool.Name = pair.alias
+		aliasTool.Description = "DEPRECATED ALIAS of " + pair.canonical + " (the Sprint Board story rename, phase 2 — owner ruling 2026-10-30). " +
+			"Behaves identically (" + boardStoryAliasWindow + "); call " + pair.canonical + " instead."
+		srv.AddTool(aliasTool, reg.handler)
+	}
 }

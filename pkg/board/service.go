@@ -304,7 +304,7 @@ func requireAgentWorkspaceTarget(actor Actor, targetWorkspaceID string) error {
 }
 
 // refuseTerminalEpicCreateTarget is the #1948 loud-refusal seam at
-// board_create_task's boundary: a task landed in a terminal epic looks
+// board_create_story's boundary: a task landed in a terminal epic looks
 // identical to a healthy backlog while the claim set silently starves
 // it (candidateSQL gates on e.status='active' — never surfaced at
 // create time; the issue's live evidence sat unfed for 20+ minutes).

@@ -65,12 +65,13 @@ func TestMCPBoard_RegistryShape(t *testing.T) {
 		"board_epic_pause", "board_epic_archive", "board_epic_unarchive",
 		"board_delete_epic",
 		// Manager set (#1747): tasks + dependencies + plan.
-		"board_create_task", "board_update_task", "board_add_dependency",
-		"board_remove_dependency", "board_delete_task", "board_pause_task",
-		"board_resume_task", "board_rearm_task", "board_import_plan",
+		"board_create_story", "board_update_story", "board_add_dependency",
+		"board_remove_dependency", "board_delete_story", "board_pause_story",
+		"board_resume_story", "board_rearm_story", "board_import_plan",
 		// S5 (the DEPOSED directive): the salvage handoff for a lapsed
-		// claim — the orchestrator's manager route.
-		"board_depose_task",
+		// claim — the orchestrator's manager route (canonical story
+		// form; board_depose_task rides the one-release alias window).
+		"board_depose_story",
 		// Manager reads (#1837 P2a): the orchestrator's overview.
 		"board_list", "board_health",
 		// Config parity (owner ruling 2026-10-28 — api/sdk/mcp/ux are
@@ -82,7 +83,7 @@ func TestMCPBoard_RegistryShape(t *testing.T) {
 		"board_move_stage_bulk",
 		// #1836 sibling: the bulk delete (delete_task's batch form —
 		// delete IS a manager action; only claim/create are owner-only).
-		"board_delete_tasks",
+		"board_delete_stories",
 		// design 0070: the local, advisory pre-submit payload check
 		// (the file-crud cutover's companion tool).
 		"board_validate_file",
@@ -392,7 +393,7 @@ func mcpToolsList(t *testing.T) map[string]map[string]any {
 // route with the pod SA token + the workspace/session stamps, and the
 // caller's fields pass through verbatim (the mcpAutomation discipline).
 func TestMCPBoard_ManagerWireContract(t *testing.T) {
-	t.Run("board_create_task wire (file-backed payload, design 0070)", func(t *testing.T) {
+	t.Run("board_create_story wire (file-backed payload, design 0070)", func(t *testing.T) {
 		api, rec := newAutomationAPI(t, 200, `{"short_id":"tsk-cccc3333"}`)
 		setupRenameWorkspaceEnv(t, api)
 
@@ -401,7 +402,7 @@ func TestMCPBoard_ManagerWireContract(t *testing.T) {
 			`"acceptanceCriteria":[{"text":"done","met":false}]}`
 		require.NoError(t, os.WriteFile(path, []byte(payload), 0o600))
 
-		out, err := mcpAutomation(context.Background(), mcpTestPassword, "board_create_task", map[string]any{
+		out, err := mcpAutomation(context.Background(), mcpTestPassword, "board_create_story", map[string]any{
 			"epicId": "epc-bbbb2222", "bodyFile": path,
 			"lsp_injected_session": "ses_workercaller1",
 		})
@@ -434,11 +435,11 @@ func TestMCPBoard_ManagerWireContract(t *testing.T) {
 		assert.JSONEq(t, `true`, string(wire["acknowledgeInactiveDeps"]))
 	})
 
-	t.Run("board_delete_task wire (reconnect query)", func(t *testing.T) {
+	t.Run("board_delete_story wire (reconnect query)", func(t *testing.T) {
 		api, rec := newAutomationAPI(t, 200, `{"item_kind":"task"}`)
 		setupRenameWorkspaceEnv(t, api)
 
-		_, err := mcpAutomation(context.Background(), mcpTestPassword, "board_delete_task", map[string]any{
+		_, err := mcpAutomation(context.Background(), mcpTestPassword, "board_delete_story", map[string]any{
 			"taskId": "tsk-cccc3333", "reconnect": true, "lsp_injected_session": "ses-1"})
 		require.NoError(t, err)
 		assert.Equal(t, http.MethodDelete, rec.method)
@@ -479,11 +480,11 @@ func TestMCPBoard_ManagerWireContract(t *testing.T) {
 		assert.NotContains(t, wire, "planFile")
 	})
 
-	t.Run("board_delete_tasks wire (#1836 sibling)", func(t *testing.T) {
+	t.Run("board_delete_stories wire (#1836 sibling)", func(t *testing.T) {
 		api, rec := newAutomationAPI(t, 200, `{"results":[{"id":"tsk-cccc3333","status":"done","orphaned_dependents":["tsk-eeee5555"]}],"count":1}`)
 		setupRenameWorkspaceEnv(t, api)
 
-		out, err := mcpAutomation(context.Background(), mcpTestPassword, "board_delete_tasks", map[string]any{
+		out, err := mcpAutomation(context.Background(), mcpTestPassword, "board_delete_stories", map[string]any{
 			"taskIds": []any{"tsk-cccc3333", "tsk-dddd4444"}, "reconnect": true,
 			"requestId":            "bulk-del-1",
 			"lsp_injected_session": "ses-1"})
@@ -526,10 +527,10 @@ func TestMCPBoard_ManagerWireContract(t *testing.T) {
 			"the injected session identity rides the wire (audit attribution + the seam belt)")
 	})
 
-	t.Run("board_pause_task / board_pause_project wire", func(t *testing.T) {
+	t.Run("board_pause_story / board_pause_project wire", func(t *testing.T) {
 		api, rec := newAutomationAPI(t, 200, `{"paused":true}`)
 		setupRenameWorkspaceEnv(t, api)
-		_, err := mcpAutomation(context.Background(), mcpTestPassword, "board_pause_task", map[string]any{
+		_, err := mcpAutomation(context.Background(), mcpTestPassword, "board_pause_story", map[string]any{
 			"taskId": "tsk-cccc3333", "lsp_injected_session": "ses-1"})
 		require.NoError(t, err)
 		assert.Equal(t, "/internal/v1/automation/board/tasks/tsk-cccc3333/pause", rec.path)
@@ -553,7 +554,7 @@ func TestMCPBoard_ManagerOpenToAnySession(t *testing.T) {
 		api, rec := newAutomationAPI(t, 200, `{}`)
 		setupRenameWorkspaceEnv(t, api)
 
-		_, err := mcpAutomation(context.Background(), mcpTestPassword, "board_pause_task", map[string]any{
+		_, err := mcpAutomation(context.Background(), mcpTestPassword, "board_pause_story", map[string]any{
 			"taskId": "tsk-cccc3333"})
 		require.NoError(t, err, "an unidentified caller proceeds — identity is attribution, never a grant")
 		assert.Equal(t, "/internal/v1/automation/board/tasks/tsk-cccc3333/pause", rec.path)
@@ -573,7 +574,7 @@ func TestMCPBoard_ManagerOpenToAnySession(t *testing.T) {
 
 		// The declared fallback rides the same open path.
 		rec.path, rec.method = "", ""
-		_, err = mcpAutomation(context.Background(), mcpTestPassword, "board_pause_task", map[string]any{
+		_, err = mcpAutomation(context.Background(), mcpTestPassword, "board_pause_story", map[string]any{
 			"taskId": "tsk-cccc3333", "sessionId": "ses_spawnedworker"})
 		require.NoError(t, err)
 		assert.Equal(t, "/internal/v1/automation/board/tasks/tsk-cccc3333/pause", rec.path)
@@ -643,7 +644,7 @@ func TestMCPBoard_ManagerDeclaredPhraseResolves(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "task.json")
 	require.NoError(t, os.WriteFile(path, []byte(`{"title":"T-phrase","description":"d","acceptanceCriteria":[{"text":"c"}]}`), 0o600))
 
-	out, err := mcpAutomation(context.Background(), mcpTestPassword, "board_create_task", map[string]any{
+	out, err := mcpAutomation(context.Background(), mcpTestPassword, "board_create_story", map[string]any{
 		"epicId":    "epc-bbbb2222",
 		"bodyFile":  path,
 		"sessionId": "amber-falcon-glides", // declared fallback, phrase form
