@@ -344,6 +344,20 @@ func boardManagerTools() []mcpTool {
 			}, "required": []string{"taskId"}},
 		},
 		{
+			Name:        "board_depose_task",
+			Description: "Depose a LAPSED claim on a story (the wire/API term is 'task'; S5, the DEPOSED directive — 2026-10-30 incident remediation): record the salvage pointer — branch, PR number, last known state — on the row so the NEXT claim's charter embeds it automatically (inherit, don't restart; no more hand-written salvage notes). An in_progress lapsed claim is requeued exactly as the reclaim would (failure overlay + backoff cooldown) and the stale session receives a DEPOSED directive (stop working; your token is revoked); a backlog row takes the pointer alone (the reclaim already ran). GUARDS: a live healthy claim refuses (409 claim_live — an unexpired lease, or life evidence on the expired one: movement, mid-turn busy, post-sentinel reaction, or a post-nudge heartbeat); done/failed/in_review rows refuse; every deposition is audit-logged (action 'depose', payload = the pointer). At least one of branch/pr/head/state/note is required. Open to any in-workspace session (the manager-grant gate is repealed, ruling 2026-10-27).",
+			InputSchema: map[string]any{"type": "object", "properties": map[string]any{
+				"taskId": map[string]any{"type": "string", "description": "Story short id (phrase form tsk-crimson-finch-blooms, legacy tsk-XXXXXXXX forms still resolve, or UUID)"},
+				"branch": map[string]any{"type": "string", "description": "The pushed branch name the deposed attempt left behind"},
+				"pr":     map[string]any{"type": "string", "description": "The open pull request's number or URL"},
+				"head":   map[string]any{"type": "string", "description": "The last known commit SHA on the branch"},
+				"state":  map[string]any{"type": "string", "description": "Last known state, free text: what was done, what gates ran, what remains"},
+				"note":   map[string]any{"type": "string", "description": "Guidance for the inheriting worker (verify-first, what to build on)"},
+				"requestId": map[string]any{"type": "string",
+					"description": "Optional idempotency key: reuse ONE id per logical operation across retries"},
+			}, "required": []string{"taskId"}},
+		},
+		{
 			// #1836: the bulk complete — the review-settlement sweep in
 			// one call (the #1832 WS2 manager move's batch twin). The
 			// bulk CLAIM variant deliberately does not exist on this
@@ -1296,7 +1310,7 @@ func callMCPTool(ctx context.Context, password, name string, args map[string]any
 		"board_delete_epic",
 		"board_create_task", "board_update_task",
 		"board_add_dependency", "board_remove_dependency",
-		"board_delete_task", "board_pause_task", "board_resume_task", "board_rearm_task",
+		"board_delete_task", "board_pause_task", "board_resume_task", "board_rearm_task", "board_depose_task",
 		"board_move_stage_bulk",
 		"board_delete_tasks",
 		"board_import_plan",

@@ -68,6 +68,9 @@ func TestMCPBoard_RegistryShape(t *testing.T) {
 		"board_create_task", "board_update_task", "board_add_dependency",
 		"board_remove_dependency", "board_delete_task", "board_pause_task",
 		"board_resume_task", "board_rearm_task", "board_import_plan",
+		// S5 (the DEPOSED directive): the salvage handoff for a lapsed
+		// claim — the orchestrator's manager route.
+		"board_depose_task",
 		// Manager reads (#1837 P2a): the orchestrator's overview.
 		"board_list", "board_health",
 		// Config parity (owner ruling 2026-10-28 — api/sdk/mcp/ux are

@@ -137,6 +137,7 @@ type APIClient interface {
 	BoardMoveStageBulk(ctx context.Context, taskIDs []string, toStage, evidenceURL, requestID string) (json.RawMessage, error)
 	BoardDeleteTasksBulk(ctx context.Context, taskIDs []string, reconnect bool, requestID string) (json.RawMessage, error)
 	BoardRearmTask(ctx context.Context, taskID, requestID string) (json.RawMessage, error)
+	BoardDeposeTask(ctx context.Context, taskID string, ptr board.SalvagePointer, requestID string) (json.RawMessage, error)
 	BoardPauseTask(ctx context.Context, taskID, requestID string) (json.RawMessage, error)
 	BoardResumeTask(ctx context.Context, taskID, requestID string) (json.RawMessage, error)
 	BoardDeleteTask(ctx context.Context, taskID string, reconnect bool) (json.RawMessage, error)
@@ -1588,6 +1589,31 @@ func (c *HTTPClient) BoardRearmTask(ctx context.Context, taskID, requestID strin
 		body = boardStartBody{RequestID: requestID}
 	}
 	return c.doRaw(ctx, http.MethodPost, "/api/v1/me/tasks/"+taskID+"/rearm", body)
+}
+
+// boardDeposeBody is the DEPOSED directive's payload (S5): the salvage
+// pointer the row records.
+type boardDeposeBody struct {
+	Branch    string `json:"branch,omitempty"`
+	PR        string `json:"pr,omitempty"`
+	Head      string `json:"head,omitempty"`
+	State     string `json:"state,omitempty"`
+	Note      string `json:"note,omitempty"`
+	RequestID string `json:"requestId,omitempty"`
+}
+
+// BoardDeposeTask is board_depose_task (S5): depose a LAPSED claim,
+// recording the salvage pointer (branch/PR/last known state) on the row
+// — the next claim's charter embeds it (inherit, don't restart).
+func (c *HTTPClient) BoardDeposeTask(ctx context.Context, taskID string, ptr board.SalvagePointer, requestID string) (json.RawMessage, error) {
+	if err := validateID(taskID, "task_id"); err != nil {
+		return nil, err
+	}
+	body := boardDeposeBody{
+		Branch: ptr.Branch, PR: ptr.PR, Head: ptr.Head, State: ptr.State, Note: ptr.Note,
+		RequestID: requestID,
+	}
+	return c.doRaw(ctx, http.MethodPost, "/api/v1/me/tasks/"+taskID+"/depose", body)
 }
 
 func (c *HTTPClient) BoardAddDependency(ctx context.Context, taskID, dependsOn, requestID string) (json.RawMessage, error) {

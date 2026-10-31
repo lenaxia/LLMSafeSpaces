@@ -80,14 +80,23 @@ type Task struct {
 	EpicID    string `json:"epic_id"`
 	ShortID   string `json:"short_id"`
 	// ShortIDDeprecated: see Project.ShortIDDeprecated (#1831 window).
-	ShortIDDeprecated  bool                  `json:"short_id_deprecated,omitempty"`
-	Title              string                `json:"title"`
-	Description        string                `json:"description"`
-	Stage              string                `json:"stage"`
-	PendingOrigin      *string               `json:"pending_origin,omitempty"`
-	PendingInput       bool                  `json:"pending_input"`
-	NudgeID            string                `json:"nudge_id,omitempty"`
-	NudgedAt           *time.Time            `json:"nudged_at,omitempty"`
+	ShortIDDeprecated bool    `json:"short_id_deprecated,omitempty"`
+	Title             string  `json:"title"`
+	Description       string  `json:"description"`
+	Stage             string  `json:"stage"`
+	PendingOrigin     *string `json:"pending_origin,omitempty"`
+	PendingInput      bool    `json:"pending_input"`
+	// NudgeID/NudgedAt are the LATEST lease-nudge sentinel (single
+	// nullable slot, overwritten per nudge — owner ruling: only the most
+	// recent nudge matters).
+	NudgeID  string     `json:"nudge_id,omitempty"`
+	NudgedAt *time.Time `json:"nudged_at,omitempty"`
+	// Salvage is the LAST depose's recorded pointer (S5): what the
+	// deposed attempt had pushed when its claim lapsed. Present on
+	// lapsed-and-deposed rows (and backlog rows deposed after the
+	// reclaim); the next claim's charter embeds it. Latest-only — see
+	// SalvagePointer.
+	Salvage            *SalvagePointer       `json:"salvage,omitempty"`
 	ProjectName        string                `json:"project_name"`
 	EpicName           string                `json:"epic_name"`
 	Tags               []string              `json:"tags"`
@@ -200,6 +209,11 @@ type Claim struct {
 	// order — the charter envelope embeds them for the next claimant
 	// after a fail-bounce (iteration history, never a failure count).
 	VerdictChain []Verdict `json:"verdictChain,omitempty"`
+	// Salvage (S5, the DEPOSED directive): the row's recorded salvage
+	// pointer, embedded in the next claim's charter after a lapsed
+	// attempt was deposed (inherit, don't restart). nil = no depose has
+	// recorded a handoff (the charter renders byte-identically).
+	Salvage *SalvagePointer `json:"salvage,omitempty"`
 	// Persona (stage-persona claim-then-spawn, owner directive
 	// 2026-10-24): the configured agent persona this claim's spawned
 	// session is chartered as. nil = the default worker charter
@@ -460,6 +474,41 @@ func (p PressureSample) Summary() string {
 // boundary — a halt finishes the thought, then stops; it is NOT an
 // abort (delete still uses the abort seam).
 const (
-	DirectiveHalt   = "halt"
-	DirectiveResume = "resume"
+	DirectiveHalt    = "halt"
+	DirectiveResume  = "resume"
+	DirectiveDeposed = "deposed"
 )
+
+// SalvagePointer is the DEPOSED directive's row-side record (S5, the
+// 2026-10-30 incident remediation): what the deposed attempt had
+// pushed when its claim lapsed — the branch, the PR, the last known
+// head and state — so the NEXT claim's charter embeds a handoff
+// (inherit, don't restart) instead of forcing every worker to re-derive
+// the lane state from transcripts (the incident cost: 4 worker
+// sessions, 3 claims, one worker re-doing pushed work).
+//
+// LATEST-ONLY on the row (the nudge_id house pattern): each depose
+// overwrites the pointer with what was known at that deposition; the
+// full trail is the 'depose' audit events. The charter renders it as a
+// handoff to VERIFY — a starting point, never a substitute for the
+// inheriting worker's own verification.
+type SalvagePointer struct {
+	// Branch is the pushed branch name (e.g. feat/sprint-board-rename).
+	Branch string `json:"branch,omitempty"`
+	// PR is the open pull request's number or URL.
+	PR string `json:"pr,omitempty"`
+	// Head is the last known commit SHA on that branch.
+	Head string `json:"head,omitempty"`
+	// State is the free-text last-known-state: what was done, what
+	// gates ran, what remains (the incident's hand-written note).
+	State string `json:"state,omitempty"`
+	// Note is the orchestrator's guidance to the inheriting worker.
+	Note string `json:"note,omitempty"`
+}
+
+// Empty reports whether the pointer carries no capture at all (an
+// all-empty depose is GuardInput — the audit event must record
+// SOMETHING for the handoff to exist).
+func (p SalvagePointer) Empty() bool {
+	return p.Branch == "" && p.PR == "" && p.Head == "" && p.State == "" && p.Note == ""
+}

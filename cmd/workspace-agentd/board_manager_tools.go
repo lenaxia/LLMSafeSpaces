@@ -467,6 +467,13 @@ func boardManagerWireCall(ctx context.Context, client *opencode.Client, name, sa
 	case "board_rearm_task":
 		// #1832 WS3: the attempts-exhaustion re-pool.
 		return client.BoardRearmTask(ctx, saToken, workspaceID, sessionID, boardRefArg(args, "taskId"), wire)
+	case "board_depose_task":
+		// S5 (the DEPOSED directive): depose a LAPSED claim, recording
+		// the salvage pointer — {branch, pr, head, state, note,
+		// requestId} ride the body verbatim (the platform validates the
+		// guard and the pointer's non-emptiness; agentd re-models
+		// nothing).
+		return client.BoardDeposeTask(ctx, saToken, workspaceID, sessionID, boardRefArg(args, "taskId"), wire)
 	case "board_pause_task":
 		return client.BoardManagerTaskAction(ctx, saToken, workspaceID, sessionID, boardRefArg(args, "taskId"), "pause")
 	case "board_resume_task":

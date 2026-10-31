@@ -497,6 +497,18 @@ func (s *Service) spawnAfter(ctx context.Context, claim *Claim) {
 	if len(claim.VerdictChain) == 0 {
 		claim.VerdictChain = s.claimVerdictChain(ctx, claim.ProjectID, claim.TaskID)
 	}
+	// S5 (the DEPOSED directive): the salvage pointer rides EVERY
+	// spawn the same way — the next claimant after a deposed lapse
+	// inherits the recorded handoff (branch/PR/state) in its charter,
+	// never a cold restart. Best-effort read; a failure degrades to a
+	// pointer-less charter, never a failed spawn.
+	if claim.Salvage == nil {
+		if claim.Task != nil && claim.Task.Salvage != nil {
+			claim.Salvage = claim.Task.Salvage
+		} else {
+			claim.Salvage = s.claimSalvage(ctx, claim.TaskID)
+		}
+	}
 	// Stage-persona claim-then-spawn: a grant lands the row in
 	// in_progress — the implementer persona (when configured) rides
 	// the charter. nil (the default config) leaves the charter
@@ -645,6 +657,10 @@ func (s *Service) spawnFor(ctx context.Context, taskID, token string) {
 	// #1832 item 5 (2/2): the verdict chain rides the re-arm's charter
 	// too (the bounced assignee is the FIRST to see the findings).
 	c.VerdictChain = s.claimVerdictChain(ctx, t.ProjectID, t.ID)
+	// S5: the salvage pointer rides the re-fed spawn too (mustTask
+	// already loaded it onto t; the inherit-not-restart contract holds
+	// on every claim path).
+	c.Salvage = t.Salvage
 	if s.asyncSpawn {
 		go func() { //nolint:gosec,contextcheck // G118/contextcheck: deliberate — delivery outlives the caller's context (same rationale as the claim spawn); failures heal by lease lapse
 			sctx := context.Background()

@@ -352,6 +352,23 @@ var boardRearmTaskTool = mcp.NewTool("board_rearm_task",
 	mcp.WithString("request_id", mcp.Description("Idempotency key (one per logical operation)")),
 )
 
+var boardDeposeTaskTool = mcp.NewTool("board_depose_task",
+	mcp.WithDescription("Depose a LAPSED claim on a story (the wire/API term is 'task'; S5, the DEPOSED directive — 2026-10-30 "+
+		"incident remediation): the orchestrator records the salvage pointer — branch, PR number, last known state — on the row, "+
+		"requeues an in_progress lapsed claim exactly as the reclaim would (failure overlay + backoff), delivers the DEPOSED "+
+		"directive to the stale session, and the NEXT claim's charter embeds the pointer automatically (inherit, don't restart). "+
+		"A backlog row takes the pointer alone (the reclaim already ran). GUARDS: a live healthy claim refuses (409 claim_live — "+
+		"unexpired lease, or life evidence on the expired one: movement/mid-turn busy/post-sentinel reaction/post-nudge heartbeat); "+
+		"done/failed/in_review rows refuse; every deposition is audit-logged (action 'depose')"),
+	mcp.WithString("task_id", mcp.Required(), mcp.Description("Story short id (tsk-…, phrase or legacy form)")),
+	mcp.WithString("branch", mcp.Description("The pushed branch name the deposed attempt left behind")),
+	mcp.WithString("pr", mcp.Description("The open pull request's number or URL")),
+	mcp.WithString("head", mcp.Description("The last known commit SHA on the branch")),
+	mcp.WithString("state", mcp.Description("Last known state, free text: what was done, what gates ran, what remains (at least one of branch/pr/head/state required)")),
+	mcp.WithString("note", mcp.Description("Guidance for the inheriting worker (verify-first, what to build on)")),
+	mcp.WithString("request_id", mcp.Description("Idempotency key (one per logical operation)")),
+)
+
 var boardEpicActivateTool = mcp.NewTool("board_epic_activate",
 	mcp.WithDescription("Activate an epic: start feeding ready work to fresh workers. Re-opens a completed "+
 		"epic; unarchive always restores active. #1747: refuses cross-epic dependencies into inactive epics "+
@@ -933,6 +950,29 @@ func (h *handlers) boardRearmTask(ctx context.Context, req mcp.CallToolRequest) 
 	return mcp.NewToolResultText(string(resp)), nil
 }
 
+func (h *handlers) boardDeposeTask(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	args := req.GetArguments()
+	taskID := strArg(args, "task_id")
+	if taskID == "" {
+		return mcp.NewToolResultError("task_id is required"), nil
+	}
+	ptr := board.SalvagePointer{
+		Branch: strArg(args, "branch"),
+		PR:     strArg(args, "pr"),
+		Head:   strArg(args, "head"),
+		State:  strArg(args, "state"),
+		Note:   strArg(args, "note"),
+	}
+	if ptr.Empty() {
+		return mcp.NewToolResultError("the salvage pointer is empty — provide at least one of branch, pr, head, state, note"), nil
+	}
+	resp, err := h.client.BoardDeposeTask(ctx, taskID, ptr, strArg(args, "request_id"))
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("failed to depose task: %v", err)), nil
+	}
+	return mcp.NewToolResultText(string(resp)), nil
+}
+
 func (h *handlers) boardEpicLifecycle(ctx context.Context, req mcp.CallToolRequest,
 	call func(ctx context.Context, epicID, requestID string) (json.RawMessage, error), verb string) (*mcp.CallToolResult, error) {
 	args := req.GetArguments()
@@ -1313,6 +1353,7 @@ func AddBoardTools(srv *server.MCPServer, h *handlers) {
 		server.ServerTool{Tool: boardMoveStageBulkTool, Handler: h.boardMoveStageBulk},
 		server.ServerTool{Tool: boardDeleteTasksTool, Handler: h.boardDeleteTasks},
 		server.ServerTool{Tool: boardRearmTaskTool, Handler: h.boardRearmTask},
+		server.ServerTool{Tool: boardDeposeTaskTool, Handler: h.boardDeposeTask},
 		server.ServerTool{Tool: boardEpicActivateTool, Handler: h.boardEpicActivate},
 		server.ServerTool{Tool: boardEpicPauseTool, Handler: h.boardEpicPause},
 		server.ServerTool{Tool: boardEpicArchiveTool, Handler: h.boardEpicArchive},

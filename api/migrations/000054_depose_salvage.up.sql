@@ -1,0 +1,22 @@
+-- 000054_depose_salvage — the DEPOSED directive's row-side state (S5,
+-- the 2026-10-30 incident remediation: first-class salvage handoff for
+-- lapsed attempts).
+--
+-- When an attempt lapses holding pushed work, recovery was ad-hoc: the
+-- orchestrator read transcripts and hand-wrote a salvage note to the
+-- next worker (the glassy-shovel incident cost 4 worker sessions and 3
+-- claims — one worker pivoted to salvage on its own initiative,
+-- another re-did work). Depose (pkg/board depose.go) is the manager
+-- lever: the row records the salvage pointer — branch, PR, last known
+-- state — and the NEXT claim's charter envelope embeds it (inherit,
+-- don't restart).
+--
+-- One nullable JSONB slot, LATEST-ONLY (the nudge_id house pattern):
+-- each depose overwrites the pointer with what was known at that
+-- deposition; the full trail lives in the board_events audit rows
+-- (action 'depose', payload carrying the pointer). The next claim's
+-- charter renders it as a handoff to VERIFY, never a truth to trust —
+-- the pointer is a starting point, not a substitute for the worker's
+-- own verification.
+
+ALTER TABLE tasks ADD COLUMN IF NOT EXISTS salvage jsonb;
