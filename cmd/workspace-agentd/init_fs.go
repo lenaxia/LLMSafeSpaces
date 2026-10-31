@@ -98,6 +98,60 @@ func replaceSymlink(path, target string) error {
 	return os.Symlink(target, path)
 }
 
+// ensureExchangeDir creates/repairs the exchange/ PVC subPath — the
+// board payload exchange dir (design 0070 §2.4a), the ONE PVC subtree
+// both uid spaces write.
+//
+// Mode decision (0770 shared group, NOT 1777 sticky — recorded in the
+// design-0070 amendment): deletion permission for an unlink comes from
+// the PARENT directory's write bit, not file ownership — a sticky bit
+// would block the sidecar (uid 2000) unlinking the runtime's (uid
+// 1000) payload files, which is the exact operation the dir exists
+// for. Group rwx under the pod's shared gid 1000 (pod RunAsGroup +
+// FSGroup; the sidecar runs RunAsGroup 1000, the runtime container
+// carries gid 1000 supplemental) is the US-4b rt/ cross-uid
+// precedent. Explicit Chmod after creation because MkdirAll applies
+// the process umask (0770 & ~022 = 0750 loses the group-write bit the
+// contract hangs on).
+//
+// Threat model: the dir holds ONLY short-lived board payload files;
+// the sidecar deletes only files it CONSUMED (the anchored path its
+// read discipline validated — regular file, caps, UTF-8), never a
+// sweep; nothing else in the user's tree is reachable through it.
+//
+// Cross-uid tolerance (a mode flip on an existing PVC re-creates the
+// pod under the OTHER uid's init): when the dir already exists with
+// the group bits right, chmod is SKIPPED — the other uid owns the dir
+// and a chmod would EPERM. Repair is attempted (and may fail loudly)
+// only when the group bits are actually wrong.
+func ensureExchangeDir(pvcRoot string) error {
+	dir := filepath.Join(pvcRoot, "exchange")
+	info, err := os.Stat(dir)
+	if os.IsNotExist(err) {
+		//nolint:gosec // G301: 0770 is the dual-uid contract (see above); parent is the PVC root this command owns
+		if err := os.Mkdir(dir, 0o770); err != nil {
+			return err
+		}
+		//nolint:gosec // G302/G306: directory (not file) — exact-mode; umask-proofing the group-write bit
+		return os.Chmod(dir, 0o770)
+	}
+	if err != nil {
+		return err
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("%s exists and is not a directory", dir)
+	}
+	if info.Mode().Perm()&0o070 != 0o070 {
+		// Group rwx missing: repair. We may not own the dir (the other
+		// mode's init created it) — a failure here is loud by design.
+		//nolint:gosec // G302: directory (not file) — the dual-uid contract mode
+		if err := os.Chmod(dir, 0o770); err != nil {
+			return fmt.Errorf("repair mode (currently %o): %w", info.Mode().Perm(), err)
+		}
+	}
+	return nil
+}
+
 // installCredential copies src to dst atomically with mode perm,
 // creating the temp file with perm from the first byte so the
 // credential is never briefly more permissive (G21 `install -m`
@@ -141,6 +195,15 @@ func runInitFSCommand(args []string, stderr io.Writer) int {
 	// Mode 0750, files inside 0640: a directory needs the x bit to
 	// traverse — design 0055's "0640" applies to the payload files.
 	platformSubpath := fs.String("platform-subpath", "create", "platform/ subPath handling: create | skip | only")
+	// Design 0070 §2.4a — the exchange/ PVC subPath (the board payload
+	// exchange dir). Same create/skip discipline as platform/: the
+	// RUNNING uid creates it (single-container platform-init uid 1000;
+	// sidecar-mode platform-dirs uid 2000 — ownership follows the
+	// writer), except the dir is DUAL-RW: mode 0770 group rwx under the
+	// pod's shared gid 1000, so the runtime container's write tool (uid
+	// 1000) and the sidecar's cleanup hook (uid 2000, gid 1000) BOTH
+	// write it. See ensureExchangeDir for the mode rationale.
+	exchangeSubpath := fs.String("exchange-subpath", "create", "exchange/ subPath handling: create | skip | only")
 
 	if err := fs.Parse(args); err != nil {
 		return 2
@@ -155,6 +218,11 @@ func runInitFSCommand(args []string, stderr io.Writer) int {
 		if err := os.MkdirAll(filepath.Join(*pvcRoot, "platform"), 0o750); err != nil {
 			return fail("platform subPath: %v", err)
 		}
+		if *exchangeSubpath != "skip" {
+			if err := ensureExchangeDir(*pvcRoot); err != nil {
+				return fail("exchange subPath: %v", err)
+			}
+		}
 		_, _ = fmt.Fprintln(stderr, "init-fs: platform-only ok")
 		return 0
 	}
@@ -168,6 +236,11 @@ func runInitFSCommand(args []string, stderr io.Writer) int {
 	if *platformSubpath == "create" {
 		if err := os.MkdirAll(filepath.Join(*pvcRoot, "platform"), 0o750); err != nil {
 			return fail("platform subPath: %v", err)
+		}
+	}
+	if *exchangeSubpath == "create" || *exchangeSubpath == "only" {
+		if err := ensureExchangeDir(*pvcRoot); err != nil {
+			return fail("exchange subPath: %v", err)
 		}
 	}
 

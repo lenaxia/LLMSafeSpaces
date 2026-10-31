@@ -318,16 +318,19 @@ func TestBoardFileParams_StrayFileKeyRefusedEverywhere(t *testing.T) {
 }
 
 // TestBoardFileParams_PathAnchoring: relative file paths resolve
-// against the WORKSPACE ROOT (the PVC mount), never agentd's process
-// cwd — the live failure class (design 0070 §2.2).
+// against the EXCHANGE ROOT (the payload exchange dir, design 0070
+// §2.4a — the one PVC subtree both uid spaces write), never agentd's
+// process cwd and no longer the workspace root (the sidecar's
+// /workspace mount is read-only: a payload file there can never be
+// auto-deleted, which is the failure this anchoring exists to close).
 func TestBoardFileParams_PathAnchoring(t *testing.T) {
 	root := t.TempDir()
-	orig := boardFileWorkspaceRoot
-	boardFileWorkspaceRoot = root
-	t.Cleanup(func() { boardFileWorkspaceRoot = orig })
+	orig := boardFileExchangeRoot
+	boardFileExchangeRoot = root
+	t.Cleanup(func() { boardFileExchangeRoot = orig })
 
 	require.NoError(t, os.MkdirAll(filepath.Join(root, "reports", "plans"), 0o755))
-	payload := `{"title":"Anchored","description":"resolved against the workspace root","acceptanceCriteria":[{"text":"c"}]}`
+	payload := `{"title":"Anchored","description":"resolved against the exchange root","acceptanceCriteria":[{"text":"c"}]}`
 	require.NoError(t, os.WriteFile(filepath.Join(root, "reports", "plans", "p1.json"), []byte(payload), 0o600))
 
 	api, rec := newAutomationAPI(t, 200, `{"short_id":"tsk-anchor001"}`)
@@ -336,7 +339,7 @@ func TestBoardFileParams_PathAnchoring(t *testing.T) {
 		"epicId": "epc-bbbb2222", "bodyFile": "reports/plans/p1.json", // RELATIVE
 		"lsp_injected_session": "ses-1",
 	})
-	require.NoError(t, err, "the relative path resolves against the workspace root, not the cwd")
+	require.NoError(t, err, "the relative path resolves against the exchange root, not the cwd")
 	var wire map[string]json.RawMessage
 	require.NoError(t, json.Unmarshal([]byte(rec.body), &wire))
 	assert.JSONEq(t, `"Anchored"`, string(wire["title"]))

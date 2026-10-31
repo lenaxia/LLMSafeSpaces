@@ -27,6 +27,20 @@ const (
 	PasswordPath    = "/sandbox-cfg/password"
 	SecretsBasePath = "/sandbox-runtime/rt/secrets"
 	WorkspacePath   = "/workspace"
+	// ExchangePath is the board payload exchange dir (design 0070
+	// §2.4a): the ONE PVC subtree mounted RW in BOTH uid spaces — the
+	// runtime container (uid 1000, where the agent's write tool
+	// creates payload files) and the agentd sidecar (uid 2000, where
+	// the design-0070 auto-cleanup hook unlinks consumed ones). In
+	// sidecar mode /workspace is ReadOnly to the sidecar (design 0055
+	// M2 integrity control) and /platform is uid-2000-exclusive, so no
+	// other path is both runtime-writable and sidecar-deletable — the
+	// 0070 "the file auto-deletes on success" contract was
+	// unsatisfiable before this dir existed (every payload call in
+	// sidecar mode returned cleanup_warning: read-only file system).
+	// Holds ONLY short-lived board payload files (bodyFile/patchFile/
+	// planFile/configFile); relative board file params anchor here.
+	ExchangePath = "/exchange"
 	// StagedFilesMaxBytes is the W8 file-class delivery budget: the
 	// staged manifest + bytes MUST fit under it because it is also the
 	// /v1/spawn-files response cap the supervisor enforces. Binding-time

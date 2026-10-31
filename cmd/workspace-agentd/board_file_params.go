@@ -22,6 +22,15 @@ package main
 // Postgres text; non-UTF-8 could not round-trip byte-identically, so
 // it is refused loudly rather than silently replaced.
 //
+// Design 0070 §2.4a: file params anchor at the EXCHANGE root
+// (/exchange — the dual-rw payload exchange dir), not the workspace
+// root: the sidecar's /workspace mount is read-only (design 0055 M2),
+// so a payload file there could never be auto-deleted (the live
+// 2026-10-30 failure: every payload call cleanup_warning'd EROFS).
+// Absolute /workspace paths stay readable for one release (compat
+// arm) and warn with a pointer at the exchange dir when the delete
+// fails.
+//
 // The #1837 single-field params (descriptionFile/outcomeFile and
 // their resolver) are DELETED by the same cutover: a body/patch file
 // already carries the long content they existed to carry.
@@ -49,33 +58,64 @@ import (
 // description) — each FIELD's own cap stays platform-authoritative.
 const boardPayloadFileMaxBytes = 256 << 10
 
-// boardFileWorkspaceRoot anchors RELATIVE file-param paths. Live
-// failure class (the cwd bug): a relative path such as
-// "reports/charters/p1a.md" opened against agentd's PROCESS cwd —
-// agentd runs from its own bin dir, so the workspace-relative path
-// never resolved. Relative paths now resolve against the workspace
-// root (the PVC mount); absolute paths pass through. A var (not the
-// const) so tests can pin the anchoring without touching /workspace.
+// boardFileExchangeRoot anchors RELATIVE file-param paths (design 0070
+// §2.4a): the payload EXCHANGE dir — the one PVC subtree mounted RW in
+// BOTH uid spaces (the runtime container's write tool creates payload
+// files there; the agentd sidecar's cleanup hook unlinks consumed
+// ones). The pre-§2.4a anchoring was the workspace root, which made
+// the auto-delete contract structurally false in sidecar mode: the
+// sidecar's /workspace mount is ReadOnly (design 0055 M2), so every
+// payload call cleanup_warning'd EROFS. Absolute paths pass through
+// (an absolute /workspace path is the one-release compat arm — read +
+// pointed warning; see boardInjectCleanupWarning). A var (not the
+// const) so tests can pin the anchoring without touching /exchange.
+var boardFileExchangeRoot = agentd.ExchangePath
+
+// boardFileWorkspaceRoot names the LEGACY payload location (the
+// workspace root) for the compat predicate: an anchored path under it
+// was written by a pre-§2.4a script, stays READABLE for one release,
+// and cannot be auto-deleted in sidecar mode (the RO mount) — the
+// cleanup warning points at the exchange dir instead of issuing a
+// forever-manual rm chore. Also a var so tests can pin the predicate.
 var boardFileWorkspaceRoot = agentd.WorkspacePath
 
 // boardFileNotFoundHint is the missing-file error's second half: the
 // auto-cleanup hook deletes consumed payload files after a successful
 // CRUD call, so a RETRY of an already-landed call finds no file. The
-// hint names the cause and both exits (re-write; confirm the landing
-// before re-submitting). "payloads are file-only" closes the door on
-// the inline fallback the cutover removed.
+// hint names the cause, both exits (re-write; confirm the landing
+// before re-submitting), and WHERE payload files live (the exchange
+// dir — a relative path that misses it is the #1 post-cutover
+// confusion). "payloads are file-only" closes the door on the inline
+// fallback the cutover removed.
 const boardFileNotFoundHint = "file not found — files are deleted after a successful CRUD call; " +
 	"if you already submitted it, re-write it; payloads are file-only " +
-	"(if this was a retry, check board_list / board_read to confirm the create landed before re-submitting)"
+	"(if this was a retry, check board_list / board_read to confirm the create landed before re-submitting). " +
+	"Payload files live under " + agentd.ExchangePath + " (the payload exchange dir); relative paths resolve against it"
 
 // anchorBoardFilePath resolves one file-param path against the
-// workspace root: absolute paths pass through, relative paths join
-// the PVC mount (never the process cwd).
+// exchange root: absolute paths pass through, relative paths join the
+// payload exchange dir (never the process cwd, never the workspace
+// root — the sidecar cannot delete from there).
 func anchorBoardFilePath(path string) string {
 	if filepath.IsAbs(path) {
 		return path
 	}
-	return filepath.Join(boardFileWorkspaceRoot, path)
+	return filepath.Join(boardFileExchangeRoot, path)
+}
+
+// boardPathIsLegacyWorkspace reports whether an anchored (absolute)
+// payload path sits under the LEGACY workspace root — the compat arm:
+// readable for one release, undeletable in sidecar mode, and the
+// cleanup warning points at the exchange dir when the delete fails.
+func boardPathIsLegacyWorkspace(anchored string) bool {
+	if anchored == boardFileWorkspaceRoot {
+		return false // the root itself is not a file param
+	}
+	rel, err := filepath.Rel(boardFileWorkspaceRoot, anchored)
+	if err != nil {
+		return false
+	}
+	return rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
 }
 
 // isBoardFileParamKey reports whether an argument key is a
