@@ -16,6 +16,7 @@ import (
 
 	"github.com/alicebob/miniredis/v2"
 	"github.com/go-redis/redis/v8"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
@@ -149,6 +150,18 @@ func TestTopicVocabulary(t *testing.T) {
 	if got := LeaseWedgeTopic("tsk-1"); got != "lease.tsk-1.wedge_verdict" {
 		t.Fatalf("wedge topic = %q", got)
 	}
+	if got := LeaseRenewedTopic("tsk-1"); got != "lease.tsk-1.renewed" {
+		t.Fatalf("renewed topic = %q", got)
+	}
+	if got := LeaseReclaimedTopic("tsk-1"); got != "lease.tsk-1.reclaimed" {
+		t.Fatalf("reclaimed topic = %q", got)
+	}
+	if task, arm, ok := ParseLease("lease.tsk-3.renewed"); !ok || task != "tsk-3" || arm != "renewed" {
+		t.Fatalf("ParseLease(renewed) = %q %q %v", task, arm, ok)
+	}
+	if task, arm, ok := ParseLease("lease.tsk-3.reclaimed"); !ok || task != "tsk-3" || arm != "reclaimed" {
+		t.Fatalf("ParseLease(reclaimed) = %q %q %v", task, arm, ok)
+	}
 	if got := StreamKey("ws-1"); got != "workspace:ws-1:events" {
 		t.Fatalf("stream key = %q", got)
 	}
@@ -162,6 +175,39 @@ func TestTopicVocabulary(t *testing.T) {
 	task, arm, ok := ParseLease("lease.tsk-2.nudged")
 	if !ok || task != "tsk-2" || arm != "nudged" {
 		t.Fatalf("ParseLease = %q %q %v", task, arm, ok)
+	}
+}
+
+// TestLeasePayloadBuilders: the lease family's payload contract as
+// CONSTRUCTORS — the API publisher and the agentd consumer/tests share
+// these, so the producer↔consumer agreement is code (design 0072 S4;
+// the payload keys are what agentd's lease group reads: assignee,
+// task_short_id, nudge_id, source, reason, failure_count).
+func TestLeasePayloadBuilders(t *testing.T) {
+	assert.Equal(t, map[string]string{
+		"task": "t1", "task_short_id": "tsk-x", "nudge_id": "ndg-1", "assignee": "ses_w",
+	}, LeaseNudgePayload("t1", "tsk-x", "ndg-1", "ses_w"))
+	assert.Equal(t, map[string]string{
+		"task": "t1", "task_short_id": "tsk-x", "assignee": "ses_w", "source": "movement",
+	}, LeaseRenewPayload("t1", "tsk-x", "ses_w", "movement"))
+	assert.Equal(t, map[string]string{
+		"task": "t1", "task_short_id": "tsk-x", "assignee": "ses_w",
+		"nudge_id": "ndg-1", "verdict": "wedged", "evidence": "no session events after the sentinel",
+	}, LeaseWedgePayload("t1", "tsk-x", "ses_w", "ndg-1", "no session events after the sentinel"))
+	assert.Equal(t, map[string]string{
+		"task": "t1", "task_short_id": "tsk-x", "assignee": "",
+		"reason": "lease_lapse", "failure_count": "2",
+	}, LeaseReclaimPayload("t1", "tsk-x", "", "lease_lapse", 2))
+	// No builder output may collide with the reserved field names.
+	for _, m := range []map[string]string{
+		LeaseNudgePayload("t", "s", "n", "a"), LeaseRenewPayload("t", "s", "a", "movement"),
+		LeaseWedgePayload("t", "s", "a", "n", "e"), LeaseReclaimPayload("t", "s", "a", "r", 1),
+	} {
+		for k := range m {
+			if k == FieldTopic || k == FieldAt {
+				t.Fatalf("payload builder collides with reserved field %q", k)
+			}
+		}
 	}
 }
 

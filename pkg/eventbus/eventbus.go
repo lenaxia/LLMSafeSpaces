@@ -24,6 +24,13 @@
 //	task.{id}.stage_changed      a board task changed stage
 //	lease.{task_id}.nudged       the nudge ladder sent its sentinel
 //	lease.{task_id}.wedge_verdict the ladder ruled a claim wedged
+//	lease.{task_id}.renewed      the ladder renewed a lease (design
+//	                             0072 S4: the observation plane's
+//	                             renewal decisions, source-tagged)
+//	lease.{task_id}.reclaimed    the ladder reclaimed a lapsed claim
+//	                             (design 0072 S4: the lapse verdicts
+//	                             and reclaims the 2026-10-30 incident
+//	                             had to reconstruct by forensics)
 //
 // Subscriptions are topic PATTERNS with `*` (any ONE segment) and a
 // trailing `**` (one or more remaining segments): "session.*.idle"
@@ -40,6 +47,7 @@ package eventbus
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -116,6 +124,65 @@ func LeaseNudgeTopic(taskID string) string {
 // LeaseWedgeTopic is lease.{task_id}.wedge_verdict.
 func LeaseWedgeTopic(taskID string) string {
 	return "lease." + taskID + ".wedge_verdict"
+}
+
+// LeaseRenewedTopic is lease.{task_id}.renewed — payload: task (the
+// board task's raw id), task_short_id, assignee, source
+// (heartbeat_response | movement | post_nudge_reaction | busy_gate —
+// WHICH rung of the ladder answered alive; design 0072 S4).
+func LeaseRenewedTopic(taskID string) string {
+	return "lease." + taskID + ".renewed"
+}
+
+// LeaseReclaimedTopic is lease.{task_id}.reclaimed — payload: task,
+// task_short_id, assignee ("" when none was recorded), reason
+// (lease_lapse | dead_evidence | nudge_delivery_failed |
+// lapse_no_assignee | persona_lapse | persona_config_cleared),
+// failure_count. Design 0072 S4.
+func LeaseReclaimedTopic(taskID string) string {
+	return "lease." + taskID + ".reclaimed"
+}
+
+// ---- Lease payload builders (design 0072 S4) ----
+//
+// The payload contract for the lease family, as constructors — the
+// API's publisher and agentd's consumer/tests share them, so the
+// producer↔consumer agreement is code, not copy-paste (the sentinel
+// BODY cannot cross the api/agentd split — pkg/board drags pgx — but
+// the payload maps can; this is the byte-parity test's backstop).
+
+// LeaseNudgePayload builds the nudged event's payload.
+func LeaseNudgePayload(task, taskShortID, nudgeID, assignee string) map[string]string {
+	return map[string]string{
+		"task": task, "task_short_id": taskShortID, "nudge_id": nudgeID, "assignee": assignee,
+	}
+}
+
+// LeaseRenewPayload builds the renewed event's payload (source: which
+// ladder rung answered alive — heartbeat_response | movement |
+// post_nudge_reaction | busy_gate).
+func LeaseRenewPayload(task, taskShortID, assignee, source string) map[string]string {
+	return map[string]string{
+		"task": task, "task_short_id": taskShortID, "assignee": assignee, "source": source,
+	}
+}
+
+// LeaseWedgePayload builds the wedge_verdict event's payload
+// (evidence: the machine verdict's summary — why this is a verdict,
+// not a guess).
+func LeaseWedgePayload(task, taskShortID, assignee, nudgeID, evidence string) map[string]string {
+	return map[string]string{
+		"task": task, "task_short_id": taskShortID, "assignee": assignee,
+		"nudge_id": nudgeID, "verdict": "wedged", "evidence": evidence,
+	}
+}
+
+// LeaseReclaimPayload builds the reclaimed event's payload.
+func LeaseReclaimPayload(task, taskShortID, assignee, reason string, failureCount int32) map[string]string {
+	return map[string]string{
+		"task": task, "task_short_id": taskShortID, "assignee": assignee,
+		"reason": reason, "failure_count": strconv.FormatInt(int64(failureCount), 10),
+	}
 }
 
 // ParseSessionSettle extracts (session id, settle kind) from a

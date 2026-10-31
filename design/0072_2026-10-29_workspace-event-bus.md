@@ -1,6 +1,6 @@
 # 0072 — Workspace event bus: one Redis Stream, many consumer groups
 
-**Status:** Implemented (2026-10-29); rollout wiring landed 2026-10-30.
+**Status:** Implemented (2026-10-29); rollout wiring landed 2026-10-30; the API's nudge-ladder publisher (S4) landed 2026-10-31.
 **Date:** 2026-10-29
 **Issues:** design/0069 (the authority frame stream the bus formalizes) · design/0071 (idle-subscriptions v1 — the delivery layer this evolves) · #1574 (derived busy) · #1970/#1977 (the SSE guarantees + seamless-lease lanes whose consumers join next)
 **Affects:** `pkg/eventbus` (NEW) · `cmd/workspace-agentd/{workspace_eventbus.go,session_notifier.go,session_notifier_metrics.go,mcp_server.go,mcp_tools.go,main.go}` + tests · `CHANGELOG.md`. No proto/ABI or frontend changes. *(Rollout amendment, 2026-10-30: the controller now arms the bus — `--workspace-eventbus-addr` + `--workspace-eventbus-password-secret` compose `AGENTD_EVENTBUS_ADDR`/`AGENTD_EVENTBUS_PASSWORD` into BOTH pod topologies' agentd processes (main container single-container mode; sidecar via the same wiring in `sidecar_eventbus.go`), with helm values under `controller.workspaceEventbusAddr/PasswordSecret`; the credentialess-address invariant is ENFORCED at controller boot and helm render.)*
@@ -42,8 +42,27 @@ Topics are dot-separated segments; the launch set:
 |---|---|---|
 | `session.{id}.idle` / `session.{id}.error` | agentd (the notifier's settle fold) | `session`, `settle`, `title` |
 | `task.{id}.stage_changed` | API board engine (future) | `task`, `from`, `to` |
-| `lease.{task_id}.nudged` | API nudge ladder (future) | `task`, `task_short_id`, `nudge_id`, `assignee` |
-| `lease.{task_id}.wedge_verdict` | API nudge ladder (future) | `task`, `assignee`, `verdict` |
+| `lease.{task_id}.nudged` | API nudge ladder (**S4, landed 2026-10-31**) | `task`, `task_short_id`, `nudge_id`, `assignee` |
+| `lease.{task_id}.wedge_verdict` | API nudge ladder (**S4, landed**) | `task`, `task_short_id`, `assignee`, `nudge_id`, `verdict`, `evidence` |
+| `lease.{task_id}.renewed` | API nudge ladder (**S4, landed**) | `task`, `task_short_id`, `assignee`, `source` (`heartbeat_response` \| `movement` \| `post_nudge_reaction` \| `busy_gate`) |
+| `lease.{task_id}.reclaimed` | API nudge ladder (**S4, landed**) | `task`, `task_short_id`, `assignee`, `reason` (`lease_lapse` \| `dead_evidence` \| `nudge_delivery_failed` \| `lapse_no_assignee` \| `persona_lapse` \| `persona_config_cleared`), `failure_count` |
+
+*S4 amendment (2026-10-31)*: the lease family's payload contract is
+formalized as constructors in `pkg/eventbus`
+(`Lease{Nudge,Renew,Wedge,Reclaim}Payload`) — the API's publisher and
+agentd's consumer/tests share them, so the producer↔consumer agreement
+is code, not copy-paste (the sentinel BODY still cannot cross the
+api/agentd split — pkg/board drags pgx — and stays pinned
+byte-for-byte by test). The API's knob is
+`board.leaseEventbus.{addr,password}` (env
+`LLMSAFESPACES_BOARD_LEASEEVENTBUS_ADDR`/`_PASSWORD`), one arming
+posture with the controller's agentd edge: arm both or neither, same
+Redis. A failed nudge publish falls back to the v1 direct send
+verbatim (the phantom-nudge contract); the renew/wedge/reclaim sink is
+fail-open observability projected POST-COMMIT from the engine
+(`board.WithLeaseEventSink`), and the nudge rung is engine-silent —
+the app nudger is the nudged publisher, so a stream's nudged count is
+never doubled.
 
 New topics join by producer↔consumer agreement — never by editing a
 switch in `pkg/eventbus`. Subscriptions are PATTERNS: `*` matches one
@@ -199,9 +218,13 @@ covered by miniredis tests regardless.
    escape hatch).
 2. **API SSE consumer**: all topics → UI live-update frames (the
    activity feed becomes a bus consumer).
-3. **API nudge-ladder publisher**: `newBoardNudger` publishes
-   `lease.{task}.nudged` instead of direct-sending; agentd's lease
-   consumer (this design) is already running.
+3. **API nudge-ladder publisher** (§9.3 — **LANDED 2026-10-31, S4**):
+   `newBoardNudger` publishes `lease.{task}.nudged` (bus first, v1
+   direct send as the fallback), agentd's lease consumer (this design)
+   delivers it, and the ladder's own decisions (renewed/wedge/reclaim)
+   ride the same stream through the engine's `WithLeaseEventSink`
+   seam. The v1 fallback is preserved and pinned: bus down ⇒ behavior
+   unchanged.
 4. **`subscribe_events` MCP tool**: arbitrary topic patterns for
    sessions that want them (the v1 vocabulary's `topics` alias is the
    bridge).

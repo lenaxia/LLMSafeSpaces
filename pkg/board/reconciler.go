@@ -332,6 +332,11 @@ func (s *Service) rc1Reclaims(ctx context.Context) (int, error) {
 	decisions := make(map[string]ladderDecision, len(victims))
 	wedgeEvidence := make(map[string]string, len(victims))
 	nudgeIDs := make(map[string]string, len(victims))
+	// renewSource / reclaimReason carry the S4 observation plane's WHY
+	// (design 0072): which rung answered alive, why a claim was
+	// re-queued — the facts the lease-event sink projects post-commit.
+	renewSource := make(map[string]string, len(victims))
+	reclaimReason := make(map[string]string, len(victims))
 	// busyOnlyRenew marks victims whose renewal evidence was Busy ALONE
 	// (no movement, no post-sentinel events, no heartbeat response) —
 	// the renew write increments their counter; every other renewal
@@ -351,6 +356,7 @@ func (s *Service) rc1Reclaims(ctx context.Context) (int, error) {
 	for _, v := range victims {
 		decisions[v.id] = ladderReclaim
 		if v.assignee == "" {
+			reclaimReason[v.id] = ReclaimReasonNoAssignee
 			continue // no identity to observe or nudge: the honest wall-clock path
 		}
 		// The heartbeat RESPONSE — OR'd in at EVERY rung (item 6
@@ -372,6 +378,7 @@ func (s *Service) rc1Reclaims(ctx context.Context) (int, error) {
 		switch {
 		case hbAfterNudge:
 			decisions[v.id] = ladderRenew // the worker answered the nudge on the response channel
+			renewSource[v.id] = RenewSourceHeartbeat
 			continue
 		case !observed:
 			// RUNG 3 — no-evidence (Nil source, degraded adapter,
@@ -381,6 +388,7 @@ func (s *Service) rc1Reclaims(ctx context.Context) (int, error) {
 			// call-a-tool is the MINIMAL harness capability — the
 			// heartbeat is the ONLY wedge detector at this rung).
 			if s.nudger == nil {
+				reclaimReason[v.id] = ReclaimReasonLapse
 				continue // no way to ask: the honest wall-clock path (pin 6)
 			}
 			if v.nudgeID == "" {
@@ -402,13 +410,23 @@ func (s *Service) rc1Reclaims(ctx context.Context) (int, error) {
 			// until the consecutive-only cap exhausts it (above).
 			decisions[v.id] = ladderRenew
 			busyOnlyRenew[v.id] = busyHonored && !o.MovedSinceLastSweep && !o.EventsAfterNudge
+			switch {
+			case busyOnlyRenew[v.id]:
+				renewSource[v.id] = RenewSourceBusy
+			case o.MovedSinceLastSweep:
+				renewSource[v.id] = RenewSourceMovement
+			default:
+				renewSource[v.id] = RenewSourceReaction
+			}
 			continue
 		case !o.Exists:
 			decisions[v.id] = ladderReclaim // dead-evidence: the fast wall-clock path below
+			reclaimReason[v.id] = ReclaimReasonDeadEvidence
 			continue
 		case s.nudger == nil:
 			// observed-quiet but no nudge seam: fall back (the nudge
 			// ladder is inert without a sender)
+			reclaimReason[v.id] = ReclaimReasonLapse
 		case v.nudgeID == "":
 			send(v)
 		case !o.NudgeMarkKnown:
@@ -424,6 +442,7 @@ func (s *Service) rc1Reclaims(ctx context.Context) (int, error) {
 			wedgeEvidence[v.id] = "no session events after the sentinel"
 		default:
 			decisions[v.id] = ladderRenew // reaction arrived between the arms
+			renewSource[v.id] = RenewSourceReaction
 		}
 	}
 
@@ -459,12 +478,23 @@ func (s *Service) rc1Reclaims(ctx context.Context) (int, error) {
 				// never a phantom nudge state claiming a sentinel that
 				// never landed.
 				decisions[pn.v.id] = ladderReclaim
+				reclaimReason[pn.v.id] = ReclaimReasonDeliveryFailed
 			}
 		}
 	}
 
 	sys := Actor{Kind: ActorSystem, Surface: SurfaceReconciler}
 	applied := 0
+	// leaseOut collects the S4 observation-plane decisions (design
+	// 0072): emitted strictly POST-COMMIT so the sink never projects a
+	// decision the transaction rolled back.
+	var leaseOut []LeaseEvent
+	leaseEvt := func(v victim, kind string) LeaseEvent {
+		return LeaseEvent{
+			Kind: kind, TaskID: v.id, TaskShortID: v.shortID, ProjectID: v.project,
+			Assignee: v.assignee, FailureCount: v.failures,
+		}
+	}
 	for _, v := range victims {
 		switch decisions[v.id] {
 		case ladderRenew:
@@ -481,6 +511,9 @@ func (s *Service) rc1Reclaims(ctx context.Context) (int, error) {
 				v.id, s.cfg.LeaseDuration.Seconds(), busyOnlyRenew[v.id]); err != nil {
 				return 0, err
 			}
+			ev := leaseEvt(v, LeaseEventRenewed)
+			ev.Source = renewSource[v.id]
+			leaseOut = append(leaseOut, ev)
 			applied++
 			continue
 		case ladderNudge:
@@ -524,6 +557,12 @@ func (s *Service) rc1Reclaims(ctx context.Context) (int, error) {
 				return 0, err
 			}
 			pending = append(pending, evt)
+			// The nudge rung itself has no engine-side lease event —
+			// the app-side nudger is the nudged publisher (design 0072
+			// §9.3; lease_events.go's header): a bus nudged event means
+			// the consumer owns delivery, a v1 send means the bus could
+			// not be trusted. Double-reporting here would make the
+			// stream's nudged count a lie.
 			applied++
 			continue
 		case ladderWedge:
@@ -557,6 +596,11 @@ func (s *Service) rc1Reclaims(ctx context.Context) (int, error) {
 				return 0, err
 			}
 			pending = append(pending, evt)
+			ev := leaseEvt(v, LeaseEventWedged)
+			ev.NudgeID = v.nudgeID
+			ev.Evidence = wedgeEvidence[v.id]
+			ev.FailureCount = v.failures + 1
+			leaseOut = append(leaseOut, ev)
 			applied++
 			continue
 		}
@@ -590,10 +634,23 @@ func (s *Service) rc1Reclaims(ctx context.Context) (int, error) {
 			return 0, err
 		}
 		pending = append(pending, evt)
+		ev := leaseEvt(v, LeaseEventReclaimed)
+		if ev.Reason = reclaimReason[v.id]; ev.Reason == "" {
+			ev.Reason = ReclaimReasonLapse // the unattributed wall-clock default (every named path sets its own)
+		}
+		ev.FailureCount = v.failures + 1
+		leaseOut = append(leaseOut, ev)
 		applied++ // r1-C5: count what landed, not what was scanned
 	}
 	if err := s.commitPublishing(ctx, tx, pending...); err != nil {
 		return 0, err
+	}
+	// POST-COMMIT projection (design 0072 S4): the decisions above are
+	// durable; report them to the observation plane. The sink bounds
+	// its own work (the app adapter's publish carries a timeout) — a
+	// slow bus must never stall the next phase of the sweep.
+	for _, ev := range leaseOut {
+		s.emitLease(ctx, ev)
 	}
 	return applied, nil
 }
@@ -635,7 +692,8 @@ func (s *Service) rc1PersonaClaims(ctx context.Context) (personaReclaim, error) 
 
 	// --- (a) lapse pass ---------------------------------------------------
 	rows, err := s.q().Query(ctx, `
-		SELECT t.id, t.project_id, COALESCE(t.lease_expires_at::text, 'null'), t.failure_count
+		SELECT t.id, t.project_id, COALESCE(t.lease_expires_at::text, 'null'), t.failure_count,
+			COALESCE(t.short_id,''), COALESCE(t.assignee_session,'')
 		FROM tasks t
 		WHERE t.stage='in_review' AND t.lease_expires_at IS NOT NULL AND t.lease_expires_at < now()`)
 	if err != nil {
@@ -644,11 +702,12 @@ func (s *Service) rc1PersonaClaims(ctx context.Context) (personaReclaim, error) 
 	type lapseVictim struct {
 		id, project, episode string
 		failures             int32
+		shortID, assignee    string
 	}
 	var lapses []lapseVictim
 	for rows.Next() {
 		var v lapseVictim
-		if err := rows.Scan(&v.id, &v.project, &v.episode, &v.failures); err != nil {
+		if err := rows.Scan(&v.id, &v.project, &v.episode, &v.failures, &v.shortID, &v.assignee); err != nil {
 			rows.Close()
 			return out, err
 		}
@@ -690,6 +749,13 @@ func (s *Service) rc1PersonaClaims(ctx context.Context) (personaReclaim, error) 
 			if err := s.commitPublishing(ctx, tx, evt); err != nil {
 				return out, err
 			}
+			// S4: the config-cleared convergence is a reclaim the
+			// observation plane reports too (which claim went away and
+			// why — the 2026-10-30 incident's invisible-lapse class).
+			s.emitLease(ctx, LeaseEvent{
+				Kind: LeaseEventReclaimed, TaskID: v.id, TaskShortID: v.shortID, ProjectID: v.project,
+				Assignee: v.assignee, Reason: ReclaimReasonPersonaCleared, FailureCount: v.failures,
+			})
 			out.applied++
 			continue
 		}
@@ -739,6 +805,14 @@ func (s *Service) rc1PersonaClaims(ctx context.Context) (personaReclaim, error) 
 		if err := s.commitPublishing(ctx, tx, evt); err != nil {
 			return out, err
 		}
+		// S4: the persona lease lapse is a reclaim on the observation
+		// plane — the reviewer's death re-queues the row (the re-arm
+		// pass below owns the fresh claim), and the 2026-10-30
+		// incident's finding was that this transition left no event.
+		s.emitLease(ctx, LeaseEvent{
+			Kind: LeaseEventReclaimed, TaskID: v.id, TaskShortID: v.shortID, ProjectID: v.project,
+			Assignee: v.assignee, Reason: ReclaimReasonPersonaLapse, FailureCount: v.failures + 1,
+		})
 		out.applied++
 	}
 

@@ -68,6 +68,15 @@ func WithNudgeSender(n NudgeSender) Option {
 	return func(s *Service) { s.nudger = n }
 }
 
+// WithLeaseEventSink installs the seamless lease's observation-plane
+// projection (design 0072 S4): the ladder's post-commit decisions —
+// renewals (which rung), wedge verdicts (evidence), reclaims (reason)
+// — reported to the sink. Nil (the default) is the inert posture: the
+// ladder behaves byte-identically, nothing is projected.
+func WithLeaseEventSink(sink LeaseEventSink) Option {
+	return func(s *Service) { s.leaseEvents = sink }
+}
+
 // WithBounceRedispatcher installs the #1959 bounce re-dispatch seam:
 // delivery of a re-dispatch turn (fresh bounce claim token + embedded
 // verdict chain) to the ORIGINAL implementer's EXISTING session — the
@@ -136,6 +145,10 @@ type Service struct {
 	// = inert: nothing is ever reported busy; claimed rows render
 	// claimed-but-quiet, never the dishonest spin.
 	busySrc AssigneeBusySource
+	// leaseEvents projects the ladder's post-commit decisions (design
+	// 0072 S4 — the observation plane). Nil = inert (nothing is
+	// projected; the ladder itself is unchanged).
+	leaseEvents LeaseEventSink
 	// redispatcher delivers the #1959 bounce re-dispatch turn to the
 	// ORIGINAL implementer's existing session (the ruling's
 	// bounce-target semantics). Nil = no delivery seam: the bounce
