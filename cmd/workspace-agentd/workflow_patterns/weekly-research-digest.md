@@ -76,7 +76,7 @@ not apply to envelope fires (see `inputschema-gotchas.md`).
 ```sh kind=shell
 trigger_create {trigger: {name: "weekly-research-digest",
   sourceType: "cron", sourceConfig: {expr: "0 9 * * 1", tz: "UTC"},
-  workflowId: "<the workflow id — camelCase field name>"}
+  workflowId: "<the workflow id — camelCase field name>"}}
 ```
 
 A new trigger does NOT fire immediately — scheduling starts at the next
