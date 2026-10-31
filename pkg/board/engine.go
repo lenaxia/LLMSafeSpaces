@@ -581,12 +581,17 @@ func (s *Service) spawnSync(ctx context.Context, claim *Claim) {
 // claim token still arbitrates the row. A stamp write that exhausted
 // retries on a STILL-LIVE claim leaves the worker running (the
 // back-fill heals); a stamp that lost the RACE (token moved) aborts
-// the dead charter.
+// the dead charter. A query ERROR answers true (live): the DB that
+// just ate four stamp attempts cannot arbitrate an abort either — the
+// safe direction is a running worker healed by back-fill, never a
+// live worker killed on an unanswerable question.
 func (s *Service) claimStillLive(ctx context.Context, taskID, token string) bool {
 	var n int
 	if err := s.q().QueryRow(ctx,
 		`SELECT count(*) FROM tasks WHERE id=$1 AND claim_token=$2`, taskID, token).Scan(&n); err != nil {
-		return false
+		slog.WarnContext(ctx, "board: spawn-stamp liveness re-check unreadable — treating the claim as live (no abort on an unanswerable question)",
+			"task_id", taskID, "err", err.Error())
+		return true
 	}
 	return n > 0
 }
