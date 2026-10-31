@@ -110,14 +110,17 @@ var boardReadTool = mcp.NewTool("board_read",
 	mcp.WithString("q", mcp.Description("Search query (short id exact or title substring)")),
 	mcp.WithArray("tags", mcp.WithStringItems(), mcp.Description("Search filter: stories carrying ALL of these tags")),
 	mcp.WithString("epic_id", mcp.Description("Search filter: narrow to one epic (epc-…, phrase or legacy form)")),
-	mcp.WithBoolean("health", mcp.Description("Render the board health snapshot (leases, cooldowns, reclaims, pending origins)")),
+	mcp.WithBoolean("health", mcp.Description("Render the board health snapshot (leases, cooldowns, reclaims, pending origins, and the observation plane's recent audit window — observation_events)")),
 	mcp.WithReadOnlyHintAnnotation(true),
 )
 
 var boardHealthTool = mcp.NewTool("board_health",
 	mcp.WithDescription("The board health snapshot (design 0067 §4.8): active leases with expiry, recent "+
 		"reclaims, story and project-slot cooldowns, pending_input counts by origin, per-project worker "+
-		"slots in use. The same projection board_read?health=true renders."),
+		"slots in use, and the observation plane's recent audit window (observation_events: stamped/nudged/"+
+		"renewed/lapse_verdict/reclaimed/deposed with their detail — lag, rung, source, evidence, reason, "+
+		"salvage — newest first, retention self-documented in observation_retention). The same projection "+
+		"board_read?health=true renders."),
 	mcp.WithReadOnlyHintAnnotation(true),
 )
 

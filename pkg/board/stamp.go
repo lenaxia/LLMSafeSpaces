@@ -162,6 +162,14 @@ func (s *Service) writeAssigneeStamp(ctx context.Context, taskID, claimToken, se
 				taskID, sessionID, claimToken, stage, s.cfg.LeaseDuration.Seconds()).Scan(&lagSeconds)
 			if err == nil {
 				stampLag.WithLabelValues(stampOriginSpawn).Observe(lagSeconds)
+				// S7: the landed stamp is an observation-plane FACT — with
+				// its lag — on the per-task trail (the histogram stays the
+				// fleet view; this row is the task's own truth). Fail-open
+				// by recordObservation's contract.
+				s.recordObservation(ctx, ObservationEvent{
+					Kind: ObservationStamped, TaskID: taskID, Session: sessionID,
+					Detail: map[string]any{"origin": stampOriginSpawn, "lag_seconds": lagSeconds},
+				})
 				return true
 			}
 			if errors.Is(err, pgx.ErrNoRows) {
@@ -213,6 +221,13 @@ func (s *Service) backfillAssigneeStamp(ctx context.Context, t *Task, actor Acto
 		// heartbeat's own arm decides renewal); only the observation
 		// plane's key was missing.
 		stampLag.WithLabelValues(stampOriginBackfill).Observe(lagSeconds)
+		// S7: the back-filled stamp lands on the trail too — the gap's
+		// CLOSURE is as much a fact as its opening (origin=backfill
+		// distinguishes the recovery from the first write).
+		s.recordObservation(ctx, ObservationEvent{
+			Kind: ObservationStamped, TaskID: t.ID, Session: actor.SessionID,
+			Detail: map[string]any{"origin": stampOriginBackfill, "lag_seconds": lagSeconds},
+		})
 		slog.InfoContext(ctx, "board: assignee stamp back-filled from claim evidence — the observation plane sees the claim again",
 			"task_id", t.ID, "session_id", actor.SessionID, "lag_seconds", lagSeconds)
 	case errors.Is(err, pgx.ErrNoRows):

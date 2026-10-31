@@ -214,6 +214,20 @@ func (s *Service) DeposeTask(ctx context.Context, actor Actor, taskID, shortIDOr
 	if err != nil {
 		return nil, err
 	}
+	// S7: the deposition lands on the observation trail (post-commit,
+	// fail-open — recordObservation's contract). A replayed requestId
+	// (dup) skips the row: the original run already recorded it, and a
+	// replay is not a second deposition. The salvage pointer rides the
+	// detail — the trail's row is the pointer WITH its context (which
+	// session, from which stage, requeued or pointer-alone).
+	if dup == nil {
+		s.recordObservation(ctx, ObservationEvent{
+			Kind: ObservationDeposed, TaskID: t.ID, Session: deposedSession,
+			Detail: map[string]any{
+				"salvage": ptr, "from_stage": t.Stage, "requeued": requeued,
+			},
+		})
+	}
 	_ = dup
 	if requeued {
 		// The DEPOSED directive to the stale session: best-effort,

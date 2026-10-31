@@ -91,11 +91,16 @@ type LeaseEvent struct {
 // projection is absent.
 type LeaseEventSink func(ctx context.Context, ev LeaseEvent)
 
-// emitLease projects one decision to the installed sink. Fail-open:
-// a nil sink is a no-op; the sink's own contract keeps a slow or
-// failing bus from stalling the sweep (the app adapter bounds every
-// publish).
+// emitLease projects one decision to BOTH retained and ephemeral
+// observation surfaces (S4 the bus, S7 the trail — same decision, two
+// projections): the durable trail row lands FIRST (observation.go —
+// the incident's lesson: the durable truth must not wait on a remote
+// bus), then the installed sink. Both fail-open independently: a nil
+// sink is a no-op, and the trail row's failure changes nothing — the
+// sink's own contract keeps a slow or failing bus from stalling the
+// sweep (the app adapter bounds every publish).
 func (s *Service) emitLease(ctx context.Context, ev LeaseEvent) {
+	s.recordObservation(ctx, observationFromLease(ev))
 	if s.leaseEvents != nil {
 		s.leaseEvents(ctx, ev)
 	}
