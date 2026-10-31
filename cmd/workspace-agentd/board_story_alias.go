@@ -19,6 +19,15 @@ package main
 // "tasks" key, board_events action vocabulary) keeps its task
 // spelling — that is the platform's wire term, not an MCP name
 // (decision recorded in the rename PR + CHANGELOG).
+//
+// Window-only note (review round 1): the origin plugin's
+// INJECTED_SESSION_TOOLS lists canonical names only, so an
+// ALIAS-named call through the in-workspace harness carries no
+// lsp_injected_session during the window — audit attribution degrades
+// to empty (never a refusal; identity is attribution-not-grant) and
+// the #1946 worker self-certification pin cannot fire for an
+// alias-named manager write. Deliberate: the plugin teaches the
+// canonical vocabulary, the window only keeps pinned callers landing.
 
 import "strings"
 
@@ -77,7 +86,14 @@ func boardStoryToolCanonical(name string) (string, string) {
 }
 
 // boardStoryToolName reports whether the name is a board story tool
-// (canonical or alias) — the input-key normalization's scope.
+// (canonical or alias) — the input-key normalization's scope. The
+// scope is EVERY registry tool whose schema advertises a
+// storyId/storyIds key: the story-named tools (substring match), the
+// shared-literal tools (move_stage, record_verdict, the dependency
+// pair, board_read), and the two lease tools (heartbeat,
+// report_throttle — review round 1 finding 1: their schemas renamed
+// taskId→storyId with the rest, so the normalization MUST cover them
+// or the canonical key is silently dropped at the REST binding).
 func boardStoryToolName(name string) bool {
 	if _, ok := boardStoryToolAliases[name]; ok {
 		return true
@@ -85,9 +101,12 @@ func boardStoryToolName(name string) bool {
 	if !strings.HasPrefix(name, "board_") {
 		return false
 	}
+	switch name {
+	case "board_heartbeat", "board_report_throttle", "board_read":
+		return true
+	}
 	return strings.Contains(name, "story") || strings.Contains(name, "move_stage") ||
-		strings.Contains(name, "record_verdict") || strings.Contains(name, "dependency") ||
-		name == "board_read"
+		strings.Contains(name, "record_verdict") || strings.Contains(name, "dependency")
 }
 
 // normalizeBoardStoryArgs translates the canonical story-form INPUT

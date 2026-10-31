@@ -1007,3 +1007,44 @@ func TestBoardStoryRenameAliases_AliasPathE2E(t *testing.T) {
 
 	m.AssertExpectations(t)
 }
+
+// TestBoardStoryRenameAliases_NoticeRidesErrors — the review round 1
+// unhappy tier for the external surface: an alias call whose platform
+// leg FAILS still carries the deprecation notice as the second
+// content block (IsError set — a deprecated spelling that fails still
+// says it is going away).
+func TestBoardStoryRenameAliases_NoticeRidesErrors(t *testing.T) {
+	m := &MockAPIClient{}
+	m.On("BoardPauseStory", mock.Anything, "tsk-missing-1", "").
+		Return("", fmt.Errorf("API error 404: not found"))
+
+	srv := NewServer(m, 30*time.Second)
+	cl, err := mcpgoclient.NewInProcessClient(srv)
+	require.NoError(t, err)
+	defer func() { _ = cl.Close() }()
+	ctx := context.Background()
+	require.NoError(t, cl.Start(ctx))
+	initReq := mcp.InitializeRequest{}
+	initReq.Params.ProtocolVersion = mcp.LATEST_PROTOCOL_VERSION
+	initReq.Params.ClientInfo = mcp.Implementation{Name: "alias-err", Version: "1.0"}
+	_, err = cl.Initialize(ctx, initReq)
+	require.NoError(t, err)
+
+	req := mcp.CallToolRequest{}
+	req.Params.Name = "board_pause_task"
+	req.Params.Arguments = map[string]any{"story_id": "tsk-missing-1"}
+	res, err := cl.CallTool(ctx, req)
+	require.NoError(t, err)
+	assert.True(t, res.IsError, "the platform 404 renders an error result")
+	require.GreaterOrEqual(t, len(res.Content), 2, "the alias notice rides the error envelope")
+	texts := []string{}
+	for _, c := range res.Content {
+		if tc, ok := c.(mcp.TextContent); ok {
+			texts = append(texts, tc.Text)
+		}
+	}
+	assert.Contains(t, texts[0], "API error 404")
+	assert.Contains(t, texts[1], "DEPRECATED")
+	assert.Contains(t, texts[1], "board_pause_story")
+	m.AssertExpectations(t)
+}

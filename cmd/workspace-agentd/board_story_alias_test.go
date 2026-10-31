@@ -188,3 +188,67 @@ func TestBoardStoryAlias_RegistryAdvertisesCanonicalOnly(t *testing.T) {
 		assert.True(t, registered, "canonical %s must be registered", canonical)
 	}
 }
+
+// TestBoardStoryAlias_LeaseToolsCanonicalKey (review round 1, finding
+// 1's regression pin): the two lease tools' schemas advertise storyId
+// with the rest of the rename — the canonical key MUST reach the wire
+// (translated onto the platform's taskId term), never be silently
+// dropped at the REST binding, and the legacy spelling MUST carry the
+// window notice. board_heartbeat stands in for report_throttle (the
+// same schema shape, the same dispatch path).
+func TestBoardStoryAlias_LeaseToolsCanonicalKey(t *testing.T) {
+	t.Run("canonical storyId reaches the wire", func(t *testing.T) {
+		api, rec := newAutomationAPI(t, 200, `{"extended":true}`)
+		setupRenameWorkspaceEnv(t, api)
+
+		texts, isError := aliasWindowCall(t, "board_heartbeat", map[string]any{
+			"storyId": "11111111-1111-1111-1111-111111111111", "claimToken": "tok-1",
+		})
+		require.False(t, isError)
+		assert.Contains(t, texts[0], `"extended":true`, "the heartbeat lands")
+		assert.NotContains(t, rec.body, "storyId",
+			"the canonical key translates onto the wire's task term — never silently dropped at the REST binding")
+		assert.Contains(t, rec.body, `"taskId":"11111111-1111-1111-1111-111111111111"`,
+			"the UUID reference rides the wire under the spelling the platform binds")
+	})
+
+	t.Run("legacy taskId carries the notice", func(t *testing.T) {
+		api, _ := newAutomationAPI(t, 200, `{"extended":true}`)
+		setupRenameWorkspaceEnv(t, api)
+
+		texts, isError := aliasWindowCall(t, "board_heartbeat", map[string]any{
+			"taskId": "11111111-1111-1111-1111-111111111111", "claimToken": "tok-1",
+		})
+		require.False(t, isError)
+		require.Len(t, texts, 2, "the legacy key spelling carries the deprecation notice")
+		assert.Contains(t, texts[1], "DEPRECATED")
+		assert.Contains(t, texts[1], "storyId")
+	})
+
+	t.Run("report_throttle shares the scope", func(t *testing.T) {
+		api, rec := newAutomationAPI(t, 200, `{}`)
+		setupRenameWorkspaceEnv(t, api)
+
+		_, isError := aliasWindowCall(t, "board_report_throttle", map[string]any{
+			"storyId": "tsk-aaaa1111", "claimToken": "tok-1"})
+		require.False(t, isError)
+		assert.Contains(t, rec.body, `"taskId":"tsk-aaaa1111"`,
+			"the throttle tool's canonical key translates like every other story-addressing tool")
+	})
+}
+
+// TestBoardStoryAlias_NoticeRidesErrors (review round 1's missing
+// unhappy tier): the deprecation notice rides FAILING calls too — an
+// alias-named call that errors (here: the platform seam answers 404)
+// still carries the notice as the second content block. The contract
+// in the CHANGELOG ("errors included") is pinned, not assumed.
+func TestBoardStoryAlias_NoticeRidesErrors(t *testing.T) {
+	api, _ := newAutomationAPI(t, 404, `{"error":"not found","code":"not_found"}`)
+	setupRenameWorkspaceEnv(t, api)
+
+	texts, isError := aliasWindowCall(t, "board_pause_task", map[string]any{"taskId": "tsk-missing-1"})
+	assert.True(t, isError, "the platform 404 renders an error result")
+	require.Len(t, texts, 2, "the alias notice rides the error envelope")
+	assert.Contains(t, texts[1], "DEPRECATED")
+	assert.Contains(t, texts[1], "board_pause_story")
+}
