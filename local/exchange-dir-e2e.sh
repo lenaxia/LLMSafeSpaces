@@ -14,7 +14,7 @@
 #        created by the platform init containers (both topologies).
 #   X3 — THE core mechanism (sidecar topology): a payload file
 #        created by the RUNTIME container (uid 1000) directly under
-#        /exchange, consumed by a real board_create_task call through
+#        /exchange, consumed by a real board_create_story call through
 #        the sidecar's mux — the call succeeds, the response carries
 #        NO cleanup_warning, and the file is GONE from the runtime
 #        container's own view. Single-container topology: the same
@@ -124,15 +124,15 @@ EPIC_OUT="$(mcp_call board_create_epic "{\"projectId\":\"${PROJECT_ID}\",\"bodyF
 EPIC_ID=$(printf '%s' "${EPIC_OUT}" | jq -r '.epic.id // .id // .epic_id // empty')
 [[ -n "${EPIC_ID}" ]] || note_fail "X3: board_create_epic returned no id: ${EPIC_OUT:0:200}"
 
-TASK_OUT="$(mcp_call board_create_task "{\"epicId\":\"${EPIC_ID}\",\"bodyFile\":\"${PROBE}\"}")"
+TASK_OUT="$(mcp_call board_create_story "{\"epicId\":\"${EPIC_ID}\",\"bodyFile\":\"${PROBE}\"}")"
 if printf '%s' "${TASK_OUT}" | grep -q '"short_id"'; then
     if printf '%s' "${TASK_OUT}" | grep -q 'cleanup_warning'; then
         note_fail "X3: the create succeeded but STILL warned: $(printf '%s' "${TASK_OUT}" | jq -r '.cleanup_warning // empty' | head -c 300)"
     else
-        ok "X3: board_create_task succeeded with NO cleanup_warning (topology: ${TOPOLOGY})"
+        ok "X3: board_create_story succeeded with NO cleanup_warning (topology: ${TOPOLOGY})"
     fi
 else
-    note_fail "X3: board_create_task did not succeed: ${TASK_OUT:0:300}"
+    note_fail "X3: board_create_story did not succeed: ${TASK_OUT:0:300}"
 fi
 if [[ -z "$(runtime_exec cat "${PROBE}" 2>/dev/null)" ]]; then
     ok "X3: the runtime-created payload file is GONE from the runtime container's own view — the ${TOPOLOGY} delete executed"
@@ -149,7 +149,7 @@ if [[ "${NESTED_MODE}" != "770" ]]; then
 else
     warn "X4 setup: subdirectory unexpectedly group-writable (${NESTED_MODE}) — the degradation premise did not reproduce; the refusal row below still must hold"
 fi
-NESTED_OUT="$(mcp_call board_create_task "{\"epicId\":\"${EPIC_ID}\",\"bodyFile\":\"${NESTED}\"}")"
+NESTED_OUT="$(mcp_call board_create_story "{\"epicId\":\"${EPIC_ID}\",\"bodyFile\":\"${NESTED}\"}")"
 if printf '%s' "${NESTED_OUT}" | grep -q 'no subdirectories'; then
     ok "X4: the nested payload path is REFUSED with the flat-contract message (the read-time gate, ${TOPOLOGY} topology)"
 else

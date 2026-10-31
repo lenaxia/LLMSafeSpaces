@@ -64,7 +64,7 @@ func TestBoardFileParams_ExchangeDelete_NoWarning(t *testing.T) {
 
 	api, _ := newAutomationAPI(t, 200, `{"short_id":"tsk-exch0001"}`)
 	setupRenameWorkspaceEnv(t, api)
-	out, err := mcpAutomation(context.Background(), mcpTestPassword, "board_create_task", map[string]any{
+	out, err := mcpAutomation(context.Background(), mcpTestPassword, "board_create_story", map[string]any{
 		"epicId": "epc-bbbb2222", "bodyFile": "task.json", // RELATIVE → /exchange/task.json
 		"lsp_injected_session": "ses-1",
 	})
@@ -88,7 +88,7 @@ func TestBoardFileParams_ExchangeDelete_AbsolutePath(t *testing.T) {
 
 	api, _ := newAutomationAPI(t, 200, `{"short_id":"tsk-exch0002"}`)
 	setupRenameWorkspaceEnv(t, api)
-	_, err := mcpAutomation(context.Background(), mcpTestPassword, "board_create_task", map[string]any{
+	_, err := mcpAutomation(context.Background(), mcpTestPassword, "board_create_story", map[string]any{
 		"epicId": "epc-bbbb2222", "bodyFile": path, // ABSOLUTE under the exchange root
 		"lsp_injected_session": "ses-1",
 	})
@@ -125,7 +125,7 @@ func TestBoardFileParams_LegacyWorkspacePath_ReadAndPointedWarning(t *testing.T)
 	})
 	setupRenameWorkspaceEnv(t, api)
 
-	out, err := mcpAutomation(context.Background(), mcpTestPassword, "board_create_task", map[string]any{
+	out, err := mcpAutomation(context.Background(), mcpTestPassword, "board_create_story", map[string]any{
 		"epicId": "epc-bbbb2222", "bodyFile": path, // ABSOLUTE /workspace path — the compat arm
 		"lsp_injected_session": "ses-1",
 	})
@@ -157,7 +157,7 @@ func TestBoardFileParams_FlatContract(t *testing.T) {
 	t.Run("nested relative refused with the flat-contract message", func(t *testing.T) {
 		api, rec := newAutomationAPI(t, 200, `{}`)
 		setupRenameWorkspaceEnv(t, api)
-		_, err := mcpAutomation(context.Background(), mcpTestPassword, "board_create_task", map[string]any{
+		_, err := mcpAutomation(context.Background(), mcpTestPassword, "board_create_story", map[string]any{
 			"epicId": "epc-bbbb2222", "bodyFile": "reports/plans/p1.json",
 			"lsp_injected_session": "ses-1",
 		})
@@ -170,7 +170,7 @@ func TestBoardFileParams_FlatContract(t *testing.T) {
 	t.Run("nested ABSOLUTE exchange path refused too", func(t *testing.T) {
 		api, _ := newAutomationAPI(t, 200, `{}`)
 		setupRenameWorkspaceEnv(t, api)
-		_, err := mcpAutomation(context.Background(), mcpTestPassword, "board_create_task", map[string]any{
+		_, err := mcpAutomation(context.Background(), mcpTestPassword, "board_create_story", map[string]any{
 			"epicId": "epc-bbbb2222", "bodyFile": filepath.Join(exchange, "reports", "plans", "p1.json"),
 			"lsp_injected_session": "ses-1",
 		})
@@ -192,7 +192,7 @@ func TestBoardFileParams_FlatContract(t *testing.T) {
 		flat := boardWritePayloadFile(t, exchange, "flat.json", payload)
 		api, _ := newAutomationAPI(t, 200, `{"short_id":"tsk-flat0001"}`)
 		setupRenameWorkspaceEnv(t, api)
-		_, err := mcpAutomation(context.Background(), mcpTestPassword, "board_create_task", map[string]any{
+		_, err := mcpAutomation(context.Background(), mcpTestPassword, "board_create_story", map[string]any{
 			"epicId": "epc-bbbb2222", "bodyFile": "flat.json",
 			"lsp_injected_session": "ses-1",
 		})
@@ -241,7 +241,7 @@ func TestBoardFileParams_LegacyWarningIsModeHonest(t *testing.T) {
 				_, _ = w.Write([]byte(`{"short_id":"tsk-mode001"}`))
 			})
 			setupRenameWorkspaceEnv(t, api)
-			out, err := mcpAutomation(context.Background(), mcpTestPassword, "board_create_task", map[string]any{
+			out, err := mcpAutomation(context.Background(), mcpTestPassword, "board_create_story", map[string]any{
 				"epicId": "epc-bbbb2222", "bodyFile": path, "lsp_injected_session": "ses-1"})
 			require.NoError(t, err)
 			assert.Contains(t, out, "cleanup_warning")

@@ -2487,7 +2487,7 @@ func mcpAutomation(ctx context.Context, password, name string, body map[string]a
 		} else {
 			res, err = dispatchBoardManagerTool(ctx, client, password, name, body, saToken, workspaceID)
 		}
-	case "board_update_task":
+	case "board_update_story":
 		// #1946 dual-route (the reviewer-persona criteria grant): a
 		// claim-token-carrying call rides the worker projection's
 		// scoped set-criteria-met route — the reviewer persona records
@@ -2519,12 +2519,12 @@ func mcpAutomation(ctx context.Context, password, name string, body map[string]a
 		"board_create_epic", "board_update_epic",
 		"board_epic_activate", "board_epic_pause", "board_epic_archive", "board_epic_unarchive",
 		"board_delete_epic",
-		"board_create_task",
+		"board_create_story",
 		"board_add_dependency", "board_remove_dependency",
-		"board_delete_task", "board_pause_task", "board_resume_task",
-		"board_rearm_task",
+		"board_delete_story", "board_pause_story", "board_resume_story",
+		"board_rearm_story",
 		"board_move_stage_bulk",
-		"board_delete_tasks",
+		"board_delete_stories",
 		"board_import_plan",
 		"board_list", "board_health",
 		"board_get_config", "board_set_config":
