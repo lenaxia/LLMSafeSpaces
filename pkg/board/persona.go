@@ -81,7 +81,7 @@ const DefaultReviewerRoleSystemPrompt = "Verify EACH acceptance criterion advers
 	"or verdict=fail with findings [{severity blocker|major|minor, pointer, criterionIndex}]. A fail bounces the task to its next claimant " +
 	"with your findings embedded. Never merge, never push. " +
 	"Recording criteria flags: as the reviewer persona you hold this row's claim — record each verified criterion with " +
-	"board_update_task {taskId, claimToken, setCriteriaMet:{index, met}} (#1946: your OWN claimed row only); " +
+	"board_update_story {storyId, claimToken, setCriteriaMet:{index, met}} (#1946: your OWN claimed row only); " +
 	"with every criterion flagged and the evidence URL in hand, board_move_stage→done completes the review."
 
 // DefaultReviewerPersona is the persona the LEGACY config composition

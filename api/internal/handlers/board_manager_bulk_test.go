@@ -89,7 +89,7 @@ func TestBoardAutomation_ManagerMoveStageBulkBinding(t *testing.T) {
 }
 
 // TestBoardAutomation_ManagerDeleteTasksBulk: #1836's bulk delete on
-// the pod seam (board_delete_task's batch twin — delete IS a manager
+// the pod seam (board_delete_story's batch twin — delete IS a manager
 // action; only task_start/task_create carry the owner-only boundary).
 // Open to ANY in-workspace session (the #1747 §5 manager-grant gate is
 // repealed, ruling 2026-10-27 / tsk-copper-refectory-generates); the

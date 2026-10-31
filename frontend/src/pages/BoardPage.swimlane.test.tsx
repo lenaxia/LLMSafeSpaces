@@ -317,7 +317,7 @@ describe("BoardPage #1832 r2 — server epics, unhappy paths, reversion guards",
     expect((screen.getByTestId("epic-title") as HTMLInputElement).value).toBe("Dup");
   });
 
-  it("a failed New-task POST keeps TaskDialog open with the error and preserved fields", async () => {
+  it("a failed New-task POST keeps StoryDialog open with the error and preserved fields", async () => {
     mockCreateTask.mockRejectedValue(boardError(409, { error: "board: guard task_guard: criteria required", code: "task_guard" }));
     renderBoard();
     await screen.findByTestId("epic-band-epic-uuid-2");
