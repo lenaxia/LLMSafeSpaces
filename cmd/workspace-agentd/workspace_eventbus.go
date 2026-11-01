@@ -160,6 +160,9 @@ func eventbusFromEnv(getenv func(string) string, logger *zap.Logger) *eventbus.R
 		_ = client.Close()
 		return nil
 	}
+	// S3: the publish counter seam — every Publish outcome (success,
+	// validation, transport) ticks the workspace's publishes_total.
+	bus.SetPublishObserver(eventbusPublishObserver(workspace))
 	logger.Info("event bus: transport wired", zap.String("stream", bus.Key()), zap.String("addr", opts.Addr))
 	return bus
 }
@@ -178,6 +181,13 @@ func runEventbusConsumers(ctx context.Context, wg *sync.WaitGroup, bus *eventbus
 	}
 	consumer := eventbusConsumerName(os.Getenv)
 	seam := func() *opencode.Client { return seamClientWithPassword(password) }
+	// S3: the consume counter seam — every dispatch outcome (group,
+	// outcome, redelivery) ticks the workspace's deliveries_total.
+	ws := workspaceIDFromEnv()
+	if ws == "" {
+		ws = "unknown"
+	}
+	onDelivery := eventbusDeliveryObserver(ws)
 
 	// notifier: session.{id}.{idle,error} → per-subscriber SessionSend
 	// (suppression §4.4, rate bound, compose — all unchanged; only the
@@ -187,9 +197,10 @@ func runEventbusConsumers(ctx context.Context, wg *sync.WaitGroup, bus *eventbus
 	go func() {
 		defer wg.Done()
 		opts := eventbus.ConsumeOptions{
-			Group:    eventbus.GroupNotifier,
-			Consumer: consumer + "-notifier",
-			Topics:   []string{"session.*.*"},
+			Group:      eventbus.GroupNotifier,
+			Consumer:   consumer + "-notifier",
+			Topics:     []string{"session.*.*"},
+			OnDelivery: onDelivery,
 			OnError: func(m eventbus.Message, err error) {
 				logger.Warn("event bus: subscription delivery failed — pending, will redeliver",
 					zap.String("topic", m.Event.Topic), zap.Error(err))
@@ -206,9 +217,10 @@ func runEventbusConsumers(ctx context.Context, wg *sync.WaitGroup, bus *eventbus
 		defer wg.Done()
 		lc := &leaseBusConsumer{seam: seam, logger: logger}
 		opts := eventbus.ConsumeOptions{
-			Group:    eventbus.GroupLease,
-			Consumer: consumer + "-lease",
-			Topics:   []string{"lease.*.*"},
+			Group:      eventbus.GroupLease,
+			Consumer:   consumer + "-lease",
+			Topics:     []string{"lease.*.*"},
+			OnDelivery: onDelivery,
 			OnError: func(m eventbus.Message, err error) {
 				logger.Warn("event bus: lease delivery failed — pending, will redeliver",
 					zap.String("topic", m.Event.Topic), zap.Error(err))
@@ -218,6 +230,11 @@ func runEventbusConsumers(ctx context.Context, wg *sync.WaitGroup, bus *eventbus
 			logger.Warn("event bus: lease consumer exited", zap.Error(err))
 		}
 	}()
+
+	// S3: the health collector — lag/pending/stalled gauges and the
+	// edge-triggered stall log lines (both topologies get it here,
+	// alongside the groups they own).
+	runEventbusHealthLoop(ctx, wg, bus, logger)
 }
 
 // ---- the lease consumer (the NudgeSender generalization) ----

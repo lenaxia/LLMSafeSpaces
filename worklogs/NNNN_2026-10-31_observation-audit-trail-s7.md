@@ -48,14 +48,23 @@ Verdict CHANGES_REQUESTED on exactly ONE blocking finding (six of seven r1 findi
 
 **Round 3: APPROVED 2026-10-31 19:01Z (head d41cdc69b).** The reviewer mutation-verified the race fix in BOTH directions (the kill test green on this head; RED with a deterministic DATA RACE when the CAS is reverted to the r2 plain-field form), confirmed CI SUCCESS on the exact head (the #1844 watchdog's auto-dispatched run 41222338700 — Lint/full -race suite/ABI/frontend/SDK all green), re-verified all eight accumulated findings with file:line evidence, and closed with zero blocking findings. Two infra faults rode the round (the 16:48 model-deployment APIError and the #1844 synchronize drop on d41cdc69b — recovered by the watchdog's CI dispatch + a re-posted /review per its guidance).
 
-## 6. What was deliberately NOT done
+## 6. The catch-up round (orchestrator request, 2026-10-31 ~20:00Z)
+
+PR #2009 approved on d272c2f33 went CONFLICTING against main (#2004/#2010/#2003 landed). One catch-up merge of origin/main, keeps-both:
+
+- **The naming judgment S5 deferred to merge time**: `board_depose_task` rides the #2005 story-first ruling FROM BIRTH as `board_depose_story` — it never shipped task-prefixed on main, so it takes NO deprecated-alias entry (the alias window exists for names that shipped); the REST path (`/tasks/:id/depose`) and wire body stay task-named per the rename's byte-identical-wire rule. Renamed across pkg/mcp (tool var/name + client interface method), the agentd catalog + dispatch case + the two name allowlists, the parity grid (canonical only, no alias column entry), the docs row, the origin plugin's injected-tools set, and the test references.
+- S1's `sessionId` back-fill argument re-rides main's renamed `storyId` schemas (three hunks in agentd's board_heartbeat/board_move_stage/board_record_verdict — both sides kept).
+- CHANGELOG/COORDINATE unioned as doc stacks (main's landed entries first).
+- The pkg/mcp integration tool-count pin recomputed: main's 66 + board_depose_story = 67.
+
+## 7. What was deliberately NOT done
 
 - **No per-task filter argument on `board_health`** — the charter offers "extend board_health OR a per-task audit read"; the additive window satisfies it at zero signature cost. `Service.TaskObservationTrail` is the per-task read, public for whichever surface wants it next; threading a filter arg through MCP client → loopback → REST → interface → mocks is a whole-lane blast radius for marginal gain, in exactly the files the pending merges conflict.
 - **No design-0072 amendment** — 0072's roadmap tracks bus consumers; S7 is not a consumer (it records at the decision seams the engine already owns). The plane relationship (ledger / bus / retained window) is documented in observation.go's header and monitoring.md.
 - **No frontend health-panel rendering** — the orchestrator surface is the MCP/REST read; the panel can render `observation_events` when a human asks for it.
 - **No summarization job for aged-out rows** — "older summarized or pruned per platform conventions": the summary IS the board_events ledger (already written, already permanent); a separate summarizer would duplicate it.
 
-## 7. Merge notes for the orchestrator
+## 8. Merge notes for the orchestrator
 
 - Base is the S4∪S5 union; S6 (`s6-bus-unification`) merges on top — my `emitLease` edit (trail row before bus sink) and the rc1 obsNudged loop are the only shared-region edits, both additive to what S6's stamp-events work touches (`stamp.go`'s success arm gains one call; S6's `WithStampSink` sits in the same file but different seam).
 - Migration 000055 is the next number after S5's 000054 on this line; if another lane takes 000055 first, renumber mechanically (the file references in observation.go's comments move with it via grep).

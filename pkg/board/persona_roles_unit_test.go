@@ -151,7 +151,7 @@ func TestDefaultReviewerPersonaIsRoleRefOnly(t *testing.T) {
 
 // TestDefaultReviewerRoleSystemPrompt — the built-in reviewer role's
 // system prompt is the verdict-channel charter VERBATIM: the
-// board_record_verdict contract, the criteria walk (board_update_task
+// board_record_verdict contract, the criteria walk (board_update_story
 // setCriteriaMet), the Done guard, and the never-merge rule. The
 // platform seeds this prose into the agent-roles table at startup
 // (seedBuiltinReviewerRole) — this pin is the single source's
@@ -166,7 +166,7 @@ func TestDefaultReviewerRoleSystemPrompt(t *testing.T) {
 		"ALL criteria met",
 		"verdict=fail with findings",
 		"Never merge, never push",
-		"board_update_task {taskId, claimToken, setCriteriaMet:{index, met}}",
+		"board_update_story {storyId, claimToken, setCriteriaMet:{index, met}}",
 		"board_move_stage→done completes the review",
 	} {
 		assert.Contains(t, p, sub)
