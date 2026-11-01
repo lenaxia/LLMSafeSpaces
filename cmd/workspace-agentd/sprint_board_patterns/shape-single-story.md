@@ -16,7 +16,7 @@ verify one artifact cleanly, and muddles verifying three.
 
 ## The flat create (no plan needed)
 
-A single story rides `board_create_task`'s flat bodyFile — no
+A single story rides `board_create_story`'s flat bodyFile — no
 `board_import_plan` ceremony. `story-single.json`:
 
 ```json kind=board-payload op=create_task
@@ -32,7 +32,7 @@ A single story rides `board_create_task`'s flat bodyFile — no
 }
 ```
 
-`board_validate_file` (op `create_task`), then `board_create_task`
+`board_validate_file` (op `create_task`), then `board_create_story`
 `{epicId, bodyFile}` — done. One story, one artifact, one review.
 
 ## Drive it

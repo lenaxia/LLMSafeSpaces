@@ -1323,9 +1323,9 @@ func TestMCPHandler_ToolDescriptionGuidance(t *testing.T) {
 	// #1415/0059 class — this surface has lost description text
 	// silently before).
 	t.Run("board pattern-doc pointers", func(t *testing.T) {
-		d, ok := descs["board_create_task"]
-		require.True(t, ok, "board_create_task in tools/list")
-		assert.Contains(t, d, "/sandbox-runtime/docs/sprint-board-patterns/", "board_create_task must point at the worked story patterns")
+		d, ok := descs["board_create_story"]
+		require.True(t, ok, "board_create_story in tools/list")
+		assert.Contains(t, d, "/sandbox-runtime/docs/sprint-board-patterns/", "board_create_story must point at the worked story patterns")
 		p, ok := descs["board_import_plan"]
 		require.True(t, ok, "board_import_plan in tools/list")
 		assert.Contains(t, p, "/sandbox-runtime/docs/sprint-board-patterns/", "board_import_plan must point at the worked story patterns")
@@ -1422,7 +1422,7 @@ func TestMCPHandler_ToolDescriptionGuidance(t *testing.T) {
 		require.True(t, ok, "board_read in tools/list")
 		for _, want := range []string{
 			"shortId",        // the tsk-… addressing from the charter
-			"taskId",         // the UUID alternative
+			"storyId",        // the UUID alternative (story rename phase 2; taskId rides the alias window)
 			"No claim token", // a read is not an in-flight write
 			"did-you-mean",   // 404 suggestions surface
 			"lease",          // the worker's own claim state is visible

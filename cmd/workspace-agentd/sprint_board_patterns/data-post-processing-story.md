@@ -25,7 +25,7 @@ exist to prevent.
 ```
 
 Validate with `board_validate_file` (op `create_task`), then submit with
-`board_create_task` `{epicId, bodyFile}`.
+`board_create_story` `{epicId, bodyFile}`.
 
 ## Why each criterion holds
 

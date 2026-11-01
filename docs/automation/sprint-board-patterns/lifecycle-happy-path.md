@@ -9,7 +9,7 @@ or two tool calls, never side-channels.
 ## 1. The story exists (the writer)
 
 Write the payload file, `board_validate_file` (op `create_task`), then
-`board_create_task` `{epicId, bodyFile}`. The description seeds the worker
+`board_create_story` `{epicId, bodyFile}`. The description seeds the worker
 charter; the criteria define done. The epic must be active (an inactive epic
 never feeds stories to workers — `board_epic_activate` is the publish
 lever).

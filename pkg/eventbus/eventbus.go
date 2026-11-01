@@ -188,6 +188,43 @@ type Message struct {
 	Attempts int64
 }
 
+// DeliveryOutcome labels one dispatch outcome — the consume-side
+// health vocabulary (S3): every entry a group's loop touches resolves
+// to exactly one of these, and the observer seam turns them into
+// counters without the transport knowing Prometheus exists.
+type DeliveryOutcome string
+
+const (
+	// DeliveryDelivered: the handler ran and returned nil; the entry
+	// was acked — the healthy consume.
+	DeliveryDelivered DeliveryOutcome = "delivered"
+	// DeliveryFiltered: the entry matched no subscription pattern and
+	// was acked unread (the group cursor must still advance).
+	DeliveryFiltered DeliveryOutcome = "filtered"
+	// DeliveryPoison: the entry exceeded MaxAttempts and was
+	// acked-and-dropped (at-least-once must not mean forever).
+	DeliveryPoison DeliveryOutcome = "poison"
+	// DeliveryHandlerError: the handler failed; the entry stays
+	// pending for redelivery (the reclaim is the retry).
+	DeliveryHandlerError DeliveryOutcome = "handler_error"
+	// DeliveryAckError: the handler ran but the ACK failed — the entry
+	// will redeliver as a duplicate (benign by contract, visible here
+	// because an invisible one is undebuggable).
+	DeliveryAckError DeliveryOutcome = "ack_error"
+)
+
+// DeliveryEvent is one observed dispatch, handed to
+// ConsumeOptions.OnDelivery after the outcome is settled. Attempts is
+// the durable delivery count (1 = first delivery; >1 = a redelivery
+// — the at-least-once machinery working, or overworking).
+type DeliveryEvent struct {
+	Group    string
+	Consumer string
+	Topic    string
+	Attempts int64
+	Outcome  DeliveryOutcome
+}
+
 // Handler processes one message. Returning nil ACKS the entry (it is
 // never redelivered to this group). Returning an error LEAVES it
 // pending: after MinIdle it is reclaimed and redelivered —

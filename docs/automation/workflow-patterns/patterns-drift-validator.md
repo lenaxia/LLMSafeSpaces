@@ -105,7 +105,9 @@ nodes:
         1. TOOL NAMES — every board_/workflow/trigger tool token a file
            references must exist in your CURRENT tool set (liveness
            probes: board_read, workflow_list, trigger_list answer their
-           families; the rest you know intrinsically).
+           families; the rest you know intrinsically). A name your
+           surface lists only as a DEPRECATED ALIAS is drift: the
+           examples teach the current canonical name.
         2. BOARD PAYLOADS — every fenced block tagged kind=board-payload
            op=<op>: write its JSON body to
            /workspace/patterns-drift/scratch/probe.json and call
@@ -136,7 +138,7 @@ nodes:
           workflow, or trigger. Your only writes: the scratch dir above
           (cleaned up), /workspace/patterns-drift/state.txt, and at most
           ONE Sprint Board story.
-        - Drift found: file ONE story via board_create_task (manager
+        - Drift found: file ONE story via board_create_story (manager
           route) into epic {{.epic_id}} (project {{.project_id}}):
           write the bodyFile first — title "Patterns drift: N findings
           across M files (digest {{.digest}})", a description

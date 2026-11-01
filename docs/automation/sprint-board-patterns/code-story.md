@@ -33,7 +33,7 @@ Then:
 
 1. `board_validate_file` (op `create_task`) on the file — fix any findings
    it reports before submitting.
-2. `board_create_task` with `{epicId: "epc-…", bodyFile: "story-code.json"}`
+2. `board_create_story` with `{epicId: "epc-…", bodyFile: "story-code.json"}`
    — the file is consumed on success.
 
 ## Why each criterion holds

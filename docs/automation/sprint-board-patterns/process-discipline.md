@@ -4,7 +4,7 @@ Description: The process rules every story charter hand-copies today, written on
 
 Vocabulary, once: the board speaks in **stories** — a story (the wire/API term is 'task') is one
 self-contained unit of work on the Sprint Board; the tool names
-(`board_create_task`, `board_move_stage`, …) keep the wire term.
+(`board_create_story`, `board_move_stage`, …) keep the wire term.
 Everything below applies to every story regardless of use case.
 
 ## Review and merge

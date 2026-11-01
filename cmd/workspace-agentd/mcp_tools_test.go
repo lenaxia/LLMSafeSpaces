@@ -1920,7 +1920,7 @@ func TestMCPSendMessage_SchemaInjectedOnly_MessageLast(t *testing.T) {
 // structural keys still owed AFTER it, and when repetition-prone bulk
 // fields come first in repeated-skeleton payloads. The live evidence:
 // send_message corrupted 5/5 with `message` opening the object;
-// board_create_task/board_update_task runaways (#1832, #1849) with
+// board_create_story/board_update_story runaways (#1832, #1849) with
 // acceptanceCriteria/dependsOn/description emitted before the discrete
 // ids (alphabetical map marshaling put them first). The safe shape —
 // proven by bash/read/edit/write across thousands of calls — is
@@ -2348,7 +2348,7 @@ func TestMCPCatalogAnnotations(t *testing.T) {
 	for i := range resp.Result.Tools {
 		byName[resp.Result.Tools[i].Name] = &resp.Result.Tools[i]
 	}
-	for _, n := range []string{"board_delete_epic", "board_delete_task", "delete_session", "abort_session", "workflow_delete", "trigger_delete"} {
+	for _, n := range []string{"board_delete_epic", "board_delete_story", "delete_session", "abort_session", "workflow_delete", "trigger_delete"} {
 		a := byName[n].Annotations
 		require.NotNil(t, a, "%s must carry annotations", n)
 		require.NotNil(t, a.DestructiveHint, "%s destructiveHint", n)

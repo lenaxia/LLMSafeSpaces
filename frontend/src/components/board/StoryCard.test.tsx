@@ -1,7 +1,7 @@
 // Copyright (C) 2026 Michael Kao
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-// TaskCard.test.tsx — the 2026-10-29 owner ruling's CLICK pins (review
+// StoryCard.test.tsx — the 2026-10-29 owner ruling's CLICK pins (review
 // round 1): the card's assignee ref is a router Link — clicking it
 // NAVIGATES to /chat/:workspaceId/:sessionId (the sidebar's target),
 // and the click does NOT open the card's own edit dialog (the
@@ -13,7 +13,7 @@
 import { render, screen, fireEvent } from "@testing-library/react";
 import { MemoryRouter, Route, Routes, useParams } from "react-router-dom";
 import { describe, it, expect, vi } from "vitest";
-import { TaskCard } from "./TaskCard";
+import { StoryCard } from "./StoryCard";
 import type { BoardTask } from "../../api/board";
 
 /** Renders the routed params — proof the SPA landed on the chat view. */
@@ -47,13 +47,13 @@ const TASK: BoardTask = {
   assignee_session: "amber-falcon-glides",
 };
 
-function renderCard(props: Partial<Parameters<typeof TaskCard>[0]> = {}) {
+function renderCard(props: Partial<Parameters<typeof StoryCard>[0]> = {}) {
   return render(
     <MemoryRouter initialEntries={["/board"]}>
       <Routes>
         <Route
           path="/board"
-          element={<TaskCard task={TASK} projectTasks={[]} onOpen={() => {}} onDetails={() => {}} kebabItems={[]} {...props} />}
+          element={<StoryCard task={TASK} projectTasks={[]} onOpen={() => {}} onDetails={() => {}} kebabItems={[]} {...props} />}
         />
         <Route path="/chat/:workspaceId/:sessionId" element={<ChatRouteProbe />} />
       </Routes>
@@ -61,7 +61,7 @@ function renderCard(props: Partial<Parameters<typeof TaskCard>[0]> = {}) {
   );
 }
 
-describe("TaskCard — session ref click-through (2026-10-29 owner ruling)", () => {
+describe("StoryCard — session ref click-through (2026-10-29 owner ruling)", () => {
   it("clicking the assignee link navigates to the session's chat view", () => {
     renderCard({ workspaceId: "ws-1" });
     fireEvent.click(screen.getByTestId("assignee-link-tsk-bbbb0002"));

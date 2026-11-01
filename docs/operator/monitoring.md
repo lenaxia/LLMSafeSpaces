@@ -117,6 +117,34 @@ The delivery-ledger projection exports its own health surface (design 0055 R5):
 - **`LLMSafespacesWakeFailures`** (warning): the reseed behind the wake is failing — opencode unreachable or store read errors. The stalled entries will not self-resolve; fix the harness path first (agentd logs `stall wake failed`).
 - **`LLMSafeSpacesDeliveryLatencyBudget`** (warning): Deliver-ack p99 > 1s sustained — fsync latency on the platform volume or WAL contention. Every send on the pod slows; check the volume's write latency and ledger WAL compaction (`ledger.compact` runs at retention boundaries).
 
+#### Event bus (design 0072, S3)
+
+The workspace event bus (one Redis/Valkey Stream per workspace, `workspace:{id}:events`) exports its health surface when `AGENTD_EVENTBUS_ADDR` arms the bus. Collected every 30s by agentd's health loop (first snapshot at startup) and scraped on the same admin port.
+
+| Metric | Type | Labels | Description |
+|---|---|---|---|
+| `workspace_agentd_eventbus_publishes_total` | Counter | `workspace_id`, `topic_family`, `outcome` | Publish outcomes: `published` / `failed` (validation or transport). A failed publish falls back to the direct v1 delivery leg — wake-ups still flow; the counter rise is the degradation signal. |
+| `workspace_agentd_eventbus_last_publish_timestamp_seconds` | Gauge | `workspace_id` | Unix timestamp of the newest entry's publish time. **The silent-publisher signal**: alert on `time() -` this while sessions are busy. No series = the stream has no entries. |
+| `workspace_agentd_eventbus_deliveries_total` | Counter | `workspace_id`, `group`, `outcome` | Dispatch outcomes per consumer group: `delivered`, `filtered` (pattern-skipped, acked unread), `handler_error` (left pending — the reclaim is the retry), `poison` (dropped past the attempt cap), `ack_error`. |
+| `workspace_agentd_eventbus_redeliveries_total` | Counter | `workspace_id`, `group` | Dispatches that were redeliveries (delivery count > 1) — the at-least-once machinery working; rising without `delivered` rising means work is being retried, not completed. |
+| `workspace_agentd_eventbus_stream_entries` | Gauge | `workspace_id` | Stream entry count (bounded ~10k by the publisher's MAXLEN — the retained-replay window). |
+| `workspace_agentd_eventbus_group_lag` | Gauge | `workspace_id`, `group` | Entries never delivered to the group (capped at 10000). Consumers dead or falling behind. |
+| `workspace_agentd_eventbus_group_pending` | Gauge | `workspace_id`, `group` | Delivered-but-un-acked entries: failing handlers, or consumers that died mid-work (the reclaim sweep is the retry). |
+| `workspace_agentd_eventbus_group_consumers` | Gauge | `workspace_id`, `group` | Registered consumer names. 0 with lag/pending > 0 = the dead-group shape (names persist until `XGROUP DELCONSUMER`, so 0 means nobody ever joined or all were removed). |
+| `workspace_agentd_eventbus_group_oldest_pending_idle_seconds` | Gauge | `workspace_id`, `group` | How long the longest-idle pending entry has sat un-acked (0 = empty). Healthy consumers reclaim past 60s; far past that, nobody is reclaiming — the wedged-group signal. |
+| `workspace_agentd_eventbus_group_stalled` | Gauge | `workspace_id`, `group` | Derived 0/1: no consumers with a backlog, oldest pending idle ≥ 5m, or lag ≥ 100. Edge-logged (`event bus: consumer group STALLED` / `recovered`) on transition. |
+
+##### Event bus health model — what a healthy bus looks like
+
+- **A quiet bus is healthy**: no workspace activity means no publishes, empty groups, all-zero gauges. Silence alone is NOT a fault — silence *plus* a growing backlog is.
+- **Healthy publish leg**: `publishes_total{outcome="published"}` rises when sessions settle (or the lease ladder nudges); `failed` stays flat. A silent publisher is caught by `time() - last_publish_timestamp_seconds` exceeding any sane quiet period *while sessions are visibly busy* — that combination means settles stopped reaching the bus (agentd also logs each fallback to the direct leg at publish failure).
+- **Healthy consumer group** (`notifier`, `lease`): `lag` returns to 0 shortly after publishes, `pending` returns to 0, `oldest_pending_idle` stays near 0. Transient blips (a burst, one handler error) are the at-least-once machinery working — `redeliveries_total` may tick.
+- **Stalled group, dead shape**: `group_consumers == 0` with `lag > 0` — nobody is consuming; every publish grows the backlog forever. Usually the agentd process died or never started its groups (check the pod and the `event bus: transport wired` boot log).
+- **Stalled group, wedged shape**: `group_oldest_pending_idle_seconds` ≥ 300 — entries were delivered but no consumer reclaimed them through five reclaim sweeps (healthy reclaim is 60s). The consumer names may still be registered (dead pods leave stale names); the idle time is the truth.
+- **Failing-but-alive group**: `deliveries_total{outcome="handler_error"}` (or `poison`) rising while `lag`/`pending` cycle — the group consumes but its work fails; that is a downstream fault (delivery seam), not a bus fault.
+- **Probe failure**: agentd logs `event bus: health probe failed` (first failure, then every 10th) — Redis/Valkey unreachable from the pod; gauges go stale at their last values, which is itself the signal.
+- **The API-side board legs (design 0072 S6)**: when `board.eventbus.*` (or S4's `board.leaseEventbus.*`) arms the API, the board-event/stamp publishers and the SSE join expose expvar counters on the API's `/debug/vars`: `board_bus_events_{published,failed}_total` (the board-event leg), `board_bus_stage_events_{published,failed}_total` (the `task.{id}.stage_changed` vocabulary topic — one committed move_stage row counts once in each family), `board_bus_stamps_{published,failed}_total`, `board_bus_sse_joined_total` (consumers started), and `board_bus_sse_fallback_total` (events the v1 point-to-point leg delivered because the bus could not — the degradation signal; a burst after a Redis outage is the breaker doing its job, a permanently rising ratio means the bus leg is down and SSE is riding v1). The join's per-replica group is `sse-<hostname>`: a stalled `sse-*` group on a workspace stream is a crashed API replica's leftover (graceful shutdown destroys its groups) — the same stalled-group shape above, triaged against the API pods rather than agentd.
+
 !!! warning "cgroup v2 required"
     `workspace_memory_bytes` and `workspace_oom_kills_total` require cgroup v2. On cgroup v1 hosts these silently produce nothing — agentd logs a single Warn per pod boot. See [Storage](storage.md#cgroup-v2-requirement).
 
@@ -314,6 +342,18 @@ topk(10, workspace_active_sessions)
 
 # OOM kills in the last hour
 increase(workspace_oom_kills_total[1h])
+
+# Event bus: stalled consumer groups (design 0072 S3)
+max by (workspace_id, group) (workspace_agentd_eventbus_group_stalled) == 1
+
+# Event bus: silent publisher — newest entry older than 30m
+time() - workspace_agentd_eventbus_last_publish_timestamp_seconds > 1800
+
+# Event bus: publish failures (each fell back to the direct v1 leg)
+sum by (workspace_id) (rate(workspace_agentd_eventbus_publishes_total{outcome="failed"}[5m]))
+
+# Event bus: consumer groups falling behind (undelivered backlog)
+max by (workspace_id, group) (workspace_agentd_eventbus_group_lag) > 100
 ```
 
 ---

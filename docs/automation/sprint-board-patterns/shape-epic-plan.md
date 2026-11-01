@@ -75,7 +75,7 @@ promise.
 - Each story then lives the happy path (`lifecycle-happy-path.md`)
   independently: the `clean` worker hands off to review; the reviewer's
   APPROVED verdict (not the worker's push) unblocks `report`.
-- Edits after import: `board_update_task` per story, or `board_add_dependency`
+- Edits after import: `board_update_story` per story, or `board_add_dependency`
   / `board_remove_dependency` for the edges — the plan file is the birth
   record, not a living document.
 

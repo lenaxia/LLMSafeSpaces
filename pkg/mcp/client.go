@@ -124,22 +124,22 @@ type APIClient interface {
 	BoardEpicArchive(ctx context.Context, epicID, requestID string) (json.RawMessage, error)
 	BoardEpicUnarchive(ctx context.Context, epicID, requestID string) (json.RawMessage, error)
 	BoardDeleteEpic(ctx context.Context, epicID string, force bool) (json.RawMessage, error)
-	BoardCreateTask(ctx context.Context, epicID string, body BoardTaskBody) (json.RawMessage, error)
-	BoardGetTask(ctx context.Context, taskID string) (json.RawMessage, error)
-	BoardTaskEvents(ctx context.Context, taskID string, limit int) (json.RawMessage, error)
-	BoardUpdateTask(ctx context.Context, taskID string, body BoardTaskBody) (json.RawMessage, error)
+	BoardCreateStory(ctx context.Context, epicID string, body BoardStoryBody) (json.RawMessage, error)
+	BoardGetStory(ctx context.Context, taskID string) (json.RawMessage, error)
+	BoardStoryEvents(ctx context.Context, taskID string, limit int) (json.RawMessage, error)
+	BoardUpdateStory(ctx context.Context, taskID string, body BoardStoryBody) (json.RawMessage, error)
 	BoardMoveStage(ctx context.Context, taskID, toStage, evidenceURL, requestID string) (json.RawMessage, error)
 	BoardRecordVerdict(ctx context.Context, taskID string, body BoardVerdictBody) (json.RawMessage, error)
-	BoardTaskVerdicts(ctx context.Context, taskID string) (json.RawMessage, error)
-	BoardStartTask(ctx context.Context, taskID, requestID string) (json.RawMessage, error)
+	BoardStoryVerdicts(ctx context.Context, taskID string) (json.RawMessage, error)
+	BoardStartStory(ctx context.Context, taskID, requestID string) (json.RawMessage, error)
 	// #1836: the bulk claim/complete batches (per-item result arrays).
-	BoardStartTasks(ctx context.Context, taskIDs []string, requestID string) (json.RawMessage, error)
+	BoardStartStories(ctx context.Context, taskIDs []string, requestID string) (json.RawMessage, error)
 	BoardMoveStageBulk(ctx context.Context, taskIDs []string, toStage, evidenceURL, requestID string) (json.RawMessage, error)
-	BoardDeleteTasksBulk(ctx context.Context, taskIDs []string, reconnect bool, requestID string) (json.RawMessage, error)
-	BoardRearmTask(ctx context.Context, taskID, requestID string) (json.RawMessage, error)
-	BoardPauseTask(ctx context.Context, taskID, requestID string) (json.RawMessage, error)
-	BoardResumeTask(ctx context.Context, taskID, requestID string) (json.RawMessage, error)
-	BoardDeleteTask(ctx context.Context, taskID string, reconnect bool) (json.RawMessage, error)
+	BoardDeleteStoriesBulk(ctx context.Context, taskIDs []string, reconnect bool, requestID string) (json.RawMessage, error)
+	BoardRearmStory(ctx context.Context, taskID, requestID string) (json.RawMessage, error)
+	BoardPauseStory(ctx context.Context, taskID, requestID string) (json.RawMessage, error)
+	BoardResumeStory(ctx context.Context, taskID, requestID string) (json.RawMessage, error)
+	BoardDeleteStory(ctx context.Context, taskID string, reconnect bool) (json.RawMessage, error)
 	BoardImportPlan(ctx context.Context, projectID string, body BoardPlanBody) (json.RawMessage, error)
 	BoardAddDependency(ctx context.Context, taskID, dependsOn, requestID string) (json.RawMessage, error)
 	BoardRemoveDependency(ctx context.Context, taskID, dependsOn, requestID string) error
@@ -1171,7 +1171,7 @@ type BoardEpicBody struct {
 	RequestID string   `json:"requestId,omitempty"`
 }
 
-// BoardTaskBody mirrors the REST boardTaskRequest. Tags is
+// BoardStoryBody mirrors the REST boardTaskRequest. Tags is
 // presence-aware (r2): the REST binding turns `"tags":[]` into a
 // non-nil empty slice the engine reads as replace-with-clear, so the
 // MCP tier must carry the distinction too — nil keeps existing tags,
@@ -1179,7 +1179,7 @@ type BoardEpicBody struct {
 // the engine writes tags unconditionally there, so absence clears —
 // REST-identical either way.) DependsOn (create only, #1747) adds
 // prerequisite edges in the same write.
-type BoardTaskBody struct {
+type BoardStoryBody struct {
 	Title              string               `json:"title,omitempty"`
 	Description        string               `json:"description,omitempty"`
 	Tags               *[]string            `json:"tags,omitempty"`
@@ -1191,15 +1191,15 @@ type BoardTaskBody struct {
 
 // BoardPlanBody mirrors the REST boardPlanRequest (#1747 import_plan).
 type BoardPlanBody struct {
-	EpicTitle string              `json:"epicTitle,omitempty"`
-	Outcome   string              `json:"outcome,omitempty"`
-	DryRun    bool                `json:"dryRun,omitempty"`
-	Tasks     []BoardPlanTaskBody `json:"tasks"`
-	RequestID string              `json:"requestId,omitempty"`
+	EpicTitle string               `json:"epicTitle,omitempty"`
+	Outcome   string               `json:"outcome,omitempty"`
+	DryRun    bool                 `json:"dryRun,omitempty"`
+	Tasks     []BoardPlanStoryBody `json:"tasks"`
+	RequestID string               `json:"requestId,omitempty"`
 }
 
-// BoardPlanTaskBody is one plan node.
-type BoardPlanTaskBody struct {
+// BoardPlanStoryBody is one plan node.
+type BoardPlanStoryBody struct {
 	Key                string           `json:"key"`
 	Title              string           `json:"title"`
 	Description        string           `json:"description,omitempty"`
@@ -1395,21 +1395,21 @@ func (c *HTTPClient) BoardDeleteEpic(ctx context.Context, epicID string, force b
 	return c.doRaw(ctx, http.MethodDelete, "/api/v1/me/epics/"+epicID+forceQuery(force), nil)
 }
 
-func (c *HTTPClient) BoardDeleteTask(ctx context.Context, taskID string, reconnect bool) (json.RawMessage, error) {
+func (c *HTTPClient) BoardDeleteStory(ctx context.Context, taskID string, reconnect bool) (json.RawMessage, error) {
 	if err := validateID(taskID, "task_id"); err != nil {
 		return nil, err
 	}
 	return c.doRaw(ctx, http.MethodDelete, "/api/v1/me/tasks/"+taskID+boolQuery("reconnect", reconnect), nil)
 }
 
-func (c *HTTPClient) BoardPauseTask(ctx context.Context, taskID, requestID string) (json.RawMessage, error) {
+func (c *HTTPClient) BoardPauseStory(ctx context.Context, taskID, requestID string) (json.RawMessage, error) {
 	if err := validateID(taskID, "task_id"); err != nil {
 		return nil, err
 	}
 	return c.doRaw(ctx, http.MethodPost, "/api/v1/me/tasks/"+taskID+"/pause", boardLifecycleBody{RequestID: requestID})
 }
 
-func (c *HTTPClient) BoardResumeTask(ctx context.Context, taskID, requestID string) (json.RawMessage, error) {
+func (c *HTTPClient) BoardResumeStory(ctx context.Context, taskID, requestID string) (json.RawMessage, error) {
 	if err := validateID(taskID, "task_id"); err != nil {
 		return nil, err
 	}
@@ -1434,21 +1434,21 @@ func boolQuery(key string, v bool) string {
 	return ""
 }
 
-func (c *HTTPClient) BoardCreateTask(ctx context.Context, epicID string, body BoardTaskBody) (json.RawMessage, error) {
+func (c *HTTPClient) BoardCreateStory(ctx context.Context, epicID string, body BoardStoryBody) (json.RawMessage, error) {
 	if err := validateID(epicID, "epic_id"); err != nil {
 		return nil, err
 	}
 	return c.doRaw(ctx, http.MethodPost, "/api/v1/me/epics/"+epicID+"/tasks", body)
 }
 
-func (c *HTTPClient) BoardGetTask(ctx context.Context, taskID string) (json.RawMessage, error) {
+func (c *HTTPClient) BoardGetStory(ctx context.Context, taskID string) (json.RawMessage, error) {
 	if err := validateID(taskID, "task_id"); err != nil {
 		return nil, err
 	}
 	return c.doRaw(ctx, http.MethodGet, "/api/v1/me/tasks/"+taskID, nil)
 }
 
-func (c *HTTPClient) BoardTaskEvents(ctx context.Context, taskID string, limit int) (json.RawMessage, error) {
+func (c *HTTPClient) BoardStoryEvents(ctx context.Context, taskID string, limit int) (json.RawMessage, error) {
 	if err := validateID(taskID, "task_id"); err != nil {
 		return nil, err
 	}
@@ -1459,7 +1459,7 @@ func (c *HTTPClient) BoardTaskEvents(ctx context.Context, taskID string, limit i
 	return c.doRaw(ctx, http.MethodGet, path, nil)
 }
 
-func (c *HTTPClient) BoardUpdateTask(ctx context.Context, taskID string, body BoardTaskBody) (json.RawMessage, error) {
+func (c *HTTPClient) BoardUpdateStory(ctx context.Context, taskID string, body BoardStoryBody) (json.RawMessage, error) {
 	if err := validateID(taskID, "task_id"); err != nil {
 		return nil, err
 	}
@@ -1498,7 +1498,7 @@ func (c *HTTPClient) BoardRecordVerdict(ctx context.Context, taskID string, body
 	return c.doRaw(ctx, http.MethodPost, "/api/v1/me/tasks/"+taskID+"/verdict", body)
 }
 
-func (c *HTTPClient) BoardTaskVerdicts(ctx context.Context, taskID string) (json.RawMessage, error) {
+func (c *HTTPClient) BoardStoryVerdicts(ctx context.Context, taskID string) (json.RawMessage, error) {
 	if err := validateID(taskID, "task_id"); err != nil {
 		return nil, err
 	}
@@ -1512,7 +1512,7 @@ type boardStartBody struct {
 	RequestID string `json:"requestId,omitempty"`
 }
 
-func (c *HTTPClient) BoardStartTask(ctx context.Context, taskID, requestID string) (json.RawMessage, error) {
+func (c *HTTPClient) BoardStartStory(ctx context.Context, taskID, requestID string) (json.RawMessage, error) {
 	if err := validateID(taskID, "task_id"); err != nil {
 		return nil, err
 	}
@@ -1546,9 +1546,9 @@ type boardBulkDeleteBody struct {
 	RequestID string   `json:"requestId,omitempty"`
 }
 
-// BoardStartTasks is the bulk claim (#1836): N manual dispatches, one
+// BoardStartStories is the bulk claim (#1836): N manual dispatches, one
 // call, per-item result array.
-func (c *HTTPClient) BoardStartTasks(ctx context.Context, taskIDs []string, requestID string) (json.RawMessage, error) {
+func (c *HTTPClient) BoardStartStories(ctx context.Context, taskIDs []string, requestID string) (json.RawMessage, error) {
 	if len(taskIDs) == 0 || len(taskIDs) > board.BulkMaxItems {
 		return nil, fmt.Errorf("task_ids must carry 1 to %d tasks (got %d)", board.BulkMaxItems, len(taskIDs))
 	}
@@ -1566,10 +1566,10 @@ func (c *HTTPClient) BoardMoveStageBulk(ctx context.Context, taskIDs []string, t
 		boardBulkMoveStageBody{TaskIDs: taskIDs, ToStage: toStage, EvidenceURL: evidenceURL, RequestID: requestID})
 }
 
-// BoardDeleteTasksBulk is the bulk delete (#1836 sibling): the
+// BoardDeleteStoriesBulk is the bulk delete (#1836 sibling): the
 // delete_task(s) batch, one shared reconnect flag, per-item result
 // array.
-func (c *HTTPClient) BoardDeleteTasksBulk(ctx context.Context, taskIDs []string, reconnect bool, requestID string) (json.RawMessage, error) {
+func (c *HTTPClient) BoardDeleteStoriesBulk(ctx context.Context, taskIDs []string, reconnect bool, requestID string) (json.RawMessage, error) {
 	if len(taskIDs) == 0 || len(taskIDs) > board.BulkMaxItems {
 		return nil, fmt.Errorf("task_ids must carry 1 to %d tasks (got %d)", board.BulkMaxItems, len(taskIDs))
 	}
@@ -1577,9 +1577,9 @@ func (c *HTTPClient) BoardDeleteTasksBulk(ctx context.Context, taskIDs []string,
 		boardBulkDeleteBody{TaskIDs: taskIDs, Reconnect: reconnect, RequestID: requestID})
 }
 
-// BoardRearmTask is board_rearm_task (#1832 WS3): re-pool an
+// BoardRearmStory is board_rearm_story (#1832 WS3): re-pool an
 // attempts-exhausted row (000050: stage=failed, origin=escalated).
-func (c *HTTPClient) BoardRearmTask(ctx context.Context, taskID, requestID string) (json.RawMessage, error) {
+func (c *HTTPClient) BoardRearmStory(ctx context.Context, taskID, requestID string) (json.RawMessage, error) {
 	if err := validateID(taskID, "task_id"); err != nil {
 		return nil, err
 	}

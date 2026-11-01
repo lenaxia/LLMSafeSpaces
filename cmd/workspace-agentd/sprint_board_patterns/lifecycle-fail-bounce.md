@@ -69,5 +69,5 @@ thing the bounce exists to avoid).
 If a finding misreads the work, do not litigate in code: satisfy the
 criterion the finding points at in the cheapest correct way, and note the
 disagreement in the pull request where the reviewer will read it. If a
-criterion itself is wrong, that is a story PATCH (`board_update_task`) —
+criterion itself is wrong, that is a story PATCH (`board_update_story`) —
 rare, and visible in the audit timeline.

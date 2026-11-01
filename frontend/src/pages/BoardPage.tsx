@@ -9,13 +9,13 @@ import { Input } from "../components/ui/Input";
 import { Badge } from "../components/ui/Badge";
 import { Spinner } from "../components/ui/Spinner";
 import { TagInput } from "../components/ui/TagInput";
-import { TaskDeleteDialog, describeTaskDeleteResult } from "../components/board/TaskDeleteDialog";
+import { StoryDeleteDialog, describeStoryDeleteResult } from "../components/board/StoryDeleteDialog";
 import { EpicDeleteDialog } from "../components/board/EpicDeleteDialog";
 import { KebabMenu } from "../components/ui/KebabMenu";
 import { BoardErrorNotice } from "../components/board/BoardErrorNotice";
-import { TaskCard } from "../components/board/TaskCard";
-import { TaskDialog } from "../components/board/TaskDialog";
-import { TaskDrawer } from "../components/board/TaskDrawer";
+import { StoryCard } from "../components/board/StoryCard";
+import { StoryDialog } from "../components/board/StoryDialog";
+import { StoryDrawer } from "../components/board/StoryDrawer";
 import { BoardDefaultsDialog, ProjectConfigTrigger } from "../components/board/BoardConfigPanels";
 import { EpicDrawer } from "../components/board/EpicDrawer";
 import { BoardHelpDrawer } from "../components/board/BoardHelpDrawer";
@@ -660,7 +660,7 @@ export function BoardPage() {
         const result = await boardApi.deleteTask(task.short_id, reconnect);
         setTaskDeleteTarget(null);
         await queryClient.invalidateQueries({ queryKey: ["board"] });
-        setPageNotice(describeTaskDeleteResult(result));
+        setPageNotice(describeStoryDeleteResult(result));
         return true;
       } catch (err) {
         setDeleteError(toBoardError(err));
@@ -731,7 +731,7 @@ export function BoardPage() {
 
   // Open the epic drawer with the authoritative row (derived progress).
   // Failures render at PAGE level (r1: they previously landed in
-  // dialogError, invisible with no TaskDialog open).
+  // dialogError, invisible with no StoryDialog open).
   const openEpicDrawer = useCallback(
     async (epicId: string) => {
       try {
@@ -923,7 +923,7 @@ export function BoardPage() {
          * the standard responsive collapse: 2 columns on small
          * screens, 4 from md up (cards keep min-w-0/break-words so
          * long titles wrap INSIDE the card and buttons stay
-         * contained — see TaskCard). */}
+         * contained — see StoryCard). */}
         <div className="grid grid-cols-2 gap-2 p-2 md:grid-cols-4" data-testid={`stage-grid-${project.short_id}`}>
           {MAIN_STAGES.map((stage) => (
             <StageCell
@@ -1495,7 +1495,7 @@ export function BoardPage() {
       </Dialog.Root>
 
       {/* --- Task create/edit ------------------------------------------------------ */}
-      <TaskDialog
+      <StoryDialog
         open={taskDialog !== null}
         onOpenChange={(open) => {
           if (!open) {
@@ -1591,7 +1591,7 @@ export function BoardPage() {
       />
 
       {/* --- Task-detail drawer (#1832 item 4) ------------------------------------ */}
-      <TaskDrawer
+      <StoryDrawer
         open={taskDrawer !== null}
         onOpenChange={(open) => {
           if (!open) setTaskDrawer(null);
@@ -1650,7 +1650,7 @@ export function BoardPage() {
       </Dialog.Root>
 
       {/* --- Task delete (kebab → modal with the reconnect checkbox) -------- */}
-      <TaskDeleteDialog
+      <StoryDeleteDialog
         open={taskDeleteTarget !== null}
         onOpenChange={(open) => {
           if (!open) {
@@ -1799,7 +1799,7 @@ function StageCell({
         <span className="text-[10px] text-muted-foreground">{cards.length}</span>
       </div>
       {cards.map((t) => (
-        <TaskCard
+        <StoryCard
           key={t.short_id}
           task={t}
           projectTasks={allProjectTasks}

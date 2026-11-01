@@ -252,11 +252,11 @@ func TestPatternDocs_ContentPins_BoardCatalog(t *testing.T) {
 		"session_read",         // where a successor reads a lapsed attempt
 		// Shapes (§D): single story, epic+plan with a dependency edge,
 		// reviewer-checkable criteria.
-		"board_create_task", // the flat single-story shape
-		"board_import_plan", // the epic+plan shape
-		"dependsOn",         // the dependency edge, in the payload
-		"dryRun",            // the plan-approval moment
-		"verification move", // reviewer-checkable: the how-to-check named
+		"board_create_story", // the flat single-story shape
+		"board_import_plan",  // the epic+plan shape
+		"dependsOn",          // the dependency edge, in the payload
+		"dryRun",             // the plan-approval moment
+		"verification move",  // reviewer-checkable: the how-to-check named
 	} {
 		assert.Contains(t, full, want, "board catalog: canonical fragment %q must stay", want)
 	}
