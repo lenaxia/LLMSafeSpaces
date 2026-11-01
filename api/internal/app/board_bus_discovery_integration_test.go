@@ -17,6 +17,7 @@ import (
 	"context"
 	"os"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -50,9 +51,17 @@ func TestIntegrationBoardBusDiscovery_NullTargetIsNotAGlobalBlackout(t *testing.
 		INSERT INTO users (id, username, email, password_hash, active, role)
 		VALUES ($1::text, $1::text, $1::text || '@example.com', 'hash', true, 'user')`, owner)
 	require.NoError(t, err, "users row must exist (FK target)")
+	// ONE ordered cleanup (review r7's leak finding): t.Cleanup is LIFO,
+	// and split cleanups registered in creation order run REVERSED —
+	// the workspaces DELETE would fire while projects still reference
+	// it (FK NO ACTION), fail silently, and leak rows into the shared
+	// test DB every run. Children first, exactly one func.
 	t.Cleanup(func() {
-		_, _ = pool.Exec(context.Background(), `DELETE FROM projects WHERE user_id=$1`, owner)
-		_, _ = pool.Exec(context.Background(), `DELETE FROM users WHERE id=$1`, owner)
+		cctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_, _ = pool.Exec(cctx, `DELETE FROM projects WHERE user_id=$1`, owner)
+		_, _ = pool.Exec(cctx, `DELETE FROM workspaces WHERE id=$1`, ws)
+		_, _ = pool.Exec(cctx, `DELETE FROM users WHERE id=$1`, owner)
 	})
 
 	// One healthy target...
@@ -60,9 +69,6 @@ func TestIntegrationBoardBusDiscovery_NullTargetIsNotAGlobalBlackout(t *testing.
 		INSERT INTO workspaces (id, user_id, name, namespace, created_at, updated_at)
 		VALUES ($1::uuid, $2::text, 'bus-discovery', 'default', now(), now())`, ws, owner)
 	require.NoError(t, err)
-	t.Cleanup(func() {
-		_, _ = pool.Exec(context.Background(), `DELETE FROM workspaces WHERE id=$1`, ws)
-	})
 	_, err = pool.Exec(ctx, `
 		INSERT INTO projects (short_id, user_id, name, target_workspace_id, worker_slots, status, created_at, updated_at)
 		VALUES ('prj-' || substr(gen_random_uuid()::text, 1, 8), $1, 'bus-discovery-p', $2::uuid, 2, 'active', now(), now())`, owner, ws)
