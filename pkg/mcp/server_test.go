@@ -1210,6 +1210,12 @@ func TestTriggerTools_InputMappingArgsPassThrough(t *testing.T) {
 	// cannot regress silently (#1415 class).
 	assert.Contains(t, triggerCreateTool.Description, "/sandbox-runtime/docs/gate-script-patterns.md")
 	assert.NotContains(t, triggerCreateTool.Description, "n >= 3")
+	// 2026-10-30 owner ruling — the worked DAG patterns live at the
+	// pod-side doc directory materialized by the agentd image; the
+	// workflow_create description points at it (drift-pinned, the
+	// #1415/0059 class).
+	assert.Contains(t, workflowCreateTool.Description, "/sandbox-runtime/docs/workflow-patterns/", "the worked-DAG-patterns doc pointer must stay")
+	assert.Contains(t, workflowCreateTool.Description, "grep '^Description:'", "the catalog is grepped, never hand-maintained")
 	b, err = json.Marshal(triggerUpdateTool.InputSchema)
 	require.NoError(t, err)
 	assert.Contains(t, string(b), "input_from")
