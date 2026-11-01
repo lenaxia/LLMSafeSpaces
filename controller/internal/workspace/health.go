@@ -429,6 +429,9 @@ func appendAgentWarnings(msg string, warnings []string) string {
 func (r *WorkspaceReconciler) restartAgentPod(ctx context.Context, ws *v1.Workspace) {
 	r.deletePodByName(ctx, podName(ws.Name, string(ws.UID)), ws.Namespace)
 	metrics.WorkspacesRunning.WithLabelValues(ws.Spec.Runtime, string(ws.Spec.SecurityLevel)).Dec()
+	// RC-A review r1: the skew gauge series dies with the pod — the
+	// rebuilt pod's first comparable scrape re-arms it.
+	r.clearAgentdSkewGauge(ws)
 	ws.Status.Phase = v1.WorkspacePhaseCreating
 	ws.Status.PodIP = ""
 	ws.Status.Endpoint = ""

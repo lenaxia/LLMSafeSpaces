@@ -223,13 +223,28 @@ agentd with the same version). Older ⇒ four automatic flags:
 | Metrics | `llmsafespaces_workspace_agentd_version_skew{workspace_id}` = 1 while stale (alert on persistence) and `..._version_skew_detected_total` once per episode |
 | Alert | `LLMSafeSpacesAgentdVersionSkew` (warning, `for: 2h`) — N-1 for hours is expected; N-1 for hours AFTER the alert means the runbook below has not been run |
 
+**Gauge lifecycle — the series dies with the pod.** A verdict is a
+property of a live pod's running agentd, so the controller deletes the
+series on every indefinite no-pod exit: workspace termination (the
+runbook's "gauge drops to 0" convergence is always achievable),
+suspension (a suspended workspace rebuilds with the CURRENT digest at
+resume — converges by construction), the health-restart path, and the
+legacy Failed self-heal. A TRANSIENT unreachable scrape deliberately
+does not clear it (the last live verdict stays latched; a truly dead
+pod reaches the health-failure restart within the 3-failure threshold,
+which does clear it) — so the alert can never be held open by a
+workspace whose pod no longer exists, and never flaps on blips.
+
 **Comparison semantics**: numeric dot segments compared left-to-right
 (`0.44.7 < 0.44.11`), tolerating a `v` prefix, ignoring prerelease and
 build-metadata suffixes. An agentd NEWER than the controller (a Renovate
 digest bump between releases) reads as current — ahead is not this
-failure class. Digest drift (`agentdPendingDigest`, above) remains the
-authoritative "your pod was not rebuilt" signal; the version surfaces
-make it human-readable and alertable.
+failure class. A pre-2026-08-15 agentd (healthz `version` carried
+OPENCODE's version; the `commit_sha`/`build_time` identity fields did
+not exist) is reported `AgentdVersionUnknown` — its version is never
+mirrored or compared. Digest drift (`agentdPendingDigest`, above)
+remains the authoritative "your pod was not rebuilt" signal; the
+version surfaces make it human-readable and alertable.
 
 ### Runbook: refreshing workspace agentds on a fleet release
 

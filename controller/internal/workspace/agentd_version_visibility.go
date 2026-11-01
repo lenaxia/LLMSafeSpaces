@@ -33,6 +33,20 @@ package workspace
 //     decision itself stays with the #1746 updatePolicy — see
 //     docs/operator/agentd-delivery.md ("Version visibility & skew
 //     detection") for the runbook.
+//
+// Gauge lifecycle (review r1): the series dies with the pod —
+// clearAgentdSkewGauge runs on every indefinite no-pod exit
+// (termination, suspension, the health-restart, the legacy Failed
+// self-heal), because a stale verdict for a pod that no longer exists
+// must never hold the LLMSafeSpacesAgentdVersionSkew alert open
+// forever. Minutes-long rebuild windows (drift recreations, the
+// health-restart's Creating phase) are covered by the alert's `for:
+// 2h` and re-armed by the new pod's first comparable scrape; a
+// TRANSIENT unreachable scrape deliberately does NOT clear it (the
+// verdict of the last live answer stays latched — flapping on scrape
+// blips would make the alert noisy, and a truly dead pod reaches the
+// health-failure restart path within the 3-failure threshold, which
+// does clear it).
 
 import (
 	"context"
@@ -62,16 +76,24 @@ const agentdVersionStaleReportedAnnotation = "llmsafespaces.dev/agentd-version-s
 // Mixed-fleet policy (W15): empty response fields (an older runtime
 // omitting commit_sha/build_time) keep the previously mirrored value;
 // the unreachable/undecodable paths in health.go clear all three.
+// EXCEPTION: a healthz carrying a version but NEITHER identity field is
+// a pre-2026-08-15 agentd (commit_sha/build_time landed together; every
+// stamped build reports non-empty values — "unknown" at minimum) whose
+// `version` field carried OPENCODE's version, not agentd's
+// (cmd/workspace-agentd/main.go) — that version is not mirrored and the
+// verdict is Unknown, never a guessed Current (review r1: an ancient
+// never-rolled pod — exactly the OnRefresh population — compared as
+// 1.18.10 > 0.44.11 and read as current).
 //
 // Skew verdicts:
 //
 //   - agentd < fleet  → AgentdVersionStale=True, gauge 1, one Warning
 //     event + counter tick per (agentd, fleet) version pair.
 //   - agentd >= fleet → AgentdVersionStale=False/Current, gauge 0.
-//   - not comparable (an "unknown"/dev build on either side) →
-//     AgentdVersionStale=False/Unknown, gauge UNTOUCHED — the last
-//     comparable verdict stays latched instead of flapping green on a
-//     weird response.
+//   - not comparable (an "unknown"/dev build on either side, or the
+//     ancient no-identity shape) → AgentdVersionStale=False/Unknown,
+//     gauge UNTOUCHED — the last comparable verdict stays latched
+//     instead of flapping green on a weird response.
 //
 // Never gates health, liveness, or restarts (the roll decision is the
 // #1746 updatePolicy's).
@@ -79,6 +101,16 @@ func (r *WorkspaceReconciler) mirrorAgentdVersion(ctx context.Context, ws *v1.Wo
 	if rep == nil {
 		return
 	}
+
+	// Pre-2026-08-15 build: `version` is opencode's, not agentd's —
+	// no identity fields, no comparable agentd version (see doc comment).
+	if rep.Version != "" && rep.CommitSHA == "" && rep.BuildTime == "" {
+		r.setCondition(ws, v1.WorkspaceConditionAgentdVersionStale, "False", v1.ReasonAgentdVersionUnknown,
+			fmt.Sprintf("agentd build predates build-identity reporting (healthz version %q is the opencode version, not agentd's) — upgrade the workspace to get a comparable agentd version",
+				rep.Version))
+		return
+	}
+
 	if rep.Version != "" {
 		ws.Status.AgentdVersion = rep.Version
 	}
@@ -104,25 +136,32 @@ func (r *WorkspaceReconciler) mirrorAgentdVersion(ctx context.Context, ws *v1.Wo
 		return
 	}
 
-	// Stale: the incident's silent skew, now loud.
+	// Stale: the incident's silent skew, now loud. The identity suffix
+	// renders only what the pod reported (an unstamped-but-comparable
+	// build shows neither "(commit , built )" holes nor fabricated
+	// values — review r1's cosmetic finding).
+	ident := ""
+	if ws.Status.AgentdCommit != "" || ws.Status.AgentdBuildTime != "" {
+		ident = fmt.Sprintf(" (commit %s, built %s)", ws.Status.AgentdCommit, ws.Status.AgentdBuildTime)
+	}
 	metrics.WorkspaceAgentdVersionSkew.WithLabelValues(ws.Name).Set(1)
 	r.setCondition(ws, v1.WorkspaceConditionAgentdVersionStale, "True", v1.ReasonAgentdVersionStale,
-		fmt.Sprintf("agentd %s (commit %s, built %s) is older than the fleet release %s — the fix train has not reached this pod; roll runbook: docs/operator/agentd-delivery.md",
-			agentdVersion, ws.Status.AgentdCommit, ws.Status.AgentdBuildTime, r.FleetVersion))
+		fmt.Sprintf("agentd %s%s is older than the fleet release %s — the fix train has not reached this pod; roll runbook: docs/operator/agentd-delivery.md",
+			agentdVersion, ident, r.FleetVersion))
 
 	stamp := agentdVersion + "|" + r.FleetVersion
 	if ws.Annotations[agentdVersionStaleReportedAnnotation] == stamp {
 		return // already reported this exact skew pair (in-memory fast path)
 	}
-	logger := log.FromContext(ctx)
-	logger.Info("agentd version skew detected (RC-A): workspace agentd older than the fleet release",
-		"workspace", ws.Name, "agentdVersion", agentdVersion,
-		"agentdCommit", ws.Status.AgentdCommit, "fleetVersion", r.FleetVersion)
-	metrics.WorkspaceAgentdVersionSkewDetectedTotal.WithLabelValues(ws.Name).Inc()
 
 	// Persist the stamp via a FULL object Update on a FRESH fetch — the
 	// health-check's Status().Update writes only the status subresource
-	// and drops metadata (same reason as mirrorLegacyScrub).
+	// and drops metadata (same reason as mirrorLegacyScrub). The
+	// episode signals (log line, counter, event) fire ONLY after the
+	// persist lands: a failed persist leaves the stamp unset, so the
+	// next scrape retries honestly instead of re-ticking the counter
+	// every 15s against the Help text's "once per episode" contract
+	// (review r1's ordering finding).
 	var fresh v1.Workspace
 	if err := r.Get(ctx, types.NamespacedName{Name: ws.Name, Namespace: ws.Namespace}, &fresh); err != nil {
 		return // a later pass retries (the in-memory stamp stays unset)
@@ -139,11 +178,29 @@ func (r *WorkspaceReconciler) mirrorAgentdVersion(ctx context.Context, ws *v1.Wo
 		ws.Annotations = map[string]string{}
 	}
 	ws.Annotations[agentdVersionStaleReportedAnnotation] = stamp
+
+	log.FromContext(ctx).Info("agentd version skew detected (RC-A): workspace agentd older than the fleet release",
+		"workspace", ws.Name, "agentdVersion", agentdVersion,
+		"agentdCommit", ws.Status.AgentdCommit, "fleetVersion", r.FleetVersion)
+	metrics.WorkspaceAgentdVersionSkewDetectedTotal.WithLabelValues(ws.Name).Inc()
 	if r.Recorder != nil {
 		r.Recorder.Eventf(ws, "Warning", "AgentdVersionStale",
-			"workspace agentd %s (commit %s, built %s) is older than the fleet release %s — platform fixes have not reached this pod; see docs/operator/agentd-delivery.md for the roll runbook",
-			agentdVersion, ws.Status.AgentdCommit, ws.Status.AgentdBuildTime, r.FleetVersion)
+			"workspace agentd %s%s is older than the fleet release %s — platform fixes have not reached this pod; see docs/operator/agentd-delivery.md for the roll runbook",
+			agentdVersion, ident, r.FleetVersion)
 	}
+}
+
+// clearAgentdSkewGauge deletes the workspace's skew gauge series (RC-A
+// review r1): the series dies with the pod. Called on every indefinite
+// no-pod exit — handleTerminating (workspace deleted: the runbook's
+// "gauge drops to 0" convergence must be achievable), handleSuspending
+// (a suspended workspace rebuilds with the CURRENT digest at resume —
+// its stale verdict is meaningless while suspended), restartAgentPod,
+// and handleFailed's no-pod self-heal branches. The episode counter is
+// deliberately NOT deleted (cumulative history, same policy as every
+// other per-workspace counter); the alert reads the gauge only.
+func (r *WorkspaceReconciler) clearAgentdSkewGauge(ws *v1.Workspace) {
+	metrics.WorkspaceAgentdVersionSkew.DeleteLabelValues(ws.Name)
 }
 
 // compareVersions orders two release version strings semver-ishly:

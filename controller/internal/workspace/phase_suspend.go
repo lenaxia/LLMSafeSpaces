@@ -100,6 +100,12 @@ func (r *WorkspaceReconciler) handleSuspending(ctx context.Context, workspace *v
 
 	r.deletePodByName(ctx, name, workspace.Namespace)
 
+	// RC-A review r1: the skew gauge series dies with the pod — a
+	// suspended workspace rebuilds with the CURRENT agentd digest at
+	// resume (converges by construction), so its stale verdict is
+	// meaningless while suspended and must not hold the alert.
+	r.clearAgentdSkewGauge(workspace)
+
 	// US-24.8 F22: suspend clears recovery state for a fresh start on
 	// resume — including the derived RecoveryExhausted condition (#760).
 	wasInRecovery := workspace.Status.ConsecutiveFailures > 0

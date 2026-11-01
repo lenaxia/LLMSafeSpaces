@@ -119,3 +119,43 @@ endpoint (`checkAgentHealth`) — no new scrape, no agentd change
 - Prerelease-vs-release compares equal (semver would order rc below
   release): the release pipeline never stamps prereleases into fleet
   deploys; documented in the doc section.
+
+## Review round 1 (CHANGES_REQUESTED on PR #2001) — remediated
+
+1. **Gauge was write-only (blocking)**: a workspace deleted while
+   stale held `LLMSafeSpacesAgentdVersionSkew` open forever. Fix:
+   `clearAgentdSkewGauge` on every indefinite no-pod exit —
+   `handleTerminating`, `handleSuspending` (suspended rebuilds with the
+   CURRENT digest at resume — converges by construction),
+   `restartAgentPod`, and `handleFailed`'s two no-pod self-heal
+   branches. Transient unreachable scrapes deliberately do NOT clear
+   (latched last-live verdict; a dead pod reaches the health-restart
+   within the 3-failure threshold). Pinned by the
+   restart/termination/suspension tests (second `DeleteLabelValues`
+   returns false — the series was truly deleted).
+2. **Episode counter/log fired before the stamp persisted**: re-ticked
+   every 15s while the persist kept failing. Fix: log + counter + event
+   now fire only after the annotation Update lands. Pinned by
+   `TestMirrorAgentdVersion_EpisodeSignalsOnlyAfterPersist` (verdict
+   surfaces immediately; episode signals do not).
+3. **Pre-2026-08-15 agentds classified Current**: their healthz
+   `version` carried OPENCODE's version ("1.18.10" > "0.44.11"), no
+   identity fields. Fix: version without BOTH `commit_sha` AND
+   `build_time` absent ⇒ ancient shape ⇒ Unknown verdict, version not
+   mirrored. Pinned by
+   `TestMirrorAgentdVersion_AncientBuildIsUnknownNotCurrent`.
+4. **Cosmetic `(commit , built )` hole**: identity suffix renders only
+   when a field was reported.
+5. **openapi/SDK gap**: `sdks/openapi.yaml` +
+   `sdks/typescript/src/types.ts` carry the three fields on
+   `WorkspaceStatusResult` (the #1760 precedent). `sdks` spec validate
+   green.
+6. **Test-thin unhappy paths**: added undecodable-clears,
+   unhealthy-but-decoded mirrors, and the restart-survival exactly-once
+   pin (a NEW reconciler over the annotation-bearing object emits no
+   duplicate event).
+
+Also this round: the shared checkout was switched to `main` by a
+sibling lane mid-edit — moved to an isolated worktree
+(`/tmp/opencode/rca-wt`) for the remediation.
+

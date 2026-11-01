@@ -10309,6 +10309,24 @@ components:
           $ref: "#/components/schemas/AgentHealthResult"
         supervisor:
           $ref: "#/components/schemas/SupervisorStatus"
+        agentdVersion:
+          type: string
+          description: >
+            RUNNING agentd's self-reported build version from its healthz
+            (RC-A, 2026-10-30) — e.g. "0.44.7". Empty while the pod is
+            unreachable. The AgentdVersionStale condition flags a version
+            older than the fleet release.
+        agentdCommit:
+          type: string
+          description: >
+            RUNNING agentd's self-reported git commit (commit_sha on
+            healthz; RC-A, 2026-10-30). "unknown" when the build was not
+            stamped.
+        agentdBuildTime:
+          type: string
+          description: >
+            RUNNING agentd's self-reported UTC build timestamp
+            (build_time on healthz; RC-A, 2026-10-30).
         sessions:
           type: array
           items:
