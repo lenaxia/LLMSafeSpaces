@@ -459,7 +459,6 @@ func TestDeliveryCarriesErrorWording(t *testing.T) {
 func TestOutboxWriteBeforeSendClearOnSuccess(t *testing.T) {
 	s := newSeamSrv(t)
 	s.block = make(chan struct{})
-	t.Cleanup(s.releaseBlock) // failure paths unpark the POST — quiesce's join never stalls
 	store := newSessionSubscriptionStore(storePath(t))
 	n := newSessionNotifier(sessionNotifierConfig{
 		Store:    store,
@@ -468,7 +467,17 @@ func TestOutboxWriteBeforeSendClearOnSuccess(t *testing.T) {
 		Deliver:  seamDeliverer(s),
 		Logger:   zap.NewNop(),
 	})
-	t.Cleanup(func() { quiesceNotifier(n) })
+	// ONE cleanup, ORDERED so the failure path cannot stall: unpark the
+	// POST FIRST (a require.* fatal leaves the delivery leg parked on
+	// <-s.block inside the counted leg — review r2's LIFO finding: a
+	// separately-registered releaseBlock ran AFTER quiesce and the
+	// quiesce join deadlocked to the package timeout before the guard
+	// ever executed), THEN join. Happy path: the test body's own
+	// releaseBlock is a close-once no-op here.
+	t.Cleanup(func() {
+		s.releaseBlock()
+		quiesceNotifier(n)
+	})
 	_, err := n.Subscribe("ses_w", "ses_m", nil)
 	require.NoError(t, err)
 

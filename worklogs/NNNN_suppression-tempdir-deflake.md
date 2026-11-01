@@ -101,6 +101,18 @@ a require.* failure before the happy-path close now unparks the POST
 instead of stalling quiesceNotifier to the package timeout. The join
 pin's `blockingDeliverer` carries the same close-once `unblock()`.
 
+REVIEW R2 CORRECTION (the r1-finding-3 guard was dead as first wired):
+`t.Cleanup` is LIFO, and the guard was registered BEFORE the quiesce
+cleanup — on the motivating failure path (a require.* fatal with the
+POST parked inside the counted leg) quiesce's join deadlocked to the
+package timeout BEFORE the guard ever ran, and the later TempDir/
+srv.Close cleanups never executed at all. Fixed by folding both into
+ONE ordered cleanup (`releaseBlock` first, then `quiesceNotifier`) —
+the guard now runs before the join it protects. The quiesce comment's
+"the engine can never write the store again" was scoped to the
+DEBOUNCE-LEG persists (the latch's persistLocked and handleFrame's
+busy-edge folds carry no leg and are not gated).
+
 ## §3a The pins (review r1's hard gate) — born red under mutation
 
 - `TestQuiesceJoinsInFlightDebounceLeg` — a deliverer that parks

@@ -871,8 +871,11 @@ func (n *sessionNotifier) cancelAllDebounces() {
 //     above; fired legs (running or parked in their deliverer) are
 //     still counted and complete before Wait returns.
 //
-// Once quiesce returns, the engine can never write the store again:
-// RemoveAll is safe the moment it finishes, not merely probably-now.
+// Once quiesce returns, no DEBOUNCE-LEG store write can land again:
+// RemoveAll is safe against the legs the moment it finishes, not
+// merely probably-now (review r2's scope correction: the latch's own
+// persistLocked path and the busy-edge folds in handleFrame carry NO
+// leg and are NOT gated — the claim covers exactly the leg persists).
 // Production never calls this — Run's own teardown keeps
 // cancelAllDebounces semantics unchanged.
 func (n *sessionNotifier) quiesce() {
