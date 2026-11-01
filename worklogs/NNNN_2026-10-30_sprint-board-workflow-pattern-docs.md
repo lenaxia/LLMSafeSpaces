@@ -61,3 +61,11 @@ Branch: `worked-patterns-board-workflows` off `origin/main` @ `a345b8101`.
 ## 5. Process
 
 Conventional commits; this worklog (NNNN sentinel — the bot assigns the number); CHANGELOG [Unreleased]; COORDINATE.md active-claim row. AI reviewer until APPROVED; the orchestrator merges; never self-merge.
+
+## 5. Review round 1 (CHANGES_REQUESTED) → remediated (2026-10-31)
+
+The single required finding: the step-8 materialization's never-block-boot posture was unpinned at the WIRING level — step 7 has `TestInitFS_GateDocCopyBlocked_NeverBlocksBoot` through the real init-fs subprocess; step 8 (the pattern dirs) had only the function-level error-path tests, so a future edit routing a pattern-dir failure through `fail()` would crash-loop every pod at Init:Error and redden nothing.
+
+REMEDIATED: `TestInitFS_PatternDocsCopyBlocked_NeverBlocksBoot` (init_fs_test.go) — the step-8 analogue, two subcases (board dir blocked / workflow dir blocked): a directory planted at one embedded example's pod path (`code-story.md` / `placeholder-rules.md`), the real init-fs subprocess, exit 0 asserted, THAT dir's `(non-fatal)` log line asserted, `init-fs: ok` asserted, and the SIBLING dir asserted to still materialize in full (the two copies are independent). Mutation-verified: a temporary `return 1` behind the sprint non-fatal log reddens the board subcase with the boot-block message; restored, all `TestInitFS*` green.
+
+Non-blocking observations handled: the CHANGELOG entry now states the no-README exemption as explicitly as the no-INDEX rule (the owner's format ruling supersedes the repo README rule for these directories — previously stated only in the test comment). The em-dash cosmetic in the agentd `workflow_create` pointer and the inputSchema-fence class were left as-is — the latter is already superseded on the stacked example-validity PR (#2000, merged into this branch), which re-tags those fences `kind=input-schema` and validates them against the REAL `ValidateInputSchema`.
