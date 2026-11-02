@@ -736,3 +736,45 @@ func TestBoardEnvOverrides_Eventbus(t *testing.T) {
 		t.Fatalf("a blank canonical password must not clobber the fallback: %+v", cfg.Board.Eventbus)
 	}
 }
+
+// TestBoardEnvOverrides_EventbusArmsLease: the REVERSE direction of the
+// per-field fallback — arming ONLY the canonical S6 knob must arm the
+// S4 lease publisher too. The arming posture is "one Redis, one
+// posture" regardless of WHICH knob the operator arms; the
+// lease-only direction left the canonical-knob operator's nudges
+// silently on v1 with lease events unpublished (PR #2007 r3 review).
+func TestBoardEnvOverrides_EventbusArmsLease(t *testing.T) {
+	t.Setenv("LLMSAFESPACES_BOARD_EVENTBUS_ADDR", "board-redis:6379")
+	t.Setenv("LLMSAFESPACES_BOARD_EVENTBUS_PASSWORD", "s6-pass")
+	cfg := &Config{}
+	applyBoardEnvOverrides(cfg)
+	if cfg.Board.LeaseEventbus.Addr != "board-redis:6379" || cfg.Board.LeaseEventbus.Password != "s6-pass" {
+		t.Fatalf("the canonical knob alone must arm the lease publisher: lease=%+v eventbus=%+v",
+			cfg.Board.LeaseEventbus, cfg.Board.Eventbus)
+	}
+
+	// An explicit S4 value still wins over the reverse fallback, and
+	// its remaining gap still fills from the canonical knob.
+	t.Setenv("LLMSAFESPACES_BOARD_LEASEEVENTBUS_ADDR", "lease-redis:6379")
+	cfg = &Config{}
+	applyBoardEnvOverrides(cfg)
+	if cfg.Board.LeaseEventbus.Addr != "lease-redis:6379" {
+		t.Fatalf("an explicit lease addr wins over the reverse fallback: %+v", cfg.Board.LeaseEventbus)
+	}
+	if cfg.Board.LeaseEventbus.Password != "s6-pass" {
+		t.Fatalf("the lease password gap fills from the canonical knob: %+v", cfg.Board.LeaseEventbus)
+	}
+
+	// Both knobs entirely unset stay OFF — the fallback never invents
+	// an address.
+	os.Unsetenv("LLMSAFESPACES_BOARD_EVENTBUS_ADDR")
+	os.Unsetenv("LLMSAFESPACES_BOARD_EVENTBUS_PASSWORD")
+	os.Unsetenv("LLMSAFESPACES_BOARD_LEASEEVENTBUS_ADDR")
+	os.Unsetenv("LLMSAFESPACES_BOARD_LEASEEVENTBUS_PASSWORD")
+	cfg = &Config{}
+	applyBoardEnvOverrides(cfg)
+	if cfg.Board.LeaseEventbus.Addr != "" || cfg.Board.Eventbus.Addr != "" {
+		t.Fatalf("the fallback must keep the OFF posture when nothing is armed: lease=%+v eventbus=%+v",
+			cfg.Board.LeaseEventbus, cfg.Board.Eventbus)
+	}
+}
