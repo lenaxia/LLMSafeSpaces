@@ -99,6 +99,38 @@ func TestEnvtestAgentdSidecar_PodSpecAdmitted(t *testing.T) {
 	}
 	require.Greater(t, scIdx, credIdx, "materialize must land before the sidecar stamps")
 	require.Equal(t, len(got.Spec.InitContainers)-1, scIdx)
+
+	// Design 0070 §2.4a: the payload exchange dir survives admission
+	// dual-rw — RW on the ADMITTED sidecar spec AND the runtime
+	// container, with the sidecar workspace mount still ReadOnly (the
+	// integrity control holds through the API server, not just
+	// buildPod). The envtest arm exists because admission-level drift
+	// (a webhook or defaulting mutating mounts) is invisible to the
+	// buildPod unit pins.
+	var scExchange, scWorkspace *corev1.VolumeMount
+	for i := range sc.VolumeMounts {
+		switch sc.VolumeMounts[i].MountPath {
+		case agentd.ExchangePath:
+			scExchange = &sc.VolumeMounts[i]
+		case agentd.WorkspacePath:
+			scWorkspace = &sc.VolumeMounts[i]
+		}
+	}
+	require.NotNil(t, scExchange, "admitted sidecar mounts the payload exchange dir")
+	require.Equal(t, "exchange", scExchange.SubPath)
+	require.False(t, scExchange.ReadOnly, "admitted sidecar exchange mount is RW")
+	require.NotNil(t, scWorkspace, "admitted sidecar mounts the workspace tree")
+	require.True(t, scWorkspace.ReadOnly, "admitted sidecar workspace mount stays ReadOnly (design 0055 M2)")
+
+	var mainExchange *corev1.VolumeMount
+	for i := range got.Spec.Containers[0].VolumeMounts {
+		if got.Spec.Containers[0].VolumeMounts[i].MountPath == agentd.ExchangePath {
+			mainExchange = &got.Spec.Containers[0].VolumeMounts[i]
+		}
+	}
+	require.NotNil(t, mainExchange, "admitted runtime container mounts the payload exchange dir")
+	require.Equal(t, "exchange", mainExchange.SubPath)
+	require.False(t, mainExchange.ReadOnly, "admitted runtime exchange mount is RW — the write tool's side of the contract")
 }
 
 // TestEnvtestAgentdSidecar_DisabledPodUnchanged: the chart gate OFF
