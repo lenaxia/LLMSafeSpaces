@@ -354,8 +354,8 @@ func boardManagerTools() []mcpTool {
 				"state":   map[string]any{"type": "string", "description": "Last known state, free text: what was done, what gates ran, what remains"},
 				"note":    map[string]any{"type": "string", "description": "Guidance for the inheriting worker (verify-first, what to build on)"},
 				"requestId": map[string]any{"type": "string",
-					"description": "Optional idempotency key: reuse ONE id per logical operation across retries"},
-			}, "required": []string{"taskId"}},
+					"description": "Optional idempotency key: reuse ONE per logical operation across retries"},
+			}, "required": []string{"storyId"}},
 		},
 		{
 			// #1836: the bulk complete — the review-settlement sweep in
