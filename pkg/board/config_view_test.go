@@ -44,7 +44,7 @@ func TestBuildBoardConfigView_UserTierStoredMap(t *testing.T) {
 	u := &BoardConfigOverride{
 		ReviewColumn:       strp(ReviewColumnManual),
 		AutoAssignReviewer: boolp(false),
-		StagePersonas:      &map[string]PersonaConfig{StageInReview: {Name: "auditor", Instructions: "Verify."}},
+		StagePersonas:      &map[string]PersonaConfig{StageInReview: {RoleID: "auditor"}},
 	}
 	view := buildBoardConfigView("user", "", u, nil)
 	assert.Equal(t, ConfigSourceUserDefault, view.Sources[ConfigKeyReviewColumn])
@@ -52,10 +52,11 @@ func TestBuildBoardConfigView_UserTierStoredMap(t *testing.T) {
 	assert.Equal(t, ConfigSourceCodeDefault, view.Sources[ConfigKeyDefaultWorkerSlots], "never stored → code default")
 	assert.Equal(t, ConfigSourceUserDefault, view.Sources[ConfigKeyStagePersonas])
 	// The explicit map owns EVERY stage: in_review renders the stored
-	// persona, in_progress renders none_explicit (visible, not silent).
+	// role reference, in_progress renders none_explicit (visible, not
+	// silent).
 	assert.Equal(t, PersonaSourceUserDefault, view.Personas[StageInReview].Source)
 	require.NotNil(t, view.Personas[StageInReview].Persona)
-	assert.Equal(t, "auditor", view.Personas[StageInReview].Persona.Name)
+	assert.Equal(t, "auditor", view.Personas[StageInReview].Persona.RoleID)
 	assert.Equal(t, PersonaSourceNoneExplicit, view.Personas[StageInProgress].Source)
 	assert.Nil(t, view.Personas[StageInProgress].Persona)
 }
@@ -64,12 +65,12 @@ func TestBuildBoardConfigView_ProjectTierPrecedence(t *testing.T) {
 	u := &BoardConfigOverride{
 		ReviewColumn:       strp(ReviewColumnManual),
 		AutoAssignReviewer: boolp(false),
-		StagePersonas:      &map[string]PersonaConfig{StageInReview: {Name: "auditor"}},
+		StagePersonas:      &map[string]PersonaConfig{StageInReview: {RoleID: "auditor"}},
 	}
 	p := &BoardConfigOverride{
 		ReviewColumn: strp(ReviewColumnOff),
 		StagePersonas: &map[string]PersonaConfig{
-			StageInProgress: {Name: "builder"},
+			StageInProgress: {RoleID: "builder"},
 		},
 	}
 	view := buildBoardConfigView("project", "proj-1", u, p)
@@ -89,14 +90,14 @@ func TestBuildBoardConfigView_ProjectTierPrecedence(t *testing.T) {
 	// wholesale-replace semantics made visible).
 	assert.Equal(t, PersonaSourceProjectOverride, view.Personas[StageInProgress].Source)
 	require.NotNil(t, view.Personas[StageInProgress].Persona)
-	assert.Equal(t, "builder", view.Personas[StageInProgress].Persona.Name)
+	assert.Equal(t, "builder", view.Personas[StageInProgress].Persona.RoleID)
 	assert.Equal(t, PersonaSourceNoneExplicit, view.Personas[StageInReview].Source)
 	assert.Nil(t, view.Personas[StageInReview].Persona,
 		"the project override map replaces the user map wholesale — the user-tier auditor never leaks through")
 }
 
 func TestBuildBoardConfigView_EmptyProjectOptOut(t *testing.T) {
-	u := &BoardConfigOverride{StagePersonas: &map[string]PersonaConfig{StageInReview: {Name: "auditor"}}}
+	u := &BoardConfigOverride{StagePersonas: &map[string]PersonaConfig{StageInReview: {RoleID: "auditor"}}}
 	p := &BoardConfigOverride{StagePersonas: &map[string]PersonaConfig{}}
 	view := buildBoardConfigView("project", "proj-1", u, p)
 	assert.Equal(t, ConfigSourceProjectOverride, view.Sources[ConfigKeyStagePersonas], "{} is an EXPLICIT override")
@@ -110,7 +111,7 @@ func TestBuildBoardConfigView_CompositionDeadUnderUserMap(t *testing.T) {
 	// The toggles are ON (code defaults) but a user-tier explicit map
 	// exists without in_review: the composition arm is dead — the map
 	// owns the stages (the none_explicit semantics, one tier up).
-	u := &BoardConfigOverride{StagePersonas: &map[string]PersonaConfig{StageInProgress: {Name: "builder"}}}
+	u := &BoardConfigOverride{StagePersonas: &map[string]PersonaConfig{StageInProgress: {RoleID: "builder"}}}
 	view := buildBoardConfigView("project", "proj-1", u, nil)
 	assert.Equal(t, PersonaSourceNoneExplicit, view.Personas[StageInReview].Source)
 	assert.Nil(t, view.Personas[StageInReview].Persona)

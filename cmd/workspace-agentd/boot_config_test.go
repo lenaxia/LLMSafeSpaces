@@ -31,7 +31,7 @@ func TestEnsureBootAgentConfig_StampsPlatformBlocks(t *testing.T) {
 	require.NoError(t, os.WriteFile(promptPath, []byte("PLATFORM PROMPT"), 0o600))
 	require.NoError(t, os.WriteFile(dirsPath, []byte(`["/tmp/*"]`), 0o600))
 
-	w := ensureBootAgentConfig(cfgPath, promptPath, dirsPath, "pw")
+	w := ensureBootAgentConfig(cfgPath, promptPath, dirsPath, "", "pw")
 	require.NotNil(t, w)
 
 	written, err := os.ReadFile(cfgPath)
@@ -80,7 +80,7 @@ func TestEnsureBootAgentConfig_MissingBootstrapFiles(t *testing.T) {
 	base := `{"$schema":"https://opencode.ai/config.json","provider":{"openai":{"options":{"apiKey":"k"}}}}`
 	require.NoError(t, os.WriteFile(cfgPath, []byte(base), 0o600))
 
-	w := ensureBootAgentConfig(cfgPath, filepath.Join(dir, "nope-prompt"), filepath.Join(dir, "nope-dirs"), "pw")
+	w := ensureBootAgentConfig(cfgPath, filepath.Join(dir, "nope-prompt"), filepath.Join(dir, "nope-dirs"), filepath.Join(dir, "nope-roles"), "pw")
 	require.NotNil(t, w)
 
 	written, err := os.ReadFile(cfgPath)
@@ -104,12 +104,12 @@ func TestEnsureBootAgentConfig_Idempotent(t *testing.T) {
 	require.NoError(t, os.WriteFile(promptPath, []byte("P"), 0o600))
 	require.NoError(t, os.WriteFile(dirsPath, []byte(`["/tmp/*"]`), 0o600))
 
-	_ = ensureBootAgentConfig(cfgPath, promptPath, dirsPath, "pw")
+	_ = ensureBootAgentConfig(cfgPath, promptPath, dirsPath, "", "pw")
 	first, err := os.ReadFile(cfgPath)
 	require.NoError(t, err)
 
 	// Fresh writer over the once-written file (simulating a second boot).
-	_ = ensureBootAgentConfig(cfgPath, promptPath, dirsPath, "pw")
+	_ = ensureBootAgentConfig(cfgPath, promptPath, dirsPath, "", "pw")
 	second, err := os.ReadFile(cfgPath)
 	require.NoError(t, err)
 
@@ -138,7 +138,7 @@ func TestEnsureBootAgentConfig_PreservesUserMCPServers(t *testing.T) {
 	require.NoError(t, os.WriteFile(promptPath, []byte("P"), 0o600))
 	require.NoError(t, os.WriteFile(dirsPath, []byte(`["/tmp/*"]`), 0o600))
 
-	w := ensureBootAgentConfig(cfgPath, promptPath, dirsPath, "pw")
+	w := ensureBootAgentConfig(cfgPath, promptPath, dirsPath, "", "pw")
 	require.NotNil(t, w)
 
 	written, err := os.ReadFile(cfgPath)
@@ -176,6 +176,6 @@ func TestEnsureBootAgentConfig_WriteFailure_ContinuesBoot(t *testing.T) {
 	require.NoError(t, os.WriteFile(promptPath, []byte("P"), 0o600))
 	require.NoError(t, os.WriteFile(dirsPath, []byte(`["/tmp/*"]`), 0o600))
 
-	w := ensureBootAgentConfig(cfgPath, promptPath, dirsPath, "pw")
+	w := ensureBootAgentConfig(cfgPath, promptPath, dirsPath, "", "pw")
 	require.NotNil(t, w, "writer must still be returned so later write paths (reload, injector) can repair")
 }

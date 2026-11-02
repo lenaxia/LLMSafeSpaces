@@ -88,12 +88,12 @@ func TestBoardSpawnRequest_WiresTheRunID(t *testing.T) {
 }
 
 // TestBoardSpawnRequest_RoleRidesTheDispatch (owner ruling
-// 2026-10-29): a persona carrying a role reference rides the agent
-// dispatch as the spec's `agent` key (the opencode agentID — the
-// workflow engine's routine-fire seam, spec["agent"]). The role is
-// the single source of truth for the spawned worker's
-// model/tools/system-prompt; a role-less persona (legacy shape)
-// carries no agent key.
+// 2026-10-29, round 2 — role-ONLY): spec["agent"] = <role> is the
+// ONE persona dispatch shape (the opencode agentID — the workflow
+// engine's routine-fire seam). The referenced role is the single
+// source of truth for the spawned worker's model/tools/system-prompt;
+// no name or instructions reach the dispatch; a persona-less claim
+// carries no agent key, byte-identical to pre-persona.
 func TestBoardSpawnRequest_RoleRidesTheDispatch(t *testing.T) {
 	mk := func(p *board.PersonaConfig) map[string]any {
 		c := &board.Claim{
@@ -108,24 +108,26 @@ func TestBoardSpawnRequest_RoleRidesTheDispatch(t *testing.T) {
 		}
 		return spec
 	}
-	// Role-bearing: the reference rides the dispatch. A role-first
-	// persona with NO name: the charter's persona line renders the
-	// reference (Label), the dispatch carries it as the agent key.
+	// The persona dispatch shape: the role reference rides the agent
+	// key verbatim; the charter's role line names it (Label).
 	spec := mk(&board.PersonaConfig{RoleID: "11111111-1111-1111-1111-111111111111"})
 	if spec["agent"] != "11111111-1111-1111-1111-111111111111" {
 		t.Fatalf("role reference must ride the agent dispatch: %+v", spec)
 	}
-	if p, _ := spec["prompt"].(string); !strings.Contains(p, "'11111111-1111-1111-1111-111111111111' persona") {
-		t.Fatalf("the label fallback must render the reference: %q", p)
+	if p, _ := spec["prompt"].(string); !strings.Contains(p, "'11111111-1111-1111-1111-111111111111' agent role") {
+		t.Fatalf("the charter's role line must render the reference: %q", p)
 	}
-	// Legacy (role-less) persona: no agent key, instructions still
-	// ride the charter.
-	spec = mk(&board.PersonaConfig{Name: "auditor", Instructions: "Verify."})
+	// The dispatch carries NOTHING else persona-shaped: no name, no
+	// instructions (the role's system prompt is the dispatch's own
+	// seam — the board composes no behavior).
+	if p, _ := spec["prompt"].(string); strings.Contains(p, "Verify adversarially") || strings.Contains(p, "instructions") {
+		t.Fatalf("behavior prose must never ride the charter: %q", p)
+	}
+	// The defensive empty-role shape (the degraded persona pkg/board
+	// never mints): no agent key, persona-less dispatch.
+	spec = mk(&board.PersonaConfig{})
 	if _, ok := spec["agent"]; ok {
-		t.Fatalf("role-less persona must not pin an agent role: %+v", spec)
-	}
-	if p, _ := spec["prompt"].(string); !strings.Contains(p, "Verify.") {
-		t.Fatalf("legacy instructions still ride the charter: %q", p)
+		t.Fatalf("an empty-role persona must not pin an agent role: %+v", spec)
 	}
 }
 

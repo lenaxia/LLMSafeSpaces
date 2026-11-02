@@ -1,9 +1,9 @@
 # 0072 — Workspace event bus: one Redis Stream, many consumer groups
 
-**Status:** Implemented (2026-10-29).
+**Status:** Implemented (2026-10-29); rollout wiring landed 2026-10-30.
 **Date:** 2026-10-29
 **Issues:** design/0069 (the authority frame stream the bus formalizes) · design/0071 (idle-subscriptions v1 — the delivery layer this evolves) · #1574 (derived busy) · #1970/#1977 (the SSE guarantees + seamless-lease lanes whose consumers join next)
-**Affects:** `pkg/eventbus` (NEW) · `cmd/workspace-agentd/{workspace_eventbus.go,session_notifier.go,session_notifier_metrics.go,mcp_server.go,mcp_tools.go,main.go}` + tests · `CHANGELOG.md`. No proto/ABI, controller, or frontend changes.
+**Affects:** `pkg/eventbus` (NEW) · `cmd/workspace-agentd/{workspace_eventbus.go,session_notifier.go,session_notifier_metrics.go,mcp_server.go,mcp_tools.go,main.go}` + tests · `CHANGELOG.md`. No proto/ABI or frontend changes. *(Rollout amendment, 2026-10-30: the controller now arms the bus — `--workspace-eventbus-addr` + `--workspace-eventbus-password-secret` compose `AGENTD_EVENTBUS_ADDR`/`AGENTD_EVENTBUS_PASSWORD` into BOTH pod topologies' agentd processes (main container single-container mode; sidecar via the same wiring in `sidecar_eventbus.go`), with helm values under `controller.workspaceEventbusAddr/PasswordSecret`; the credentialess-address invariant is ENFORCED at controller boot and helm render.)*
 
 ---
 

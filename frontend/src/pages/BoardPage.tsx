@@ -9,16 +9,17 @@ import { Input } from "../components/ui/Input";
 import { Badge } from "../components/ui/Badge";
 import { Spinner } from "../components/ui/Spinner";
 import { TagInput } from "../components/ui/TagInput";
-import { TaskDeleteDialog, describeTaskDeleteResult } from "../components/board/TaskDeleteDialog";
+import { StoryDeleteDialog, describeStoryDeleteResult } from "../components/board/StoryDeleteDialog";
 import { EpicDeleteDialog } from "../components/board/EpicDeleteDialog";
 import { KebabMenu } from "../components/ui/KebabMenu";
 import { BoardErrorNotice } from "../components/board/BoardErrorNotice";
-import { TaskCard } from "../components/board/TaskCard";
-import { TaskDialog } from "../components/board/TaskDialog";
-import { TaskDrawer } from "../components/board/TaskDrawer";
+import { StoryCard } from "../components/board/StoryCard";
+import { StoryDialog } from "../components/board/StoryDialog";
+import { StoryDrawer } from "../components/board/StoryDrawer";
 import { BoardDefaultsDialog, ProjectConfigTrigger } from "../components/board/BoardConfigPanels";
 import { EpicDrawer } from "../components/board/EpicDrawer";
-import { Archive, KanbanSquare, ChevronRight, ListFilter, Settings2 } from "lucide-react";
+import { BoardHelpDrawer } from "../components/board/BoardHelpDrawer";
+import { Archive, HelpCircle, KanbanSquare, ChevronRight, ListFilter, Settings2 } from "lucide-react";
 import { useSearchParams } from "react-router-dom";
 import { cn } from "../lib/utils";
 import { boardApi, type BoardEpic, type BoardProject, type BoardTask, type BoardEventPayload } from "../api/board";
@@ -98,6 +99,10 @@ export function BoardPage() {
   // toolbar. Closed = not rendered = zero height (mobile: the swim
   // lanes start immediately below the toolbar, nothing overlaps).
   const [filterDrawerOpen, setFilterDrawerOpen] = useState(false);
+  // The "How the sprint board works" help drawer (owner ruling
+  // 2026-10-30): opened from the toolbar's HelpCircle affordance AND
+  // the empty-board first-run state — static prose, no data dependency.
+  const [helpOpen, setHelpOpen] = useState(false);
   const [sideCollapsed, setSideCollapsed] = useState(true);
   // #1964: archived projects' two-level drawer — the #1627
   // Archived-group deliberate-friction posture: BOTH levels are
@@ -655,7 +660,7 @@ export function BoardPage() {
         const result = await boardApi.deleteTask(task.short_id, reconnect);
         setTaskDeleteTarget(null);
         await queryClient.invalidateQueries({ queryKey: ["board"] });
-        setPageNotice(describeTaskDeleteResult(result));
+        setPageNotice(describeStoryDeleteResult(result));
         return true;
       } catch (err) {
         setDeleteError(toBoardError(err));
@@ -680,7 +685,7 @@ export function BoardPage() {
         const cascade = result.cascade_tasks ?? [];
         const orphans = result.orphaned_dependents ?? [];
         setPageNotice(
-          `${epic.title} deleted — ${cascade.length} task${cascade.length === 1 ? "" : "s"} cascaded` +
+          `${epic.title} deleted — ${cascade.length} stor${cascade.length === 1 ? "y" : "ies"} cascaded` +
             (orphans.length > 0 ? `; ${orphans.length} cross-epic dependent${orphans.length === 1 ? "" : "s"} orphaned (audited)` : ""),
         );
         return true;
@@ -726,7 +731,7 @@ export function BoardPage() {
 
   // Open the epic drawer with the authoritative row (derived progress).
   // Failures render at PAGE level (r1: they previously landed in
-  // dialogError, invisible with no TaskDialog open).
+  // dialogError, invisible with no StoryDialog open).
   const openEpicDrawer = useCallback(
     async (epicId: string) => {
       try {
@@ -814,9 +819,9 @@ export function BoardPage() {
               className="h-6 px-2 text-[11px]"
               onClick={() => openSwimlaneNewTask(project)}
               data-testid={`new-task-${project.short_id}`}
-              title={selectedEpic ? `New task in ${selectedEpic.title}` : `New task in ${project.name} — pick an epic`}
+              title={selectedEpic ? `New story in ${selectedEpic.title}` : `New story in ${project.name} — pick an epic`}
             >
-              New task
+              New story
             </Button>
             {/* #1832 item 3: project kebab — archive/unarchive
              * ONLY (#1747: project delete is eliminated; this
@@ -874,7 +879,7 @@ export function BoardPage() {
                     )}
                     onClick={() => toggleEpicSelection(project.id, epic.id)}
                     onDoubleClick={() => void openEpicDrawer(epic.id)}
-                    title={`${epic.title} — click to highlight its tasks; double-click for the epic drawer`}
+                    title={`${epic.title} — click to highlight its stories; double-click for the epic drawer`}
                   >
                     {/* Ruling 4: the TITLE is the label — the epc- id
                      * never renders here (it lives in the click-through
@@ -918,7 +923,7 @@ export function BoardPage() {
          * the standard responsive collapse: 2 columns on small
          * screens, 4 from md up (cards keep min-w-0/break-words so
          * long titles wrap INSIDE the card and buttons stay
-         * contained — see TaskCard). */}
+         * contained — see StoryCard). */}
         <div className="grid grid-cols-2 gap-2 p-2 md:grid-cols-4" data-testid={`stage-grid-${project.short_id}`}>
           {MAIN_STAGES.map((stage) => (
             <StageCell
@@ -1004,7 +1009,7 @@ export function BoardPage() {
       <div className="flex flex-col gap-2 border-b border-border px-4 py-2" data-testid="board-toolbar">
         <div className="flex flex-wrap items-center gap-2">
           <KanbanSquare className="h-4 w-4 text-muted-foreground" aria-hidden />
-          <h1 className="text-sm font-semibold">Board</h1>
+          <h1 className="text-sm font-semibold">Sprint Board</h1>
           <select
             aria-label="Project focus"
             value={focusProject}
@@ -1030,7 +1035,7 @@ export function BoardPage() {
             onChange={(e) => setSearch(e.target.value)}
             placeholder="Search title, tag or id…"
             className="h-8 w-56"
-            aria-label="Search tasks"
+            aria-label="Search stories"
             data-testid="board-search"
           />
           <div className="ml-auto flex items-center gap-2">
@@ -1088,6 +1093,21 @@ export function BoardPage() {
             <Button variant="outline" size="sm" onClick={() => { setShowCreateProject(true); setCreateError(null); }} data-testid="new-project-button">
               New project
             </Button>
+            {/* Owner ruling 2026-10-30: a help affordance on the board —
+             * opens the "How the sprint board works" drawer (what it is,
+             * the recommended workflow, worked examples). Icon-only, so
+             * the accessible name carries the full intent. */}
+            <Button
+              variant="outline"
+              size="sm"
+              className="h-8 w-8 px-0"
+              onClick={() => setHelpOpen(true)}
+              aria-label="Learn more: how the sprint board works"
+              title="Learn more: how the sprint board works"
+              data-testid="board-help-button"
+            >
+              <HelpCircle className="h-4 w-4" aria-hidden />
+            </Button>
           </div>
         </div>
         {/* Owner ruling 2026-10-29: the filter pills live in this
@@ -1114,7 +1134,7 @@ export function BoardPage() {
                 failedOnly ? "bg-destructive/15 text-destructive" : "bg-muted text-muted-foreground hover:bg-accent",
               )}
               data-testid="failed-filter-toggle"
-              title="#1813: show only tasks whose last worker attempt failed (the overlay — never a stage)"
+              title="#1813: show only stories whose last worker attempt failed (the overlay — never a stage)"
             >
               FAILED
             </button>
@@ -1211,6 +1231,20 @@ export function BoardPage() {
           <div className="flex h-full flex-col items-center justify-center gap-2 text-sm text-muted-foreground" data-testid="board-empty">
             <span>No boards yet.</span>
             <Button size="sm" onClick={() => setShowCreateProject(true)}>Create your first project</Button>
+            {/* Owner ruling 2026-10-30: the first-run moment carries the
+             * help entry point — same drawer, discoverable before any
+             * project exists. */}
+            <Button
+              variant="ghost"
+              size="sm"
+              className="text-muted-foreground"
+              onClick={() => setHelpOpen(true)}
+              aria-label="Learn more: how the sprint board works"
+              data-testid="board-empty-learn-more"
+            >
+              <HelpCircle className="mr-1 h-3.5 w-3.5" aria-hidden />
+              How the sprint board works
+            </Button>
           </div>
         ) : projectsQuery.isSuccess && activeProjects.length === 0 ? (
           // #1964: every project archived — the active surface is empty
@@ -1408,7 +1442,7 @@ export function BoardPage() {
           <Dialog.Overlay className="fixed inset-0 bg-black/40 z-50" />
           <Dialog.Content className="fixed left-1/2 top-1/2 z-50 flex w-[24rem] max-w-[calc(100vw-2rem)] -translate-x-1/2 -translate-y-1/2 flex-col gap-3 rounded-md border border-border bg-background p-4 shadow-xl">
             <Dialog.Title className="text-sm font-semibold">
-              New task in {taskPickerProject?.name} — pick an epic
+              New story in {taskPickerProject?.name} — pick an epic
             </Dialog.Title>
             <div className="flex flex-col gap-1" data-testid="epic-picker">
               {(taskPickerProject ? epicsByProject.get(taskPickerProject.id) ?? [] : []).map((epic) => (
@@ -1432,7 +1466,7 @@ export function BoardPage() {
               {taskPickerProject && (epicsByProject.get(taskPickerProject.id) ?? []).length === 0 && (
                 <div className="flex flex-col gap-2" data-testid="epic-picker-empty">
                   <span className="text-xs text-muted-foreground">
-                    No epics in {taskPickerProject.name} yet — a task needs its epic.
+                    No epics in {taskPickerProject.name} yet — a story needs its epic.
                   </span>
                   <Button
                     variant="outline"
@@ -1461,7 +1495,7 @@ export function BoardPage() {
       </Dialog.Root>
 
       {/* --- Task create/edit ------------------------------------------------------ */}
-      <TaskDialog
+      <StoryDialog
         open={taskDialog !== null}
         onOpenChange={(open) => {
           if (!open) {
@@ -1557,7 +1591,7 @@ export function BoardPage() {
       />
 
       {/* --- Task-detail drawer (#1832 item 4) ------------------------------------ */}
-      <TaskDrawer
+      <StoryDrawer
         open={taskDrawer !== null}
         onOpenChange={(open) => {
           if (!open) setTaskDrawer(null);
@@ -1616,7 +1650,7 @@ export function BoardPage() {
       </Dialog.Root>
 
       {/* --- Task delete (kebab → modal with the reconnect checkbox) -------- */}
-      <TaskDeleteDialog
+      <StoryDeleteDialog
         open={taskDeleteTarget !== null}
         onOpenChange={(open) => {
           if (!open) {
@@ -1650,6 +1684,10 @@ export function BoardPage() {
       {/* --- Board defaults (the relocated Settings tab, owner ruling
        * 2026-10-28 — config ON the board) --------------------------------- */}
       <BoardDefaultsDialog open={defaultsOpen} onOpenChange={setDefaultsOpen} />
+
+      {/* --- Help drawer ("How the sprint board works", owner ruling
+       * 2026-10-30) -------------------------------------------------------- */}
+      <BoardHelpDrawer open={helpOpen} onOpenChange={setHelpOpen} />
     </div>
   );
 }
@@ -1761,7 +1799,7 @@ function StageCell({
         <span className="text-[10px] text-muted-foreground">{cards.length}</span>
       </div>
       {cards.map((t) => (
-        <TaskCard
+        <StoryCard
           key={t.short_id}
           task={t}
           projectTasks={allProjectTasks}
@@ -1776,7 +1814,7 @@ function StageCell({
           onDetails={onCardDetails}
           kebabItems={[
             {
-              label: "Delete task…",
+              label: "Delete story…",
               destructive: true,
               onClick: () => onCardDelete(t),
             },

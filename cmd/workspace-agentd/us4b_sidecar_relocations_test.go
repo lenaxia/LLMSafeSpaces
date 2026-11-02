@@ -42,10 +42,12 @@ func TestUS4B_BootPathHelpers_EnvOverrides(t *testing.T) {
 	t.Setenv("LLMSAFESPACES_AGENT_CONFIG_PATH", "/agentd-config/agent-config.json")
 	t.Setenv("LLMSAFESPACES_ADMIN_PROMPT_PATH", "/agentd-secrets/admin-prompt.md")
 	t.Setenv("LLMSAFESPACES_ALLOWED_DIRS_PATH", "/agentd-config/allowed-dirs.json")
+	t.Setenv("LLMSAFESPACES_AGENT_ROLES_PATH", "/agentd-config/agent-roles.json")
 
 	require.Equal(t, "/agentd-config/agent-config.json", agentConfigPathFromEnv())
 	require.Equal(t, "/agentd-secrets/admin-prompt.md", adminPromptPathFromEnv())
 	require.Equal(t, "/agentd-config/allowed-dirs.json", allowedDirsPathFromEnv())
+	require.Equal(t, "/agentd-config/agent-roles.json", agentRolesPathFromEnv())
 }
 
 // TestUS4B_BootPathHelpers_WiredIntoBootStamp: with the overrides set, the
@@ -56,18 +58,24 @@ func TestUS4B_BootPathHelpers_WiredIntoBootStamp(t *testing.T) {
 	cfgPath := filepath.Join(dir, "agent-config.json")
 	promptPath := filepath.Join(dir, "admin-prompt.md")
 	dirsPath := filepath.Join(dir, "allowed-dirs.json")
+	rolesPath := filepath.Join(dir, "agent-roles.json")
 	t.Setenv("LLMSAFESPACES_AGENT_CONFIG_PATH", cfgPath)
 	t.Setenv("LLMSAFESPACES_ADMIN_PROMPT_PATH", promptPath)
 	t.Setenv("LLMSAFESPACES_ALLOWED_DIRS_PATH", dirsPath)
+	t.Setenv("LLMSAFESPACES_AGENT_ROLES_PATH", rolesPath)
 
 	require.NoError(t, os.WriteFile(promptPath, []byte("RELOCATED PROMPT"), 0o640))
 	require.NoError(t, os.WriteFile(dirsPath, []byte(`["/tmp/*"]`), 0o640))
+	roleID := "11111111-2222-3333-4444-555555555555"
+	rolesJSON := `[{"id":"` + roleID + `","slug":"reviewer","system":"RELOCATED ROLE PROMPT"}]`
+	require.NoError(t, os.WriteFile(rolesPath, []byte(rolesJSON), 0o640))
 
-	cfgOut, promptOut, dirsOut := bootAgentConfigPathsWithEnv()
+	cfgOut, promptOut, dirsOut, rolesOut := bootAgentConfigPathsWithEnv()
 	require.Equal(t, cfgPath, cfgOut)
 	require.Equal(t, promptPath, promptOut)
 	require.Equal(t, dirsPath, dirsOut)
-	ensureBootAgentConfig(cfgOut, promptOut, dirsOut, "pw")
+	require.Equal(t, rolesPath, rolesOut)
+	ensureBootAgentConfig(cfgOut, promptOut, dirsOut, rolesOut, "pw")
 
 	data, err := os.ReadFile(cfgPath)
 	require.NoError(t, err, "the stamp must write to the overridden config path")
@@ -75,6 +83,8 @@ func TestUS4B_BootPathHelpers_WiredIntoBootStamp(t *testing.T) {
 		"the stamp must source the admin prompt from the overridden path")
 	require.Contains(t, string(data), "/tmp/*",
 		"the stamp must source allowed-dirs from the overridden path")
+	require.Contains(t, string(data), roleID,
+		"the stamp must materialize the agent-role vocabulary from the overridden path")
 }
 
 // --- cross-uid flag ----------------------------------------------------------

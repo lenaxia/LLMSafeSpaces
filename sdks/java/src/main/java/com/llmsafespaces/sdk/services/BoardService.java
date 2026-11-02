@@ -9,10 +9,11 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * Task Board service (#1699, design 0067 §4.3a): the owner's manager
- * surface at /me/projects, /me/epics, /me/tasks. Row encoding is the
- * engine's canonical JSON (snake_case short_id — identical to the
- * internal automation seam's rendering).
+ * Sprint Board service, formerly Task Board (#1699, design 0067 §4.3a):
+ * the owner's manager surface at /me/projects, /me/epics, /me/tasks.
+ * Prose says "story" (owner ruling 2026-10-30); the wire/API term stays
+ * "task". Row encoding is the engine's canonical JSON (snake_case
+ * short_id — identical to the internal automation seam's rendering).
  */
 public class BoardService {
     private final LLMSafeSpacesClient c;

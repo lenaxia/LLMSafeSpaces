@@ -51,6 +51,16 @@ const sidecarEnvPassword = "AGENTD_SIDECAR_PASSWORD"
 // state and the D5.2/D5.3 fail-closed doctrine applies.
 const sidecarEnvControlPlanePassword = "AGENTD_CONTROL_PLANE_PASSWORD"
 
+// agentdRunsAsSidecar is true only inside the `--sidecar` process (set
+// at runSidecarCommand entry, never reset). It is the runtime mode
+// predicate for user-facing prose that must stay mode-honest — e.g. the
+// board payload cleanup warning: a consumed file under the LEGACY
+// workspace root can NEVER be auto-deleted in this topology (the
+// sidecar's /workspace mount is read-only, design 0055 M2), while the
+// single-container process mounts /workspace RW and a delete failure
+// there is merely transient (review r1 finding 4).
+var agentdRunsAsSidecar bool
+
 // readSidecarControlPlanePasswordFromEnv resolves the §D1 control-plane
 // secret. Missing/empty is an error the caller treats as fatal.
 func readSidecarControlPlanePasswordFromEnv() (string, error) {
@@ -108,6 +118,10 @@ type sidecarConfig struct {
 // shutdown) minus every child-ownership duty. Exit code communicates
 // failure; it never returns normally.
 func runSidecarCommand(_ []string) int {
+	// The mode predicate (see agentdRunsAsSidecar): this process — and
+	// only this process, the one serving the user mux /v1/mcp — runs
+	// under the sidecar's read-only /workspace mount.
+	agentdRunsAsSidecar = true
 	log = newLogger()
 	defer func() { _ = log.Sync() }()
 
@@ -177,8 +191,8 @@ func runSidecarCommand(_ []string) int {
 	// US-4b: the sidecar's stores live on the consumer-split volumes —
 	// the controller wires the env overrides; helpers default to the
 	// /sandbox-runtime consts for env-less local runs.
-	bootCfgPath, bootPromptPath, bootDirsPath := bootAgentConfigPathsWithEnv()
-	agentConfigWriter := ensureBootAgentConfig(bootCfgPath, bootPromptPath, bootDirsPath, password)
+	bootCfgPath, bootPromptPath, bootDirsPath, bootRolesPath := bootAgentConfigPathsWithEnv()
+	agentConfigWriter := ensureBootAgentConfig(bootCfgPath, bootPromptPath, bootDirsPath, bootRolesPath, password)
 
 	deps := buildSidecarDeps(sidecarConfig{
 		password:    password,
@@ -234,6 +248,14 @@ func runSidecarCommand(_ []string) int {
 		// no L4/L5 cadence. Same loop, same cadence as single-container.
 		go runSessionStateWatchdog(bgCtx, os.Getenv("WORKSPACE_ID"), sidecarAuthority, sessionstate.ReconcileCadence)
 	}
+	// Design 0071/0072, sidecar edition (the #1332 both-modes
+	// convention): the sidecar's muxes serve the MCP subscription
+	// surface, so THIS process runs the notifier's delivery engine and
+	// the eventbus consumer groups when AGENTD_EVENTBUS_ADDR (wired by
+	// agentd_sidecar.go's eventbusEnv) arms a bus. Unset/unreachable →
+	// nil bus → the v1 point-to-point leg, same as single-container
+	// mode. runShutdown's bgCancel joins the consumers + loops.
+	wireSidecarNotifierBus(bgCtx, &bgWg, sidecarAuthority, os.Getenv, password, log)
 	startBackgroundLoops(bgCtx, &bgWg, deps)
 	// #1576 layer 1's signal: the sidecar learns generation boundaries
 	// from the supervisor's ChildPID (boot observation + every respawn)

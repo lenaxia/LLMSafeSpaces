@@ -47,13 +47,19 @@ import {
 
 /** The persona editor's draft: whether an explicit stagePersonas key
  * will be sent (the set-ness surface — sending {} is the opt-out,
- * sending nothing inherits), and the map itself. */
-export type PersonaDraft = { explicit: boolean; map: Record<string, BoardPersonaConfig> };
+ * sending nothing inherits), and the map itself (stage → role
+ * reference; the stored values normalize through personaRefOf). */
+export type PersonaDraft = { explicit: boolean; map: Record<string, PersonaRef> };
 
-const EMPTY_PERSONA_MAP: Record<string, BoardPersonaConfig> = {};
+const EMPTY_PERSONA_MAP: Record<string, PersonaRef> = {};
 
 function personaDraftOf(stored: Record<string, BoardPersonaConfig> | undefined, explicitStored: boolean): PersonaDraft {
-  return { explicit: explicitStored, map: stored ?? EMPTY_PERSONA_MAP };
+  if (!stored) return { explicit: explicitStored, map: EMPTY_PERSONA_MAP };
+  const map: Record<string, PersonaRef> = {};
+  for (const [stage, p] of Object.entries(stored)) {
+    map[stage] = personaRefOf(p);
+  }
+  return { explicit: explicitStored, map };
 }
 
 function personaDraftDirty(draft: PersonaDraft, stored: PersonaDraft): boolean {
@@ -62,32 +68,42 @@ function personaDraftDirty(draft: PersonaDraft, stored: PersonaDraft): boolean {
 
 // --- Role-ONLY persona editing (owner ruling 2026-10-29, round 2) --------------
 //
-// "We can remove any editor feature for the DX. It's not role-first,
-// it's role-ONLY." A persona IS a reference to a platform agent role
-// (the member-readable GET /me/agent-roles vocabulary) — the role's
-// model/tools/system-prompt are the single source of truth. The
+// "Board stages should ONLY ever have roles configured, there is no
+// custom definition in the board itself. ROLES are the way to define
+// behavior for board stages." A persona IS a reference to a platform
+// agent role (the member-readable GET /me/agent-roles vocabulary) —
+// the role's model/tools/system-prompt are the single source of truth
+// (the default reviewer's verdict-channel charter is the SEEDED
+// reviewer role's system prompt, composed nowhere in this UI). The
 // editor offers exactly ONE authoring surface per stage: the role
-// select (+ Remove). The legacy name input and the instructions
-// override textarea are GONE from the DOM — instructions are not an
-// editor surface anymore (the backend's default-reviewer composition
-// and the stored-shape decode are the only writers/readers of them;
-// the editor never shows them). There is no "no role" option: a
-// picker row with no role chosen is not persisted (dropped on save).
+// select (+ Remove). No name input, no instructions textarea, no
+// "no role" option: a picker row with no role chosen is not persisted
+// (dropped on save).
+
+/** The persona editor's draft map value: the referenced role (id or
+ * slug — bare string, the canonical wire form). "" = a row that
+ * exists in the draft but no role is picked yet; picking one persists
+ * it, saving without picking drops it. */
+type PersonaRef = string;
 
 /** The role picker's placeholder — what an unpicked row's select
  * shows (NOT an option; nothing role-less can be authored). */
 const PERSONA_PICK_ROLE = "Pick a role…";
 
+/** Normalize a decoded persona value to its bare role reference: the
+ * canonical string form directly, the {roleId} object's roleId. */
+function personaRefOf(p: BoardPersonaConfig | undefined): PersonaRef {
+  if (p === undefined) return "";
+  return typeof p === "string" ? p : p.roleId ?? "";
+}
+
 /** The role-only persistence rule (applied at BOTH tiers' save
  * bodies): an entry with no role reference is not a persona — an
- * added-but-unpicked row, or a stored legacy {name, instructions}
- * entry, is dropped from the outgoing map. Entries carrying a roleId
- * ride verbatim (name/instructions included — the stored shape is
- * untouched; only the editor stopped authoring them). */
-function persistablePersonaMap(map: Record<string, BoardPersonaConfig>): Record<string, BoardPersonaConfig> {
-  const out: Record<string, BoardPersonaConfig> = {};
-  for (const [stage, p] of Object.entries(map)) {
-    if (p.roleId) out[stage] = p;
+ * added-but-unpicked row is dropped from the outgoing map. */
+function persistablePersonaMap(map: Record<string, PersonaRef>): Record<string, PersonaRef> {
+  const out: Record<string, PersonaRef> = {};
+  for (const [stage, ref] of Object.entries(map)) {
+    if (ref) out[stage] = ref;
   }
   return out;
 }
@@ -98,38 +114,33 @@ function roleLabel(r: AgentRole): string {
   return `${r.name} (${r.scope})`;
 }
 
-/** The role a persona's roleId addresses (id or slug — the platform
- * accepts both), or null for a role-less/legacy persona. */
-function personaRole(p: BoardPersonaConfig | undefined, roles: AgentRole[]): AgentRole | null {
-  if (!p?.roleId) return null;
-  return roles.find((r) => r.id === p.roleId || r.slug === p.roleId) ?? null;
+/** The role a persona's reference addresses (id or slug — the platform
+ * accepts both), or null when the reference is empty or stale. */
+function personaRole(ref: PersonaRef | undefined, roles: AgentRole[]): AgentRole | null {
+  if (!ref) return null;
+  return roles.find((r) => r.id === ref || r.slug === ref) ?? null;
 }
 
 /** A persona's display label for status lines: the role's name when
- * referenced, else the legacy name, else the raw reference. */
-function personaLabel(p: BoardPersonaConfig | undefined, roles: AgentRole[]): string {
-  if (!p) return "";
-  const r = personaRole(p, roles);
+ * the reference resolves, else the raw reference (a stale ref stays
+ * visible — the drift the config view renders). */
+function personaLabel(ref: PersonaRef | undefined, roles: AgentRole[]): string {
+  if (!ref) return "";
+  const r = personaRole(ref, roles);
   if (r) return r.name;
-  return p.name || p.roleId || "";
+  return ref;
 }
 
 /** The one-click reviewer import (the suppression warning's button):
- * the reviewer AGENT ROLE when the vocabulary carries one (the
- * default-reviewer composition points at it — ruling 2026-10-29),
- * with the mirrored charter prose riding the stored shape (the
- * editor never shows it — role-ONLY). When no reviewer role exists
- * the legacy name+instructions shape is returned as an UNPICKED
- * PICKER ROW (there is no legacy lane to display it in — role-only):
- * it carries no roleId, so a save drops it, and because the guards
- * below read the PERSISTABLE map the warning stays up until a role
- * is actually picked — never a silent suppression. */
-function reviewerImport(roles: AgentRole[]): BoardPersonaConfig {
-  const role = roles.find((r) => r.slug === "reviewer" || r.name === "reviewer");
-  if (role) {
-    return { roleId: role.id, name: DEFAULT_REVIEWER_PERSONA.name, instructions: DEFAULT_REVIEWER_PERSONA.instructions };
-  }
-  return { name: DEFAULT_REVIEWER_PERSONA.name, instructions: DEFAULT_REVIEWER_PERSONA.instructions };
+ * the reviewer AGENT ROLE the vocabulary carries (resolved to its id
+ * so the select shows it immediately), else the built-in reviewer
+ * role's SLUG — the platform seeds that role at startup, so the slug
+ * always addresses it (the server validates against the real
+ * vocabulary, not this possibly-stale copy). */
+function reviewerImport(roles: AgentRole[]): PersonaRef {
+  const role = roles.find((r) => r.slug === DEFAULT_REVIEWER_PERSONA || r.name === DEFAULT_REVIEWER_PERSONA);
+  if (role) return role.id;
+  return DEFAULT_REVIEWER_PERSONA;
 }
 
 // The legacy-composition hazard, shared by both tiers: an explicit map
@@ -140,7 +151,7 @@ function reviewerImport(roles: AgentRole[]): BoardPersonaConfig {
 function PersonaSuppressWarning(props: {
   testPrefix: string;
   kind: "composition" | "inherited";
-  inheritedPersona?: BoardPersonaConfig;
+  inheritedPersona?: PersonaRef;
   roles: AgentRole[];
   onImport: () => void;
 }) {
@@ -201,8 +212,9 @@ export function PersonaEditor(props: {
   compositionActive: boolean;
   /** The tier-above explicit map (project tier: the user's stored
    * stagePersonas when their map is explicit; null = no explicit map
-   * above → the composition is what in_review runs on). */
-  inherited: Record<string, BoardPersonaConfig> | null;
+   * above → the composition is what in_review runs on). Values are
+   * role references (bare strings). */
+  inherited: Record<string, PersonaRef> | null;
   /** The selectable agent-role vocabulary (GET /me/agent-roles). May
    * be empty (load failure / none defined) — editing degrades to the
    * legacy lane. */
@@ -210,9 +222,9 @@ export function PersonaEditor(props: {
 }) {
   const { draft, onDraft } = props;
   const roles = props.roles;
-  const setMap = (map: Record<string, BoardPersonaConfig>) => onDraft({ ...draft, map });
+  const setMap = (map: Record<string, PersonaRef>) => onDraft({ ...draft, map });
 
-  const effectiveInherited = (stage: string): BoardPersonaConfig | undefined =>
+  const effectiveInherited = (stage: string): PersonaRef | undefined =>
     props.inherited !== null ? props.inherited[stage] : undefined;
   const inheritedReviewer = effectiveInherited("in_review");
   // The guards read the PERSISTABLE map — exactly what a save sends
@@ -240,14 +252,14 @@ export function PersonaEditor(props: {
   };
   // "" = unpicked (the placeholder renders; the entry will not
   // persist until a role is chosen).
-  const roleSelectValue = (p: BoardPersonaConfig): string => {
-    const r = personaRole(p, roles);
+  const roleSelectValue = (ref: PersonaRef | undefined): string => {
+    const r = personaRole(ref, roles);
     if (r) return roleLabel(r);
-    return p.roleId ?? "";
+    return ref ?? "";
   };
-  const onRoleSelect = (stage: string, p: BoardPersonaConfig, label: string) => {
+  const onRoleSelect = (stage: string, _ref: PersonaRef | undefined, label: string) => {
     const r = roles.find((role) => roleLabel(role) === label);
-    if (r) setMap({ ...draft.map, [stage]: { ...p, roleId: r.id, name: r.name } });
+    if (r) setMap({ ...draft.map, [stage]: r.id });
   };
 
   return (
@@ -322,6 +334,10 @@ export function PersonaEditor(props: {
       <div className="space-y-2">
         {PERSONA_ELIGIBLE_STAGES.map((stage) => {
           const persona = draft.map[stage];
+          // The row-existence test is KEY PRESENCE, not truthiness: an
+          // unpicked row ("") renders the picker (it persists only
+          // once a role is chosen — the role-only rule).
+          const listed = stage in draft.map;
           if (!draft.explicit) {
             // What the stage runs on today, read-only.
             const inh = effectiveInherited(stage);
@@ -345,7 +361,7 @@ export function PersonaEditor(props: {
               </div>
             );
           }
-          if (!persona) {
+          if (!listed) {
             // The explicit-key-owns-all-stages semantics, VISIBLE: a
             // stage the map does not list has NO persona — never a
             // silent inheritance.
@@ -361,7 +377,7 @@ export function PersonaEditor(props: {
                   variant="outline"
                   size="sm"
                   data-testid={`${props.testPrefix}-${stage}-add`}
-                  onClick={() => setMap({ ...draft.map, [stage]: {} })}
+                  onClick={() => setMap({ ...draft.map, [stage]: "" })}
                 >
                   Add persona
                 </Button>
@@ -409,7 +425,7 @@ export function PersonaEditor(props: {
               ...draft,
               map: {
                 ...draft.map,
-                in_review: inheritedReviewer !== undefined ? { ...inheritedReviewer } : reviewerImport(roles),
+                in_review: inheritedReviewer !== undefined ? inheritedReviewer : reviewerImport(roles),
               },
             })
           }
@@ -694,9 +710,11 @@ export function ProjectConfigDialog(props: {
 
   // The user tier's explicit map is what this project inherits when
   // its own override is absent (null = no explicit map above: the
-  // legacy composition is what in_review runs on).
-  const userInherited: Record<string, BoardPersonaConfig> | null =
-    userCfg.data?.stagePersonasSet ? (userCfg.data.stagePersonas ?? {}) : null;
+  // legacy composition is what in_review runs on). Values normalize
+  // to bare role references (the draft's working form).
+  const userInherited: Record<string, PersonaRef> | null = userCfg.data?.stagePersonasSet
+    ? Object.fromEntries(Object.entries(userCfg.data.stagePersonas ?? {}).map(([k, p]) => [k, personaRefOf(p)]))
+    : null;
   const prov = (k: string, v: boolean) => (
     <span data-testid={`cfg-provenance-${props.project.short_id}-${k}`} className="text-xs text-muted-foreground">
       {v ? "override" : "inherited"}

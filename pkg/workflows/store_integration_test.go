@@ -17,6 +17,8 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -1374,6 +1376,64 @@ func (s *StoreIntegrationSuite) TestTriggerFireResultRoundTrip() {
 	assert.Contains(s.T(), string(fires[0].Result), "deadline exceeded")
 }
 
+// TestTriggerDelete_WithFireHistory_CascadeRoundTrip pins the
+// 2026-10-30 live-fire question at the schema level: trigger 7df2f7d4
+// (cron */3 + inline gate script, every fire skipped) refused DELETE
+// and UPDATE with 500s while LIST read it fine. This proves fire
+// history can never be the blocker — trigger_fires.trigger_id is ON
+// DELETE CASCADE, so delete-with-history is a plain round-trip: the
+// fires go with the row, and a subsequent fire listing reads empty,
+// not a dangling-FK error.
+func (s *StoreIntegrationSuite) TestTriggerDelete_WithFireHistory_CascadeRoundTrip() {
+	ctx := context.Background()
+	now := time.Now()
+
+	trigID := uuid.New().String()
+	require.NoError(s.T(), s.store.CreateTrigger(ctx, &TriggerRow{
+		ID: trigID, OwnerType: "user", OwnerID: "u1",
+		Name: "release-watch-repro", Enabled: true, SourceType: "cron",
+		SourceConfig: json.RawMessage(`{"expr":"*/3 * * * *","tz":"UTC"}`),
+		// The repro shape: an inline gate script whose handler never
+		// proceeds — every fire lands status=skipped.
+		ScriptLanguage:   "python",
+		ScriptHandler:    "def handler(input):\n    return {'proceed': False, 'vars': {}}",
+		AutoDisableAfter: 10, NextFireAt: &now,
+		CreatedAt: now, UpdatedAt: now,
+	}))
+	for i := 0; i < 3; i++ {
+		fired := now.Add(-time.Duration(i+1) * 3 * time.Minute)
+		completed := fired.Add(500 * time.Millisecond)
+		require.NoError(s.T(), s.store.CreateTriggerFire(ctx, &TriggerFireRow{
+			ID: uuid.New().String(), TriggerID: trigID, SourceType: "cron",
+			ActionType:   "routine",
+			ActionResult: json.RawMessage(`{"gate":{"proceed":false}}`),
+			Status:       "skipped", FiredAt: fired, CompletedAt: &completed,
+		}))
+	}
+
+	// History is visible pre-delete.
+	fires, err := s.store.ListTriggerFires(ctx, trigID, 50, 0)
+	require.NoError(s.T(), err)
+	require.Len(s.T(), fires, 3)
+
+	// Disable (the verb that 500ed live): plain success.
+	enabledFalse := false
+	_, err = s.store.UpdateTrigger(ctx, "user", "u1", trigID, &TriggerUpdate{Enabled: &enabledFalse})
+	require.NoError(s.T(), err)
+
+	// Delete (the other verb that 500ed live): plain success — the
+	// fires cascade, no FK violation surfaces.
+	require.NoError(s.T(), s.store.DeleteTrigger(ctx, "user", "u1", trigID))
+
+	_, err = s.store.GetTrigger(ctx, "user", "u1", trigID)
+	assert.ErrorIs(s.T(), err, ErrNotFound)
+
+	// The cascade removed the audit rows with the trigger.
+	fires, err = s.store.ListTriggerFires(ctx, trigID, 50, 0)
+	require.NoError(s.T(), err)
+	assert.Empty(s.T(), fires)
+}
+
 // TestUpdateTrigger_WorkflowFK_NonexistentTargetRejected pins the real-DB
 // face of issue #1519 half (a): UpdateTrigger targeting a nonexistent
 // workflow UUID fails at the triggers.workflow_id FK, and the violation
@@ -1576,4 +1636,90 @@ func (s *StoreIntegrationSuite) TestListWorkerSessions_IsWorkerSession() {
 		require.NoError(s.T(), err)
 		assert.False(s.T(), ok, "re-verification must refuse %s", id)
 	}
+}
+
+// TestTriggerStatementCacheRotation_Class26IsOneShot pins the physical
+// root cause of the 2026-10-30 22:00-22:40 v0.44.11 live-fire (trigger
+// 5da42f34, "v04411-release-watch", created post-#1995): per-id fetch /
+// update / delete 500ed ("failed to fetch trigger" / "failed to delete
+// trigger") through the rollout window while LIST read the same row
+// fine, and everything healed first-try once the rollout settled.
+//
+// Mechanism, recreated on real PG with the exact live row shape: pgx
+// prepares and caches per-id statements server-side; when a rollout
+// rotates those statements away behind the client's back (statement-
+// pooler recycle / failover-side DEALLOCATE), the next execution of the
+// cached statement fails ONCE with SQLSTATE 26000 "prepared statement
+// \"stmtcache_…\" does not exist" — a deterministic-LOOKING code the
+// #1995 classifier let through un-retried (08/53/57/58 + net.Error
+// only), turning a per-(connection, statement) one-shot blip into the
+// hard 500s. The immediate re-run re-prepares and succeeds — which is
+// precisely why the handler-level single retry is the correct fix, and
+// why LIST (whose statement had been revalidated on the connections it
+// landed on) kept working. The row's creation time was a red herring:
+// the failure is condition-dependent, not row-shape-dependent.
+func (s *StoreIntegrationSuite) TestTriggerStatementCacheRotation_Class26IsOneShot() {
+	ctx := context.Background()
+	now := time.Now()
+
+	// The exact live row shape: cron */5 with NO tz key, the inline
+	// marker-file gate script, autoDisableAfter 12.
+	trigID := uuid.New().String()
+	require.NoError(s.T(), s.store.CreateTrigger(ctx, &TriggerRow{
+		ID: trigID, OwnerType: "user", OwnerID: "u1",
+		Name: "v04411-release-watch", Enabled: true, SourceType: "cron",
+		SourceConfig:     json.RawMessage(`{"expr":"*/5 * * * *"}`),
+		ScriptLanguage:   "python",
+		ScriptHandler:    "import json, subprocess, os\nMARKER = '/tmp/opencode/v04411-deploy-fired.marker'\nRUN_ID = '41131334216'\n\ndef handler(input):\n    return {'proceed': False, 'vars': {}}",
+		AutoDisableAfter: 12, NextFireAt: &now,
+		CreatedAt: now, UpdatedAt: now,
+	}))
+
+	// Pin ONE dedicated session so the cached statement and the
+	// server-side rotation share it — and so the poisoned client-side
+	// cache never returns to the suite's shared pool (DEALLOCATE is
+	// session-scoped; the conn is closed, not released).
+	dsn := os.Getenv("TEST_DATABASE_URL")
+	if dsn == "" {
+		dsn = "postgres://postgres:testpass@localhost:5433/llmsafespaces_test?sslmode=disable"
+	}
+	conn, err := pgx.Connect(ctx, dsn)
+	require.NoError(s.T(), err)
+	defer conn.Close(ctx)
+	getStmt := func() error {
+		rows, err := conn.Query(ctx, `SELECT `+triggerSelectColumns+`
+			FROM triggers WHERE id = $1 AND owner_type = $2 AND owner_id = $3`,
+			trigID, "user", "u1")
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		_, scanErr := scanTriggerRows(rows)
+		return scanErr
+	}
+	for i := 0; i < 3; i++ {
+		require.NoError(s.T(), getStmt(), "warm the cached per-id statement")
+	}
+
+	// Server-side statement rotation, behind pgx's cache: what a pooler
+	// recycle or a failover-side session reset does during a rollout.
+	_, err = conn.Exec(ctx, "DEALLOCATE ALL")
+	require.NoError(s.T(), err)
+
+	// The incident error, verbatim class: SQLSTATE 26000.
+	err = getStmt()
+	require.Error(s.T(), err, "the rotated cached statement must fail on next use")
+	var pgErr *pgconn.PgError
+	require.ErrorAs(s.T(), err, &pgErr)
+	s.Equal("26000", pgErr.Code)
+	s.Contains(pgErr.Message, "prepared statement")
+
+	// ONE-SHOT: the immediate re-run re-prepares and succeeds — the
+	// empirical basis for retrying class 26 at the handler layer.
+	require.NoError(s.T(), getStmt(), "the very next execution must heal (re-prepare)")
+
+	// And the pool-level per-id read is unaffected end-to-end.
+	got, err := s.store.GetTrigger(ctx, "user", "u1", trigID)
+	require.NoError(s.T(), err)
+	s.Equal(trigID, got.ID)
 }

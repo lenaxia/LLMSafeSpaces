@@ -113,6 +113,15 @@ type bootstrapWorkspaceLookup interface {
 	GetWorkspace(ctx context.Context, workspaceID string) (*types.WorkspaceMetadata, error)
 }
 
+// bootstrapAgentRoleReader is the agent-role vocabulary seam (the
+// stage-persona materialization source): satisfied structurally by
+// *database.PgOrgStore. Optional — no reader means no agentRoles in
+// the bootstrap response and the pod materializes no named agents
+// (the SetSettingsReader pattern).
+type bootstrapAgentRoleReader interface {
+	ListAgentRoles(ctx context.Context, scope string, orgID string) ([]*types.AgentRole, error)
+}
+
 // k8sTokenReviewer implements TokenReviewer via the K8s API server's
 // TokenReview endpoint.
 type k8sTokenReviewer struct {
@@ -147,6 +156,18 @@ type bootstrapAPIResponse struct {
 	// permission.external_directory (the LIVE key on pinned opencode)
 	// as "allow" rules (stops agents prompting for /tmp/* on every session).
 	AllowedExternalDirectories []string `json:"allowedExternalDirectories,omitempty"`
+	// AgentRoles is the workspace's addressable agent-role vocabulary
+	// (platform scope + the workspace's org — the same composition
+	// ListForMe serves the board owner). The agentd bootstrap
+	// subcommand stages it verbatim to /sandbox-runtime/agent-roles.json
+	// and the AgentConfigWriter materializes each entry as a NAMED
+	// opencode agent (agent.<roleID>) so a board stage-persona
+	// dispatch (spec["agent"] = <roleId>) resolves to the role's own
+	// system prompt — opencode silently falls back to the build agent
+	// for an unknown agentID (NODE-EXECUTE-CONTRACT §A8), so the role
+	// must exist in the pod's registry. Omitted when no reader is
+	// wired (tests/local) or the vocabulary resolves empty.
+	AgentRoles []types.MaterializedAgentRole `json:"agentRoles,omitempty"`
 }
 
 // PodBootstrapHandler handles POST /internal/v1/pod-bootstrap — the
@@ -163,6 +184,7 @@ type PodBootstrapHandler struct {
 	lookup            bootstrapWorkspaceLookup
 	promptSvc         *prompt.Service
 	settings          bootstrapSettingsReader
+	agentRoles        bootstrapAgentRoleReader
 	expectedNamespace string
 	logger            interfaces.LoggerInterface
 	relaySink         relayOutcomeSink
@@ -216,6 +238,25 @@ func (h *PodBootstrapHandler) HasRelayOutcomeSink() bool { return h.relaySink !=
 // bootstrapSettingsReader interface) or any other GetStrings-capable reader.
 func (h *PodBootstrapHandler) SetSettingsReader(sr bootstrapSettingsReader) {
 	h.settings = sr
+}
+
+// SetAgentRoleReader wires the agent-role vocabulary source used to
+// deliver the workspace's addressable roles in the bootstrap response
+// (the stage-persona materialization half of the A8 seam). Optional —
+// when nil, no agentRoles are delivered and the pod materializes no
+// named agents. The SetSettingsReader pattern: production wiring is
+// enforced by the app-level wiring test, not a hard constructor arg.
+func (h *PodBootstrapHandler) SetAgentRoleReader(ar bootstrapAgentRoleReader) {
+	h.agentRoles = ar
+}
+
+// HasAgentRoleReader reports whether an agent-role reader has been
+// wired. Used by the app-level wiring test to enforce that production
+// constructs the handler with SetAgentRoleReader called — without it,
+// stage-persona dispatches would silently run the build agent (the A8
+// fallback) on every pod.
+func (h *PodBootstrapHandler) HasAgentRoleReader() bool {
+	return h.agentRoles != nil
 }
 
 // SetLogger installs a structured logger so the handler can emit
@@ -475,7 +516,77 @@ func (h *PodBootstrapHandler) Bootstrap(c *gin.Context) {
 		}
 	}
 
+	// Resolve the workspace's addressable agent-role vocabulary (the
+	// stage-persona materialization half of the A8 seam — without it a
+	// persona'd dispatch silently runs the build agent). Failures are
+	// non-fatal: the pod boots with no named agents and agentd's A8
+	// pre-validation degrades persona'd dispatches loudly. Composition
+	// mirrors ListForMe/the board role directory: platform scope
+	// always, the workspace's org scope when it belongs to one; the
+	// flat config is served as stored (the same posture as the
+	// selectable-vocabulary read — no extends resolution).
+	if h.agentRoles != nil {
+		roles, rErr := h.agentRoles.ListAgentRoles(c.Request.Context(), "platform", "")
+		if rErr != nil {
+			h.warnBootstrapDegradation("pod-bootstrap: platform agent-role list failed", req.WorkspaceID, rErr)
+		} else {
+			if ws.OrgID != nil && *ws.OrgID != "" {
+				orgRoles, oErr := h.agentRoles.ListAgentRoles(c.Request.Context(), "org", *ws.OrgID)
+				if oErr != nil {
+					h.warnBootstrapDegradation("pod-bootstrap: org agent-role list failed", req.WorkspaceID, oErr)
+				} else {
+					roles = append(roles, orgRoles...)
+				}
+			}
+			resp.AgentRoles = materializedAgentRoles(roles)
+		}
+	}
+
 	c.JSON(http.StatusOK, resp)
+}
+
+// warnBootstrapDegradation emits a bootstrap-resolution warning through
+// the optional logger (silent no-op when unwired — tests/local).
+func (h *PodBootstrapHandler) warnBootstrapDegradation(msg, workspaceID string, err error) {
+	if h.logger != nil {
+		h.logger.Warn(msg, "workspaceID", workspaceID, "error", err)
+	}
+}
+
+// materializedAgentRoles projects store rows onto the pod-delivery
+// shape (ID is the opencode agent name; the config's pointer fields
+// deref safely — a nil field is simply omitted from the wire). Nil
+// rows and blank IDs are skipped (the ID is the dispatch key).
+func materializedAgentRoles(roles []*types.AgentRole) []types.MaterializedAgentRole {
+	out := make([]types.MaterializedAgentRole, 0, len(roles))
+	for _, r := range roles {
+		if r == nil || strings.TrimSpace(r.ID) == "" {
+			continue
+		}
+		entry := types.MaterializedAgentRole{
+			ID:    r.ID,
+			Slug:  r.Slug,
+			Name:  r.Name,
+			Tools: r.Config.Tools,
+		}
+		if r.Config.System != nil {
+			entry.System = *r.Config.System
+		}
+		if r.Config.Description != nil {
+			entry.Description = *r.Config.Description
+		}
+		if r.Config.Model != nil {
+			entry.Model = *r.Config.Model
+		}
+		if r.Config.Mode != nil {
+			entry.Mode = *r.Config.Mode
+		}
+		out = append(out, entry)
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 func extractBearerToken(header string) string {

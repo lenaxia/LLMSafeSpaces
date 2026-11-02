@@ -269,6 +269,10 @@ func (s *BoardSuite) SetupTest() {
 		board.WithPRDriftSource(s.drift),
 		board.WithPendingInputSource(s.pending),
 		board.WithFailpoint(s.fps.fp),
+		// Role-only personas: the standard suite service resolves
+		// persona role references through the two-role fixture
+		// vocabulary (the seeded reviewer + one org role).
+		board.WithRoleDirectory(personaRoleDirectory()),
 	)
 	// The default test reconciler installs NO spawner: the §4.4 dispatch
 	// drive is inert without a spawn seam (no lease churn), so RC-phase

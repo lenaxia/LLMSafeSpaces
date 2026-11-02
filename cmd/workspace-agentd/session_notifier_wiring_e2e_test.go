@@ -277,9 +277,10 @@ func (e *wiringEnv) startConsumer(t *testing.T) {
 
 // stopConsumer cancels the loops' context and JOINS them — bounded, so
 // a leaked Run/ticker/POST fails loudly instead of hanging the binary.
-// The settle sleep after the join out-waits an in-flight debounce
-// timer leg's trailing store persist (the TempDir race — the CI
-// -short+coverage class).
+// With the loops joined, Run has returned (its defer canceled every
+// armed debounce), so the notifier's leg join is exact: it waits out an
+// in-flight timer leg's trailing store persist (the TempDir race — the
+// CI -short+coverage class) with no sleep to guess the bound.
 func (e *wiringEnv) stopConsumer(t *testing.T) {
 	t.Helper()
 	if e.cancel == nil {
@@ -296,7 +297,9 @@ func (e *wiringEnv) stopConsumer(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Error("session notifier loops did not drain within 5s of cancel — lifecycle is not clean")
 	}
-	time.Sleep(100 * time.Millisecond)
+	if e.notifier != nil {
+		e.notifier.waitDebounceLegs()
+	}
 	e.cancel = nil
 }
 

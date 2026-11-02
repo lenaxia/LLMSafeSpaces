@@ -339,20 +339,25 @@ type sessionNotifier struct {
 	tracker     map[string]*notifierSession // canonical id → derived state
 	debounces   map[string]*armedDebounce   // canonical broadcaster id → timer
 	suppression suppressionTracker          // §4.4 already-notified ledger (mu-guarded)
-	// legWG counts IN-FLIGHT debounce timer legs: reserved at arm time
-	// (armDebounceLocked, before the timer exists), released either by
-	// the leg body itself or — when a winning timer Stop proves the leg
-	// will never run — by cancelDebounceLocked. Pure bookkeeping:
-	// nothing in production waits on it; quiesce() joins it so a fired
-	// leg's trailing store persist cannot outlive a test's t.TempDir
-	// (the RemoveAll race PR #1986's round-2 review evidenced).
-	legWG sync.WaitGroup
+	// debounceLegs counts ARMED-but-unresolved debounce timer legs: Add
+	// at arm time, Done exactly once when the leg resolves — either the
+	// timer body returning (fired) or the cancel that stopped the timer
+	// before it fired (absorbed; timer.Stop's return value is the exact
+	// discriminator). waitDebounceLegs joins them: a leg's work does not
+	// end at delivery — the outbox dismiss persist (marshal, file
+	// fsync, rename, dir fsync) trails the deliverer's return, and on a
+	// loaded runner that trail outlives any sleep a caller might guess.
+	// Bookkeeping only: no call site changes behavior.
+	debounceLegs sync.WaitGroup
 	// quiescing, once set under mu, PERMANENTLY disables arming:
 	// armDebounceLocked is the only creator of timer legs, so after the
 	// flag is observed no new reservation can appear and quiesce()'s
-	// Wait joins a set that can only drain to zero — the join is
-	// deterministic even against a fold racing a canceled Run. Test
-	// support only (set by quiesce); production never sets it.
+	// join waits a set that can only drain to zero — the join is
+	// deterministic even against a fold racing a canceled Run (review
+	// r1 finding 2: the bare cancel-then-Wait shape admits an Add
+	// concurrent with a Wait already at zero — the gate closes it
+	// structurally). Test support only (set by quiesce); production
+	// never sets it.
 	quiescing bool
 	// deliverCtx is the Run loop's context (the delivery leg's
 	// cancellation parent); nil until Run starts — timer legs fired
@@ -812,7 +817,9 @@ func (n *sessionNotifier) settleGatesPassLocked(sid string, st *notifierSession)
 }
 
 // armDebounceLocked arms (or re-arms) the broadcaster's settle timer.
-// Caller holds mu.
+// Caller holds mu. The leg is registered on debounceLegs BEFORE the
+// timer exists (the body can never run without its unit counted), and
+// resolves it in its defer — or the pre-fire cancel absorbs it.
 func (n *sessionNotifier) armDebounceLocked(sid, kind string) {
 	if n.quiescing {
 		return // teardown gated arming — no leg can be born past quiesce
@@ -821,10 +828,10 @@ func (n *sessionNotifier) armDebounceLocked(sid, kind string) {
 	// Reserve the leg BEFORE the timer exists, under the same mu the
 	// quiesce gate takes: every live reservation is therefore visible
 	// to quiesce's critical section, whose Wait joins exactly that set.
-	n.legWG.Add(1)
+	n.debounceLegs.Add(1)
 	a := &armedDebounce{kind: kind}
 	a.timer = time.AfterFunc(n.debounce, func() {
-		defer n.legWG.Done()
+		defer n.debounceLegs.Done()
 		n.debounceFired(sid, kind)
 	})
 	n.debounces[sid] = a
@@ -836,10 +843,11 @@ func (n *sessionNotifier) armDebounceLocked(sid, kind string) {
 func (n *sessionNotifier) cancelDebounceLocked(sid string) {
 	if a, ok := n.debounces[sid]; ok {
 		if a.timer.Stop() {
-			// Stop won: the leg will never run — retract its
-			// reservation. The Stop-false shapes (fired, running,
-			// finished) balance through the leg's own defer.
-			n.legWG.Done()
+			// Stop() true ⇒ the body never ran and never will —
+			// absorb its leg unit here. The fired path's Done runs
+			// in the body's defer; Stop's return value makes the
+			// two mutually exclusive, so the counter stays exact.
+			n.debounceLegs.Done()
 		}
 		delete(n.debounces, sid)
 	}
@@ -853,6 +861,18 @@ func (n *sessionNotifier) cancelAllDebounces() {
 	}
 }
 
+// waitDebounceLegs blocks until every debounce timer leg has fully
+// returned, trailing store persist (the enqueue/dismiss fsync-rename
+// pairs) included. The shutdown seam for teardown paths that remove the
+// store's directory: RemoveAll racing a trailing leg write is the
+// "unlinkat: directory not empty" CI class. Callers must have stopped
+// the ARMING source first — the quiesce gate is how (see below);
+// arm-while-waiting at counter zero is the WaitGroup reuse hazard.
+// Safe to call with nothing armed (returns immediately).
+func (n *sessionNotifier) waitDebounceLegs() {
+	n.debounceLegs.Wait()
+}
+
 // quiesce deterministically stills the debounce machinery — the test
 // teardown join (fixture cleanup's backstop). A fired leg keeps
 // writing the store document after its deliverer returned — the outbox
@@ -864,12 +884,15 @@ func (n *sessionNotifier) cancelAllDebounces() {
 //
 //   - the gate: quiescing under mu permanently refuses new arms
 //     (armDebounceLocked is the ONLY leg creator), so after this
-//     critical section the in-flight set can only shrink;
+//     critical section the in-flight set can only shrink — the bare
+//     cancel-then-Wait shape (waitDebounceLegs alone) admits an Add
+//     concurrent with a Wait already at zero, the WaitGroup reuse
+//     hazard above;
 //   - the join: every reservation was made under the same mu, so
-//     legWG.Wait() waits exactly the legs that existed at the gate —
-//     pending timers were stopped and their reservations retracted
-//     above; fired legs (running or parked in their deliverer) are
-//     still counted and complete before Wait returns.
+//     waitDebounceLegs waits exactly the legs that existed at the
+//     gate — pending timers were stopped and their reservations
+//     retracted above; fired legs (running or parked in their
+//     deliverer) are still counted and complete before Wait returns.
 //
 // Once quiesce returns, no DEBOUNCE-LEG store write can land again:
 // RemoveAll is safe against the legs the moment it finishes, not
@@ -885,7 +908,7 @@ func (n *sessionNotifier) quiesce() {
 		n.cancelDebounceLocked(sid)
 	}
 	n.mu.Unlock()
-	n.legWG.Wait()
+	n.waitDebounceLegs()
 }
 
 // debounceFired is the timer body: still-armed check (the cancel may

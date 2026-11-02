@@ -86,7 +86,7 @@ func TestBoardPayloadSchema_DTOParity(t *testing.T) {
 		require.NoError(t, err)
 		// setCriteriaMet is control-plane: read from INLINE tool
 		// arguments (the #1946 grant), refused in the file.
-		parity("create_task", props, reflect.TypeOf(mcpclient.BoardTaskBody{}), []string{"setCriteriaMet"})
+		parity("create_task", props, reflect.TypeOf(mcpclient.BoardStoryBody{}), []string{"setCriteriaMet"})
 	})
 
 	t.Run("update_task_patch", func(t *testing.T) {
@@ -95,7 +95,7 @@ func TestBoardPayloadSchema_DTOParity(t *testing.T) {
 		// setCriteriaMet: inline-only control-plane (above); dependsOn:
 		// the platform's UPDATE DTO does not bind it (a file spelling
 		// would be silently dropped — refused here instead).
-		parity("update_task_patch", props, reflect.TypeOf(mcpclient.BoardTaskBody{}), []string{"setCriteriaMet", "dependsOn"})
+		parity("update_task_patch", props, reflect.TypeOf(mcpclient.BoardStoryBody{}), []string{"setCriteriaMet", "dependsOn"})
 	})
 
 	t.Run("create_epic and update_epic_patch", func(t *testing.T) {
@@ -194,41 +194,66 @@ func TestBoardValidate_HappyPaths(t *testing.T) {
 		assert.True(t, report.Valid)
 	})
 
-	// Role-first persona shapes (owner ruling 2026-10-29): the bare
-	// role reference string, the {roleId, instructions?} object, and
-	// the legacy {name, instructions} object all validate clean.
-	t.Run("set_config role-first persona shapes", func(t *testing.T) {
+	// Role-ONLY persona shapes (owner ruling 2026-10-29, round 2): the
+	// bare role reference string (canonical) and the {roleId} object —
+	// nothing else. The legacy name/instructions shapes reject at the
+	// schema (additionalProperties on the persona object).
+	t.Run("set_config role-only persona shapes", func(t *testing.T) {
 		for name, payload := range map[string]string{
-			"bare reference":        `{"stagePersonas":{"in_review":"reviewer"}}`,
-			"roleId object":         `{"stagePersonas":{"in_progress":{"roleId":"build"}}}`,
-			"roleId + override":     `{"stagePersonas":{"in_review":{"roleId":"reviewer","instructions":"Adversarial."}}}`,
-			"legacy name shape":     `{"stagePersonas":{"in_review":{"name":"auditor","instructions":"Verify."}}}`,
-			"roleId + display name": `{"stagePersonas":{"in_review":{"roleId":"11111111-1111-1111-1111-111111111111","name":"Reviewer"}}}`,
-			// Review round 1 finding 3 (parity with the platform
-			// decoder): an EMPTY name alongside a roleId is legal —
-			// the display label is optional when the role carries it.
-			"roleId + empty name": `{"stagePersonas":{"in_review":{"roleId":"reviewer","name":""}}}`,
+			"bare reference": `{"stagePersonas":{"in_review":"reviewer"}}`,
+			"roleId object":  `{"stagePersonas":{"in_progress":{"roleId":"build"}}}`,
+			"roleId uuid":    `{"stagePersonas":{"in_review":{"roleId":"11111111-1111-1111-1111-111111111111"}}}`,
 		} {
 			report := validateFixture(t, "set_config", payload)
 			assert.True(t, report.Valid, "%s: expected valid, findings %+v", name, report.Findings)
 		}
+		// The legacy shapes are NOT admitted (no migration, no compat —
+		// owner ruling: no personas were ever created).
+		for name, payload := range map[string]string{
+			"legacy name+instructions": `{"stagePersonas":{"in_review":{"name":"auditor","instructions":"Verify."}}}`,
+			"legacy name only":         `{"stagePersonas":{"in_review":{"name":"auditor"}}}`,
+			"roleId + instructions":    `{"stagePersonas":{"in_review":{"roleId":"reviewer","instructions":"Adversarial."}}}`,
+			"roleId + name":            `{"stagePersonas":{"in_review":{"roleId":"reviewer","name":"Reviewer"}}}`,
+		} {
+			report := validateFixture(t, "set_config", payload)
+			assert.False(t, report.Valid, "%s: the non-role shape must reject", name)
+			assert.Contains(t, findingPaths(report), "stagePersonas.in_review", name)
+		}
 	})
 
 	t.Run("set_config persona violation classes", func(t *testing.T) {
-		// An object persona with neither roleId nor name — the
-		// semantic check names the role-or-name rule.
-		report := validateFixture(t, "set_config", `{"stagePersonas":{"in_review":{"instructions":"neither"}}}`)
+		// An object persona with no roleId — the semantic check names
+		// the role-reference rule (the schema's oneOf/required findings
+		// ride along; the SEMANTIC finding is the one that names the
+		// rule).
+		report := validateFixture(t, "set_config", `{"stagePersonas":{"in_review":{}}}`)
 		assert.False(t, report.Valid)
-		require.Len(t, report.Findings, 1)
-		f := report.Findings[0]
-		assert.Equal(t, "stagePersonas.in_review", f.Path)
-		assert.Equal(t, "persona-role-or-name", f.Rule)
-		// A whitespace-only name is the empty slot — the same
+		found := false
+		for _, f := range report.Findings {
+			if f.Path == "stagePersonas.in_review" && f.Rule == "persona-role-ref" {
+				found = true
+			}
+		}
+		assert.True(t, found, "the semantic persona-role-ref finding must name the rule: %+v", report.Findings)
+		// A whitespace-only roleId is the empty slot — the same
 		// trim-aware rule the platform decoder enforces (one contract
 		// per shape).
-		report = validateFixture(t, "set_config", `{"stagePersonas":{"in_review":{"name":"   "}}}`)
+		report = validateFixture(t, "set_config", `{"stagePersonas":{"in_review":{"roleId":"   "}}}`)
 		assert.False(t, report.Valid)
-		assert.Equal(t, "persona-role-or-name", report.Findings[0].Rule)
+		assert.Equal(t, "persona-role-ref", report.Findings[0].Rule)
+		// A whitespace-only BARE reference rejects too (review round 2,
+		// PR #1990): the schema's minLength cannot see whitespace, but
+		// the semantic check trim-checks — admission identical to the
+		// platform decoder on both shapes.
+		report = validateFixture(t, "set_config", `{"stagePersonas":{"in_review":"   "}}`)
+		assert.False(t, report.Valid)
+		wsFound := false
+		for _, f := range report.Findings {
+			if f.Path == "stagePersonas.in_review" && f.Rule == "persona-role-ref" {
+				wsFound = true
+			}
+		}
+		assert.True(t, wsFound, "the whitespace bare-string reference must carry the persona-role-ref finding: %+v", report.Findings)
 		// An empty bare reference rejects at the schema (minLength).
 		report = validateFixture(t, "set_config", `{"stagePersonas":{"in_review":""}}`)
 		assert.False(t, report.Valid)
@@ -413,11 +438,11 @@ func TestBoardValidate_DualEntryPointEquivalence(t *testing.T) {
 		payload  string
 		routing  map[string]any
 	}{
-		"seedless create": {"create_task", "board_create_task",
+		"seedless create": {"create_task", "board_create_story",
 			`{"title":"T"}`, map[string]any{"epicId": "epc-bbbb2222"}},
 		"unknown field": {"create_epic", "board_create_epic",
 			`{"title":"E","bogus":1}`, map[string]any{"projectId": "prj-aaaa1111"}},
-		"placeholder": {"create_task", "board_create_task",
+		"placeholder": {"create_task", "board_create_story",
 			`{"title":"tbd","description":"d","acceptanceCriteria":[{"text":"c"}]}`, map[string]any{"epicId": "epc-bbbb2222"}},
 		"plan both arms": {"import_plan", "board_import_plan",
 			`{"epic":{"title":"E"},"epicId":"epc-x","tasks":[{"key":"k","title":"T","description":"d","acceptanceCriteria":[{"text":"c"}]}]}`,

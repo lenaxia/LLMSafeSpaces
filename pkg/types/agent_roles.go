@@ -49,6 +49,32 @@ type PermissionRule struct {
 	Effect   string `json:"effect"`
 }
 
+// MaterializedAgentRole is the pod-delivery shape of one addressable
+// agent role: the bootstrap response carries the workspace's vocabulary
+// (platform scope + the workspace's org scope — the same composition
+// the board role directory serves the board owner), the agentd
+// bootstrap subcommand writes it verbatim to agentd.AgentRolesPath
+// (tmpfs), and the opencode ConfigWriter materializes each entry as a
+// NAMED opencode agent (agent.<ID>) so a stage-persona dispatch
+// (spec["agent"] = <roleId>) resolves to the role's own system prompt
+// (NODE-EXECUTE-CONTRACT §A8: opencode silently falls back to the
+// build agent for an unknown agentID — the role MUST exist in the
+// config). ID is the opencode agent name (a platform UUID — it cannot
+// collide with opencode's built-in agent names); Slug/Name ride for
+// diagnostics only, never as agent keys. Freshness contract: the file
+// is written at every pod bootstrap, so role edits land on the next
+// boot — the same contract as the admin prompt.
+type MaterializedAgentRole struct {
+	ID          string          `json:"id"`
+	Slug        string          `json:"slug,omitempty"`
+	Name        string          `json:"name,omitempty"`
+	Description string          `json:"description,omitempty"`
+	System      string          `json:"system,omitempty"`
+	Model       string          `json:"model,omitempty"`
+	Mode        string          `json:"mode,omitempty"`
+	Tools       json.RawMessage `json:"tools,omitempty"`
+}
+
 // UnmarshalRoleConfig decodes a JSONB config blob into a RoleConfig,
 // preserving unknown keys in the Raw map for forward compatibility.
 // (Stress test 3.4: Go's default unmarshaler would silently drop unknown keys.)

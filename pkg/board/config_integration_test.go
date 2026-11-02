@@ -583,13 +583,13 @@ func (s *BoardSuite) TestBoardConfig_ViewRealWiring() {
 	// as the BUILT-IN default reviewer; in_progress has no composition.
 	s.Equal(board.PersonaSourceDefaultReviewer, v.Personas[board.StageInReview].Source)
 	s.Require().NotNil(v.Personas[board.StageInReview].Persona)
-	s.Equal(board.DefaultReviewerPersona.Name, v.Personas[board.StageInReview].Persona.Name)
+	s.Equal(board.DefaultReviewerPersona.RoleID, v.Personas[board.StageInReview].Persona.RoleID)
 	s.Equal(board.PersonaSourceNone, v.Personas[board.StageInProgress].Source)
 	s.Nil(v.Personas[board.StageInProgress].Persona)
 
 	// --- project tier: one config key + one persona stage overridden --------------
 	pers := map[string]board.PersonaConfig{
-		board.StageInReview: {Name: "proj reviewer", Instructions: "Check the pins."},
+		board.StageInReview: {RoleID: "reviewer"},
 	}
 	_, err = s.svc.SetProjectBoardConfig(ctx, s.owner(), p.ID, "", &board.BoardConfigOverride{
 		ReviewColumn:  strVal(board.ReviewColumnAuto),
@@ -623,7 +623,7 @@ func (s *BoardSuite) TestBoardConfig_ViewRealWiring() {
 	// included); in_progress UNLISTED in the explicit map → none.
 	s.Equal(board.PersonaSourceProjectOverride, v.Personas[board.StageInReview].Source)
 	s.Require().NotNil(v.Personas[board.StageInReview].Persona)
-	s.Equal("proj reviewer", v.Personas[board.StageInReview].Persona.Name)
+	s.Equal("reviewer", v.Personas[board.StageInReview].Persona.RoleID, "the view renders the RAW stored reference")
 	s.Equal(board.PersonaSourceNoneExplicit, v.Personas[board.StageInProgress].Source)
 	s.Nil(v.Personas[board.StageInProgress].Persona)
 }

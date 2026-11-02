@@ -247,6 +247,20 @@ api:
 controller:
   enabled: true
   replicaCount: 1
+  # Design 0072 (the workspace event bus): arm the bus in every agentd
+  # sidecar. workspaceEventbusAddr is the Redis coordinate the workspaces
+  # publish to (host:port or a credentialess redis:// URL — NEVER embed a
+  # password here; pod specs are readable). When set, sidecars receive
+  # AGENTD_EVENTBUS_ADDR and the notifier's delivery leg rides the
+  # per-workspace Redis Stream (workspace:{id}:events) with the v1
+  # point-to-point fallback; empty (the default) keeps the bus dormant.
+  # workspaceEventbusPasswordSecret is NAME:KEY of an existing secret
+  # carrying the Redis password (e.g. llmsafespaces-credentials:redis-password)
+  # — delivered to sidecars as AGENTD_EVENTBUS_PASSWORD via secretKeyRef,
+  # never rendered into a pod spec. Required when the Redis requires auth;
+  # a password secret without an address refuses to render AND boot.
+  workspaceEventbusAddr: ""
+  workspaceEventbusPasswordSecret: ""
   # #1507: workspace pods' terminationGracePeriodSeconds — the bounded
   # graceful-termination window kubelet gives agentd on pod deletion
   # (agentd's serial shutdown budget: HTTP drain 25s + bg wait 5s +

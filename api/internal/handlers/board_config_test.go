@@ -169,15 +169,15 @@ func TestBoardConfigREST_StagePersonasRoundTrip(t *testing.T) {
 	svc.projects = []board.Project{{ID: "p1", ShortID: "prj-aaaa1111", UserID: "user-1", WorkerSlots: 2, Status: board.ProjectActive}}
 	r := newBoardConfigRouter(t, svc)
 
-	t.Run("user tier decodes the typed map", func(t *testing.T) {
+	t.Run("user tier decodes the typed map (role references only)", func(t *testing.T) {
 		w := doBoardREST(t, r, http.MethodPut, "/api/v1/me/board/config",
-			`{"stagePersonas":{"in_review":{"name":"auditor","instructions":"Verify."},"in_progress":{"name":"implementer"}}}`)
+			`{"stagePersonas":{"in_review":"reviewer","in_progress":{"roleId":"build"}}}`)
 		require.Equal(t, http.StatusOK, w.Code, w.Body.String())
 		require.NotNil(t, svc.lastGlobalConfigSet.StagePersonas)
 		m := *svc.lastGlobalConfigSet.StagePersonas
 		require.Len(t, m, 2)
-		assert.Equal(t, board.PersonaConfig{Name: "auditor", Instructions: "Verify."}, m["in_review"])
-		assert.Equal(t, board.PersonaConfig{Name: "implementer"}, m["in_progress"])
+		assert.Equal(t, board.PersonaConfig{RoleID: "reviewer"}, m["in_review"])
+		assert.Equal(t, board.PersonaConfig{RoleID: "build"}, m["in_progress"])
 	})
 
 	t.Run("project tier accepts the key (the composition lever)", func(t *testing.T) {

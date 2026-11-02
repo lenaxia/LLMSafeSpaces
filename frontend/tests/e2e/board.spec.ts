@@ -376,7 +376,7 @@ async function setupBoardMocks(page: Page, state: BoardState) {
       (projectId === PROJECT_A ? "Apollo" : "Borealis");
     const row = task({
       short_id: `tsk-new${String(state.tasks.length + 1).padStart(4, "0")}`,
-      title: body.title ?? "New task",
+      title: body.title ?? "New story",
       stage: "backlog",
       project_id: projectId,
       epic_id: epicId,
@@ -484,7 +484,7 @@ async function openBoard(page: Page, init?: Partial<BoardState>) {
 
 // --- rows -------------------------------------------------------------------------
 
-test.describe("Task Board UI (#1702)", () => {
+test.describe("Sprint Board UI (#1702)", () => {
   test("renders swimlanes per project, stage columns, and cards (§4.8)", async ({ page }) => {
     await openBoard(page);
 
@@ -749,7 +749,7 @@ test.describe("Task Board UI (#1702)", () => {
 });
 
 test.describe("#1832 items 1-2 — swimlane creation buttons + collapsible epic bands", () => {
-  test("every swimlane header carries enabled New epic / New task buttons (contextual, no dropdown)", async ({ page }) => {
+  test("every swimlane header carries enabled New epic / New story buttons (contextual, no dropdown)", async ({ page }) => {
     await openBoard(page);
 
     for (const pid of [PROJECT_A, PROJECT_B]) {
@@ -817,14 +817,14 @@ test.describe("#1832 items 1-2 — swimlane creation buttons + collapsible epic 
     await expect(page.getByTestId("task-card-tsk-eeee0005")).not.toHaveAttribute("data-highlighted");
   });
 
-  test("the selected epic scopes New task (POST lands on that epic's route)", async ({ page }) => {
+  test("the selected epic scopes New story (POST lands on that epic's route)", async ({ page }) => {
     const state = await openBoard(page);
 
     await page.getByTestId("epic-band-epic-2").click();
     await page.getByTestId(`new-task-${PROJECT_A}`).click();
 
     // The dialog names the selected epic as the landing zone.
-    await expect(page.getByText("New task in E2", { exact: true })).toBeVisible();
+    await expect(page.getByText("New story in E2", { exact: true })).toBeVisible();
     await page.getByTestId("task-title").fill("Scoped follow-up");
     await page.getByTestId("task-description").fill("seeded charter (#1849: required at create)");
     await page.getByTestId("new-criterion").fill("c1");
@@ -841,14 +841,14 @@ test.describe("#1832 items 1-2 — swimlane creation buttons + collapsible epic 
     expect(state.tasks.some((t) => t.title === "Scoped follow-up")).toBe(true);
   });
 
-  test("New task with no selection opens the epic picker; a pick scopes the dialog", async ({ page }) => {
+  test("New story with no selection opens the epic picker; a pick scopes the dialog", async ({ page }) => {
     await openBoard(page);
 
     await page.getByTestId(`new-task-${PROJECT_A}`).click();
     await expect(page.getByTestId("epic-picker")).toBeVisible();
     await page.getByTestId("epic-picker-option-epic-2").click();
 
-    await expect(page.getByText("New task in E2", { exact: true })).toBeVisible();
+    await expect(page.getByText("New story in E2", { exact: true })).toBeVisible();
     await page.getByTestId("task-title").fill("Picked task");
     await page.getByTestId("task-description").fill("seeded charter");
     await page.getByTestId("new-criterion").fill("c1");
@@ -886,7 +886,7 @@ test.describe("#1832 r2 — server-listed epics, unhappy paths, picker escape ha
     await expect(page.getByTestId("epic-picker-option-epic-created-prj-bbbb2222")).toBeVisible();
     await page.getByTestId("epic-picker-option-epic-created-prj-bbbb2222").click();
 
-    await expect(page.getByText("New task in Reload survivor", { exact: true })).toBeVisible();
+    await expect(page.getByText("New story in Reload survivor", { exact: true })).toBeVisible();
     await page.getByTestId("task-title").fill("First of its name");
     await page.getByTestId("task-description").fill("seeded charter");
     await page.getByTestId("new-criterion").fill("c1");
@@ -953,7 +953,7 @@ test.describe("#1832 r2 — server-listed epics, unhappy paths, picker escape ha
 
     await page.getByTestId("epic-band-epic-2").click();
     await page.getByTestId(`new-task-${PROJECT_A}`).click();
-    await expect(page.getByText("New task in E2", { exact: true })).toBeVisible();
+    await expect(page.getByText("New story in E2", { exact: true })).toBeVisible();
     await page.getByTestId("task-title").fill("Doomed task");
     await page.getByTestId("task-description").fill("seeded charter");
     await page.getByTestId("new-criterion").fill("c1");
@@ -961,7 +961,7 @@ test.describe("#1832 r2 — server-listed epics, unhappy paths, picker escape ha
     await page.getByTestId("task-save").click();
 
     await expect(page.locator("[data-board-error]").first()).toBeVisible({ timeout: 8000 });
-    await expect(page.getByText("New task in E2", { exact: true })).toBeVisible();
+    await expect(page.getByText("New story in E2", { exact: true })).toBeVisible();
     await expect(page.getByTestId("task-title")).toHaveValue("Doomed task");
   });
 
@@ -1061,7 +1061,7 @@ test.describe("#1832 item 3 — kebab menus + delete flows", () => {
     const state = await openBoard(page);
 
     await page.getByTestId("task-kebab-tsk-cccc0003").click();
-    await page.getByRole("menuitem", { name: "Delete task…" }).click();
+    await page.getByRole("menuitem", { name: "Delete story…" }).click();
 
     const modal = page.getByTestId("task-delete-modal");
     await expect(modal).toBeVisible();
@@ -1084,7 +1084,7 @@ test.describe("#1832 item 3 — kebab menus + delete flows", () => {
     const state = await openBoard(page);
 
     await page.getByTestId("task-kebab-tsk-cccc0003").click();
-    await page.getByRole("menuitem", { name: "Delete task…" }).click();
+    await page.getByRole("menuitem", { name: "Delete story…" }).click();
     const modal = page.getByTestId("task-delete-modal");
     await modal.getByTestId("reconnect-dependents").check();
 
@@ -1465,5 +1465,115 @@ test.describe("2026-10-29 filter drawer — pills collapsed, count badge, clear-
     await expect(page.getByTestId("drawer-implementer")).toBeVisible();
     await page.getByTestId("drawer-implementer").click();
     await expect(page).toHaveURL(new RegExp(`/chat/${WORKSPACE_ID}/brave-osprey-lands$`));
+  });
+});
+
+// 2026-10-30 owner ruling: a Learn-more affordance teaching the board.
+// The vitest tier (BoardPage.helpdrawer.test.tsx) pins copy completeness
+// — five sections, six worked examples, story vocabulary, vendor
+// neutrality — at the jsdom level; THIS is the real-browser tier. What
+// only surfaces here: a drawer that mounts in the a11y tree but is
+// invisible/clipped/uninteractive in real layout (portal, z-index,
+// overlay CSS), an icon-only affordance displaced by the real toolbar,
+// and an overlay that traps the board after either exit (focus/pointer
+// events never released). The empty board's first-run entry point rides
+// the same drawer.
+test.describe("2026-10-30 help drawer — Learn more: how the sprint board works", () => {
+  test("happy: the toolbar affordance opens the visible drawer; the Close button restores the board", async ({ page }) => {
+    await openBoard(page);
+
+    // The affordance is VISIBLE in the real toolbar layout — an
+    // icon-only button displaced or clipped by real flex layout reads
+    // present in jsdom and invisible here.
+    const help = page.getByTestId("board-help-button");
+    await expect(help).toBeVisible();
+    await expect(help).toHaveAttribute("aria-label", "Learn more: how the sprint board works");
+
+    // Closed = no portal content at all.
+    await expect(page.getByTestId("board-help-drawer")).toHaveCount(0);
+
+    await help.click();
+    const drawer = page.getByTestId("board-help-drawer");
+    await expect(drawer).toBeVisible();
+    await expect(page.getByTestId("board-help-title")).toHaveText("How the sprint board works");
+    // Real-render spot checks: the first section heading and one
+    // example card render inside the real drawer (not just attach).
+    await expect(page.getByTestId("board-help-heading-what")).toBeVisible();
+    await expect(page.getByTestId("board-help-example-code")).toBeVisible();
+
+    // The Close button exit: drawer + overlay leave the DOM, the board
+    // is intact underneath.
+    await page.getByTestId("board-help-close").click();
+    await expect(page.getByTestId("board-help-drawer")).toHaveCount(0);
+    await expect(page.getByTestId("task-card-tsk-aaaa0001")).toBeVisible();
+  });
+
+  test("unhappy: Escape closes the drawer and releases the board underneath (no overlay trap)", async ({ page }) => {
+    await openBoard(page);
+
+    await page.getByTestId("board-help-button").click();
+    await expect(page.getByTestId("board-help-drawer")).toBeVisible();
+
+    // Escape — the Radix dialog contract's keyboard exit (the same
+    // exit every drawer in the app honors).
+    await page.keyboard.press("Escape");
+    await expect(page.getByTestId("board-help-drawer")).toHaveCount(0);
+
+    // The board underneath is INTERACTIVE again — a lingering overlay
+    // (pointer-events trap) or a stranded focus ring surfaces as a
+    // failed click/type on real board chrome: the search input takes a
+    // keystroke and actually filters.
+    const search = page.getByTestId("board-search");
+    await search.click();
+    await search.fill("charter");
+    await expect(page.getByTestId("task-card-tsk-aaaa0001")).toBeVisible(); // "Write charter" matches
+    await expect(page.getByTestId("task-card-tsk-cccc0003")).toHaveCount(0); // "Review drag arm" filtered out
+  });
+
+  test("first-run: the empty board carries the learn-more entry; the drawer opens with no project data", async ({ page }) => {
+    // The static drawer has no data dependency — the first-run moment
+    // (zero projects) is exactly when a user needs the explainer.
+    const state: BoardState = { tasks: [], projects: [], epics: [] };
+    await installSSEEmitters(page);
+    await setupBoardMocks(page, state);
+    await page.goto("/board");
+    await expect(page.getByTestId("board-empty")).toBeVisible();
+
+    // Both affordances present at first-run: the empty-state entry and
+    // the toolbar icon.
+    await expect(page.getByTestId("board-empty-learn-more")).toBeVisible();
+    await expect(page.getByTestId("board-help-button")).toBeVisible();
+
+    await page.getByTestId("board-empty-learn-more").click();
+    await expect(page.getByTestId("board-help-drawer")).toBeVisible();
+    await expect(page.getByTestId("board-help-title")).toHaveText("How the sprint board works");
+
+    // The exit leaves the first-run state untouched underneath.
+    await page.keyboard.press("Escape");
+    await expect(page.getByTestId("board-help-drawer")).toHaveCount(0);
+    await expect(page.getByTestId("board-empty")).toBeVisible();
+  });
+
+  test("mobile: the toolbar affordance stays reachable at 375px; the drawer resolves its width against the real viewport", async ({ page }) => {
+    await page.setViewportSize({ width: 375, height: 667 });
+    await openBoard(page);
+
+    const help = page.getByTestId("board-help-button");
+    await expect(help).toBeVisible();
+    await help.click();
+    const drawer = page.getByTestId("board-help-drawer");
+    await expect(drawer).toBeVisible();
+    // Real-browser geometry: w-[26rem] (416px) must clamp to the 90vw
+    // max at a 375px viewport (337.5px) — a clipped or zero-width
+    // drawer reads visible-in-jsdom and broken here.
+    const box = await page.evaluate(() => {
+      const d = document.querySelector('[data-testid="board-help-drawer"]')!.getBoundingClientRect();
+      return { left: d.left, width: d.width };
+    });
+    expect(box.left).toBeGreaterThanOrEqual(0);
+    expect(box.width).toBeGreaterThan(300);
+
+    await page.keyboard.press("Escape");
+    await expect(page.getByTestId("board-help-drawer")).toHaveCount(0);
   });
 });

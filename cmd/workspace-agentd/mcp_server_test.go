@@ -1357,7 +1357,7 @@ func TestMCPHandler_ToolDescriptionGuidance(t *testing.T) {
 			"BOARD LEASE NUDGE",                      // the trigger the worker is told to watch for
 			"observedProgressAt",                     // the response's stamp field
 			"claim_token",                            // the 409 code that means the claim is gone
-			"re-read the task",                       // the recovery path
+			"re-read it with board_read",             // the recovery path (story vocabulary, ruling 2026-10-30)
 		} {
 			assert.Contains(t, d, want)
 		}
@@ -1400,7 +1400,7 @@ func TestMCPHandler_ToolDescriptionGuidance(t *testing.T) {
 		require.True(t, ok, "board_read in tools/list")
 		for _, want := range []string{
 			"shortId",        // the tsk-… addressing from the charter
-			"taskId",         // the UUID alternative
+			"storyId",        // the UUID alternative (story rename phase 2; taskId rides the alias window)
 			"No claim token", // a read is not an in-flight write
 			"did-you-mean",   // 404 suggestions surface
 			"lease",          // the worker's own claim state is visible

@@ -51,6 +51,12 @@ func newFakeOpencodeHarness(t *testing.T) *fakeOpencodeHarness {
 		status:         http.StatusOK,
 	}
 	mux := http.NewServeMux()
+	mux.HandleFunc("GET /agent", func(w http.ResponseWriter, _ *http.Request) {
+		// A8 pre-validation source: the parked fake serves opencode's
+		// registry (build — the specs these tests dispatch name it).
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `[{"name":"build"}]`)
+	})
 	mux.HandleFunc("POST /session", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		fmt.Fprint(w, `{"id":"ses_worker_1"}`)
@@ -88,6 +94,14 @@ func newFakeOpencodeHarness(t *testing.T) *fakeOpencodeHarness {
 
 	orig := agentAddrAtomic.Load()
 	t.Cleanup(func() { agentAddrAtomic.Store(orig) })
+	// A8 cache hygiene: cold registry per harness (same discipline as
+	// newDedupeHarness — no cross-test stub leakage).
+	t.Cleanup(func() {
+		agentRegistryCache.Lock()
+		agentRegistryCache.password = ""
+		agentRegistryCache.names = nil
+		agentRegistryCache.Unlock()
+	})
 	agentAddrAtomic.Store(h.srv.URL)
 	return h
 }

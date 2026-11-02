@@ -144,6 +144,7 @@ func (s *BoardSuite) TestPersonaSpawnRace_S1_NoMechanicalFlipWithoutWorkerMove()
 		board.WithWorkerAborter(s.aborter.Abort),
 		board.WithAsyncSpawn(),
 		board.WithDriveQueue(nil),
+		board.WithRoleDirectory(personaRoleDirectory()),
 	)
 	s.recon = board.NewReconciler(s.pool, s.cfg,
 		board.WithWorkerSpawner(spawner.Spawn),
@@ -152,6 +153,7 @@ func (s *BoardSuite) TestPersonaSpawnRace_S1_NoMechanicalFlipWithoutWorkerMove()
 		board.WithPendingInputSource(s.pending),
 		board.WithFailpoint(s.fps.fp),
 		board.WithAsyncSpawn(),
+		board.WithRoleDirectory(personaRoleDirectory()),
 	)
 
 	c, err := svc.ClaimNext(ctx, "w-"+ws, ws)
@@ -211,6 +213,7 @@ func (s *BoardSuite) TestPersonaSpawnRace_S2_ImmediateMoveRacingInFlightSpawn() 
 		board.WithWorkerSpawner(spawner.Spawn),
 		board.WithWorkerAborter(aborter.Abort),
 		board.WithAsyncSpawn(),
+		board.WithRoleDirectory(personaRoleDirectory()),
 	)
 
 	c, err := svc.ClaimNext(ctx, "w-"+ws, ws)
@@ -240,7 +243,7 @@ func (s *BoardSuite) TestPersonaSpawnRace_S2_ImmediateMoveRacingInFlightSpawn() 
 	})
 	rev := spawner.claimAt(1)
 	s.Require().NotNil(rev.Persona, "the in_review entry's spawn carries the reviewer persona")
-	s.Equal(board.DefaultReviewerPersona.Name, rev.Persona.Name)
+	s.Equal(reviewerRole.ID, rev.Persona.RoleID)
 	s.Equal(board.StageInReview, rev.Stage)
 	s.Equal(*row.ClaimToken, rev.ClaimToken, "claim-before-spawn: the charter carries the MINTED token")
 
@@ -274,8 +277,9 @@ func (s *BoardSuite) TestPersonaSpawnRace_S5_HeartbeatNotStillbornOnRearmWindow(
 		board.WithWorkerSpawner(spawner.Spawn),
 		board.WithAsyncSpawn(),
 		board.WithTurnEvidenceSource(evidence),
+		board.WithRoleDirectory(personaRoleDirectory()),
 	)
-	s.setStagePersonas(svc, p, map[string]board.PersonaConfig{"in_review": {Name: "reviewer"}})
+	s.setStagePersonas(svc, p, map[string]board.PersonaConfig{"in_review": {RoleID: "reviewer"}})
 
 	c, err := svc.ClaimNext(ctx, "w-"+ws, ws)
 	s.Require().NoError(err)
@@ -305,6 +309,7 @@ func (s *BoardSuite) TestPersonaSpawnRace_S5_HeartbeatNotStillbornOnRearmWindow(
 		board.WithPendingInputSource(s.pending),
 		board.WithFailpoint(s.fps.fp),
 		board.WithAsyncSpawn(),
+		board.WithRoleDirectory(personaRoleDirectory()),
 	)
 	s.sweep()
 	lapsed := s.rawTask(task.ID)
@@ -363,8 +368,10 @@ func (s *BoardSuite) TestPersonaSpawnRace_S6_VerdictChannelHoldsReviewersToken()
 	task := s.seedTask(e, "s6-verdict-channel", nil, false)
 
 	spawner := &claimCapture{}
-	svc := board.NewService(s.pool, s.cfg, board.WithWorkerSpawner(spawner.Spawn))
-	s.setStagePersonas(svc, p, map[string]board.PersonaConfig{"in_review": {Name: "reviewer"}})
+	svc := board.NewService(s.pool, s.cfg,
+		board.WithWorkerSpawner(spawner.Spawn),
+		board.WithRoleDirectory(personaRoleDirectory()))
+	s.setStagePersonas(svc, p, map[string]board.PersonaConfig{"in_review": {RoleID: "reviewer"}})
 
 	c, err := svc.ClaimNext(ctx, "w-"+ws, ws)
 	s.Require().NoError(err)

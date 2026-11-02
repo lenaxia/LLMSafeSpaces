@@ -27,6 +27,20 @@ const (
 	PasswordPath    = "/sandbox-cfg/password"
 	SecretsBasePath = "/sandbox-runtime/rt/secrets"
 	WorkspacePath   = "/workspace"
+	// ExchangePath is the board payload exchange dir (design 0070
+	// §2.4a): the ONE PVC subtree mounted RW in BOTH uid spaces — the
+	// runtime container (uid 1000, where the agent's write tool
+	// creates payload files) and the agentd sidecar (uid 2000, where
+	// the design-0070 auto-cleanup hook unlinks consumed ones). In
+	// sidecar mode /workspace is ReadOnly to the sidecar (design 0055
+	// M2 integrity control) and /platform is uid-2000-exclusive, so no
+	// other path is both runtime-writable and sidecar-deletable — the
+	// 0070 "the file auto-deletes on success" contract was
+	// unsatisfiable before this dir existed (every payload call in
+	// sidecar mode returned cleanup_warning: read-only file system).
+	// Holds ONLY short-lived board payload files (bodyFile/patchFile/
+	// planFile/configFile); relative board file params anchor here.
+	ExchangePath = "/exchange"
 	// StagedFilesMaxBytes is the W8 file-class delivery budget: the
 	// staged manifest + bytes MUST fit under it because it is also the
 	// /v1/spawn-files response cap the supervisor enforces. Binding-time
@@ -45,6 +59,19 @@ const (
 	// death, no plaintext-on-PVC concern (it's a list of public path
 	// globs, not secrets).
 	AllowedDirsPath = "/sandbox-runtime/allowed-dirs.json"
+	// AgentRolesPath is where the bootstrap subcommand writes the
+	// workspace's addressable agent-role vocabulary (a JSON array of
+	// role entries — id + slug/name + the role config's behavior
+	// fields). The AgentConfigWriter reads it once at init and
+	// materializes each role as a NAMED opencode agent
+	// (agent.<roleID> — prompt/model/mode/tools) so a board
+	// stage-persona dispatch (spec["agent"] = <roleId>, the A8
+	// agentID seam) resolves to the role's own system prompt instead
+	// of silently falling back to the build agent (NODE-EXECUTE-
+	// CONTRACT §A8: opencode never errors on an unknown agentID).
+	// Same tmpfs lifecycle as admin-prompt.md: written at every pod
+	// bootstrap, wiped on pod death, never on the PVC.
+	AgentRolesPath = "/sandbox-runtime/agent-roles.json"
 	// ModelResolutionWarningPath is where the materialize subcommand records
 	// that the workspace's persisted default model could not be resolved to
 	// any provider in agent-config.json (e.g. a relay-only model selected
@@ -79,6 +106,15 @@ const (
 	AgentdAdminPort = 4098 // agentd admin HTTP API (healthz, readyz, statusz) — US-22.8
 	AgentdAdminAddr = "0.0.0.0:4098"
 	AuthUsername    = "opencode" // Basic Auth username for opencode
+	// ErrorCodeAgentNotFound is the A8 pre-validation rejection
+	// (NODE-EXECUTE-CONTRACT §A8): an agent-node dispatch named an
+	// agent absent from opencode's live registry — the failure that
+	// opencode itself would have swallowed (silent build-agent
+	// fallback). Rides the 200 workflow-execute error envelope so the
+	// engine-side callers (the board spawner) can branch on it: a
+	// persona'd spawn degrades to a persona-less re-dispatch instead
+	// of spawning a silently role-less worker.
+	ErrorCodeAgentNotFound = "agent_not_found"
 )
 
 // OverlayMountPath is the agentd image-volume mount inside workspace

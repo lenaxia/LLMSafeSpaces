@@ -34,10 +34,10 @@ const EPIC_STATE_REFUSAL = boardError(409, {
   code: "epic_state",
 });
 
-/** Opens the task kebab on a card and clicks Delete task… */
+/** Opens the task kebab on a card and clicks Delete story… */
 async function openTaskDelete(shortId: string) {
   fireEvent.click(screen.getByTestId(`task-kebab-${shortId}`));
-  fireEvent.click(await screen.findByRole("menuitem", { name: "Delete task…" }));
+  fireEvent.click(await screen.findByRole("menuitem", { name: "Delete story…" }));
   return screen.findByTestId("task-delete-modal");
 }
 
@@ -103,7 +103,7 @@ describe("BoardPage #1832 item 3 — kebab menus + delete flows", () => {
 
     fireEvent.click(screen.getByTestId("task-kebab-tsk-cccc0003"));
     const menu = await screen.findByRole("menu");
-    expect(within(menu).getByRole("menuitem", { name: "Delete task…" })).toBeInTheDocument();
+    expect(within(menu).getByRole("menuitem", { name: "Delete story…" })).toBeInTheDocument();
 
     // The kebab click must NOT have opened the task editor (stopPropagation).
     expect(screen.queryByTestId("task-title")).toBeNull();

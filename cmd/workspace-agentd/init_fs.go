@@ -98,6 +98,69 @@ func replaceSymlink(path, target string) error {
 	return os.Symlink(target, path)
 }
 
+// ensureExchangeDir creates/repairs the exchange/ PVC subPath — the
+// board payload exchange dir (design 0070 §2.4a), the ONE PVC subtree
+// both uid spaces write.
+//
+// Mode decision (0770 shared group, NOT 1777 sticky — recorded in the
+// design-0070 amendment): deletion permission for an unlink comes from
+// the PARENT directory's write bit, not file ownership — a sticky bit
+// would block the sidecar (uid 2000) unlinking the runtime's (uid
+// 1000) payload files, which is the exact operation the dir exists
+// for. Group rwx under the pod's shared gid 1000 (pod RunAsGroup +
+// FSGroup; the sidecar runs RunAsGroup 1000, the runtime container
+// carries gid 1000 supplemental) is the US-4b rt/ cross-uid
+// precedent. Explicit Chmod after creation because MkdirAll applies
+// the process umask (0770 & ~022 = 0750 loses the group-write bit the
+// contract hangs on).
+//
+// Threat model: the dir holds ONLY short-lived board payload files;
+// the sidecar deletes only files it CONSUMED (the anchored path its
+// read discipline validated — regular file, caps, UTF-8), never a
+// sweep; nothing else in the user's tree is reachable through it.
+//
+// Cross-uid tolerance (a mode flip on an existing PVC re-creates the
+// pod under the OTHER uid's init): when the dir already exists at
+// EXACTLY the contract mode (0770, no sticky), chmod is SKIPPED — the
+// other uid owns the dir and a chmod would EPERM. Anything else —
+// missing group bits, OR a planted 0777/1777 (world/sticky: a sticky
+// bit blocks exactly the cross-uid unlink this dir exists for, review
+// r1 finding) — is repaired when the running uid owns the dir and
+// fails loudly into Init:Error when it cannot (a root-owned
+// kubelet-fallback dir needs operator repair; the failure is bounded
+// and named). Lstat, never Stat: a planted SYMLINK at exchange/ is
+// refused as not-a-directory (the replaceSymlink discipline — checks
+// must describe the LINK, not its target).
+func ensureExchangeDir(pvcRoot string) error {
+	dir := filepath.Join(pvcRoot, "exchange")
+	info, err := os.Lstat(dir)
+	if os.IsNotExist(err) {
+		//nolint:gosec // G301: 0770 is the dual-uid contract (see above); parent is the PVC root this command owns
+		if err := os.Mkdir(dir, 0o770); err != nil {
+			return err
+		}
+		//nolint:gosec // G302/G306: directory (not file) — exact-mode; umask-proofing the group-write bit
+		return os.Chmod(dir, 0o770)
+	}
+	if err != nil {
+		return err
+	}
+	if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("%s exists and is not a directory (planted symlinks are refused, never followed)", dir)
+	}
+	if mode := info.Mode(); mode.Perm() != 0o770 || mode&os.ModeSticky != 0 {
+		// Off-contract mode (missing group bits, world-writable, or
+		// sticky): repair. We may not own the dir (the other mode's
+		// init — or the kubelet fallback — created it); a failure
+		// here is loud by design.
+		//nolint:gosec // G302: directory (not file) — the dual-uid contract mode
+		if err := os.Chmod(dir, 0o770); err != nil {
+			return fmt.Errorf("repair mode (currently %v): %w", mode.Perm(), err)
+		}
+	}
+	return nil
+}
+
 // installCredential copies src to dst atomically with mode perm,
 // creating the temp file with perm from the first byte so the
 // credential is never briefly more permissive (G21 `install -m`
@@ -141,8 +204,30 @@ func runInitFSCommand(args []string, stderr io.Writer) int {
 	// Mode 0750, files inside 0640: a directory needs the x bit to
 	// traverse — design 0055's "0640" applies to the payload files.
 	platformSubpath := fs.String("platform-subpath", "create", "platform/ subPath handling: create | skip | only")
+	// Design 0070 §2.4a — the exchange/ PVC subPath (the board payload
+	// exchange dir). Same create/skip discipline as platform/: the
+	// RUNNING uid creates it (single-container platform-init uid 1000;
+	// sidecar-mode platform-dirs uid 2000 — ownership follows the
+	// writer), except the dir is DUAL-RW: mode 0770 group rwx under the
+	// pod's shared gid 1000, so the runtime container's write tool (uid
+	// 1000) and the sidecar's cleanup hook (uid 2000, gid 1000) BOTH
+	// write it. See ensureExchangeDir for the mode rationale.
+	exchangeSubpath := fs.String("exchange-subpath", "create", "exchange/ subPath handling: create | skip | only")
 
 	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+
+	// Review r1 (flag-value asymmetry): an unknown --exchange-subpath
+	// value must be a LOUD flag error (exit 2), never a silent skip —
+	// a typo'd value deferring creation falls straight into the
+	// root-owned-0755 kubelet-fallback failure class. (The older
+	// --platform-subpath keeps its historical behavior — pre-existing
+	// surface, out of scope here.)
+	switch *exchangeSubpath {
+	case "create", "skip", "only":
+	default:
+		_, _ = fmt.Fprintf(stderr, "init-fs: --exchange-subpath must be create|skip|only (got %q)\n", *exchangeSubpath)
 		return 2
 	}
 
@@ -154,6 +239,11 @@ func runInitFSCommand(args []string, stderr io.Writer) int {
 	if *platformSubpath == "only" {
 		if err := os.MkdirAll(filepath.Join(*pvcRoot, "platform"), 0o750); err != nil {
 			return fail("platform subPath: %v", err)
+		}
+		if *exchangeSubpath != "skip" {
+			if err := ensureExchangeDir(*pvcRoot); err != nil {
+				return fail("exchange subPath: %v", err)
+			}
 		}
 		_, _ = fmt.Fprintln(stderr, "init-fs: platform-only ok")
 		return 0
@@ -168,6 +258,11 @@ func runInitFSCommand(args []string, stderr io.Writer) int {
 	if *platformSubpath == "create" {
 		if err := os.MkdirAll(filepath.Join(*pvcRoot, "platform"), 0o750); err != nil {
 			return fail("platform subPath: %v", err)
+		}
+	}
+	if *exchangeSubpath == "create" || *exchangeSubpath == "only" {
+		if err := ensureExchangeDir(*pvcRoot); err != nil {
+			return fail("exchange subPath: %v", err)
 		}
 	}
 

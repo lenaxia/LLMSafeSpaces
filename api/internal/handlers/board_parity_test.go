@@ -152,9 +152,9 @@ var boardParityMatrix = []parityRow{
 		externalMCP: liveCell, extTools: []string{"board_record_verdict"},
 		agent: liveCell, agentTools: []string{"board_record_verdict"}}, // #1832 item 5: reviewers are manager surfaces — the verdict core is forge-agnostic, adapters map INTO it. #1947: the SPAWNED reviewer persona (the stage-persona claim-then-spawn) is a worker session — its verdict rides the agent seam, claim-token-guarded (the in_review row's live token)
 	{action: "task_verdicts", restMethods: []string{"ListTaskVerdicts"}, rest: liveCell,
-		externalMCP: liveCell, extTools: []string{"board_task_verdicts"}, agent: absentCell}, // #1832 item 5: the ordered verdict chain (B2's envelope input)
-	{action: "board_task_events", restMethods: []string{"TaskEvents"}, rest: liveCell,
-		externalMCP: liveCell, extTools: []string{"board_task_events"}, agent: absentCell}, // #1832 item 4: drawer audit-timeline read — REST + external MCP (construction parity)
+		externalMCP: liveCell, extTools: []string{"board_story_verdicts", "board_task_verdicts"}, agent: absentCell}, // #1832 item 5: the ordered verdict chain (B2's envelope input)
+	{action: "board_story_events", restMethods: []string{"TaskEvents"}, rest: liveCell,
+		externalMCP: liveCell, extTools: []string{"board_story_events", "board_task_events"}, agent: absentCell}, // #1832 item 4: drawer audit-timeline read — REST + external MCP (construction parity)
 	{action: "create_epic", restMethods: []string{"CreateEpic"}, rest: liveCell,
 		externalMCP: liveCell, extTools: []string{"board_create_epic"}, agent: liveCell,
 		agentTools: []string{"board_create_epic"}},
@@ -180,11 +180,11 @@ var boardParityMatrix = []parityRow{
 		agentTools: []string{"board_delete_epic"},
 		denyErr:    &board.GuardError{Code: board.GuardEpicState, Detail: "claims in flight — force required"}, denyCode: http.StatusConflict},
 	{action: "create_task", restMethods: []string{"CreateEpicTask"}, rest: liveCell,
-		externalMCP: liveCell, extTools: []string{"board_create_task"}, agent: liveCell,
-		agentTools: []string{"board_create_task"}},
+		externalMCP: liveCell, extTools: []string{"board_create_story", "board_create_task"}, agent: liveCell,
+		agentTools: []string{"board_create_story"}},
 	{action: "update_task", restMethods: []string{"UpdateTask"}, rest: liveCell,
 		externalMCP: liveCell, extTools: []string{"board_update_item"}, agent: liveCell,
-		agentTools: []string{"board_update_task"}},
+		agentTools: []string{"board_update_story"}},
 	{action: "add_dependency", restMethods: []string{"AddDependency"}, rest: liveCell,
 		externalMCP: liveCell, extTools: []string{"board_add_dependency"}, agent: liveCell,
 		agentTools: []string{"board_add_dependency"},
@@ -197,7 +197,7 @@ var boardParityMatrix = []parityRow{
 		agentTools: []string{"board_move_stage"},
 		denyErr:    &board.GuardError{Code: board.GuardDone, Detail: "criteria unmet or evidence missing"}, denyCode: http.StatusConflict},
 	{action: "task_start", restMethods: []string{"StartTask"}, rest: liveCell,
-		externalMCP: liveCell, extTools: []string{"board_start_task"}, agent: absentCell, // round-3 #2: dropped from agent surfaces (the engine claims and spawns)
+		externalMCP: liveCell, extTools: []string{"board_start_story", "board_start_task"}, agent: absentCell, // round-3 #2: dropped from agent surfaces (the engine claims and spawns)
 		denyErr: &board.GuardError{Code: board.GuardEpicState, Detail: "paused epics refuse task_start"}, denyCode: http.StatusConflict},
 	// #1836 bulk rows: the batch forms ride the same per-action boundary
 	// as their single forms — the bulk claim keeps task_start's
@@ -205,7 +205,7 @@ var boardParityMatrix = []parityRow{
 	// three-live-columns shape (the manager-grade move is the #1832
 	// WS2 cell the agent column already carries).
 	{action: "bulk_start", restMethods: []string{"StartTasksBulk"}, rest: liveCell,
-		externalMCP: liveCell, extTools: []string{"board_start_tasks"}, agent: absentCell, // follows task_start's boundary
+		externalMCP: liveCell, extTools: []string{"board_start_stories", "board_start_tasks"}, agent: absentCell, // follows task_start's boundary
 		denyErr: &board.GuardError{Code: board.GuardInput, Detail: "bulk batch capped at 50 items"}, denyCode: http.StatusBadRequest},
 	{action: "bulk_move_stage", restMethods: []string{"MoveStageBulk"}, rest: liveCell,
 		externalMCP: liveCell, extTools: []string{"board_move_stage_bulk"}, agent: liveCell,
@@ -216,23 +216,23 @@ var boardParityMatrix = []parityRow{
 	// carry the owner-only boundary; the bulk form follows the single
 	// form's boundary, unlike the bulk claim).
 	{action: "bulk_delete", restMethods: []string{"DeleteTasksBulk"}, rest: liveCell,
-		externalMCP: liveCell, extTools: []string{"board_delete_tasks"}, agent: liveCell,
-		agentTools: []string{"board_delete_tasks"},
+		externalMCP: liveCell, extTools: []string{"board_delete_stories", "board_delete_tasks"}, agent: liveCell,
+		agentTools: []string{"board_delete_stories"},
 		denyErr:    &board.GuardError{Code: board.GuardInput, Detail: "bulk batch capped at 50 items"}, denyCode: http.StatusBadRequest},
 	{action: "delete_task", restMethods: []string{"DeleteTask"}, rest: liveCell,
 		externalMCP: liveCell, extTools: []string{"board_delete"}, agent: liveCell,
-		agentTools: []string{"board_delete_task"},
+		agentTools: []string{"board_delete_story"},
 		denyErr:    &board.GuardError{Code: board.GuardClaimToken, Detail: "claims in flight"}, denyCode: http.StatusConflict},
 	{action: "pause_task", restMethods: []string{"PauseTask"}, rest: liveCell,
-		externalMCP: liveCell, extTools: []string{"board_pause_task"}, agent: liveCell,
-		agentTools: []string{"board_pause_task"},
+		externalMCP: liveCell, extTools: []string{"board_pause_story", "board_pause_task"}, agent: liveCell,
+		agentTools: []string{"board_pause_story"},
 		denyErr:    &board.GuardError{Code: board.GuardPaused, Detail: "terminal rows refuse pause"}, denyCode: http.StatusConflict},
 	{action: "resume_task", restMethods: []string{"ResumeTask"}, rest: liveCell,
-		externalMCP: liveCell, extTools: []string{"board_resume_task"}, agent: liveCell,
-		agentTools: []string{"board_resume_task"}},
+		externalMCP: liveCell, extTools: []string{"board_resume_story", "board_resume_task"}, agent: liveCell,
+		agentTools: []string{"board_resume_story"}},
 	{action: "rearm_task", restMethods: []string{"RearmTask"}, rest: liveCell,
-		externalMCP: liveCell, extTools: []string{"board_rearm_task"}, agent: liveCell,
-		agentTools: []string{"board_rearm_task"},
+		externalMCP: liveCell, extTools: []string{"board_rearm_story", "board_rearm_task"}, agent: liveCell,
+		agentTools: []string{"board_rearm_story"},
 		denyErr:    &board.GuardError{Code: board.GuardStage, Detail: "re-arm targets attempts-exhausted rows"}, denyCode: http.StatusConflict},
 	{action: "import_plan", restMethods: []string{"ImportPlan"}, rest: liveCell,
 		externalMCP: liveCell, extTools: []string{"board_import_plan"}, agent: liveCell,
@@ -385,7 +385,7 @@ func boardParityRESTCall(t *testing.T, r *gin.Engine, action string) *httptest.R
 		return doBoardREST(t, r, http.MethodGet, "/api/v1/me/projects", "")
 	case "task_verdicts":
 		return doBoardREST(t, r, http.MethodGet, "/api/v1/me/tasks/tsk-cccc3333/verdicts", "")
-	case "board_task_events":
+	case "board_story_events":
 		return doBoardREST(t, r, http.MethodGet, "/api/v1/me/tasks/tsk-cccc3333/events", "")
 	case "record_verdict":
 		return doBoardREST(t, r, http.MethodPost, "/api/v1/me/tasks/tsk-cccc3333/verdict",
@@ -839,12 +839,12 @@ func boardParityExtToolArgs(action string) (string, map[string]any, bool) {
 	case "board_read":
 		return "board_list_projects", map[string]any{}, true
 	case "task_verdicts":
-		return "board_task_verdicts", map[string]any{"task_id": "tsk-cccc3333"}, true
-	case "board_task_events":
-		return "board_task_events", map[string]any{"task_id": "tsk-cccc3333"}, true
+		return "board_story_verdicts", map[string]any{"story_id": "tsk-cccc3333"}, true
+	case "board_story_events":
+		return "board_story_events", map[string]any{"story_id": "tsk-cccc3333"}, true
 	case "record_verdict":
 		return "board_record_verdict", map[string]any{
-			"task_id": "tsk-cccc3333", "verdict": "fail", "reviewer": "rev",
+			"story_id": "tsk-cccc3333", "verdict": "fail", "reviewer": "rev",
 			"findings": []map[string]any{{"severity": "blocker", "pointer": "c1"}},
 		}, true
 	case "create_epic":
@@ -862,31 +862,31 @@ func boardParityExtToolArgs(action string) (string, map[string]any, bool) {
 	case "delete_epic":
 		return "board_delete", map[string]any{"item_id": "epc-bbbb2222", "force": true}, true
 	case "create_task":
-		return "board_create_task", map[string]any{"epic_id": "epc-bbbb2222", "title": "T"}, true
+		return "board_create_story", map[string]any{"epic_id": "epc-bbbb2222", "title": "T"}, true
 	case "update_task":
 		return "board_update_item", map[string]any{"item_id": "tsk-cccc3333", "title": "x"}, true
 	case "add_dependency":
-		return "board_add_dependency", map[string]any{"task_id": "tsk-cccc3333", "depends_on": "tsk-dddd4444"}, true
+		return "board_add_dependency", map[string]any{"story_id": "tsk-cccc3333", "depends_on": "tsk-dddd4444"}, true
 	case "remove_dependency":
-		return "board_remove_dependency", map[string]any{"task_id": "tsk-cccc3333", "depends_on": "tsk-dddd4444"}, true
+		return "board_remove_dependency", map[string]any{"story_id": "tsk-cccc3333", "depends_on": "tsk-dddd4444"}, true
 	case "move_stage":
-		return "board_move_stage", map[string]any{"task_id": "tsk-cccc3333", "to_stage": "done"}, true
+		return "board_move_stage", map[string]any{"story_id": "tsk-cccc3333", "to_stage": "done"}, true
 	case "task_start":
-		return "board_start_task", map[string]any{"task_id": "tsk-cccc3333"}, true
+		return "board_start_story", map[string]any{"story_id": "tsk-cccc3333"}, true
 	case "bulk_start":
-		return "board_start_tasks", map[string]any{"task_ids": []any{"tsk-cccc3333"}}, true
+		return "board_start_stories", map[string]any{"story_ids": []any{"tsk-cccc3333"}}, true
 	case "bulk_move_stage":
-		return "board_move_stage_bulk", map[string]any{"task_ids": []any{"tsk-cccc3333"}, "to_stage": "done"}, true
+		return "board_move_stage_bulk", map[string]any{"story_ids": []any{"tsk-cccc3333"}, "to_stage": "done"}, true
 	case "bulk_delete":
-		return "board_delete_tasks", map[string]any{"task_ids": []any{"tsk-cccc3333"}}, true
+		return "board_delete_stories", map[string]any{"story_ids": []any{"tsk-cccc3333"}}, true
 	case "rearm_task":
-		return "board_rearm_task", map[string]any{"task_id": "tsk-cccc3333"}, true
+		return "board_rearm_story", map[string]any{"story_id": "tsk-cccc3333"}, true
 	case "delete_task":
 		return "board_delete", map[string]any{"item_id": "tsk-cccc3333"}, true
 	case "pause_task":
-		return "board_pause_task", map[string]any{"task_id": "tsk-cccc3333"}, true
+		return "board_pause_story", map[string]any{"story_id": "tsk-cccc3333"}, true
 	case "resume_task":
-		return "board_resume_task", map[string]any{"task_id": "tsk-cccc3333"}, true
+		return "board_resume_story", map[string]any{"story_id": "tsk-cccc3333"}, true
 	case "import_plan":
 		return "board_import_plan", map[string]any{
 			"project_id": "prj-aaaa1111", "epic_title": "E",
@@ -1124,7 +1124,7 @@ func boardReadActions() map[string]bool {
 		// #1832 item 5: the verdict chain read.
 		"task_verdicts": true,
 		// #1832 item 4: the task-events timeline read.
-		"board_task_events": true}
+		"board_story_events": true}
 }
 
 // TestBoardParity_IdempotentReplay: the clientMessageID discipline at

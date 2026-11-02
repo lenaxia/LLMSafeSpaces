@@ -491,7 +491,8 @@ export interface UpdateUserPromptRequest {
   content?: string;
 }
 
-// ─── Task Board (design 0067, #1699) ─────────────────────────────────────────
+// ─── Sprint Board, formerly Task Board (design 0067, #1699) ────────────────
+// Prose says "story"; the wire/API term stays "task".
 // Row encoding is the engine's canonical JSON (snake_case short_id —
 // identical to the internal automation seam's rendering).
 

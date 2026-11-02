@@ -112,3 +112,12 @@ jobs:
       # executes — is why the step is explicit, not a path trigger.
       - name: Run envtest setup wiring tests
         run: go test -timeout 300s -race -tags envtest ./controller/internal/controller/ -run TestEnvtestSetupWiring -v
+
+      # Design 0072 rollout: the ARMED posture pin — SetupControllers
+      # with a live bus addr + secret ref → the reconciled pod's main
+      # container carries AGENTD_EVENTBUS_ADDR (plain, credentialess)
+      # + AGENTD_EVENTBUS_PASSWORD (secretKeyRef). Own package because
+      # controller-runtime's controller-name registry is process-global
+      # (a second SetupControllers in the same binary collides).
+      - name: Run envtest eventbus armed-posture tests
+        run: go test -timeout 300s -race -tags envtest ./controller/internal/controller/eventbuswiring/ -run TestEnvtestSetupWiring_EventbusArmsPodEnv -v

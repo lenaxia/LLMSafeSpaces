@@ -223,7 +223,7 @@ func resyncSecretsHandler(d resyncDeps) http.HandlerFunc {
 		}
 
 		priorHash, _ := readPriorBatch(d.batchPath)
-		payload, notModified, _, _, _, err := fetchBootstrapSecrets(r.Context(), d.apiURL, d.workspaceID, string(token), priorHash)
+		payload, notModified, _, _, _, _, err := fetchBootstrapSecrets(r.Context(), d.apiURL, d.workspaceID, string(token), priorHash)
 		if err != nil {
 			reason := resyncReasonPullFailed
 			if errors.Is(err, errBootstrapUnauthorized) {

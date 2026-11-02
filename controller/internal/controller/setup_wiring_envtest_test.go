@@ -89,6 +89,7 @@ func TestEnvtestSetupWiring_DirectReaderServesRuntimeResolution(t *testing.T) {
 
 	require.NoError(t, SetupControllers(mgr,
 		"", "", "", "", "", "",
+		"", "", "", // design-0072 bus: the dormant default (this test pins the pre-0072 posture)
 		workspace.UploadStagingConfig{},
 		AgentdDelivery{Image: wiringAgentdImage, BinarySHA256AMD64: wiringAgentdSHAAMD, BinarySHA256ARM64: wiringAgentdSHAARM},
 		OpencodeDelivery{Image: wiringOpencodeImage, BinarySHA256AMD64: wiringOpencodeAMD, BinarySHA256ARM64: wiringOpencodeARM},

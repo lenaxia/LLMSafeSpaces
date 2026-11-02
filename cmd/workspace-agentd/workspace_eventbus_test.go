@@ -222,3 +222,41 @@ func TestRunEventbusConsumersNilSafe(t *testing.T) {
 		runEventbusConsumers(context.Background(), nil, nil, nil, "", zap.NewNop())
 	})
 }
+
+func TestEventbusPasswordEnvComposesOntoHostPort(t *testing.T) {
+	// The secretKeyRef spelling (design 0072 rollout): the address is a
+	// plaintext host:port and the password rides
+	// AGENTD_EVENTBUS_PASSWORD. The composition must reach the redis
+	// OPTIONS (the client auths) — pinned over miniredis with RequireAuth.
+	mr, err := miniredis.Run()
+	require.NoError(t, err)
+	defer mr.Close()
+	mr.RequireAuth("sekrit")
+	bus := eventbusFromEnv(func(k string) string {
+		switch k {
+		case "AGENTD_EVENTBUS_ADDR":
+			return mr.Addr()
+		case "AGENTD_EVENTBUS_PASSWORD":
+			return "sekrit"
+		case "WORKSPACE_ID":
+			return "ws-1"
+		}
+		return ""
+	}, zap.NewNop())
+	require.NotNil(t, bus, "host:port + password env must wire the bus")
+
+	// The wrong password must NOT wire (the composition is real auth,
+	// not a passthrough string).
+	bus = eventbusFromEnv(func(k string) string {
+		switch k {
+		case "AGENTD_EVENTBUS_ADDR":
+			return mr.Addr()
+		case "AGENTD_EVENTBUS_PASSWORD":
+			return "wrong"
+		case "WORKSPACE_ID":
+			return "ws-1"
+		}
+		return ""
+	}, zap.NewNop())
+	assert.Nil(t, bus, "a wrong password must disable the bus (nil), never a half-authed client")
+}

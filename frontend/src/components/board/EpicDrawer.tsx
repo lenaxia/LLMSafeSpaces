@@ -32,9 +32,9 @@ interface EpicDrawerProps {
 /** The §4.6/§4.2 action vocabulary, display-side. */
 const ACTION_LABELS: Record<string, string> = {
   move_stage: "stage moved",
-  create_task: "task created",
-  update_task: "task updated",
-  delete_task: "task deleted",
+  create_task: "story created",
+  update_task: "story updated",
+  delete_task: "story deleted",
   start_task: "worker dispatched",
   add_dependency: "dependency added",
   remove_dependency: "dependency removed",
@@ -49,8 +49,8 @@ const ACTION_LABELS: Record<string, string> = {
   report_throttle: "throttled (429 requeue)",
   reclaim: "lease reclaimed",
   escalate: "escalated to pending input",
-  pause_task: "task paused",
-  resume_task: "task resumed",
+  pause_task: "story paused",
+  resume_task: "story resumed",
   pause_project: "project paused",
   resume_project: "project resumed",
   import_plan: "plan imported",
@@ -163,7 +163,7 @@ export function EpicDrawer({
 
           <div className="flex flex-wrap justify-end gap-2 border-t border-border px-4 py-3">
             {onNewTask && (
-              <Button variant="outline" size="sm" onClick={onNewTask} data-testid="drawer-new-task">New task</Button>
+              <Button variant="outline" size="sm" onClick={onNewTask} data-testid="drawer-new-task">New story</Button>
             )}
             {epic.status !== "active" ? (
               onActivate && (

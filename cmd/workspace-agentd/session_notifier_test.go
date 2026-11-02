@@ -845,9 +845,21 @@ func runNotifierOnAuthority(t *testing.T, a *sessionstate.Authority, store *sess
 		Logger:   zap.NewNop(),
 	})
 	ctx, cancel := context.WithCancel(context.Background())
-	go n.Run(ctx)
+	// Cleanups run LIFO: the drain (cancel + join) executes FIRST, so
+	// no frame fold can arm a debounce past that point (arm-while-
+	// waiting is the WaitGroup reuse hazard); quiesce then joins any
+	// timer leg the last frames left in flight.
 	t.Cleanup(func() { quiesceNotifier(n) })
-	t.Cleanup(cancel)
+	runDone := make(chan struct{})
+	go func() { defer close(runDone); n.Run(ctx) }()
+	t.Cleanup(func() {
+		cancel()
+		select {
+		case <-runDone:
+		case <-time.After(5 * time.Second):
+			t.Error("session notifier Run loop did not drain within 5s of cancel — lifecycle is not clean")
+		}
+	})
 	return cancel
 }
 
@@ -970,7 +982,8 @@ func TestRunResubscribesAfterDrop(t *testing.T) {
 	})
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	go n.Run(ctx)
+	runDone := make(chan struct{})
+	go func() { defer close(runDone); n.Run(ctx) }()
 
 	select {
 	case <-closed:
@@ -980,8 +993,12 @@ func TestRunResubscribesAfterDrop(t *testing.T) {
 	notice := waitForNotice(t, deliver.ch)
 	assert.Equal(t, subscriptionEventIdle, notice.Event,
 		"the resubscribe's snapshot reconciled the dropped episode (latched busy + snapshot idle)")
-	// Quiesce before returning: Run's own cancel arrives with the
-	// deferred ctx cancel, too late for an in-flight timer leg's
-	// trailing persist (the TempDir race).
+	// Quiesce in shutdown order BEFORE returning: cancel stops the
+	// loop, the join waits out any in-flight frame fold (a fold arming
+	// a debounce past the quiesce would race the TempDir teardown it
+	// exists to protect), and quiesceNotifier joins the fired leg's
+	// trailing persist — deterministic, no sleep.
+	cancel()
+	<-runDone
 	quiesceNotifier(n)
 }

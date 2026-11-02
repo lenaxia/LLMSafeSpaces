@@ -88,21 +88,13 @@ export type PersonaEligibleStage = (typeof PERSONA_ELIGIBLE_STAGES)[number];
 
 /** The persona the LEGACY config composition (reviewColumn=auto AND
  * autoAssignReviewer=true, no explicit stagePersonas.in_review)
- * renders — a verbatim mirror of pkg/board's DefaultReviewerPersona.
- * Keep byte-identical with the Go source: it is the one-click import
- * the BoardConfigTab editor offers (go test
- * TestDefaultReviewerPersona_FrontendMirror pins the parity). */
-export const DEFAULT_REVIEWER_PERSONA: { name: string; instructions: string } = {
-  name: "reviewer",
-  instructions:
-    "Verify EACH acceptance criterion adversarially, with evidence. Record ONE structured verdict: " +
-    "board_record_verdict with verdict=approve (requires the task's evidence URL and ALL criteria met — the Done guard applies regardless) " +
-    "or verdict=fail with findings [{severity blocker|major|minor, pointer, criterionIndex}]. A fail bounces the task to its next claimant " +
-    "with your findings embedded. Never merge, never push. " +
-    "Recording criteria flags: as the reviewer persona you hold this row's claim — record each verified criterion with " +
-    "board_update_task {taskId, claimToken, setCriteriaMet:{index, met}} (#1946: your OWN claimed row only); " +
-    "with every criterion flagged and the evidence URL in hand, board_move_stage→done completes the review.",
-};
+ * renders — a verbatim mirror of pkg/board's DefaultReviewerPersona:
+ * the ROLE REFERENCE to the built-in reviewer agent role (its slug).
+ * The platform seeds that role at startup with the verdict-channel
+ * charter as its system prompt; keep the slug byte-identical with the
+ * Go source (go test TestDefaultReviewerPersona_FrontendMirror pins
+ * the parity). */
+export const DEFAULT_REVIEWER_PERSONA = "reviewer";
 
 /** pending_origin (§4.1) — the health grouping's by-origin labels. */
 export const PENDING_ORIGIN_LABELS: Record<string, string> = {
@@ -314,7 +306,7 @@ export function suggestBoardItems<T extends Suggestible>(
 export const BOARD_GUARD_MESSAGES: Record<string, string> = {
   stage_transition: "That stage move is not one the machine enumerates.",
   done_guard: "Done requires ALL acceptance criteria met + an evidence URL (ruling R2).",
-  claim_token: "The task holds a live worker claim — stage writes need its claim token; the card snapped back.",
+  claim_token: "The story holds a live worker claim — stage writes need its claim token; the card snapped back.",
   manager_surface_only: "Pending-input exits are human decisions (manager surfaces only).",
   workspace_binding: "The caller's workspace is not this project's target.",
   epic_state: "The epic's state refuses this action.",
@@ -323,16 +315,16 @@ export const BOARD_GUARD_MESSAGES: Record<string, string> = {
   validation: "A field failed the engine's validation (a required name/title, or a shape rule).",
   invalid_input: "Malformed arguments (a blank or oversized search query, or an unknown filter).",
   // #1747 additions: the pause lever, backpressure caps, graph limits.
-  task_paused: "The task is paused — forward writes and claims wait for resume (#1747).",
-  concurrency_limit: "The per-user or per-instance concurrent-claim cap is saturated; the task stays ready and retries.",
-  graph_limit: "A DAG blast-radius cap was hit (edges per node, or tasks per epic) — split the plan.",
+  task_paused: "The story is paused — forward writes and claims wait for resume (#1747).",
+  concurrency_limit: "The per-user or per-instance concurrent-claim cap is saturated; the story stays ready and retries.",
+  graph_limit: "A DAG blast-radius cap was hit (edges per node, or stories per epic) — split the plan.",
   backpressure: "The workspace pod is under resource pressure; claiming pauses until it clears.",
   // DependencyError's codes (ruling R4a — the dependency-write 409 class
   // the server actually emits; GuardDependency is defined engine-side but
   // never returned, so it has no mirror here).
   cycle: "That dependency would create a cycle (ruling R4a).",
   cross_workspace: "Dependencies stay within one workspace (#1747).",
-  self: "A task cannot depend on itself (ruling R4).",
+  self: "A story cannot depend on itself (ruling R4).",
   // #1837 P1b: the emission-corruption rejection class.
   text_rejected: "The text failed corruption checks (degenerate repetition or raw JSON splice artifacts) — regenerate the content (long text: use a file-backed field).",
 };

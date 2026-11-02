@@ -43,39 +43,43 @@ func TestCharterPrompt_NoChainNoSection(t *testing.T) {
 	}
 }
 
-// Stage-persona claim-then-spawn (owner directive 2026-10-24): the
-// charter renders the configured persona — the legacy reviewer
-// composition's default persona AND an arbitrary named persona with
-// custom instructions — while a persona-less claim stays
+// Stage-persona claim-then-spawn, ROLE-ONLY (owner ruling 2026-10-29,
+// round 2): the charter renders the referenced agent role's identity
+// line — ONE line, no behavior prose (the role's system prompt rides
+// the dispatch, never the charter) — while a persona-less claim stays
 // byte-identical to today's worker charter.
 func TestCharterPrompt_PersonaRendering(t *testing.T) {
-	// The legacy composition's default reviewer persona (a reviewer
-	// claim for in_review) renders the verdict contract.
-	rev := &board.PersonaConfig{Name: board.DefaultReviewerPersona.Name, Instructions: board.DefaultReviewerPersona.Instructions}
+	// The default reviewer persona (the built-in reviewer role
+	// reference): the charter names the role; the verdict contract
+	// (board_record_verdict et al) is the ROLE's system prompt and must
+	// NOT ride the charter — the board composes no behavior.
+	rev := &board.PersonaConfig{RoleID: board.DefaultReviewerRoleSlug}
 	got := boardCharterPrompt(&board.Claim{
 		ShortID: "tsk-aaaa0001", ClaimToken: "tok", Stage: board.StageInReview, Persona: rev,
 		Task: &board.Task{Description: "desc",
 			AcceptanceCriteria: []board.AcceptanceCriterion{{Text: "c1"}, {Text: "c2"}}},
 	})
 	for _, want := range []string{
-		"You are the 'reviewer' persona for task tsk-aaaa0001 at stage in_review (claim token: tok)",
-		"board_record_verdict",
-		"blocker|major|minor",
-		"Never merge",
+		"You are the 'reviewer' agent role for task tsk-aaaa0001 at stage in_review (claim token: tok)",
 		"[ ] c1", "[ ] c2",
 	} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("reviewer persona charter missing %q:\n%s", want, got)
 		}
 	}
+	for _, banned := range []string{"board_record_verdict", "Never merge", "instructions"} {
+		if strings.Contains(got, banned) {
+			t.Fatalf("role-only charter must not carry behavior prose %q:\n%s", banned, got)
+		}
+	}
 
-	// An ARBITRARY persona (no instructions) renders the generic
-	// scaffold; nothing is hardwired to reviewer/in_review.
+	// An ARBITRARY role reference renders the same one-line scaffold;
+	// nothing is hardwired to reviewer/in_review.
 	got = boardCharterPrompt(&board.Claim{
 		ShortID: "tsk-bbbb0002", ClaimToken: "tk2", Stage: board.StageInProgress,
-		Persona: &board.PersonaConfig{Name: "implementer"},
+		Persona: &board.PersonaConfig{RoleID: "implementer"},
 	})
-	if !strings.Contains(got, "You are the 'implementer' persona for task tsk-bbbb0002 at stage in_progress (claim token: tk2)") {
+	if !strings.Contains(got, "You are the 'implementer' agent role for task tsk-bbbb0002 at stage in_progress (claim token: tk2)") {
 		t.Fatalf("arbitrary persona scaffold missing:\n%s", got)
 	}
 
@@ -94,7 +98,7 @@ func TestCharterPrompt_PersonaRendering(t *testing.T) {
 // persona's outcome, never the implementer loop; the task body is
 // context, and the persona-less charter stays byte-identical.
 func TestCharterPrompt_PersonaCharterDropsImplementerTrailer(t *testing.T) {
-	rev := &board.PersonaConfig{Name: board.DefaultReviewerPersona.Name, Instructions: board.DefaultReviewerPersona.Instructions}
+	rev := &board.PersonaConfig{RoleID: board.DefaultReviewerRoleSlug}
 	persona := boardCharterPrompt(&board.Claim{
 		ShortID: "tsk-dddd0004", ClaimToken: "tok", Stage: board.StageInReview, Persona: rev,
 		Task: &board.Task{Description: "desc", AcceptanceCriteria: []board.AcceptanceCriterion{{Text: "c1"}}},
@@ -108,9 +112,8 @@ func TestCharterPrompt_PersonaCharterDropsImplementerTrailer(t *testing.T) {
 		}
 	}
 	for _, want := range []string{
-		"You are the 'reviewer' persona for task tsk-dddd0004 at stage in_review (claim token: tok)",
-		"board_record_verdict",
-		"persona's outcome",
+		"You are the 'reviewer' agent role for task tsk-dddd0004 at stage in_review (claim token: tok)",
+		"agent role's outcome",
 	} {
 		if !strings.Contains(persona, want) {
 			t.Fatalf("persona charter missing %q:\n%s", want, persona)
@@ -120,7 +123,7 @@ func TestCharterPrompt_PersonaCharterDropsImplementerTrailer(t *testing.T) {
 	// An arbitrary persona drops the trailer too (nothing reviewer-specific).
 	arbitrary := boardCharterPrompt(&board.Claim{
 		ShortID: "tsk-eeee0005", ClaimToken: "tk5", Stage: board.StageInProgress,
-		Persona: &board.PersonaConfig{Name: "implementer"},
+		Persona: &board.PersonaConfig{RoleID: "implementer"},
 	})
 	if strings.Contains(arbitrary, "Work the task to completion") {
 		t.Fatalf("persona-bearing charters close on the persona outcome, not the implementer loop:\n%s", arbitrary)

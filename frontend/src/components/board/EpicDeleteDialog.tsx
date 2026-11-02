@@ -65,8 +65,8 @@ export function EpicDeleteDialog({ open, onOpenChange, epic, epicTasks, onDelete
             <span className="font-mono text-xs text-muted-foreground">{epic?.short_id}</span>
           </Dialog.Title>
           <Dialog.Description className="text-xs text-muted-foreground">
-            Destructive and permanent — “{epic?.title}” and every task under it are removed (each
-            task keeps its own snapshot event in the audit log; cross-epic dependents are
+            Destructive and permanent — “{epic?.title}” and every story under it are removed (each
+            story keeps its own snapshot event in the audit log; cross-epic dependents are
             surfaced as orphans, never a refusal).
           </Dialog.Description>
           {error && <BoardErrorNotice error={error} title="Delete refused" onDismiss={onDismissError} />}
@@ -75,7 +75,7 @@ export function EpicDeleteDialog({ open, onOpenChange, epic, epicTasks, onDelete
             <span>
               <span className="font-medium">Cascade:</span>{" "}
               <span data-testid="epic-delete-cascade-count">{epicTasks.length}</span>{" "}
-              task{epicTasks.length === 1 ? "" : "s"} under this epic will be deleted.
+              stor{epicTasks.length === 1 ? "y" : "ies"} under this epic will be deleted.
             </span>
           </div>
 

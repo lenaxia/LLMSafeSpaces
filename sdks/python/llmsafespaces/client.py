@@ -81,7 +81,10 @@ class _WorkflowsAPI:
 
 
 class _BoardAPI:
-    """Task Board (design 0067, #1699): the owner's manager surface.
+    """Sprint Board, formerly Task Board (design 0067, #1699): the owner's manager surface.
+
+    Prose says "story" (owner ruling 2026-10-30); the wire/API term
+    stays "task" — every route/field keeps its task spelling.
     Row encoding is the engine's canonical JSON (snake_case short_id)."""
 
     def __init__(self, client: "LLMSafeSpaces"):

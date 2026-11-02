@@ -1,5 +1,5 @@
 /**
- * #1832 item 6 (2/2) — Task Board Config UI e2e.
+ * #1832 item 6 (2/2) — Sprint Board Config UI e2e.
  *
  * Rows:
  *   1. The board-defaults dialog (opened from the board itself; the

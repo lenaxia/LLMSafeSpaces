@@ -193,8 +193,8 @@ describe("BoardPage — OR4 pr:N tag validation (create/edit surfaces)", () => {
     mockCreateTask.mockResolvedValue({});
     renderBoard();
     await screen.findByTestId("task-card-tsk-eeee0005");
-    // dblclick the E2 chip opens the drawer; use the drawer's New task
-    // (the swimlane headers carry their own New task since #1832 —
+    // dblclick the E2 chip opens the drawer; use the drawer's New story
+    // (the swimlane headers carry their own New story since #1832 —
     // disambiguate via the drawer button's testid).
     // 2026-10-28 ruling 1: chips are gone — the epic ROW's double-click
     // opens the drawer.

@@ -53,7 +53,7 @@ func TestBoardFileParams_ByteIdenticalRoundTrip(t *testing.T) {
 	api, rec := newAutomationAPI(t, 200, `{"short_id":"tsk-file0001"}`)
 	setupRenameWorkspaceEnv(t, api)
 
-	out, err := mcpAutomation(context.Background(), mcpTestPassword, "board_create_task", map[string]any{
+	out, err := mcpAutomation(context.Background(), mcpTestPassword, "board_create_story", map[string]any{
 		"epicId": "epc-bbbb2222", "bodyFile": path,
 		"lsp_injected_session": "ses-1",
 	})
@@ -80,7 +80,7 @@ func TestBoardFileParams_ReadDiscipline(t *testing.T) {
 	call := func(args map[string]any) error {
 		api, rec := newAutomationAPI(t, 200, `{}`)
 		setupRenameWorkspaceEnv(t, api)
-		_, err := mcpAutomation(context.Background(), mcpTestPassword, "board_create_task", args)
+		_, err := mcpAutomation(context.Background(), mcpTestPassword, "board_create_story", args)
 		assert.Empty(t, rec.method, "no wire call may happen for a refused file")
 		return err
 	}
@@ -180,9 +180,9 @@ func TestBoardFileParams_InlinePayloadRefused(t *testing.T) {
 		inlineValue any
 		fileKey     string
 	}{
-		{"board_create_task", map[string]any{"epicId": "epc-bbbb2222"}, "title", "T", "bodyFile"},
+		{"board_create_story", map[string]any{"epicId": "epc-bbbb2222"}, "title", "T", "bodyFile"},
 		{"board_create_epic", map[string]any{"projectId": "prj-aaaa1111"}, "title", "E", "bodyFile"},
-		{"board_update_task", map[string]any{"taskId": "tsk-cccc3333"}, "description", "d", "patchFile"},
+		{"board_update_story", map[string]any{"taskId": "tsk-cccc3333"}, "description", "d", "patchFile"},
 		{"board_update_epic", map[string]any{"epicId": "epc-bbbb2222"}, "outcome", "o", "patchFile"},
 		{"board_import_plan", map[string]any{"projectId": "prj-aaaa1111"}, "tasks", []any{}, "planFile"},
 	}
@@ -224,7 +224,7 @@ func TestBoardFileParams_RoutingAndControlPlaneStayInline(t *testing.T) {
 	t.Run("control-plane setCriteriaMet without patchFile", func(t *testing.T) {
 		api, rec := newAutomationAPI(t, 200, `{"id":"t-1"}`)
 		setupRenameWorkspaceEnv(t, api)
-		_, err := mcpAutomation(context.Background(), mcpTestPassword, "board_update_task", map[string]any{
+		_, err := mcpAutomation(context.Background(), mcpTestPassword, "board_update_story", map[string]any{
 			"taskId": "tsk-aaaa1111", "setCriteriaMet": map[string]any{"index": 0, "met": true},
 			"lsp_injected_session": "ses-1"})
 		require.NoError(t, err, "the bare criteria check-off is control-plane — no patch file needed")
@@ -242,7 +242,7 @@ func TestBoardFileParams_RoutingAndControlPlaneStayInline(t *testing.T) {
 		setupRenameWorkspaceEnv(t, api)
 		path := boardWritePayloadFile(t, t.TempDir(), "patch.json",
 			`{"title":"T-mixed","description":"d-mixed"}`)
-		_, err := mcpAutomation(context.Background(), mcpTestPassword, "board_update_task", map[string]any{
+		_, err := mcpAutomation(context.Background(), mcpTestPassword, "board_update_story", map[string]any{
 			"taskId": "tsk-aaaa1111", "setCriteriaMet": map[string]any{"index": 1, "met": false},
 			"patchFile": path, "lsp_injected_session": "ses-1"})
 		require.NoError(t, err)
@@ -282,12 +282,12 @@ func TestBoardFileParams_StrayFileKeyRefusedEverywhere(t *testing.T) {
 	}{
 		{"board_create_project", "name_file"},
 		{"board_create_project", "bodyFile"},
-		{"board_create_task", "descriptionFile"},
-		{"board_create_task", "description_file"},
+		{"board_create_story", "descriptionFile"},
+		{"board_create_story", "description_file"},
 		{"board_create_epic", "outcomeFile"},
 		{"board_update_epic", "outcome_file"},
 		{"board_import_plan", "bodyFile"},
-		{"board_pause_task", "patchFile"},
+		{"board_pause_story", "patchFile"},
 		{"board_list", "plan_file"},
 	}
 	for _, s := range strays {
@@ -299,11 +299,11 @@ func TestBoardFileParams_StrayFileKeyRefusedEverywhere(t *testing.T) {
 			switch s.tool {
 			case "board_create_project", "board_import_plan", "board_list":
 				args["projectId"] = "prj-aaaa1111"
-			case "board_create_task":
+			case "board_create_story":
 				args["epicId"] = "epc-bbbb2222"
 			case "board_create_epic", "board_update_epic":
 				args["epicId"] = "epc-bbbb2222"
-			case "board_update_task", "board_pause_task":
+			case "board_update_story", "board_pause_story":
 				args["taskId"] = "tsk-cccc3333"
 			}
 			if s.tool == "board_create_project" {
@@ -318,25 +318,31 @@ func TestBoardFileParams_StrayFileKeyRefusedEverywhere(t *testing.T) {
 }
 
 // TestBoardFileParams_PathAnchoring: relative file paths resolve
-// against the WORKSPACE ROOT (the PVC mount), never agentd's process
-// cwd — the live failure class (design 0070 §2.2).
+// against the EXCHANGE ROOT (the payload exchange dir, design 0070
+// §2.4a — the one PVC subtree both uid spaces write), never agentd's
+// process cwd and no longer the workspace root (the sidecar's
+// /workspace mount is read-only: a payload file there can never be
+// auto-deleted, which is the failure this anchoring exists to close).
+// Payload files sit DIRECTLY under the exchange root — the flat
+// contract (review r1 finding 2): nested subdirectories are created
+// by the write tool without the cross-uid group-write bit, so a
+// nested file could never be auto-deleted and is refused at read.
 func TestBoardFileParams_PathAnchoring(t *testing.T) {
 	root := t.TempDir()
-	orig := boardFileWorkspaceRoot
-	boardFileWorkspaceRoot = root
-	t.Cleanup(func() { boardFileWorkspaceRoot = orig })
+	orig := boardFileExchangeRoot
+	boardFileExchangeRoot = root
+	t.Cleanup(func() { boardFileExchangeRoot = orig })
 
-	require.NoError(t, os.MkdirAll(filepath.Join(root, "reports", "plans"), 0o755))
-	payload := `{"title":"Anchored","description":"resolved against the workspace root","acceptanceCriteria":[{"text":"c"}]}`
-	require.NoError(t, os.WriteFile(filepath.Join(root, "reports", "plans", "p1.json"), []byte(payload), 0o600))
+	payload := `{"title":"Anchored","description":"resolved against the exchange root","acceptanceCriteria":[{"text":"c"}]}`
+	require.NoError(t, os.WriteFile(filepath.Join(root, "p1.json"), []byte(payload), 0o600))
 
 	api, rec := newAutomationAPI(t, 200, `{"short_id":"tsk-anchor001"}`)
 	setupRenameWorkspaceEnv(t, api)
-	_, err := mcpAutomation(context.Background(), mcpTestPassword, "board_create_task", map[string]any{
-		"epicId": "epc-bbbb2222", "bodyFile": "reports/plans/p1.json", // RELATIVE
+	_, err := mcpAutomation(context.Background(), mcpTestPassword, "board_create_story", map[string]any{
+		"epicId": "epc-bbbb2222", "bodyFile": "p1.json", // RELATIVE, FLAT
 		"lsp_injected_session": "ses-1",
 	})
-	require.NoError(t, err, "the relative path resolves against the workspace root, not the cwd")
+	require.NoError(t, err, "the relative path resolves against the exchange root, not the cwd")
 	var wire map[string]json.RawMessage
 	require.NoError(t, json.Unmarshal([]byte(rec.body), &wire))
 	assert.JSONEq(t, `"Anchored"`, string(wire["title"]))
@@ -351,10 +357,10 @@ func TestBoardFileParams_Cleanup(t *testing.T) {
 
 	t.Run("success deletes (all three keys)", func(t *testing.T) {
 		for _, tc := range []struct{ tool, fileKey, payload string }{
-			{"board_create_task", "bodyFile", taskPayload},
+			{"board_create_story", "bodyFile", taskPayload},
 			{"board_create_epic", "bodyFile", epicPayload},
 			{"board_update_epic", "patchFile", patchPayload},
-			{"board_update_task", "patchFile", patchPayload},
+			{"board_update_story", "patchFile", patchPayload},
 			{"board_import_plan", "planFile", `{"epic":{"title":"E"},"tasks":[{"key":"k","title":"T","description":"d","acceptanceCriteria":[{"text":"c"}]}]}`},
 		} {
 			path := boardWritePayloadFile(t, t.TempDir(), "p.json", tc.payload)
@@ -362,13 +368,13 @@ func TestBoardFileParams_Cleanup(t *testing.T) {
 			setupRenameWorkspaceEnv(t, api)
 			args := map[string]any{tc.fileKey: path, "lsp_injected_session": "ses-1"}
 			switch tc.tool {
-			case "board_create_task":
+			case "board_create_story":
 				args["epicId"] = "epc-bbbb2222"
 			case "board_create_epic", "board_import_plan":
 				args["projectId"] = "prj-aaaa1111"
 			case "board_update_epic":
 				args["epicId"] = "epc-bbbb2222"
-			case "board_update_task":
+			case "board_update_story":
 				args["taskId"] = "tsk-cccc3333"
 			}
 			_, err := mcpAutomation(context.Background(), mcpTestPassword, tc.tool, args)
@@ -382,7 +388,7 @@ func TestBoardFileParams_Cleanup(t *testing.T) {
 		path := boardWritePayloadFile(t, t.TempDir(), "p.json", taskPayload)
 		api, _ := newAutomationAPI(t, http.StatusConflict, `{"error":"guard"}`)
 		setupRenameWorkspaceEnv(t, api)
-		_, err := mcpAutomation(context.Background(), mcpTestPassword, "board_create_task", map[string]any{
+		_, err := mcpAutomation(context.Background(), mcpTestPassword, "board_create_story", map[string]any{
 			"epicId": "epc-bbbb2222", "bodyFile": path, "lsp_injected_session": "ses-1"})
 		require.Error(t, err)
 		_, statErr := os.Stat(path)
@@ -393,7 +399,7 @@ func TestBoardFileParams_Cleanup(t *testing.T) {
 		path := boardWritePayloadFile(t, t.TempDir(), "p.json", `{"title":"T"}`) // seedless
 		api, _ := newAutomationAPI(t, 200, `{}`)
 		setupRenameWorkspaceEnv(t, api)
-		_, err := mcpAutomation(context.Background(), mcpTestPassword, "board_create_task", map[string]any{
+		_, err := mcpAutomation(context.Background(), mcpTestPassword, "board_create_story", map[string]any{
 			"epicId": "epc-bbbb2222", "bodyFile": path, "lsp_injected_session": "ses-1"})
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "local validation")
@@ -438,7 +444,7 @@ func TestBoardFileParams_Cleanup(t *testing.T) {
 			_, _ = w.Write([]byte(`{"short_id":"tsk-cleanup01"}`))
 		})
 		setupRenameWorkspaceEnv(t, api)
-		out, err := mcpAutomation(context.Background(), mcpTestPassword, "board_create_task", map[string]any{
+		out, err := mcpAutomation(context.Background(), mcpTestPassword, "board_create_story", map[string]any{
 			"epicId": "epc-bbbb2222", "bodyFile": path, "lsp_injected_session": "ses-1"})
 		require.NoError(t, err, "the call still succeeds — a delete failure only warns")
 		assert.Contains(t, out, "cleanup_warning")

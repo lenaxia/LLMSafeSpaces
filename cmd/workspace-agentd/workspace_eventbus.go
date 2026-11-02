@@ -131,6 +131,21 @@ func eventbusFromEnv(getenv func(string) string, logger *zap.Logger) *eventbus.R
 			zap.String("addr", redactRedisAddr(raw)), zap.String("reason", urlFreeReason(err)))
 		return nil
 	}
+	// AGENTD_EVENTBUS_PASSWORD (the secretKeyRef spelling — the
+	// controller injects it from the platform's credentials secret so
+	// the address itself stays a plaintext host:port in the pod spec):
+	// applied only when the parsed options carry NO credentials of
+	// their own — a redis://user:pass@… URL keeps what it embedded
+	// (the env is for the host:port form; both-set is a config smell
+	// — the URL wins, deterministically, and NOW loudly: the warn is
+	// the operator's signal to drop one of the two).
+	if pw := strings.TrimSpace(getenv("AGENTD_EVENTBUS_PASSWORD")); pw != "" {
+		if opts.Password != "" {
+			logger.Warn("AGENTD_EVENTBUS_PASSWORD set alongside a credentialed AGENTD_EVENTBUS_ADDR URL — the URL's own credentials win; drop one (the env is the secretKeyRef spelling for credentialess host:port addresses)")
+		} else {
+			opts.Password = pw
+		}
+	}
 	client := redis.NewClient(opts)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -141,6 +156,9 @@ func eventbusFromEnv(getenv func(string) string, logger *zap.Logger) *eventbus.R
 		_ = client.Close()
 		return nil
 	}
+	// S3: the publish counter seam — every Publish outcome (success,
+	// validation, transport) ticks the workspace's publishes_total.
+	bus.SetPublishObserver(eventbusPublishObserver(workspace))
 	logger.Info("event bus: transport wired", zap.String("stream", bus.Key()), zap.String("addr", opts.Addr))
 	return bus
 }
@@ -159,6 +177,13 @@ func runEventbusConsumers(ctx context.Context, wg *sync.WaitGroup, bus *eventbus
 	}
 	consumer := eventbusConsumerName(os.Getenv)
 	seam := func() *opencode.Client { return seamClientWithPassword(password) }
+	// S3: the consume counter seam — every dispatch outcome (group,
+	// outcome, redelivery) ticks the workspace's deliveries_total.
+	ws := workspaceIDFromEnv()
+	if ws == "" {
+		ws = "unknown"
+	}
+	onDelivery := eventbusDeliveryObserver(ws)
 
 	// notifier: session.{id}.{idle,error} → per-subscriber SessionSend
 	// (suppression §4.4, rate bound, compose — all unchanged; only the
@@ -168,9 +193,10 @@ func runEventbusConsumers(ctx context.Context, wg *sync.WaitGroup, bus *eventbus
 	go func() {
 		defer wg.Done()
 		opts := eventbus.ConsumeOptions{
-			Group:    eventbus.GroupNotifier,
-			Consumer: consumer + "-notifier",
-			Topics:   []string{"session.*.*"},
+			Group:      eventbus.GroupNotifier,
+			Consumer:   consumer + "-notifier",
+			Topics:     []string{"session.*.*"},
+			OnDelivery: onDelivery,
 			OnError: func(m eventbus.Message, err error) {
 				logger.Warn("event bus: subscription delivery failed — pending, will redeliver",
 					zap.String("topic", m.Event.Topic), zap.Error(err))
@@ -187,9 +213,10 @@ func runEventbusConsumers(ctx context.Context, wg *sync.WaitGroup, bus *eventbus
 		defer wg.Done()
 		lc := &leaseBusConsumer{seam: seam, logger: logger}
 		opts := eventbus.ConsumeOptions{
-			Group:    eventbus.GroupLease,
-			Consumer: consumer + "-lease",
-			Topics:   []string{"lease.*.*"},
+			Group:      eventbus.GroupLease,
+			Consumer:   consumer + "-lease",
+			Topics:     []string{"lease.*.*"},
+			OnDelivery: onDelivery,
 			OnError: func(m eventbus.Message, err error) {
 				logger.Warn("event bus: lease delivery failed — pending, will redeliver",
 					zap.String("topic", m.Event.Topic), zap.Error(err))
@@ -199,6 +226,11 @@ func runEventbusConsumers(ctx context.Context, wg *sync.WaitGroup, bus *eventbus
 			logger.Warn("event bus: lease consumer exited", zap.Error(err))
 		}
 	}()
+
+	// S3: the health collector — lag/pending/stalled gauges and the
+	// edge-triggered stall log lines (both topologies get it here,
+	// alongside the groups they own).
+	runEventbusHealthLoop(ctx, wg, bus, logger)
 }
 
 // ---- the lease consumer (the NudgeSender generalization) ----
