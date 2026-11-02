@@ -137,3 +137,28 @@ repolint` green; `chart-sync-migrations` applied; frontend
 - The DEPOSED directive is deliberately content-free (no pointer
   prose): the deposed worker needs the STOP contract, not the handoff
   — the inheritor's charter carries the pointer.
+
+## Rework rounds (post-r5 APPROVE)
+
+1. **The story-rename port (main #2005)**: `board_depose_story`
+   canonical + `board_depose_task` one-release alias in both windows;
+   storyId/story_id keys; parity cell carries both external names; the
+   docs row + alias row; the agentd registry/allowlists/injection
+   list; the external-MCP 68-tool count. E2E/wire pins ported (the
+   wire test rides the wire's task spelling beneath mcpAutomation,
+   matching main's own pause wire test).
+2. **S6/S4/S3 absorbed**: the branch merged the S6 unification
+   (#2008), the S4 lease-events publisher, and S3's health lane (their
+   lanes' commits on the shared working branch), plus main's bot
+   numbering. The overflow-fallback flake the orchestrator bounced on
+   was the S6 machinery's timing-dependent pin — fixed by asserting
+   the drop-free BOUNDS + the no-drop totals (20x green under -race).
+3. **Review r6 (this tree)**: worklog sentinel fixes (1242/1243 →
+   NNNN; the S3 twin removed — main already numbered it 1244), the
+   CHANGELOG alias-count staleness, depose's lease-plane emission +
+   pin, emitLease panic containment + pin, the discovery NULL blackout
+   (COALESCE + the only real-SQL discovery test), and the eventbus
+   gauge GC for vanished groups + pin. Deferred to the owning lanes
+   (noted in COORDINATE): XADD-timeout dedup in the SSE fan-out tail,
+   the lease scope-read budget/cache parity, the bulk-tools canonical
+   story_ids allow-arm, the real-router SSE-join E2E.

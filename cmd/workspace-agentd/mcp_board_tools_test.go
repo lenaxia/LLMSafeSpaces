@@ -69,8 +69,7 @@ func TestMCPBoard_RegistryShape(t *testing.T) {
 		"board_remove_dependency", "board_delete_story", "board_pause_story",
 		"board_resume_story", "board_rearm_story", "board_import_plan",
 		// S5 (the DEPOSED directive): the salvage handoff for a lapsed
-		// claim — the orchestrator's manager route (canonical story
-		// form; board_depose_task rides the one-release alias window).
+		// claim — the orchestrator's manager route.
 		"board_depose_story",
 		// Manager reads (#1837 P2a): the orchestrator's overview.
 		"board_list", "board_health",
@@ -453,9 +452,6 @@ func TestMCPBoard_ManagerWireContract(t *testing.T) {
 		api, rec := newAutomationAPI(t, 200, `{"stage":"backlog"}`)
 		setupRenameWorkspaceEnv(t, api)
 
-		// The dispatch layer speaks the CANONICAL name + the wire's
-		// taskId key (board_depose_task/storyId resolve at tools/call,
-		// the alias window above this seam — pinned by the alias tests).
 		_, err := mcpAutomation(context.Background(), mcpTestPassword, "board_depose_story", map[string]any{
 			"taskId": "tsk-cccc3333",
 			"branch": "feat/salvage", "pr": "1997", "head": "65e4d9dcd",

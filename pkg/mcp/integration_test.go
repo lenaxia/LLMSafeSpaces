@@ -89,8 +89,7 @@ func TestIntegration_FullWorkflow(t *testing.T) {
 	// deprecated story-rename aliases (story rename phase 2, owner
 	// ruling 2026-10-30: board_create_task, board_task_verdicts,
 	// board_task_events, board_start_task(s), board_delete_tasks,
-	// board_(rearm|pause|resume)_task + board_depose_task — S5's tool
-	// shipped under its task name on the integration branch) = 68.
+	// board_(rearm|pause|resume|depose)_task) = 68).
 	toolsResp, err := mcpClient.ListTools(ctx, mcp.ListToolsRequest{})
 	require.NoError(t, err)
 	assert.Len(t, toolsResp.Tools, 68)
@@ -106,7 +105,6 @@ func TestIntegration_FullWorkflow(t *testing.T) {
 		"board_create_task": true, "board_task_verdicts": true, "board_task_events": true,
 		"board_start_task": true, "board_start_tasks": true, "board_delete_tasks": true,
 		"board_rearm_task": true, "board_pause_task": true, "board_resume_task": true,
-		"board_depose_task": true, // S5 shipped under its task name on the integration branch — same window
 	} {
 		tool, ok := toolSchemas[alias]
 		require.True(t, ok, "deprecated alias %s must stay registered through the alias window", alias)

@@ -990,14 +990,23 @@ func applyBoardEnvOverrides(config *Config) {
 	if v := strings.TrimSpace(os.Getenv("LLMSAFESPACES_BOARD_EVENTBUS_PASSWORD")); v != "" {
 		config.Board.Eventbus.Password = v
 	}
-	// Per-field fallback: the S4 leaseEventbus values fill any gap —
-	// one Redis, one arming posture (the S4 knob keeps working
-	// unchanged; the canonical spelling wins field-by-field).
+	// Per-field fallback, BOTH directions: either knob's values fill
+	// the other's gaps — one Redis, one arming posture, whichever knob
+	// the operator arms (the S4 spelling keeps working unchanged; the
+	// canonical spelling wins field-by-field; arming the canonical knob
+	// alone must arm the lease publisher too, not leave it silently on
+	// v1 with lease events unpublished — PR #2007 r3 review).
 	if strings.TrimSpace(config.Board.Eventbus.Addr) == "" {
 		config.Board.Eventbus.Addr = config.Board.LeaseEventbus.Addr
 	}
 	if strings.TrimSpace(config.Board.Eventbus.Password) == "" {
 		config.Board.Eventbus.Password = config.Board.LeaseEventbus.Password
+	}
+	if strings.TrimSpace(config.Board.LeaseEventbus.Addr) == "" {
+		config.Board.LeaseEventbus.Addr = config.Board.Eventbus.Addr
+	}
+	if strings.TrimSpace(config.Board.LeaseEventbus.Password) == "" {
+		config.Board.LeaseEventbus.Password = config.Board.Eventbus.Password
 	}
 }
 

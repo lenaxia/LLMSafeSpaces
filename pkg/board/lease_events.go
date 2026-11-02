@@ -23,7 +23,10 @@ package board
 // convention, not an enum — the bus vocabulary's rule): the launch set
 // is pinned by the wiring tests and consumed by agentd's lease group.
 
-import "context"
+import (
+	"context"
+	"log/slog"
+)
 
 // LeaseEvent kinds — the arm of lease.{task_id}.{kind} on the bus.
 const (
@@ -56,6 +59,10 @@ const (
 	ReclaimReasonNoAssignee     = "lapse_no_assignee"      // no identity to observe or nudge: the wall-clock path
 	ReclaimReasonPersonaLapse   = "persona_lapse"          // stage-persona (in_review) lease lapse
 	ReclaimReasonPersonaCleared = "persona_config_cleared" // persona config removed mid-flight; claim converged away
+	// S5: the DEPOSED directive's manager-accelerated reclaim (depose.go)
+	// — the salvage-handoff reclaim; the pointer rides the row, the
+	// event tells the lease plane WHICH claim went away and why.
+	ReclaimReasonDeposed = "deposed"
 )
 
 // LeaseEvent is one ladder decision, projected post-commit. The bus
@@ -94,9 +101,20 @@ type LeaseEventSink func(ctx context.Context, ev LeaseEvent)
 // emitLease projects one decision to the installed sink. Fail-open:
 // a nil sink is a no-op; the sink's own contract keeps a slow or
 // failing bus from stalling the sweep (the app adapter bounds every
-// publish).
+// publish). A sink that PANICS is contained here — the stamp leg's
+// declared contract (emitStamp), lifted to this leg by review r6:
+// lease emissions run on the reconciler sweep goroutine and the
+// Heartbeat request path, and a broken projection must never take
+// either down. Loud, then on.
 func (s *Service) emitLease(ctx context.Context, ev LeaseEvent) {
-	if s.leaseEvents != nil {
-		s.leaseEvents(ctx, ev)
+	if s.leaseEvents == nil {
+		return
 	}
+	defer func() {
+		if r := recover(); r != nil {
+			slog.ErrorContext(ctx, "board: lease event sink panicked — contained (the ladder decision itself landed)",
+				"task_id", ev.TaskID, "kind", ev.Kind, "panic", r)
+		}
+	}()
+	s.leaseEvents(ctx, ev)
 }

@@ -238,14 +238,29 @@ func TestBoardBusPublisher_OverflowFallsBack(t *testing.T) {
 	pub := newBoardBusPublisher(tr, scope, spy.publisher)
 	publisher := boardBusPublisherOrV1(pub, spy.publisher)
 
-	// The drainer is parked on the gate: one event in the drainer,
-	// boardBusQueue buffered, then the NEXT two overflow straight to
-	// v1.
+	// The drainer is parked on the gate: the buffer (boardBusQueue)
+	// absorbs what it can, the excess overflows straight to v1.
 	for i := 0; i < boardBusQueue+3; i++ {
 		publisher(testEvent("create_task"))
 	}
-	require.Equal(t, 2, spy.count(), "overflow hands the excess to v1 — never a drop")
+	// The overflow COUNT is scheduling-dependent by design — the parked
+	// drainer may or may not have pulled its one in-flight event before
+	// the loop fills the buffer (2 vs 3 flipped run-to-run under -race;
+	// CI run 41224144128). The invariant is the BOUNDS: at least the
+	// guaranteed excess (buffer + one in-flight drainer slot short of
+	// the total) reaches v1, and never more than the full excess beyond
+	// the buffer — never a drop, never a duplicate.
+	overflowed := spy.count()
+	require.GreaterOrEqual(t, overflowed, 2, "the guaranteed excess reaches v1 — never a drop")
+	require.LessOrEqual(t, overflowed, 3, "bounded by the total beyond the buffer capacity")
 	close(scope.gate)
+	// The no-drop totals: the bus takes the buffer (+ the drainer's
+	// in-flight event), v1 took the overflow — the counts sum to the
+	// published total. Nothing was lost anywhere.
+	wantBus := boardBusQueue + 3 - overflowed
+	require.Eventually(t, func() bool {
+		return len(busStreamEntries(t, mr.Addr(), "ws-1")) == wantBus
+	}, 2*time.Second, 10*time.Millisecond, "buffer+drainer events flush to the bus; no event dropped")
 }
 
 // The stamp projection: task.{id}.stamped with the SSE scope.

@@ -8,6 +8,7 @@ package board_test
 import (
 	"context"
 	"encoding/json"
+	"sync"
 
 	"github.com/stretchr/testify/require"
 
@@ -389,4 +390,71 @@ func (s *BoardSuite) newDeposeService(msg *fakeMessenger, lives board.AssigneeLi
 		opts = append(opts, board.WithLivenessSource(lives))
 	}
 	return board.NewService(s.pool, s.cfg, opts...)
+}
+
+// KILL-PIN S5-f (review r6's contract-gap finding): depose IS a
+// reclaim the observation plane reports — the in_progress requeue
+// emits lease.{task}.reclaimed{reason=deposed} post-commit with the
+// deposed session and the post-increment failure count (the
+// invisible-lapse class depose exists to handle). The backlog
+// pointer-only arm emits NOTHING (no claim went away). The same pin
+// holds the emitLease panic-containment contract (the stamp leg's
+// declared contract, lifted to this leg by r6): a panicking sink is
+// contained, never takes the depose or its caller down.
+func (s *BoardSuite) TestDepose_ReclaimEmitsOnLeasePlaneAndSinkPanicsAreContained() {
+	ctx := context.Background()
+	ws := s.seedWorkspace()
+	p := s.seedProject(ws, 2)
+	e := s.seedEpic(p, board.EpicActive)
+	t := s.seedTask(e, "lease-visible", nil, false)
+
+	var mu sync.Mutex
+	var events []board.LeaseEvent
+	panicOnce := func(ctx context.Context, ev board.LeaseEvent) {
+		mu.Lock()
+		defer mu.Unlock()
+		events = append(events, ev)
+		if len(events) == 1 {
+			panic("injected sink panic: the projection is broken")
+		}
+	}
+	msg := &fakeMessenger{}
+	s.svc = board.NewService(s.pool, s.cfg,
+		board.WithWorkerSpawner(s.spawner.Spawn),
+		board.WithWorkerAborter(s.aborter.Abort),
+		board.WithWorkerMessenger(msg.Deliver),
+		board.WithLeaseEventSink(panicOnce),
+		board.WithRoleDirectory(personaRoleDirectory()),
+	)
+
+	c := s.claimOrFail(ws)
+	require.Equal(s.T(), t.ID, c.TaskID)
+	assignee := *s.rawTask(t.ID).Assignee
+	s.expireLease(t.ID)
+
+	// The sink PANICS on the first emission — the depose itself must
+	// still succeed (containment), and the event must still have been
+	// handed over (the panic is the SINK's, after delivery).
+	out, err := s.svc.DeposeTask(ctx, s.agentManager(ws, "orchestrator-depose"), "", t.ShortID, deposePtr(), "")
+	s.Require().NoError(err, "a panicking lease sink is contained — the depose itself lands")
+	require.Equal(s.T(), board.StageBacklog, out.Stage)
+	require.Equal(s.T(), 1, s.countEvents("depose"), "the audit row landed too")
+
+	mu.Lock()
+	require.Len(s.T(), events, 1, "exactly one lease event — the depose's reclaim")
+	ev := events[0]
+	mu.Unlock()
+	require.Equal(s.T(), board.LeaseEventReclaimed, ev.Kind)
+	require.Equal(s.T(), t.ID, ev.TaskID)
+	require.Equal(s.T(), assignee, ev.Assignee, "the plane learns WHICH claim went away")
+	require.Equal(s.T(), board.ReclaimReasonDeposed, ev.Reason)
+	require.Equal(s.T(), int32(1), ev.FailureCount, "the post-increment count")
+
+	// The backlog pointer-only arm emits nothing: no claim went away.
+	_, err = s.svc.DeposeTask(ctx, s.agentManager(ws, "orchestrator-depose"), "", t.ShortID,
+		board.SalvagePointer{Branch: "feat/x", Head: "abc"}, "")
+	s.Require().NoError(err)
+	mu.Lock()
+	require.Len(s.T(), events, 1, "the pointer-only refresh is silent on the lease plane")
+	mu.Unlock()
 }

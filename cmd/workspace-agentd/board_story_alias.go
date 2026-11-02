@@ -49,11 +49,7 @@ var boardStoryToolAliases = map[string]string{
 	"board_rearm_task":   "board_rearm_story",
 	"board_pause_task":   "board_pause_story",
 	"board_resume_task":  "board_resume_story",
-	// The S5 depose tool never shipped on main under its task name —
-	// it rode the sprint-board-story-machinery integration branch
-	// (which prod runs) as board_depose_task through v0.44.x, so the
-	// pre-rename spelling gets the same one-release window.
-	"board_depose_task": "board_depose_story",
+	"board_depose_task":  "board_depose_story",
 }
 
 // boardStoryAliasNotice renders the deprecated-tool-name notice.

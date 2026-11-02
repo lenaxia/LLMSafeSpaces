@@ -717,10 +717,15 @@ func boardBusPublisherOrV1(p *boardBusPublisher, v1 board.EventPublisher) board.
 }
 
 // DiscoverBoardWorkspaces is the production discovery read: every
-// workspace that carries a board project.
+// workspace that carries a board project. The column is NULLABLE
+// (migration 000036; create validates but the schema does not) — a
+// NULL scans into COALESCE(”) and is filtered below, because ONE NULL
+// row failing the scan would disable the SSE join GLOBALLY (every
+// syncOnce cycle errors, consumers hold stale frames forever while
+// publishes keep landing — review r6's blackout finding).
 func DiscoverBoardWorkspaces(pool *pgxpool.Pool) func(context.Context) ([]string, error) {
 	return func(ctx context.Context) ([]string, error) {
-		rows, err := pool.Query(ctx, `SELECT DISTINCT target_workspace_id::text FROM projects`)
+		rows, err := pool.Query(ctx, `SELECT DISTINCT COALESCE(target_workspace_id::text, '') FROM projects`)
 		if err != nil {
 			return nil, err
 		}
@@ -730,6 +735,9 @@ func DiscoverBoardWorkspaces(pool *pgxpool.Pool) func(context.Context) ([]string
 			var id string
 			if err := rows.Scan(&id); err != nil {
 				return nil, err
+			}
+			if id == "" {
+				continue // a NULL target (pre-validation row) discovers nothing
 			}
 			out = append(out, id)
 		}

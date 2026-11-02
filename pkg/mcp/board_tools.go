@@ -353,14 +353,14 @@ var boardRearmStoryTool = mcp.NewTool("board_rearm_story",
 )
 
 var boardDeposeStoryTool = mcp.NewTool("board_depose_story",
-	mcp.WithDescription("Depose a LAPSED claim on a story (the REST wire term is 'task'; S5, the DEPOSED directive — 2026-10-30 "+
+	mcp.WithDescription("Depose a LAPSED claim on a story (the wire/API term is 'task'; S5, the DEPOSED directive — 2026-10-30 "+
 		"incident remediation): the orchestrator records the salvage pointer — branch, PR number, last known state — on the row, "+
 		"requeues an in_progress lapsed claim exactly as the reclaim would (failure overlay + backoff), delivers the DEPOSED "+
 		"directive to the stale session, and the NEXT claim's charter embeds the pointer automatically (inherit, don't restart). "+
 		"A backlog row takes the pointer alone (the reclaim already ran). GUARDS: a live healthy claim refuses (409 claim_live — "+
 		"unexpired lease, or life evidence on the expired one: movement/mid-turn busy/post-sentinel reaction/post-nudge heartbeat); "+
 		"done/failed/in_review rows refuse; every deposition is audit-logged (action 'depose')"),
-	mcp.WithString("story_id", mcp.Required(), mcp.Description("Story short id (tsk-…, phrase or legacy form)")),
+	mcp.WithString("story_id", mcp.Required(), mcp.Description("Story short id, phrase form (tsk-crimson-finch-blooms; legacy tsk-XXXXXXXX still resolves, deprecated)")),
 	mcp.WithString("branch", mcp.Description("The pushed branch name the deposed attempt left behind")),
 	mcp.WithString("pr", mcp.Description("The open pull request's number or URL")),
 	mcp.WithString("head", mcp.Description("The last known commit SHA on the branch")),
@@ -570,9 +570,7 @@ var boardStoryToolAliases = map[string]string{
 	"board_rearm_task":    "board_rearm_story",
 	"board_pause_task":    "board_pause_story",
 	"board_resume_task":   "board_resume_story",
-	// The S5 depose tool shipped (v0.44.x, the integration branch)
-	// under its task name — same one-release window as the fleet.
-	"board_depose_task": "board_depose_story",
+	"board_depose_task":   "board_depose_story",
 }
 
 // storyDeprecationMiddleware is the notice carrier for the alias
@@ -1089,7 +1087,7 @@ func (h *handlers) boardDeposeStory(ctx context.Context, req mcp.CallToolRequest
 	}
 	resp, err := h.client.BoardDeposeStory(ctx, taskID, ptr, strArg(args, "request_id"))
 	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("failed to depose story: %v", err)), nil
+		return mcp.NewToolResultError(fmt.Sprintf("failed to depose task: %v", err)), nil
 	}
 	return mcp.NewToolResultText(string(resp)), nil
 }

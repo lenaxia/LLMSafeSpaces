@@ -130,8 +130,8 @@ func TestBoardStoryAlias_CanonicalMap(t *testing.T) {
 		"board_rearm_task":   "board_rearm_story",
 		"board_pause_task":   "board_pause_story",
 		"board_resume_task":  "board_resume_story",
-		// S5's depose tool shipped under its task name on the sprint
-		// integration branch (which prod runs) — same one-release window.
+		// S5 (the DEPOSED directive): born task-named on the branch,
+		// ported to the story vocabulary with the same window.
 		"board_depose_task": "board_depose_story",
 	}
 	require.Len(t, boardStoryToolAliases, len(want), "the renamed registry tools, exactly")

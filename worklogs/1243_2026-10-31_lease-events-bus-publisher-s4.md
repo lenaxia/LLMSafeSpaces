@@ -87,3 +87,50 @@ the overlap; the reconciliation:
 - Gates rerun on the merged tree (serial): build, golangci-lint, fmt-check,
   repolint, pkg/eventbus, pkg/board -tags integration, api/internal/{app,config,
   handlers}, cmd/workspace-agentd full.
+
+## 10. Rework round 4 (PR #2007 — the final catch-up: #2006's lineage landed on main)
+
+#2006 (S5 depose, whose lineage carried S4/S6/S3's files through the shared
+branch) merged to main at b1a00ef67; the base-branch deletion auto-closed this
+PR; reopened, retargeted to main. The catch-up merge of origin/main (1f197d527)
+under the lane, per the orchestrator's reconciliation shape:
+
+- **TAKE THEIRS on every conflicted transport/machinery file** (19 conflicts):
+  board_bus.go(+test), pkg/board/{lease_events.go,depose.go(+integration test)},
+  eventbus_metrics.go(+test), the story-alias surface (board_story_alias.go(+test),
+  mcp_server.go, board_manager_tools.go, mcp_board_tools_test.go),
+  pkg/mcp/{board_tools.go,client.go,integration_test.go}, docs/api/mcp.md.
+  Theirs is the post-#2005/#2006 lineage (S5's ReclaimReasonDeposed + the
+  emitLease panic containment ride in lease_events.go; the exchange-dir wording
+  rides the tool descriptions). The E2E delta ours→theirs is EXACTLY the r3
+  blocker's two-line fix: the depose arms speak the canonical
+  `board_depose_story` at the dispatch seam.
+- **Unions**: service.go/app.go auto-merged carrying all three lanes' seams
+  (leaseEvents + busySrc + stampEvents; boardLeaseBus + WithBusySource +
+  the S6 boardBusPublisher); CHANGELOG/COORDINATE take theirs (the newer
+  superset).
+- **Worklog dedupe**: main's S5-lineage renumber created twins — kept this
+  lane's 1242/1243 (COORDINATE-referenced, and 1243 is the full r1-r4 record),
+  removed main's byte-identical 1246 / subset 1249; kept main's numbered
+  1244/1245/1247/1248/1250, removed this lane's NNNN twins (identical or
+  subset content; the depose twin's richer post-r5 rounds live in 1248).
+- **The r3 review's two inherited follow-ups, dispositioned this round**:
+  1. The flaky `TestBoardBusPublisher_OverflowFallsBack` — ALREADY FIXED on
+     main (review r6 of the #2006 lineage): the pin asserts the drop-free
+     BOUNDS instead of a scheduling-dependent count. Verified, not assumed:
+     the taken board_bus_test.go carries the bounds assertion + the
+     run-41224144128 comment; 5/5 green under -race on this tree.
+  2. The config-posture asymmetry (canonical `board.eventbus.*` alone left
+     the lease publisher disarmed) — FIXED here (TDD: the new
+     TestBoardEnvOverrides_EventbusArmsLease red → the per-field fallback
+     made BIDIRECTIONAL in config.go → green; the full config package green).
+
+- Gates on the merged tree (serial, PG 16 local with all 54 migrations
+  applied): go build ./...; go vet (touched pkgs); -race: pkg/eventbus,
+  api/internal/config, pkg/mcp, api/internal/app, cmd/workspace-agentd full
+  (465s), pkg/board -tags integration (19.6s); api/internal/handlers (101s);
+  TestIntegrationBoardManagerE2E -tags integration PASS (the r3 blocker, on
+  this exact tree); repolint + pkg/repolint (the docs parity canary);
+  golangci-lint v2.13.1 (contextcheck included) 0 issues; gofmt clean on the
+  tracked tree (the local fmt-check diffs are the CI runner's own untracked
+  .ai-workflows artifacts, invisible to CI's fresh checkout).
