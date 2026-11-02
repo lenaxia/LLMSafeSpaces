@@ -1,6 +1,7 @@
 [
   "authz",
   "backpressure",
+  "claim_live",
   "claim_token",
   "concurrency_limit",
   "cross_workspace",

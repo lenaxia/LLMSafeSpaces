@@ -295,6 +295,9 @@ const (
 	GuardConcurrency  = "concurrency_limit" // user/global concurrent-claim cap refuses a manual dispatch
 	GuardGraphLimit   = "graph_limit"       // edges-per-node / nodes-per-epic cap (blast-radius bound)
 	GuardBackpressure = "backpressure"      // workspace resource pressure gates claiming (informational class)
+	// S5 (the DEPOSED directive): a LIVE healthy claim refuses
+	// deposition — the lease has not lapsed, or the assignee shows life.
+	GuardClaimLive = "claim_live"
 	// #1699 (#1772): malformed arguments (rendered 400).
 	GuardInput = "invalid_input"
 )

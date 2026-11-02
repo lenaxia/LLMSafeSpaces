@@ -43,6 +43,55 @@ func TestCharterPrompt_NoChainNoSection(t *testing.T) {
 	}
 }
 
+// S5 (the DEPOSED directive): the charter embeds the salvage handoff —
+// the next claimant after a deposed lapse INHERITS the recorded pointer
+// (branch/PR/state), never a cold restart. A pointer-less claim renders
+// byte-identically (no section).
+func TestCharterPrompt_RendersSalvageHandoff(t *testing.T) {
+	c := &board.Claim{
+		ShortID: "tsk-aaaa0001", ClaimToken: "tok",
+		Task: &board.Task{Description: "Do the thing"},
+		Salvage: &board.SalvagePointer{
+			Branch: "feat/sprint-board-story-vocabulary",
+			PR:     "1997",
+			Head:   "65e4d9dcd",
+			State:  "full rename sweep pushed; worklog 1237, CHANGELOG, COORDINATE row",
+			Note:   "verify against the criteria, then open the PR and iterate with the reviewer",
+		},
+	}
+	got := boardCharterPrompt(c)
+	for _, want := range []string{
+		"SALVAGE HANDOFF",
+		"INHERIT this state",
+		"Branch: feat/sprint-board-story-vocabulary",
+		"PR: 1997",
+		"Last known head: 65e4d9dcd",
+		"Last known state: full rename sweep pushed; worklog 1237, CHANGELOG, COORDINATE row",
+		"Note from the orchestrator: verify against the criteria",
+		"never as verified truth",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("charter prompt missing %q:\n%s", want, got)
+		}
+	}
+}
+
+func TestCharterPrompt_NoSalvageNoSection(t *testing.T) {
+	got := boardCharterPrompt(&board.Claim{ShortID: "tsk-aaaa0001", ClaimToken: "tok"})
+	if strings.Contains(got, "SALVAGE HANDOFF") {
+		t.Fatalf("a pointer-less claim must not render the salvage section")
+	}
+	if got != boardCharterPrompt(&board.Claim{ShortID: "tsk-aaaa0001", ClaimToken: "tok", Salvage: nil}) {
+		t.Fatalf("nil salvage is the pointer-less shape")
+	}
+	// The empty pointer renders nothing too (Empty() guard).
+	got = boardCharterPrompt(&board.Claim{ShortID: "tsk-aaaa0001", ClaimToken: "tok",
+		Salvage: &board.SalvagePointer{}})
+	if strings.Contains(got, "SALVAGE HANDOFF") {
+		t.Fatalf("an all-empty pointer must not render the salvage section")
+	}
+}
+
 // Stage-persona claim-then-spawn, ROLE-ONLY (owner ruling 2026-10-29,
 // round 2): the charter renders the referenced agent role's identity
 // line — ONE line, no behavior prose (the role's system prompt rides

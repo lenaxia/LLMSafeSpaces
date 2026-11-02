@@ -198,7 +198,13 @@ export function StoryCard({ task, projectTasks, pending, refused, dimmed, highli
             <Link2 className="h-3 w-3" /> {depStages.length}
           </button>
         )}
-        {task.stage === "in_progress" && task.assignee_session && <BusyIndicator size="sm" />}
+        {/* RC-C S2 (badge honesty): the spinner reflects LIVENESS, not
+         * claim state — busy (mid-turn on a live lease) spins; idle,
+         * unknown, or lapsed quiets to the distinct claimed-but-quiet
+         * marker (assignee_busy is the server's derived-busy answer
+         * under the lease TTL; absent = quiet, never the dishonest
+         * spin of the 2026-10-30 incident). */}
+        {task.stage === "in_progress" && task.assignee_session && <BusyIndicator size="sm" busy={task.assignee_busy === true} />}
         {/* 2026-10-29 owner ruling: the assignee ref is a CLICKABLE
          * session link (the card's busy area names its worker). The
          * value rides the read edge already phrase-translated (#1922)

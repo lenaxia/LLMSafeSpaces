@@ -307,6 +307,8 @@ export const BOARD_GUARD_MESSAGES: Record<string, string> = {
   stage_transition: "That stage move is not one the machine enumerates.",
   done_guard: "Done requires ALL acceptance criteria met + an evidence URL (ruling R2).",
   claim_token: "The story holds a live worker claim — stage writes need its claim token; the card snapped back.",
+  // S5 (the DEPOSED directive): deposition targets lapsed claims only.
+  claim_live: "The claim is live and healthy — deposition refuses (the lease has not lapsed, or the worker shows life).",
   manager_surface_only: "Pending-input exits are human decisions (manager surfaces only).",
   workspace_binding: "The caller's workspace is not this project's target.",
   epic_state: "The epic's state refuses this action.",

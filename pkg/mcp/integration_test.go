@@ -84,14 +84,15 @@ func TestIntegration_FullWorkflow(t *testing.T) {
 	// verdict tools (board_record_verdict, board_story_verdicts) + 1
 	// board_story_events (#1832 item 4) + 1 board_rearm_story
 	// (#1832 WS3) + 3 #1836 bulk tools (board_start_stories,
-	// board_move_stage_bulk, board_delete_stories) = 57, PLUS the 9
-	// one-release deprecated story-rename aliases (story rename phase 2,
-	// owner ruling 2026-10-30: board_create_task, board_task_verdicts,
+	// board_move_stage_bulk, board_delete_stories) + 1 board_depose_story
+	// (S5, the DEPOSED directive) = 58, PLUS the 10 one-release
+	// deprecated story-rename aliases (story rename phase 2, owner
+	// ruling 2026-10-30: board_create_task, board_task_verdicts,
 	// board_task_events, board_start_task(s), board_delete_tasks,
-	// board_(rearm|pause|resume)_task) = 66).
+	// board_(rearm|pause|resume|depose)_task) = 68).
 	toolsResp, err := mcpClient.ListTools(ctx, mcp.ListToolsRequest{})
 	require.NoError(t, err)
-	assert.Len(t, toolsResp.Tools, 66)
+	assert.Len(t, toolsResp.Tools, 68)
 
 	toolNames := make(map[string]bool)
 	toolSchemas := make(map[string]mcp.Tool)
