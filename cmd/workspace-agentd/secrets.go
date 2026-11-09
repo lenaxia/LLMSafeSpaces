@@ -1256,46 +1256,72 @@ func applySecretsBatch(ctx context.Context, cfg materializeConfig, deps applySec
 
 	restarted := false
 	if proc != nil && shouldRestart(batch) {
-		if reason, names := classifySecretRestartReason(batch); reason != "" {
-			if err := writeRestartReasonMarker(markerPath, reason, names); err != nil {
-				log.Error("failed to write restart-reason marker", zap.Error(err))
-				pkgOpsMetrics.RecordMarkerWriteFailure(workspaceIDFromEnv(), reason)
-			} else {
-				logRestartReasonAtWrite(reason, names, log.Core())
+		// Content gate: an applied batch whose restart-relevant payload
+		// (env-secret/api-key type|name|value lines) is byte-identical to
+		// the last applied payload must not restart the child. The
+		// secrets-reconcile cadence can re-apply identical batches and
+		// every type-gated restart killed in-flight chat turns. The hash
+		// lives on the same tmpfs as secrets-env (pod death wipes both, so
+		// the first post-boot apply always restarts); a failed/partial
+		// apply never anchors it.
+		payloadHash := restartPayloadHash(batch)
+		payloadPath := restartPayloadPath(cfg.toPaths().SecretsEnvPath)
+		if prior, rErr := readRestartPayloadHash(payloadPath); rErr == nil && prior != "" && prior == payloadHash {
+			log.Info("secrets apply: restart-relevant payload unchanged since last apply; suppressing agent restart",
+				zap.String("payloadHash", payloadHash[:min(12, len(payloadHash))]))
+		} else {
+			if rErr != nil && !os.IsNotExist(rErr) {
+				log.Warn("secrets apply: restart-payload hash unreadable; restart proceeds ungated", zap.Error(rErr))
 			}
-			// H2: record the restart in the Prometheus counter so ops
-			// dashboards surface credential-change restarts. Recorded
-			// UNCONDITIONALLY (after the marker/log block), not gated on
-			// marker-write success — a full/read-only PVC must not suppress
-			// the metric. This matches the crash path (main.go) and the OOM
-			// path (oom_detection.go), which also record the metric
-			// regardless of marker outcome. The reason label is the short
-			// metric form (env_secrets / api_key) matching the help text and
-			// the crash/oom reasons.
-			//
-			// EXCEPT the socket topology (see shouldPreRecordRestartMetric):
-			// *socketReloadProc reaches the supervisor's credential_reload
-			// rev gate, which may SUPPRESS the restart — counting here, at
-			// request time, would show a restart for every push regardless
-			// of the gate's verdict and bury the suppression signal under
-			// the exact churn this gate exists to expose.
-			// socketReloadProc.restart records the outcome-truthful counter
-			// pair (restarts / restarts_suppressed) in the sidecar registry
-			// the PodMonitor scrapes.
-			if shouldPreRecordRestartMetric(proc) {
-				pkgOpsMetrics.RecordRestart(workspaceIDFromEnv(), metricRestartReason(reason))
+			if reason, names := classifySecretRestartReason(batch); reason != "" {
+				if err := writeRestartReasonMarker(markerPath, reason, names); err != nil {
+					log.Error("failed to write restart-reason marker", zap.Error(err))
+					pkgOpsMetrics.RecordMarkerWriteFailure(workspaceIDFromEnv(), reason)
+				} else {
+					logRestartReasonAtWrite(reason, names, log.Core())
+				}
+				// H2: record the restart in the Prometheus counter so ops
+				// dashboards surface credential-change restarts. Recorded
+				// UNCONDITIONALLY (after the marker/log block), not gated on
+				// marker-write success — a full/read-only PVC must not suppress
+				// the metric. This matches the crash path (main.go) and the OOM
+				// path (oom_detection.go), which also record the metric
+				// regardless of marker outcome. The reason label is the short
+				// metric form (env_secrets / api_key) matching the help text and
+				// the crash/oom reasons.
+				//
+				// EXCEPT the socket topology (see shouldPreRecordRestartMetric):
+				// *socketReloadProc reaches the supervisor's credential_reload
+				// rev gate, which may SUPPRESS the restart — counting here, at
+				// request time, would show a restart for every push regardless
+				// of the gate's verdict and bury the suppression signal under
+				// the exact churn this gate exists to expose.
+				// socketReloadProc.restart records the outcome-truthful counter
+				// pair (restarts / restarts_suppressed) in the sidecar registry
+				// the PodMonitor scrapes.
+				if shouldPreRecordRestartMetric(proc) {
+					pkgOpsMetrics.RecordRestart(workspaceIDFromEnv(), metricRestartReason(reason))
+				}
+			}
+			//nolint:contextcheck // deps.BgCtx is the agentd lifecycle context (not the request context) — the deferred goroutine must outlive the HTTP request
+			restarted = makeSessionAwareRestartDecision(deps.BgCtx, proc, tracker, restartDecisionConfig{
+				PollInterval: restartIdleCheckInterval,
+				StallBound:   restartStallBound,
+				GraceWindow:  defaultInterruptGrace,
+				Lister:       lister,
+				Interrupter:  deps.Interrupter,
+				PendingApply: deps.PendingApply,
+				BgWg:         deps.BgWg,
+			})
+			// Persist the payload identity only when the applied state is
+			// complete — a partial apply must not anchor a hash the on-disk
+			// state cannot vouch for (mirrors the rev-anchor semantics).
+			if payloadHash != "" && !result.HasFailures() {
+				if wErr := writeRestartPayloadHash(payloadPath, payloadHash); wErr != nil {
+					log.Warn("secrets apply: failed to persist restart-payload hash", zap.Error(wErr))
+				}
 			}
 		}
-		//nolint:contextcheck // deps.BgCtx is the agentd lifecycle context (not the request context) — the deferred goroutine must outlive the HTTP request
-		restarted = makeSessionAwareRestartDecision(deps.BgCtx, proc, tracker, restartDecisionConfig{
-			PollInterval: restartIdleCheckInterval,
-			StallBound:   restartStallBound,
-			GraceWindow:  defaultInterruptGrace,
-			Lister:       lister,
-			Interrupter:  deps.Interrupter,
-			PendingApply: deps.PendingApply,
-			BgWg:         deps.BgWg,
-		})
 	}
 
 	// File-class live reload (#1244): the files half of delivery only ran
