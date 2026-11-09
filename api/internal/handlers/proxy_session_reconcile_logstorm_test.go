@@ -41,7 +41,7 @@ func (l *reconcileWarnCapture) Warn(msg string, kv ...interface{}) {
 	var b strings.Builder
 	b.WriteString(msg)
 	for i := 0; i+1 < len(kv); i += 2 {
-		b.WriteString(fmt.Sprintf("|%v=%v", kv[i], kv[i+1]))
+		fmt.Fprintf(&b, "|%v=%v", kv[i], kv[i+1])
 	}
 	l.warns = append(l.warns, b.String())
 }

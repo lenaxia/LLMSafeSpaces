@@ -488,7 +488,12 @@ jobs:
 
   frontend-test:
     name: Frontend (unit + typecheck + e2e)
-    runs-on: ubuntu-latest
+    # Pinned (2026-11-09): the ubuntu-latest image rolled to 26.04 and the
+    # pinned @playwright/test 1.60.0 cannot install chromium there
+    # ("Playwright does not support chromium on ubuntu26.04-x64") — this
+    # broke the job for every PR with zero code change. Unpin when
+    # @playwright/test is bumped past the 26.04 support boundary.
+    runs-on: ubuntu-24.04
     needs: [changes]
     if: github.event_name != 'pull_request' || needs.changes.outputs.docs_only != 'true'
     # No `needs: [lint]` — see the comment on the `test` job.
