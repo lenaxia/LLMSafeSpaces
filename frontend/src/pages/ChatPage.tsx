@@ -598,6 +598,31 @@ export function ChatPage() {
     }
   }, [workspaceId, sessionId, queryClient, queue]);
 
+  // Landed-user reconcile (queued-message ordering): when the harness
+  // MESSAGE_START announces a user message, refetch history and drop any
+  // optimistic twin immediately. A queued message delivered minutes after
+  // its send used to keep the client-clock bubble pinned below live agent
+  // parts until the idle reconcile; the landed copy belongs at its backend
+  // landing position as soon as it exists. MESSAGE_START proves the
+  // harness persisted the message, so the #447 eventual-consistency guard
+  // does not apply — but the drop still requires the identity to be
+  // demonstrably present in the refetched history.
+  const reconcileLandedUserMessage = useCallback(async () => {
+    if (!workspaceId || !sessionId) return;
+    try {
+      await queryClient.refetchQueries({ queryKey: ["messages", workspaceId, sessionId] });
+      const freshHistory = queryClient.getQueryData<{ pages: Array<{ messages: Message[] }> }>(
+        ["messages", workspaceId, sessionId],
+      );
+      const msgs = freshHistory?.pages.flatMap((p) => p.messages) ?? [];
+      if (msgs.length === 0) return;
+      const historyKeys = new Set(msgs.map(messageIdentityKey));
+      setLocalMessages((prev) => prev.filter((m) => !historyKeys.has(messageIdentityKey(m))));
+    } catch {
+      // Best-effort; the idle reconcile self-corrects.
+    }
+  }, [workspaceId, sessionId, queryClient]);
+
   // The contract stream: snapshot-first sync + discard rule + live events
   // (the only agent-derived consumption path after the hard cutover).
   const contractStream = useContractStream(sseWorkspaceId, {
@@ -889,6 +914,7 @@ export function ChatPage() {
       case EventType.MESSAGE_START: {
         if (evt.message?.type === MessageType.USER && evt.message.id) {
           knownUserMessageIds.current.add(evt.message.id);
+          void reconcileLandedUserMessage();
         }
         return;
       }
@@ -939,7 +965,7 @@ export function ChatPage() {
       default:
         return;
     }
-  }, [workspaceId, sessionId, queryClient, notifySessionIdle, reconcileOnIdle, queue, clearSessionPendingPrompts, clearStreamTimedOut, clearSessionBusy, upsertStreamPart, appendStreamDelta]);
+  }, [workspaceId, sessionId, queryClient, notifySessionIdle, reconcileOnIdle, reconcileLandedUserMessage, queue, clearSessionPendingPrompts, clearStreamTimedOut, clearSessionBusy, upsertStreamPart, appendStreamDelta]);
 
   // Platform events only: the workspace stream's session-state dialect is
   // deleted (hard cutover); workspace.phase/alert, queue.update, and
