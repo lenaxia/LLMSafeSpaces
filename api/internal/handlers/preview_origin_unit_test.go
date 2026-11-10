@@ -439,7 +439,12 @@ func TestEpic67UnhappyPathScenarios(t *testing.T) {
 		if cookie != "" {
 			req.Header.Set("Cookie", "__Host-pv="+cookie)
 		}
-		resp, err := http.DefaultClient.Do(req)
+		// Call-local client, never http.DefaultClient: its shared pool
+		// races with OTHER parallel tests' server teardowns — a mid-flight
+		// request dies with "http: CloseIdleConnections called" when any
+		// sibling test closes its transport (CI flake, 2026-11-09).
+		client := &http.Client{Timeout: 30 * time.Second}
+		resp, err := client.Do(req)
 		if err != nil {
 			t.Fatalf("request to %s: %v", host, err)
 		}
