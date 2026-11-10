@@ -170,6 +170,10 @@ func (r *WorkspaceReconciler) reconcileAgentdDelivery(ctx context.Context, ws *v
 	runtime := ws.Spec.Runtime
 	secLevel := string(ws.Spec.SecurityLevel)
 	metrics.WorkspacesRunning.WithLabelValues(runtime, secLevel).Dec()
+	// RC-A r2: the scraped pod dies here — its skew verdict (if any)
+	// goes with it; the rolled pod converges to the desired digest and
+	// its first comparable scrape re-arms the gauge at the new verdict.
+	r.clearAgentdSkewGauge(ws)
 	ws.Status.Phase = v1.WorkspacePhaseCreating
 	ws.Status.PodIP = ""
 	ws.Status.Endpoint = ""

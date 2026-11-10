@@ -97,6 +97,9 @@ func (r *WorkspaceReconciler) handleActive(ctx context.Context, workspace *v1.Wo
 		runtime := workspace.Spec.Runtime
 		secLevel := string(workspace.Spec.SecurityLevel)
 		metrics.WorkspacesRunning.WithLabelValues(runtime, secLevel).Dec()
+		// RC-A r2: the scraped pod is gone — its skew verdict goes with
+		// it (the recreated pod's first comparable scrape re-arms it).
+		r.clearAgentdSkewGauge(workspace)
 		workspace.Status.Phase = v1.WorkspacePhaseCreating
 		workspace.Status.PodIP = ""
 		workspace.Status.Endpoint = ""
@@ -126,6 +129,9 @@ func (r *WorkspaceReconciler) handleActive(ctx context.Context, workspace *v1.Wo
 			runtime := workspace.Spec.Runtime
 			secLevel := string(workspace.Spec.SecurityLevel)
 			metrics.WorkspacesRunning.WithLabelValues(runtime, secLevel).Dec()
+			// RC-A r2: dies with the pod (re-armed by the replacement's
+			// first comparable scrape).
+			r.clearAgentdSkewGauge(workspace)
 			workspace.Status.Phase = v1.WorkspacePhaseCreating
 			workspace.Status.PodIP = ""
 			workspace.Status.Endpoint = ""
@@ -210,6 +216,9 @@ func (r *WorkspaceReconciler) handleActive(ctx context.Context, workspace *v1.Wo
 		runtime := workspace.Spec.Runtime
 		secLevel := string(workspace.Spec.SecurityLevel)
 		metrics.WorkspacesRunning.WithLabelValues(runtime, secLevel).Dec()
+		// RC-A r2: dies with the pod (re-armed by the replacement's
+		// first comparable scrape).
+		r.clearAgentdSkewGauge(workspace)
 		workspace.Status.Phase = v1.WorkspacePhaseCreating
 		workspace.Status.PodIP = ""
 		workspace.Status.Endpoint = ""

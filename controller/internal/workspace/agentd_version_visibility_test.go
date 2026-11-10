@@ -562,3 +562,46 @@ func TestHandleSuspending_ClearsSkewGauge(t *testing.T) {
 	assert.False(t, metrics.WorkspaceAgentdVersionSkew.DeleteLabelValues("ws-rca-susp"),
 		"suspension must have DELETED the skew series")
 }
+
+// TestSuspendFromPreActive_ClearsSkewGauge (review r2, the blocker):
+// the SECOND suspend path — a pre-Active workspace parked Suspended
+// directly — must also delete the skew series. The reachable shape: a
+// workspace that was Active (gauge set by its scraped pod), recycled
+// to Creating, then suspended from Creating before reaching Active.
+func TestSuspendFromPreActive_ClearsSkewGauge(t *testing.T) {
+	ws := makeWorkspace("ws-rca-pre", "default", v1.WorkspacePhaseCreating)
+	suspendTrue := true
+	ws.Spec.Suspend = &suspendTrue
+	pod := makeRunningPod(podName("ws-rca-pre", string(ws.UID)), "default", "10.0.0.99")
+
+	r := reconcilerFor(t, ws, pod)
+	metrics.WorkspaceAgentdVersionSkew.WithLabelValues("ws-rca-pre").Set(1)
+
+	_, err := r.Reconcile(context.Background(), reqFor("ws-rca-pre", "default"))
+	require.NoError(t, err)
+
+	updated := &v1.Workspace{}
+	require.NoError(t, r.Get(context.Background(),
+		types.NamespacedName{Name: "ws-rca-pre", Namespace: "default"}, updated))
+	assert.Equal(t, v1.WorkspacePhaseSuspended, updated.Status.Phase,
+		"sanity: the pre-Active suspend path must have run")
+	assert.False(t, metrics.WorkspaceAgentdVersionSkew.DeleteLabelValues("ws-rca-pre"),
+		"suspendFromPreActive must have DELETED the skew series — a workspace parked Suspended must not page on a previous pod's verdict")
+}
+
+// TestEnterRecovery_ClearsSkewGauge (review r2, the same-class funnel):
+// every failure-class Active exit funnels through enterRecovery — the
+// failed pod's verdict dies there, so a workspace cycling recovery
+// never pages on a previous pod's stale verdict.
+func TestEnterRecovery_ClearsSkewGauge(t *testing.T) {
+	ws := makeWorkspace("ws-rca-recov", "default", v1.WorkspacePhaseActive)
+	r, _ := versionTestReconciler(t, "0.44.11", ws)
+	metrics.WorkspaceAgentdVersionSkew.WithLabelValues("ws-rca-recov").Set(1)
+
+	_, err := r.enterRecovery(context.Background(), ws, FailureClassProcess)
+	require.NoError(t, err)
+
+	assert.Equal(t, v1.WorkspacePhaseCreating, ws.Status.Phase)
+	assert.False(t, metrics.WorkspaceAgentdVersionSkew.DeleteLabelValues("ws-rca-recov"),
+		"enterRecovery must have DELETED the skew series")
+}

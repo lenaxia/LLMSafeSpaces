@@ -157,5 +157,40 @@ endpoint (`checkAgentHealth`) — no new scrape, no agentd change
 
 Also this round: the shared checkout was switched to `main` by a
 sibling lane mid-edit — moved to an isolated worktree
-(`/tmp/opencode/rca-wt`) for the remediation.
+(`/tmp/opencode/rca-wt`) for the remediation. Post-remediation: main
+moved (0.44.12 + same-day merges) → merged origin/main (only
+COORDINATE.md conflicted; both sides' rows kept).
+
+## Review round 2 (REQUEST_CHANGES on e82ecd61) — remediated
+
+Blocker: `suspendFromPreActive` (the SECOND suspend path — pre-Active
+workspaces park Suspended directly) deleted the pod without clearing
+the gauge: a workspace that was Active (gauge set), recycled to
+Creating, then suspended from there, paged forever.
+
+Same-class sweep ("series dies with the pod" now holds at EVERY site
+where a scraped pod can die):
+
+- `suspendFromPreActive` — the blocker (pinned:
+  `TestSuspendFromPreActive_ClearsSkewGauge`, the reachable
+  Active→Creating→suspend shape).
+- `enterRecovery` (recovery_policy.go) — the single funnel for every
+  failure-class Active exit (crashloop, infra, image pull, OOM); one
+  site covers the recovery-cycling flows whose pods die under
+  handleCreating's stale-pod cleanup (pinned:
+  `TestEnterRecovery_ClearsSkewGauge`).
+- `handleActive`'s three Active→Creating recreations (restart-gen,
+  password-secret heal, arch drift) — one-line clears; identical shape
+  to the pinned paths (worklog note, not individually pinned).
+- `reconcileAgentdDelivery`'s roll (#1746) — the rolled pod's verdict
+  dies; the converged pod re-arms at the new verdict.
+- Deliberately NOT cleared: phase_creating's mid-build pod deletions
+  (never-scraped pods — no series can exist; recovery-flow pods are
+  covered at the enterRecovery funnel), and transient unreachable
+  scrapes (latched last-live verdict, unchanged from r1).
+
+The upgrade_rollout_kill inventory (deletion-path classification
+source-guard) needed no update — the new clears sit inside already-
+classified functions.
+
 

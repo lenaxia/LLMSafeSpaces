@@ -39,6 +39,14 @@ func (r *WorkspaceReconciler) suspendFromPreActive(ctx context.Context, workspac
 	name := podName(workspace.Name, string(workspace.UID))
 	r.deletePodByName(ctx, name, workspace.Namespace)
 
+	// RC-A review r2: the skew gauge series dies with the pod — same
+	// rule as handleSuspending. This path usually runs before any pod
+	// was ever scraped (Pending/Creating), but a workspace that was
+	// Active (gauge set), recycled to Creating (password-secret heal,
+	// restart-generation, arch drift), and suspended from there parks
+	// Suspended indefinitely — the old pod's verdict must not linger.
+	r.clearAgentdSkewGauge(workspace)
+
 	// US-24.8 F22 parity: suspend clears recovery state for a fresh start
 	// on resume — including the derived RecoveryExhausted condition
 	// (#760): it must not outlive the counters it is derived from.
