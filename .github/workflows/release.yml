@@ -198,7 +198,10 @@ jobs:
   frontend-test:
     name: Frontend (unit + typecheck + e2e)
     needs: [lint]
-    runs-on: ubuntu-latest
+    # Pinned (2026-11-10): ubuntu-latest rolled to 26.04 and the pinned
+    # @playwright/test 1.60.0 cannot install chromium there — same break
+    # as the ci.yml frontend-test pin. Unpin together with it.
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-node@v6
