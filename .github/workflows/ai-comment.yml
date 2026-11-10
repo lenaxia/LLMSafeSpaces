@@ -76,10 +76,10 @@ jobs:
        github.event.comment.author_association == 'MEMBER' ||
        github.event.comment.author_association == 'COLLABORATOR' ||
        contains(fromJson('["agentic-actor-coder[bot]","ai-workflows-propagation[bot]"]'), github.event.comment.user.login))
-    uses: lenaxia/ai-workflows/.github/workflows/ai-comment.yml@v0.2.23 # pin rollback 2026-11-10: v0.2.25 route-command.sh "OUT_FILE: unbound variable" breaks every /review (#1844 escalation); restore-forward only with that fixed
+    uses: lenaxia/ai-workflows/.github/workflows/ai-comment.yml@v0.2.24 # pin step 2026-11-10: v0.2.25 breaks /review (OUT_FILE regression); v0.2.23 fails runner-side despite clean local repro — try v0.2.24 (debounce+retry-gate, pre-refactor) 2026-11-10: v0.2.25 route-command.sh "OUT_FILE: unbound variable" breaks every /review (#1844 escalation); restore-forward only with that fixed
     secrets: inherit
     with:
-      version: v0.2.23 # pin rollback 2026-11-10: match the uses: ref — v0.2.25 route-command.sh breaks every /review
+      version: v0.2.24 # pin step 2026-11-10: match uses: ref 2026-11-10: match the uses: ref — v0.2.25 route-command.sh breaks every /review
       project_name: LLMSafeSpaces
       # Trusted app-bot commenters (ai-workflows #51): without this the CLI
       # assert refuses bot /review comments pre-LLM even though the admission
