@@ -60,6 +60,7 @@ const boardNudgeDeliveryConcurrency = 8
 const (
 	fpRC1Pre       = "rc1.pre"
 	fpRC1Post      = "rc1.post"
+	fpRC1PreCommit = "rc1.precommit" // S8: fault between the deposal recording and the commit — the abort must NOT fire on the rolled-back reclaim
 	fpPersonaPre   = "persona.pre"
 	fpPersonaPost  = "persona.post"
 	fpDispatchPre  = "dispatch.pre"
@@ -683,6 +684,13 @@ func (s *Service) rc1Reclaims(ctx context.Context) (int, error) {
 			deposed = append(deposed, d)
 		}
 	}
+	// S8 rollback guard (kill-test seam): the deposal audit rows and
+	// delivery entries are collected but NOT yet durable — a fault here
+	// rolls the whole reclaim back and the aborts must never fire on a
+	// claim that never ended.
+	if err := s.failAt(ctx, fpRC1PreCommit); err != nil {
+		return 0, err
+	}
 	if err := s.commitPublishing(ctx, tx, pending...); err != nil {
 		return 0, err
 	}
@@ -754,6 +762,25 @@ func (s *Service) deposeTx(ctx context.Context, tx pgx.Tx, project, taskID, epis
 		return deposedWorker{}, Event{}, false, nil
 	}
 	return deposedWorker{taskID: taskID, session: assignee}, evt, true, nil
+}
+
+// deposeTaskTx is deposeTx's Task-shaped twin for the drift/settle
+// paths (RC2 drift-done, closed-unmerged re-entry, the anchored-review
+// settle): the episode derives from the row's own lease expiry (the
+// claim-epoch key, RFC3339Nano; the claim token discriminates the
+// degenerate lease-less claim), and the deposal is gated on a LIVE
+// claim (claim_token non-empty) — an unclaimed row's recorded assignee
+// is a corpse reference, not a deposable holder (the S8 guard: the
+// abort fires only when a claim is actually superseded).
+func (s *Service) deposeTaskTx(ctx context.Context, tx pgx.Tx, t *Task, reclaimEventID string) (deposedWorker, Event, bool, error) {
+	if t.ClaimToken == "" {
+		return deposedWorker{}, Event{}, false, nil
+	}
+	episode := t.ClaimToken
+	if t.LeaseExpiresAt != nil {
+		episode = t.LeaseExpiresAt.UTC().Format(time.RFC3339Nano)
+	}
+	return s.deposeTx(ctx, tx, t.ProjectID, t.ID, episode, t.AssigneeSession, reclaimEventID)
 }
 
 // abortDeposed delivers ONE deposed-session abort — post-commit,
@@ -1348,8 +1375,8 @@ func (s *Service) rc2Drift(ctx context.Context, cutoff time.Time) (done, review,
 					// The #1832 review settle rides the drift-done path
 					// too (a drift-completed subject completes/parks its
 					// anchored review tasks in the same transaction).
-					settleEvts, settlePokes, err := s.completeReviewTasks(ctx, tx, t, pr.URL, nil)
-					if err != nil {
+					settle := &settleOut{}
+					if err := s.completeReviewTasks(ctx, tx, t, pr.URL, nil, settle); err != nil {
 						_ = tx.Rollback(ctx)
 						return done, review, reentry, err
 					}
@@ -1359,11 +1386,32 @@ func (s *Service) rc2Drift(ctx context.Context, cutoff time.Time) (done, review,
 						_ = tx.Rollback(ctx)
 						return done, review, reentry, err
 					}
+					// S8: the drift-done ended the subject's own live
+					// claim (external truth deposed the reviewer) — the
+					// settle's anchored-review depositions ride the same
+					// collection.
+					subjectDeposed, subjectAbortEvt, subjectOK, derr := s.deposeTaskTx(ctx, tx, t,
+						"reconciler:drift_done:"+t.ID)
+					if derr != nil {
+						_ = tx.Rollback(ctx)
+						return done, review, reentry, derr
+					}
+					publish := append([]Event{evt}, settle.events...)
+					if subjectOK {
+						publish = append(publish, subjectAbortEvt)
+					}
 					done++
-					if err := s.commitPublishing(ctx, tx, append([]Event{evt}, settleEvts...)...); err != nil {
+					if err := s.commitPublishing(ctx, tx, publish...); err != nil {
 						return done, review, reentry, err
 					}
-					for _, pid := range settlePokes {
+					// S8: post-commit — the drift-done is durable; abort
+					// every claimant it deposed (subject + anchored
+					// reviews).
+					s.abortDeposedWorkers(ctx, settle.deposed)
+					if subjectOK {
+						s.abortDeposed(ctx, subjectDeposed)
+					}
+					for _, pid := range settle.pokes {
 						s.pokeDrive(pid) // sibling projects of the subject (review r1, finding 5)
 					}
 				} else {
@@ -1470,9 +1518,25 @@ func (s *Service) rc2Drift(ctx context.Context, cutoff time.Time) (done, review,
 					_ = tx.Rollback(ctx)
 					return done, review, reentry, err
 				}
+				// S8: the re-entry's fresh mint supersedes the claim the
+				// in_review row held (external truth deposed the reviewer) —
+				// deposed on the PRE-mint task snapshot, aborted post-commit.
+				reentryDeposed, reentryAbortEvt, reentryOK, derr := s.deposeTaskTx(ctx, tx, t,
+					"reconciler:drift_reentry:"+t.ID)
+				if derr != nil {
+					_ = tx.Rollback(ctx)
+					return done, review, reentry, derr
+				}
+				publish := []Event{evt}
+				if reentryOK {
+					publish = append(publish, reentryAbortEvt)
+				}
 				reentry++
-				if err := s.commitPublishing(ctx, tx, evt); err != nil {
+				if err := s.commitPublishing(ctx, tx, publish...); err != nil {
 					return done, review, reentry, err
+				}
+				if reentryOK {
+					s.abortDeposed(ctx, reentryDeposed)
 				}
 			} else {
 				if err := tx.Commit(ctx); err != nil {

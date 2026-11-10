@@ -139,3 +139,68 @@ absence, red only on over-abort):
 - The abort is belt-and-suspenders on top of expiry + the 409
   arbitration: those remain the authority; this makes the stop enforced
   rather than assumed.
+
+## §7 Review round 1 (REQUEST CHANGES on c5afc0013) — round 2
+
+Two blocking findings, both addressed:
+
+**Finding 1 (tests gate)** — the persona config-removed arm's deposal
+had no pin. → `TestPin_S8_5b_PersonaConfigClearedAbortsReviewer`: the
+reviewer claim mints, the config is REMOVED mid-flight (the project
+override set to the empty map — the {}-owns-the-mapping semantics), the
+lapse takes the persona_cleared branch, and the pin asserts the abort +
+the audit pointer resolving to the config-cleared reclaim. Verified
+born-RED against exactly the indicted mutation (`ok = false` on that
+branch's deposeTx result reddens S8-5b and nothing else).
+
+**Finding 2 (false invariant)** — "EVERY reconciler pass that
+definitively ends a claim aborts" was falsified by RC2 drift-done,
+closed-unmerged re-entry, and completeReviewTasks. The invariant is now
+TRUE for every PLATFORM-initiated ending (the wiring, not the wording):
+
+- **RC2 drift-done** (merged PR + criteria met): the in_review row's
+  live claim ends by external truth — the reviewer deposed on the
+  pre-write task snapshot, aborted post-commit; the settle's
+  anchored-review depositions ride the same collection.
+- **RC2 closed-unmerged re-entry**: the fresh mint supersedes the
+  in_review claim — the OLD reviewer deposed on the PRE-mint snapshot,
+  aborted post-commit BEFORE the fresh spawn.
+- **completeReviewTask** (the #1832 settle, both call sites — the
+  done-settle and the drift-done settle): an anchored review task
+  holding a live claim is deposed by its SUBJECT's completion —
+  platform-initiated, not the reviewer's own write. completeReviewTasks
+  now accumulates into a settleOut collector (events + pokes + deposed)
+  threaded to the commit owner: the done-settle rides the post-commit
+  nudge (new `deposed` field, fired before the spawn arms), the
+  drift-done delivers directly.
+- `deposeTaskTx` — the Task-shaped twin of deposeTx: gated on a LIVE
+  claim (claim_token non-empty — an unclaimed row's assignee is a corpse
+  reference, not a deposable holder), episode keyed on the row's own
+  lease expiry (claim-token fallback for the degenerate lease-less
+  claim).
+
+The honest EXCLUSION list (unchanged, now precise): worker/HUMAN-initiated
+endings never abort — the throttle self-report, the forward moves and
+the reviewer's own verdict (the writer's own successful write proves it
+alive), the bounce mint, rearm of claim-less failed rows, and
+manager-initiated stage moves (delete remains its own aborting path).
+S8 is the platform-AUTOMATIC stop for platform-initiated claim endings.
+
+**Non-blocking gaps, also addressed** (S8-6, S8-7):
+- the N>1 batch leg — one sweep deposing both holders aborts both
+  (ElementsMatch — the batch is concurrent, order-free);
+- the aborter-error branch — a refusing aborter (dead pod) degrades to
+  the warn; the reclaim, the audit row, and the sweep all stand;
+- the rollback-guard negative pin — a new `rc1.precommit` failpoint
+  faults between the deposal recording and the commit: NO abort, NO
+  events, the row untouched; the next sweep converges with exactly one
+  abort (the post-commit-only guard, made mechanical).
+
+Rebased onto main (1a2819a2f) — S5's lease-event observation plane and
+S4's event projections landed in the same hunks; both kept (the emit
+loops and the aborts are independent post-commit effects).
+
+§8 pins: S8-1..S8-10 (S8-5 split into 5/5b). Full pkg/board PG suite
+green post-round-2 (47–63s); build; make fmt-check; golangci-lint 0;
+mutation checks: deposeTaskTx-neuter reddens 8/9/10; the config-removed
+`ok = false` reddens 5b.

@@ -413,3 +413,366 @@ func (s *BoardSuite) TestPin_S8_5_PersonaLapseAbortsReviewer() {
 	s.Equal("reclaim", s.eventActionFor(reclaimEvent),
 		"the audit pointer resolves to the persona lapse's reclaim event")
 }
+
+// PIN S8-5b (review round 1, finding 1 — the config-REMOVED arm): the
+// persona lapse pass's config-cleared branch ends the reviewer's claim
+// too (converge-to-unclaimed, no accounting) — the deposed reviewer is
+// aborted and audited. Deleting the branch's deposal call must redden
+// THIS pin.
+func (s *BoardSuite) TestPin_S8_5b_PersonaConfigClearedAbortsReviewer() {
+	ws := s.seedWorkspace()
+	p := s.seedProject(ws, 2)
+	e := s.seedEpic(p, board.EpicActive)
+	task := s.seedTask(e, "s8-reviewer-config-cleared", nil, false)
+
+	spawner := &s8Spawner{}
+	aborter := &fakeAborter{}
+	svc := board.NewService(s.pool, s.cfg,
+		board.WithWorkerSpawner(spawner.Spawn),
+		board.WithWorkerAborter(aborter.Abort),
+		board.WithRoleDirectory(personaRoleDirectory()),
+	)
+	s.setStagePersonas(svc, p, map[string]board.PersonaConfig{"in_review": {RoleID: "reviewer"}})
+	recon := board.NewReconciler(s.pool, s.cfg,
+		board.WithWorkerSpawner(spawner.Spawn),
+		board.WithWorkerAborter(aborter.Abort),
+		board.WithPRDriftSource(s.drift),
+		board.WithPendingInputSource(s.pending),
+		board.WithFailpoint(s.fps.fp),
+		board.WithRoleDirectory(personaRoleDirectory()),
+	)
+
+	c, err := svc.ClaimNext(context.Background(), "worker-"+ws, ws)
+	s.Require().NoError(err)
+	_, err = svc.MoveStage(context.Background(), s.agent(c.Assignee, c.ClaimToken), "", c.ShortID, board.StageInReview, "", "")
+	s.Require().NoError(err)
+	reviewer := s.reloadTask(task.ID).AssigneeSession
+	s.Require().NotEqual(c.Assignee, reviewer)
+
+	// The persona config is REMOVED mid-flight: the lapse pass takes the
+	// config-cleared convergence branch (persona_cleared reclaim).
+	s.setStagePersonas(svc, p, map[string]board.PersonaConfig{})
+
+	s.expireLease(task.ID)
+	s.fps.armAt("persona.post", errors.New("pin: stop after the persona pass"))
+	_, err = recon.Sweep(context.Background())
+	s.Require().Error(err)
+	s.fps.disarm("persona.post")
+
+	s.Require().Nil(s.rawTask(task.ID).ClaimToken, "the config-cleared lapse ended the claim")
+	s.Equal(1, aborter.count(), "the deposed reviewer is aborted on the config-cleared arm too")
+	s.Equal(task.ID+"/"+reviewer, aborter.callsSlice()[0])
+
+	s.Equal(1, s.countEventsFor("reclaim_abort", task.ID))
+	_, session, reclaimEvent, _ := s.reclaimAbortEvent(task.ID)
+	s.Equal(reviewer, session)
+	s.Equal("reclaim", s.eventActionFor(reclaimEvent), "the audit pointer resolves to the config-cleared reclaim")
+}
+
+// errAborter records the call and refuses — the delivery-degradation
+// shape (a dead pod behind the interrupt route).
+type errAborter struct {
+	mu    sync.Mutex
+	calls []string
+}
+
+func (f *errAborter) Abort(_ context.Context, taskID, assignee string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.calls = append(f.calls, taskID+"/"+assignee)
+	return errors.New("pod unreachable")
+}
+
+func (f *errAborter) callsSlice() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make([]string, len(f.calls))
+	copy(out, f.calls)
+	return out
+}
+
+// PIN S8-6 (the batch + delivery-degradation legs): N deposed holders
+// in ONE sweep are ALL aborted (the mass-lapse incident shape), and an
+// aborter error degrades to a warn — the reclaim, the audit trail, and
+// the sweep all proceed (the 409 arbitration remains the authority).
+func (s *BoardSuite) TestPin_S8_6_BatchAndDeliveryErrorLegs() {
+	s.Run("N deposed in one sweep — all aborted", func() {
+		ws := s.seedWorkspace()
+		p := s.seedProject(ws, 4)
+		e := s.seedEpic(p, board.EpicActive)
+		first := s.seedTask(e, "s8-batch-a", nil, false)
+		second := s.seedTask(e, "s8-batch-b", nil, false)
+
+		spawner := &s8Spawner{}
+		aborter := &fakeAborter{}
+		svc := s.s8Svc(spawner, aborter)
+		c1, err := svc.ClaimNext(context.Background(), "worker-"+ws, ws)
+		s.Require().NoError(err)
+		c2, err := svc.ClaimNext(context.Background(), "worker-"+ws, ws)
+		s.Require().NoError(err)
+		holderA := s.reloadTask(c1.TaskID).AssigneeSession
+		holderB := s.reloadTask(c2.TaskID).AssigneeSession
+
+		lives := &fakeLiveness{}
+		lives.set(holderA, dead())
+		lives.set(holderB, dead())
+		recon := s.s8Recon(lives, nil, aborter)
+
+		s.expireLease(first.ID)
+		s.expireLease(second.ID)
+		s.rc1Sweep(recon)
+
+		s.reclaimOverlay(first.ID, 1)
+		s.reclaimOverlay(second.ID, 1)
+		s.Equal(2, aborter.count(), "the one-sweep batch aborts EVERY deposed holder")
+		got := aborter.callsSlice()
+		s.ElementsMatch([]string{first.ID + "/" + holderA, second.ID + "/" + holderB}, got)
+		s.Equal(2, s.countEvents("reclaim_abort"), "one audit row per deposal")
+	})
+
+	s.Run("aborter error degrades to a warn — nothing else affected", func() {
+		ws := s.seedWorkspace()
+		p := s.seedProject(ws, 4)
+		e := s.seedEpic(p, board.EpicActive)
+		task := s.seedTask(e, "s8-abort-err", nil, false)
+
+		spawner := &s8Spawner{}
+		aborter := &errAborter{}
+		svc := board.NewService(s.pool, s.cfg,
+			board.WithWorkerSpawner(spawner.Spawn),
+			board.WithPRDriftSource(s.drift),
+			board.WithPendingInputSource(s.pending),
+			board.WithFailpoint(s.fps.fp),
+		)
+		c, err := svc.ClaimNext(context.Background(), "worker-"+ws, ws)
+		s.Require().NoError(err)
+		s.Equal(task.ID, c.TaskID)
+		holder := s.reloadTask(task.ID).AssigneeSession
+
+		lives := &fakeLiveness{}
+		lives.set(holder, dead())
+		recon := board.NewReconciler(s.pool, s.cfg,
+			board.WithLivenessSource(lives),
+			board.WithWorkerAborter(aborter.Abort),
+			board.WithPRDriftSource(s.drift),
+			board.WithPendingInputSource(s.pending),
+			board.WithFailpoint(s.fps.fp),
+		)
+
+		s.expireLease(task.ID)
+		s.rc1Sweep(recon)
+
+		s.reclaimOverlay(task.ID, 1)
+		s.True(rowIsMarkedFailed(s, task.ID), "the reclaim itself is unaffected by the delivery error")
+		s.Equal([]string{task.ID + "/" + holder}, aborter.callsSlice(), "the abort was ATTEMPTED")
+		s.Equal(1, s.countEventsFor("reclaim_abort", task.ID),
+			"the deposal audit row stands — the DELIVERY failed, not the decision")
+	})
+}
+
+// PIN S8-7 (the rollback guard, mechanical): a fault between the
+// deposal recording and the commit rolls the WHOLE reclaim back — the
+// abort must NOT fire on a claim that never ended, and the next sweep
+// converges with exactly one abort. This is the post-commit-only guard
+// made testable (the S8 twin of the delete path's failed-transaction
+// pin).
+func (s *BoardSuite) TestPin_S8_7_FaultedReclaimNeverAborts() {
+	ws := s.seedWorkspace()
+	p := s.seedProject(ws, 4)
+	e := s.seedEpic(p, board.EpicActive)
+	task := s.seedTask(e, "s8-rollback", nil, false)
+
+	spawner := &s8Spawner{}
+	aborter := &fakeAborter{}
+	svc := s.s8Svc(spawner, aborter)
+	c, err := svc.ClaimNext(context.Background(), "worker-"+ws, ws)
+	s.Require().NoError(err)
+	s.Equal(task.ID, c.TaskID)
+	holder := s.reloadTask(task.ID).AssigneeSession
+
+	lives := &fakeLiveness{}
+	lives.set(holder, dead())
+	recon := s.s8Recon(lives, nil, aborter)
+
+	// The fault lands between the deposal recording and the commit.
+	s.expireLease(task.ID)
+	s.fps.armAt("rc1.precommit", errors.New("pin: fault before the reclaim commit"))
+	_, err = recon.Sweep(context.Background())
+	s.Require().Error(err)
+	s.Require().Contains(err.Error(), "rc1.precommit")
+	s.fps.disarm("rc1.precommit")
+
+	s.Equal(0, aborter.count(), "a rolled-back reclaim NEVER aborts — the claim never ended")
+	s.Equal(0, s.countEvents("reclaim"), "the reclaim rolled back with the audit rows")
+	s.Equal(0, s.countEvents("reclaim_abort"))
+	row := s.rawTask(task.ID)
+	s.Equal(board.StageInProgress, row.Stage, "the row is untouched by the faulted pass")
+	s.Require().NotNil(row.ClaimToken)
+
+	// The next sweep converges — exactly one abort, exactly one trail.
+	s.rc1Sweep(recon)
+	s.reclaimOverlay(task.ID, 1)
+	s.Equal(1, aborter.count(), "the converged reclaim aborts exactly once")
+	s.Equal(1, s.countEvents("reclaim_abort"))
+}
+
+// PIN S8-8 (review round 1, finding 2 — drift-done): RC2's merged-PR
+// convergence ends the in_review row's LIVE claim (the persona reviewer
+// deposed by external truth) — aborted post-commit with the audit
+// pointer naming the drift_done event. The implementer (whose own
+// forward move ended ITS claim long before) is never touched.
+func (s *BoardSuite) TestPin_S8_8_DriftDoneAbortsDeposedReviewer() {
+	ws := s.seedWorkspace()
+	p := s.seedProject(ws, 2)
+	e := s.seedEpic(p, board.EpicActive)
+	task := s.seedTask(e, "s8-drift-done", []string{"pr:88"}, true)
+
+	spawner := &s8Spawner{}
+	aborter := &fakeAborter{}
+	svc := board.NewService(s.pool, s.cfg,
+		board.WithWorkerSpawner(spawner.Spawn),
+		board.WithWorkerAborter(aborter.Abort),
+		board.WithRoleDirectory(personaRoleDirectory()),
+	)
+	s.setStagePersonas(svc, p, map[string]board.PersonaConfig{"in_review": {RoleID: "reviewer"}})
+	recon := board.NewReconciler(s.pool, s.cfg,
+		board.WithWorkerAborter(aborter.Abort),
+		board.WithPRDriftSource(s.drift),
+		board.WithPendingInputSource(s.pending),
+		board.WithFailpoint(s.fps.fp),
+		board.WithRoleDirectory(personaRoleDirectory()),
+	)
+
+	c, err := svc.ClaimNext(context.Background(), "worker-"+ws, ws)
+	s.Require().NoError(err)
+	_, err = svc.MoveStage(context.Background(), s.agent(c.Assignee, c.ClaimToken), "", c.ShortID, board.StageInReview, "", "")
+	s.Require().NoError(err)
+	reviewer := s.reloadTask(task.ID).AssigneeSession
+	s.Require().NotEqual(c.Assignee, reviewer, "the persona mint stamped the reviewer")
+	s.Require().NotNil(s.rawTask(task.ID).ClaimToken, "the in_review row holds a live claim")
+
+	s.drift.set(88, board.PRState{Merged: true, URL: "https://git.example/88"})
+	_, err = recon.Sweep(context.Background())
+	s.Require().NoError(err)
+
+	s.Equal(board.StageDone, s.rawTask(task.ID).Stage, "the drift convergence lands done")
+	s.Equal(1, aborter.count(), "the deposed reviewer is aborted")
+	s.Equal(task.ID+"/"+reviewer, aborter.callsSlice()[0])
+	s.NotContains(aborter.callsSlice()[0], c.Assignee, "the implementer's own forward move was never a deposal")
+
+	s.Equal(1, s.countEventsFor("reclaim_abort", task.ID))
+	_, session, reclaimEvent, _ := s.reclaimAbortEvent(task.ID)
+	s.Equal(reviewer, session)
+	s.Equal("drift_done", s.eventActionFor(reclaimEvent), "the audit pointer names the drift_done ending")
+}
+
+// PIN S8-9 (finding 2 — closed-unmerged re-entry): RC2's re-entry mint
+// supersedes the in_review claim (fresh token for a fresh worker) — the
+// OLD reviewer is aborted post-commit with the audit pointer naming the
+// drift_reentry event, and the abort precedes the fresh spawn.
+func (s *BoardSuite) TestPin_S8_9_ReentryAbortsDeposedReviewer() {
+	ws := s.seedWorkspace()
+	p := s.seedProject(ws, 2)
+	e := s.seedEpic(p, board.EpicActive)
+	task := s.seedTask(e, "s8-reentry", []string{"pr:89"}, true)
+
+	spawner := &s8Spawner{}
+	aborter := &fakeAborter{}
+	svc := board.NewService(s.pool, s.cfg,
+		board.WithWorkerSpawner(spawner.Spawn),
+		board.WithWorkerAborter(aborter.Abort),
+		board.WithRoleDirectory(personaRoleDirectory()),
+	)
+	s.setStagePersonas(svc, p, map[string]board.PersonaConfig{"in_review": {RoleID: "reviewer"}})
+	recon := board.NewReconciler(s.pool, s.cfg,
+		board.WithWorkerSpawner(spawner.Spawn),
+		board.WithWorkerAborter(aborter.Abort),
+		board.WithPRDriftSource(s.drift),
+		board.WithPendingInputSource(s.pending),
+		board.WithFailpoint(s.fps.fp),
+		board.WithRoleDirectory(personaRoleDirectory()),
+	)
+
+	c, err := svc.ClaimNext(context.Background(), "worker-"+ws, ws)
+	s.Require().NoError(err)
+	_, err = svc.MoveStage(context.Background(), s.agent(c.Assignee, c.ClaimToken), "", c.ShortID, board.StageInReview, "", "")
+	s.Require().NoError(err)
+	reviewer := s.reloadTask(task.ID).AssigneeSession
+	s.Require().NotEqual(c.Assignee, reviewer)
+
+	s.drift.set(89, board.PRState{Closed: true, URL: "https://git.example/89"})
+	_, err = recon.Sweep(context.Background())
+	s.Require().NoError(err)
+
+	row := s.rawTask(task.ID)
+	s.Equal(board.StageInProgress, row.Stage, "the re-entry lands in_progress with a fresh claim")
+	s.Require().NotNil(row.ClaimToken)
+	s.NotEqual(reviewer, row.Assignee, "the fresh worker supersedes the reviewer's stamp")
+
+	s.Equal(1, aborter.count(), "the superseded reviewer is aborted")
+	s.Equal(task.ID+"/"+reviewer, aborter.callsSlice()[0])
+	s.Equal(1, s.countEventsFor("reclaim_abort", task.ID))
+	_, session, reclaimEvent, _ := s.reclaimAbortEvent(task.ID)
+	s.Equal(reviewer, session)
+	s.Equal("drift_reentry", s.eventActionFor(reclaimEvent), "the audit pointer names the re-entry ending")
+}
+
+// PIN S8-10 (finding 2 — the done-settle's anchored reviews): when a
+// subject reaches done, the #1832 settle COMPLETES its anchored review
+// tasks — a review task holding a LIVE claim is deposed by the settle
+// (platform-initiated: the SUBJECT's completion, not the reviewer's own
+// write) and aborted post-commit with the audit pointer naming the
+// review_complete event. The SUBJECT's own reviewer (its claim ended by
+// the manager's human move) is the exclusion: human-initiated moves
+// never abort.
+func (s *BoardSuite) TestPin_S8_10_DoneSettleAbortsAnchoredReviewer() {
+	ws := s.seedWorkspace()
+	p := s.seedProject(ws, 2)
+	e := s.seedEpic(p, board.EpicActive)
+	subject := s.seedTask(e, "s8-settle-subject", nil, true)
+	review := s.seedTask(e, "s8-settle-review", []string{"review-of:" + subject.ShortID}, true)
+
+	spawner := &s8Spawner{}
+	aborter := &fakeAborter{}
+	svc := board.NewService(s.pool, s.cfg,
+		board.WithWorkerSpawner(spawner.Spawn),
+		board.WithWorkerAborter(aborter.Abort),
+		board.WithRoleDirectory(personaRoleDirectory()),
+	)
+	s.setStagePersonas(svc, p, map[string]board.PersonaConfig{"in_review": {RoleID: "reviewer"}})
+
+	// The subject: worker → in_review (its own reviewer claim mints).
+	cs, err := svc.ClaimNext(context.Background(), "worker-"+ws, ws)
+	s.Require().NoError(err)
+	s.Require().Equal(subject.ID, cs.TaskID)
+	_, err = svc.MoveStage(context.Background(), s.agent(cs.Assignee, cs.ClaimToken), "", cs.ShortID, board.StageInReview, "", "")
+	s.Require().NoError(err)
+	subjectReviewer := s.reloadTask(subject.ID).AssigneeSession
+
+	// The anchored review task: worker → in_review (ITS reviewer claim).
+	cr, err := svc.ClaimNext(context.Background(), "worker-"+ws, ws)
+	s.Require().NoError(err)
+	s.Require().Equal(review.ID, cr.TaskID)
+	_, err = svc.MoveStage(context.Background(), s.agent(cr.Assignee, cr.ClaimToken), "", cr.ShortID, board.StageInReview, "", "")
+	s.Require().NoError(err)
+	reviewReviewer := s.reloadTask(review.ID).AssigneeSession
+	s.Require().NotEqual(cs.Assignee, reviewReviewer)
+
+	// The manager completes the subject (a HUMAN move — the subject's
+	// own reviewer is NOT a deposal; the settle's completion of the
+	// anchored review task IS platform-initiated).
+	_, err = svc.MoveStage(context.Background(), s.owner(), subject.ID, "", board.StageDone, "https://git.example/settle", "")
+	s.Require().NoError(err)
+
+	s.Equal(board.StageDone, s.rawTask(review.ID).Stage, "the anchored review completed with its subject")
+	s.Equal(1, aborter.count(), "exactly the anchored review's claimant is aborted")
+	s.Equal(review.ID+"/"+reviewReviewer, aborter.callsSlice()[0])
+	s.NotEqual(subject.ID+"/"+subjectReviewer, aborter.callsSlice()[0],
+		"the subject's own reviewer ended by the human move — never aborted (the exclusion)")
+
+	s.Equal(1, s.countEventsFor("reclaim_abort", review.ID))
+	_, session, reclaimEvent, _ := s.reclaimAbortEvent(review.ID)
+	s.Equal(reviewReviewer, session)
+	s.Equal("review_complete", s.eventActionFor(reclaimEvent), "the audit pointer names the review_complete ending")
+	s.Equal(0, s.countEventsFor("reclaim_abort", subject.ID), "no deposal audit for the human-ended subject claim")
+}
