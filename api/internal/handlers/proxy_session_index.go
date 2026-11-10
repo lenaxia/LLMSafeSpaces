@@ -359,6 +359,7 @@ func (h *ProxyHandler) runSessionIndexReconciliation(workspaceID string) {
 		next[id] = reconcileMissThreshold
 	}
 	keptOperatorIDs := make([]string, 0, len(keptForOperator))
+	keptSpawnWindowIDs := make([]string, 0, len(keptForOperator))
 	h.state().SetReconcileMisses(ctx, workspaceID, next)
 	// byInternal feeds BOTH post-reap populations' lookups: the #1889
 	// F3 phrase-orphan disposition at the delete site, and the
@@ -440,8 +441,7 @@ func (h *ProxyHandler) runSessionIndexReconciliation(workspaceID string) {
 	for _, id := range keptForOperator {
 		if row, ok := byInternal[id]; ok && row.MessageCount == 0 {
 			sessionindex.ReconcileOutcome("kept_spawn_window")
-			h.logger.Warn("session reconcile: spawn-window grace kept fresh row (not a ghost until the grace lapses)",
-				"workspaceID", workspaceID, "sessionID", id)
+			keptSpawnWindowIDs = append(keptSpawnWindowIDs, id)
 			continue
 		}
 		// #1340 triage guard: history-bearing rows the harness reports
@@ -461,6 +461,17 @@ func (h *ProxyHandler) runSessionIndexReconciliation(workspaceID string) {
 			sample = sample[:reconcileWarnIDSamples]
 		}
 		h.logger.Warn("session reconcile: history-bearing rows absent at harness, kept for operator review",
+			"workspaceID", workspaceID, "count", n, "sampleIDs", strings.Join(sample, ","))
+	}
+	// Same per-pass aggregation for the spawn-window population (review
+	// minor finding on PR #2011): bounded by recent session creation, but
+	// the same per-row shape in the same pass.
+	if n := len(keptSpawnWindowIDs); n > 0 {
+		sample := keptSpawnWindowIDs
+		if len(sample) > reconcileWarnIDSamples {
+			sample = sample[:reconcileWarnIDSamples]
+		}
+		h.logger.Warn("session reconcile: spawn-window grace kept fresh rows (not ghosts until the grace lapses)",
 			"workspaceID", workspaceID, "count", n, "sampleIDs", strings.Join(sample, ","))
 	}
 

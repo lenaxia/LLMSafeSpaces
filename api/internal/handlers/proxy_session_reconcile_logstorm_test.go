@@ -108,6 +108,42 @@ func TestSessionIndexReconcile_LogStormAggregated(t *testing.T) {
 	assert.Contains(t, stormLines[0], "count=4", "aggregated warn carries the row count")
 }
 
+func TestSessionIndexReconcile_LogStormSampleCapBoundary(t *testing.T) {
+	h, cl, idx := captureReconcileHandler(t)
+	// More rows than the sample cap: count carries the full population,
+	// the sample stays capped at reconcileWarnIDSamples.
+	const n = reconcileWarnIDSamples + 2
+	seedGhostRows(t, idx, "ws-1", n)
+
+	runReconcile(t, h, "ws-1")
+	runReconcile(t, h, "ws-1")
+
+	var stormLines []string
+	for _, w := range cl.warns {
+		if strings.Contains(w, "history-bearing rows absent at harness") {
+			stormLines = append(stormLines, w)
+		}
+	}
+	require.Len(t, stormLines, 1, "one aggregated warn per pass, got %d: %v", len(stormLines), cl.warns)
+	assert.Contains(t, stormLines[0], fmt.Sprintf("count=%d", n), "count carries the full population")
+	ids := strings.Split(afterKV(stormLines[0], "sampleIDs="), ",")
+	assert.Len(t, ids, reconcileWarnIDSamples, "sampleIDs capped at the constant")
+}
+
+// afterKV extracts the value following key= up to the next | separator
+// (the captureLogger kv shape).
+func afterKV(line, key string) string {
+	i := strings.Index(line, key)
+	if i < 0 {
+		return ""
+	}
+	rest := line[i+len(key):]
+	if j := strings.Index(rest, "|"); j >= 0 {
+		rest = rest[:j]
+	}
+	return rest
+}
+
 func TestSessionIndexReconcile_LogStormNoRowsNoWarn(t *testing.T) {
 	h, cl, _ := captureReconcileHandler(t)
 	runReconcile(t, h, "ws-1")

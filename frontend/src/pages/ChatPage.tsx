@@ -610,6 +610,15 @@ export function ChatPage() {
   const reconcileLandedUserMessage = useCallback(async () => {
     if (!workspaceId || !sessionId) return;
     try {
+      // Mirror reconcileOnIdle's page-1 bound: the landed queued message is
+      // the newest message and lands in page 1, so refetching every cached
+      // page (each with its stale before-cursor, growing with pagination
+      // depth) on every USER MESSAGE_START buys nothing.
+      queryClient.setQueryData(["messages", workspaceId, sessionId], (old: unknown) => {
+        if (!old) return old;
+        const inf = old as { pages: unknown[]; pageParams: unknown[] };
+        return { pages: inf.pages.slice(0, 1), pageParams: inf.pageParams.slice(0, 1) };
+      });
       await queryClient.refetchQueries({ queryKey: ["messages", workspaceId, sessionId] });
       const freshHistory = queryClient.getQueryData<{ pages: Array<{ messages: Message[] }> }>(
         ["messages", workspaceId, sessionId],

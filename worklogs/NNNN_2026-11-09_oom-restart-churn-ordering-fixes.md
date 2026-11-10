@@ -2,7 +2,7 @@
 
 **Date:** 2026-11-09
 **Session:** Production incident triage on the home cluster (llmsafespaces ns) + fixes for the four validated issue classes
-**Status:** Complete
+**Status:** Complete (review round 1 addressed)
 
 ---
 
@@ -59,6 +59,14 @@ Diagnose why chat sessions were dead in the frontend and the LLM unresponsive, t
 - None for this work. (Note: App-identity git auth unavailable in this environment; the platform-provisioned `GH_TOKEN` mechanism is used per README-LLM §0b's credential-mechanism clause.)
 
 ---
+
+## Review Round 1 (AI reviewer, 2026-11-10)
+
+- **Finding 1 (blocking, accepted)**: restart-payload anchor read/compare/write sat OUTSIDE applyMu; a parked restart from apply A could land its anchor AFTER apply B's — a stale identity over the child's env, wrongly suppressing a needed restart. Fixed: gate read + anchor write moved inside the locked section (serialized in pipeline order); restart decision stays outside. Regression test `TestApplyBatch_ConcurrentAnchorsSerializeInPipelineOrder` pins the interleaving with a CAS-gated blocking proc.
+- **Finding 2 (blocking, accepted)**: `reconcileLandedUserMessage` refetched all cached pages per MESSAGE_START (stale cursors, growing with depth). Fixed: mirrors reconcileOnIdle's page-1 slice before refetch (the landed message is the newest and lands in page 1).
+- Minor (accepted): `kept_spawn_window` per-row Warn folded into the same per-pass aggregate. `reap_deferred_probe` intentionally stays per-row — each line carries a distinct probe error string that an aggregate would destroy.
+- Missing tests added: concurrent-anchor race (above), unreadable-anchor fail-open (`TestApplyBatch_UnreadablePayloadHashFailsOpen`, skipped as root), sample-cap boundary (`TestSessionIndexReconcile_LogStormSampleCapBoundary`). Socket-topology composition pin deferred (suite green; ordering unpinned) — noted as follow-up.
+- CI gates repaired en route: x/net 0.62.0 + klauspost/compress 1.20.2 (fresh vuln DB findings), frontend-test + sdk-contract jobs pinned to ubuntu-24.04 (26.04 runner image broke playwright install + hurl/libxml2), epic67 test flake fixed (call-local http client), gosec G703 function-level nolint on atomicWriteAny (repo convention), staticcheck QF1012.
 
 ## Tests Run
 
