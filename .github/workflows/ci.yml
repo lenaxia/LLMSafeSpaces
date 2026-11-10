@@ -643,7 +643,11 @@ jobs:
 
   sdk-contract:
     name: SDK Contract Tests
-    runs-on: ubuntu-latest
+    # Pinned (2026-11-09): the ubuntu-latest image rolled to 26.04, which
+    # dropped libxml2.so.2 — the pinned hurl 5.0.1 binary cannot load
+    # (all SDK language suites still pass). Same runner-image break as
+    # the frontend-test pin above; unpin together with it.
+    runs-on: ubuntu-24.04
     needs: [test, test-full, frontend-test]
     steps:
       - uses: actions/checkout@v6
