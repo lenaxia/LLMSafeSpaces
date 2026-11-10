@@ -2603,6 +2603,11 @@ func TestMonitoring_PrometheusRule_ContainsAllAlerts(t *testing.T) {
 		"LLMSafeSpacesLoopCanaryProbeStale",
 		"LLMSafeSpacesLoopParkedSweeperStale",
 		"LLMSafeSpacesLoopReconcileWatchdogStale",
+		// RC-A (2026-10-30 incident): workspace agentd older than the
+		// fleet release — the silent 15h-skew killer (warning tier:
+		// N-1 for hours is the OnRefresh posture; 2h+ persistence means
+		// the roll runbook has not been run).
+		"LLMSafeSpacesAgentdVersionSkew",
 	}
 	for _, expectedName := range expected {
 		require.True(t, alertNames[expectedName],

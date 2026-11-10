@@ -29,6 +29,9 @@ func (r *WorkspaceReconciler) handleFailed(ctx context.Context, workspace *v1.Wo
 			"gen", workspace.Spec.RestartGeneration,
 			"observed", workspace.Status.ObservedRestartGeneration)
 		r.cleanupFailedWorkspaceSecrets(ctx, workspace)
+		// RC-A review r1: no pod alive → the skew series dies with it
+		// (the rebuilt pod's first comparable scrape re-arms it).
+		r.clearAgentdSkewGauge(workspace)
 		workspace.Status.Phase = v1.WorkspacePhasePending
 		workspace.Status.Message = ""
 		workspace.Status.FailureReason = v1.FailureReasonNone
@@ -66,6 +69,8 @@ func (r *WorkspaceReconciler) handleFailed(ctx context.Context, workspace *v1.Wo
 		}
 		logger.Info("Workspace Failed; no pod exists, retrying")
 		r.cleanupFailedWorkspaceSecrets(ctx, workspace)
+		// RC-A review r1: no pod alive → the skew series dies with it.
+		r.clearAgentdSkewGauge(workspace)
 		workspace.Status.Phase = v1.WorkspacePhaseCreating
 		workspace.Status.PodIP = ""
 		workspace.Status.Endpoint = ""

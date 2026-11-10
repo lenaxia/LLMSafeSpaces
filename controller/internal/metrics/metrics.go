@@ -124,6 +124,32 @@ var (
 		},
 		[]string{"reason"},
 	)
+	// RC-A (2026-10-30 incident): workspace pods whose RUNNING agentd
+	// self-reports a version older than the fleet release the controller
+	// was deployed with. The gauge is level (1 while stale — alert on
+	// any persistence, e.g. `sum(...) > 0 for 30m`) and DIES WITH THE
+	// POD: the controller deletes the series on every indefinite
+	// no-pod exit (termination, suspension, health-restart, the legacy
+	// Failed self-heal), so a workspace deleted while stale cannot
+	// hold the alert open forever. The counter ticks once per stale
+	// EPISODE (each new (agentd, fleet) version pair, only after the
+	// exactly-once annotation stamp persists), not per 15s scrape.
+	// Kills the incident's silent 15-hour skew: the signal existed only
+	// inside the pod's admin healthz until this pair existed.
+	WorkspaceAgentdVersionSkew = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "llmsafespaces_workspace_agentd_version_skew",
+			Help: "1 while the workspace pod's running agentd reports a version older than the fleet release the controller was deployed with (RC-A 2026-10-30), by workspace. The series is deleted when the pod goes away (terminate/suspend/restart) — it never outlives the pod it judged",
+		},
+		[]string{"workspace_id"},
+	)
+	WorkspaceAgentdVersionSkewDetectedTotal = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "llmsafespaces_workspace_agentd_version_skew_detected_total",
+			Help: "Agentd version-skew episodes detected (running agentd older than the fleet release, RC-A 2026-10-30), by workspace. Once per episode (new agentd/fleet version pair), not per scrape",
+		},
+		[]string{"workspace_id"},
+	)
 	WorkspaceCreateDurationSeconds = prometheus.NewHistogramVec(
 		prometheus.HistogramOpts{Name: "llmsafespaces_workspace_create_duration_seconds", Help: "Wall-clock time from creation request to Active", Buckets: startupBuckets},
 		[]string{"has_packages", "has_init_script"},
@@ -247,6 +273,8 @@ func AllCollectors() []prometheus.Collector {
 		WorkspaceRecoveryDurationSeconds,
 		WorkspaceStatusUpdateConflictsTotal,
 		WorkspacePVCCleanupDelegatedTotal,
+		WorkspaceAgentdVersionSkew,
+		WorkspaceAgentdVersionSkewDetectedTotal,
 		WorkspaceCreateDurationSeconds, WorkspaceResumeDurationSeconds,
 		WorkspaceInitContainerDurationSeconds,
 		ReconciliationDurationSeconds, ReconciliationErrorsTotal,
