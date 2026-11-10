@@ -8,6 +8,7 @@ import (
 	"errors"
 	"net/http"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -357,6 +358,8 @@ func (h *ProxyHandler) runSessionIndexReconciliation(workspaceID string) {
 	for _, id := range keptForOperator {
 		next[id] = reconcileMissThreshold
 	}
+	keptOperatorIDs := make([]string, 0, len(keptForOperator))
+	keptSpawnWindowIDs := make([]string, 0, len(keptForOperator))
 	h.state().SetReconcileMisses(ctx, workspaceID, next)
 	// byInternal feeds BOTH post-reap populations' lookups: the #1889
 	// F3 phrase-orphan disposition at the delete site, and the
@@ -438,8 +441,7 @@ func (h *ProxyHandler) runSessionIndexReconciliation(workspaceID string) {
 	for _, id := range keptForOperator {
 		if row, ok := byInternal[id]; ok && row.MessageCount == 0 {
 			sessionindex.ReconcileOutcome("kept_spawn_window")
-			h.logger.Warn("session reconcile: spawn-window grace kept fresh row (not a ghost until the grace lapses)",
-				"workspaceID", workspaceID, "sessionID", id)
+			keptSpawnWindowIDs = append(keptSpawnWindowIDs, id)
 			continue
 		}
 		// #1340 triage guard: history-bearing rows the harness reports
@@ -447,8 +449,30 @@ func (h *ProxyHandler) runSessionIndexReconciliation(workspaceID string) {
 		// (a vanished session with history may indicate a harness store
 		// reset; the read path still answers the typed gone-state).
 		sessionindex.ReconcileOutcome("kept_for_operator")
-		h.logger.Warn("session reconcile: history-bearing row absent at harness, kept for operator review",
-			"workspaceID", workspaceID, "sessionID", id)
+		keptOperatorIDs = append(keptOperatorIDs, id)
+	}
+	// Log-storm guard: the per-row Warn used to emit one line per kept
+	// row per pass — hundreds of lines per workspace per 30s cadence in
+	// the boot window. The outcome metrics carry the per-row diagnosis;
+	// the log is ONE aggregated line per pass with a capped id sample.
+	if n := len(keptOperatorIDs); n > 0 {
+		sample := keptOperatorIDs
+		if len(sample) > reconcileWarnIDSamples {
+			sample = sample[:reconcileWarnIDSamples]
+		}
+		h.logger.Warn("session reconcile: history-bearing rows absent at harness, kept for operator review",
+			"workspaceID", workspaceID, "count", n, "sampleIDs", strings.Join(sample, ","))
+	}
+	// Same per-pass aggregation for the spawn-window population (review
+	// minor finding on PR #2011): bounded by recent session creation, but
+	// the same per-row shape in the same pass.
+	if n := len(keptSpawnWindowIDs); n > 0 {
+		sample := keptSpawnWindowIDs
+		if len(sample) > reconcileWarnIDSamples {
+			sample = sample[:reconcileWarnIDSamples]
+		}
+		h.logger.Warn("session reconcile: spawn-window grace kept fresh rows (not ghosts until the grace lapses)",
+			"workspaceID", workspaceID, "count", n, "sampleIDs", strings.Join(sample, ","))
 	}
 
 	h.backfillShortIDs(ctx, workspaceID, rows)
@@ -480,6 +504,11 @@ func (h *ProxyHandler) probeSessionAliveByID(ctx context.Context, workspaceID, s
 // one-time rollout catch-up so a single reconcile pass never turns
 // into a workspace-wide write storm.
 const shortIDBackfillBudget = 25
+
+// reconcileWarnIDSamples caps the per-pass aggregated reconcile Warn's
+// session-id sample. The full population lives in the outcome metrics;
+// the log line names enough rows to start an investigation.
+const reconcileWarnIDSamples = 10
 
 // backfillShortIDs is the design 0066 convergence sweep's short-id
 // half: rows whose short_id is still NULL (predating the rollout, or a
@@ -564,6 +593,7 @@ func (h *ProxyHandler) rebuildMessageCounts(ctx context.Context, workspaceID str
 		return
 	}
 	candidates := make([]types.SessionListItem, 0, len(rows))
+	invisibleCountZero := make([]string, 0)
 	for _, row := range rows {
 		if present[row.InternalID] {
 			candidates = append(candidates, row)
@@ -580,9 +610,18 @@ func (h *ProxyHandler) rebuildMessageCounts(ctx context.Context, workspaceID str
 		// signal, or every real ghost would pollute it.
 		if row.MessageCount == 0 {
 			sessionindex.ReconcileOutcome("count_skip_not_present")
-			h.logger.Warn("session reconcile: count rebuild cannot reach list-invisible count-zero row (the #1452 gap; the listing serve-through owns its convergence)",
-				"workspaceID", workspaceID, "sessionID", row.InternalID)
+			invisibleCountZero = append(invisibleCountZero, row.InternalID)
 		}
+	}
+	// Log-storm guard: same aggregation as the kept_for_operator pass —
+	// one Warn per pass with a capped id sample, not one line per row.
+	if n := len(invisibleCountZero); n > 0 {
+		sample := invisibleCountZero
+		if len(sample) > reconcileWarnIDSamples {
+			sample = sample[:reconcileWarnIDSamples]
+		}
+		h.logger.Warn("session reconcile: count rebuild cannot reach list-invisible count-zero rows (the #1452 gap; the listing serve-through owns its convergence)",
+			"workspaceID", workspaceID, "count", n, "sampleIDs", strings.Join(sample, ","))
 	}
 	if len(candidates) == 0 {
 		return

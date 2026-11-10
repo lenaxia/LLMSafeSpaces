@@ -204,6 +204,8 @@ func (d fileDelivery) apply(files []spawnFileEntry) (string, error) {
 // atomicWriteAny writes bytes to path with the final mode atomically:
 // temp file in the same directory (same filesystem ⇒ rename is atomic),
 // created with the FINAL mode so no window exists with looser bits.
+//
+//nolint:gosec // G703 (taint via dir): dir is not user input — every caller derives it from a store coordinate in the operator-set LLMSAFESPACES_*_PATH trust domain (secrets-env, rev anchor, restart-payload siblings) or a test temp dir. Temp+rename stay inside that same directory by construction. Function-level directive: the pinned gosec taint release attributes the finding inconsistently across lines.
 func atomicWriteAny(path string, data []byte, mode os.FileMode) error {
 	dir := filepath.Dir(path)
 	tmp, err := os.CreateTemp(dir, ".deliver-*")
