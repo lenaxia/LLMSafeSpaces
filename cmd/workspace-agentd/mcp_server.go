@@ -165,7 +165,7 @@ func boardManagerTools() []mcpTool {
 		{
 			Name:        "board_health",
 			Annotations: annot(true, false, false),
-			Description: "The WORKSPACE's board health snapshot (#1837 P2a): active leases with expiry and assignee, story and project-slot cooldowns, pending_input counts by origin, recent reclaims, and per-project worker slots in use — one call over every board this workspace's projects carry. Use it to answer 'what is in flight, what is stuck, what cools down' before scheduling decisions. Workspace-scoped; open to any in-workspace session (the manager-grant gate is repealed, ruling 2026-10-27, tsk-copper-refectory-generates).",
+			Description: "The WORKSPACE's board health snapshot (#1837 P2a): active leases with expiry and assignee, story and project-slot cooldowns, pending_input counts by origin, recent reclaims, per-project worker slots in use, and the observation plane's recent audit window (observation_events: stamped/nudged/renewed/lapse_verdict/reclaimed/deposed with their detail — lag, rung, source, evidence, reason, salvage — newest first, retention self-documented in observation_retention) — one call over every board this workspace's projects carry. Use it to answer 'what is in flight, what is stuck, what cools down' before scheduling decisions. Workspace-scoped; open to any in-workspace session (the manager-grant gate is repealed, ruling 2026-10-27, tsk-copper-refectory-generates).",
 			InputSchema: map[string]any{"type": "object", "properties": map[string]any{}},
 		},
 		{
