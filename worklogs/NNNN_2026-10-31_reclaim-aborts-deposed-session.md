@@ -204,3 +204,43 @@ loops and the aborts are independent post-commit effects).
 green post-round-2 (47–63s); build; make fmt-check; golangci-lint 0;
 mutation checks: deposeTaskTx-neuter reddens 8/9/10; the config-removed
 `ok = false` reddens 5b.
+
+## §9 Review round 3 (blocker: the drift-done capture point) — round 4
+
+**The finding**: the drift-done deposal asserted an OUT-of-transaction
+snapshot's identity while the done UPDATE carried only the stage
+predicate — a claim replaced in the read→write window (the drift
+consult itself) would have the deposal name the OLD holder for a claim
+the row no longer held.
+
+**The fix (the reviewer's option a, applied to BOTH RC2 sites)**:
+- drift-done UPDATE gains a claim-identity predicate: the exact
+  snapshot token when the snapshot held a live claim, `claim_token IS
+  NULL` when it held none. A raced re-claim/bounce misses
+  (RowsAffected=0): this sweep converges nothing, deposes nobody, and
+  the next sweep's FRESH snapshot converges (the real racing writer —
+  a verdict bounce — leaves a move_stage event, so the event-fed RC2
+  scan re-sees the row).
+- the closed-unmerged re-entry mint gains the same predicate (the same
+  class, one branch over), and its post-commit spawn now gates on
+  `affected` — a miss must not spawn a phantom worker for a token that
+  never landed (the guarded stamp would abort it as stillborn).
+- completeReviewTask needs no guard: its candidates are read INSIDE the
+  caller's transaction under FOR UPDATE (reviewCandidates) — the
+  snapshot IS the capture point there. The RC1/persona passes read
+  under the lock or behind the expiry predicate — capture-point by
+  construction (why the review named only RC2).
+
+**Pins (born-RED verified by removing the predicate → S8-11 red)**:
+- S8-11 drift-done raced: the s8RacingDrift fixture lands a fresh claim
+  mid-sweep (the drift consult is the read→write window,
+  deterministically) — sweep 1 converges NOTHING, deposes nobody, no
+  events; sweep 2 (fresh snapshot + the racing writer's move_stage
+  event re-feeding the scan) converges and deposes the claim the row
+  ACTUALLY holds (`sess-raced`, never the stale reviewer).
+- S8-12 the re-entry twin: same race; additionally no phantom spawn on
+  the miss (spawn count frozen), and sweep 2's convergence spawns the
+  fresh worker exactly once.
+
+Gates: full pkg/board PG suite green (53s); build; make fmt-check;
+golangci-lint 0.

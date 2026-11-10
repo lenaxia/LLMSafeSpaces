@@ -1343,6 +1343,23 @@ func (s *Service) rc2Drift(ctx context.Context, cutoff time.Time) (done, review,
 				if err != nil {
 					return done, review, reentry, err
 				}
+				// S8 review round 3 (the capture-point guard): the task
+				// snapshot t was read OUTSIDE this transaction, and the
+				// deposal below asserts ITS identity (holder, claim,
+				// epoch). The UPDATE therefore requires the row's claim
+				// to STILL be the snapshot's — the exact token when the
+				// snapshot held a live claim, NULL when it held none. A
+				// raced re-claim/verdict-bounce in the window misses
+				// (RowsAffected=0): this sweep deposes NOBODY and the
+				// next sweep re-reads and converges against the fresh
+				// claim. The deposal's identity can never describe a
+				// claim the row no longer holds.
+				claimPredicate := "claim_token IS NULL"
+				claimArgs := []any{t.ID}
+				if t.ClaimToken != "" {
+					claimPredicate = "claim_token=$2"
+					claimArgs = append(claimArgs, t.ClaimToken)
+				}
 				tag, err := tx.Exec(ctx, `
 					UPDATE tasks SET stage='done', stage_entered_at=now(),
 						claim_token=NULL, lease_expires_at=NULL, claim_incremented_attempts=false, claim_persona=NULL,
@@ -1354,7 +1371,7 @@ func (s *Service) rc2Drift(ctx context.Context, cutoff time.Time) (done, review,
 						-- finding 4's sibling).
 						pending_input=false, pending_origin=NULL,
 						nudge_id=NULL, nudged_at=NULL, last_heartbeat_at=NULL
-					WHERE id=$1 AND stage='in_review'`, t.ID)
+					WHERE id=$1 AND stage='in_review' AND `+claimPredicate, claimArgs...)
 				if err != nil {
 					_ = tx.Rollback(ctx)
 					return done, review, reentry, err
@@ -1415,6 +1432,11 @@ func (s *Service) rc2Drift(ctx context.Context, cutoff time.Time) (done, review,
 						s.pokeDrive(pid) // sibling projects of the subject (review r1, finding 5)
 					}
 				} else {
+					// The stage predicate or the capture-point guard
+					// missed: raced a concurrent writer (or the claim was
+					// replaced after the snapshot) — converged by them or
+					// by the NEXT sweep's fresh snapshot; this sweep
+					// deposes nobody.
 					if err := tx.Commit(ctx); err != nil {
 						return done, review, reentry, err
 					}
@@ -1465,6 +1487,19 @@ func (s *Service) rc2Drift(ctx context.Context, cutoff time.Time) (done, review,
 			// lands backlog (never a token-less in_progress row).
 			if t.AssigneeSession != "" {
 				newToken = uuidNew()
+				// S8 review round 3 (the capture-point guard, the
+				// re-entry twin of drift-done's): the deposal asserts the
+				// OUT-of-transaction snapshot's identity — so when the
+				// snapshot held a live claim, the mint requires the row to
+				// STILL hold that exact token. A raced re-claim/verdict in
+				// the window misses (affected=false): nobody deposed this
+				// sweep; the next sweep converges against the fresh claim.
+				claimPredicate := ""
+				claimArgs := []any{t.ID, newToken, s.cfg.LeaseDuration.Seconds()}
+				if t.ClaimToken != "" {
+					claimPredicate = " AND claim_token=$4"
+					claimArgs = append(claimArgs, t.ClaimToken)
+				}
 				tag, err := tx.Exec(ctx, `
 					UPDATE tasks SET stage='in_progress', stage_entered_at=now(),
 						claim_token=$2, lease_expires_at=now()+make_interval(secs=>$3::float8),
@@ -1477,8 +1512,7 @@ func (s *Service) rc2Drift(ctx context.Context, cutoff time.Time) (done, review,
 						-- and reset the episode evidence slots.
 						pending_input=false, pending_origin=NULL,
 						nudge_id=NULL, nudged_at=NULL, last_heartbeat_at=NULL, busy_renews=0
-					WHERE id=$1 AND stage='in_review'`,
-					t.ID, newToken, s.cfg.LeaseDuration.Seconds())
+					WHERE id=$1 AND stage='in_review'`+claimPredicate, claimArgs...)
 				if err != nil {
 					_ = tx.Rollback(ctx)
 					return done, review, reentry, err
@@ -1543,9 +1577,12 @@ func (s *Service) rc2Drift(ctx context.Context, cutoff time.Time) (done, review,
 					return done, review, reentry, err
 				}
 			}
-			if newToken != "" {
+			if newToken != "" && affected {
 				// After commit: the re-spawn delivers the token to a fresh
-				// worker (merged doc: no nudges to dead sessions).
+				// worker (merged doc: no nudges to dead sessions). Gated
+				// on affected — a capture-point miss must not spawn a
+				// worker for a token that never landed (the guarded
+				// stamp would abort it as stillborn).
 				s.spawnFor(ctx, t.ID, newToken)
 			}
 		}

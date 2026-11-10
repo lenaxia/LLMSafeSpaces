@@ -26,6 +26,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgxpool"
+
 	"github.com/lenaxia/llmsafespaces/pkg/board"
 )
 
@@ -47,6 +49,14 @@ func (f *s8Spawner) Spawn(_ context.Context, _ *board.Claim) (string, error) {
 	id := fmt.Sprintf("sess-%d", f.n)
 	f.calls = append(f.calls, id)
 	return id, nil
+}
+
+func (f *s8Spawner) callsSnapshot() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make([]string, len(f.calls))
+	copy(out, f.calls)
+	return out
 }
 
 // s8Recon builds a reconciler carrying the liveness/nudge seams AND an
@@ -775,4 +785,164 @@ func (s *BoardSuite) TestPin_S8_10_DoneSettleAbortsAnchoredReviewer() {
 	s.Equal(reviewReviewer, session)
 	s.Equal("review_complete", s.eventActionFor(reclaimEvent), "the audit pointer names the review_complete ending")
 	s.Equal(0, s.countEventsFor("reclaim_abort", subject.ID), "no deposal audit for the human-ended subject claim")
+}
+
+// s8RacingDrift wraps the fake drift host with a ONE-SHOT mid-sweep
+// claim replacement: the FIRST GetPullRequest lands a fresh claim on
+// the row (the reviewer-verdict-bounce shape racing the drift snapshot,
+// deterministically — the drift consult IS the read→write window), then
+// answers from the wrapped state. The mint also leaves the row a
+// move_stage event, exactly as a real racing writer (a verdict bounce's
+// updateStageTx) would — RC2's scan is event-fed off that action, so
+// the next sweep's re-visibility rides it. The capture-point pins use
+// it to prove a STALE snapshot never deposes.
+type s8RacingDrift struct {
+	delegate *fakeDriftSource
+	pool     *pgxpool.Pool
+	taskID   string
+	project  string
+	mu       sync.Mutex
+	fired    bool
+}
+
+func (r *s8RacingDrift) GetPullRequest(ctx context.Context, n int) (board.PRState, error) {
+	r.mu.Lock()
+	fired := r.fired
+	r.fired = true
+	r.mu.Unlock()
+	if !fired {
+		_, _ = r.pool.Exec(ctx, `
+			UPDATE tasks SET claim_token='22222222-2222-4222-8222-222222222222'::uuid,
+				lease_expires_at=now()+interval '30 seconds', assignee_session='sess-raced'
+			WHERE id=$1`, r.taskID)
+		_, _ = r.pool.Exec(ctx, `
+			INSERT INTO board_events (id, project_id, item_kind, item_id, action, actor, payload)
+			VALUES ($2, $1, 'task', $3, 'move_stage', '{}', '{}')`,
+			r.project, "racing-mint-"+r.taskID, r.taskID)
+	}
+	return r.delegate.GetPullRequest(ctx, n)
+}
+
+// PIN S8-11 (review round 3, the capture-point guard — drift-done): the
+// task snapshot is read OUTSIDE the transaction; when a fresh claim
+// lands in the read→write window (here: the drift consult itself), the
+// done UPDATE's claim-identity predicate MISSES — this sweep converges
+// nothing, deposes NOBODY, writes no events; the NEXT sweep's fresh
+// snapshot converges and deposes the claim the row ACTUALLY holds.
+func (s *BoardSuite) TestPin_S8_11_DriftDoneCapturePoint() {
+	ws := s.seedWorkspace()
+	p := s.seedProject(ws, 2)
+	e := s.seedEpic(p, board.EpicActive)
+	task := s.seedTask(e, "s8-drift-raced", []string{"pr:881"}, true)
+
+	spawner := &s8Spawner{}
+	aborter := &fakeAborter{}
+	svc := board.NewService(s.pool, s.cfg,
+		board.WithWorkerSpawner(spawner.Spawn),
+		board.WithWorkerAborter(aborter.Abort),
+		board.WithRoleDirectory(personaRoleDirectory()),
+	)
+	s.setStagePersonas(svc, p, map[string]board.PersonaConfig{"in_review": {RoleID: "reviewer"}})
+	racing := &s8RacingDrift{delegate: s.drift, pool: s.pool, taskID: task.ID, project: p.ID}
+	recon := board.NewReconciler(s.pool, s.cfg,
+		board.WithWorkerAborter(aborter.Abort),
+		board.WithPRDriftSource(racing),
+		board.WithPendingInputSource(s.pending),
+		board.WithFailpoint(s.fps.fp),
+		board.WithRoleDirectory(personaRoleDirectory()),
+	)
+
+	c, err := svc.ClaimNext(context.Background(), "worker-"+ws, ws)
+	s.Require().NoError(err)
+	_, err = svc.MoveStage(context.Background(), s.agent(c.Assignee, c.ClaimToken), "", c.ShortID, board.StageInReview, "", "")
+	s.Require().NoError(err)
+	staleReviewer := s.reloadTask(task.ID).AssigneeSession
+
+	// Sweep 1: the drift consult replaces the claim MID-SWEEP — the
+	// snapshot's token is stale by the UPDATE, the predicate misses.
+	s.drift.set(881, board.PRState{Merged: true, URL: "https://git.example/881"})
+	_, err = recon.Sweep(context.Background())
+	s.Require().NoError(err)
+
+	row := s.rawTask(task.ID)
+	s.Equal(board.StageInReview, row.Stage, "the raced drift-done converges NOTHING this sweep")
+	s.Equal(0, aborter.count(), "a stale snapshot deposes NOBODY — the identity never described the live claim")
+	s.Equal(0, s.countEventsFor("drift_done", task.ID))
+	s.Equal(0, s.countEventsFor("reclaim_abort", task.ID))
+	s.Equal("sess-raced", *row.Assignee, "the racing claim is the row's live truth")
+
+	// Sweep 2: the fresh snapshot reads the RACED claim — convergence
+	// deposes the claim the row actually holds.
+	_, err = recon.Sweep(context.Background())
+	s.Require().NoError(err)
+
+	s.Equal(board.StageDone, s.rawTask(task.ID).Stage, "the next sweep converges against the fresh snapshot")
+	s.Equal(1, aborter.count(), "the deposal names the claim the row HELD, not the stale one")
+	s.Equal(task.ID+"/sess-raced", aborter.callsSlice()[0])
+	s.NotEqual(staleReviewer, "sess-raced")
+	s.Equal(1, s.countEventsFor("reclaim_abort", task.ID))
+	_, session, reclaimEvent, _ := s.reclaimAbortEvent(task.ID)
+	s.Equal("sess-raced", session)
+	s.Equal("drift_done", s.eventActionFor(reclaimEvent))
+}
+
+// PIN S8-12 (the capture-point guard — the re-entry twin): the same race
+// against the closed-unmerged mint — the miss deposes nobody and spawns
+// nothing (no phantom worker for a token that never landed); the next
+// sweep converges and deposes the raced claim's holder.
+func (s *BoardSuite) TestPin_S8_12_ReentryCapturePoint() {
+	ws := s.seedWorkspace()
+	p := s.seedProject(ws, 2)
+	e := s.seedEpic(p, board.EpicActive)
+	task := s.seedTask(e, "s8-reentry-raced", []string{"pr:891"}, true)
+
+	spawner := &s8Spawner{}
+	aborter := &fakeAborter{}
+	svc := board.NewService(s.pool, s.cfg,
+		board.WithWorkerSpawner(spawner.Spawn),
+		board.WithWorkerAborter(aborter.Abort),
+		board.WithRoleDirectory(personaRoleDirectory()),
+	)
+	s.setStagePersonas(svc, p, map[string]board.PersonaConfig{"in_review": {RoleID: "reviewer"}})
+	racing := &s8RacingDrift{delegate: s.drift, pool: s.pool, taskID: task.ID, project: p.ID}
+	recon := board.NewReconciler(s.pool, s.cfg,
+		board.WithWorkerSpawner(spawner.Spawn),
+		board.WithWorkerAborter(aborter.Abort),
+		board.WithPRDriftSource(racing),
+		board.WithPendingInputSource(s.pending),
+		board.WithFailpoint(s.fps.fp),
+		board.WithRoleDirectory(personaRoleDirectory()),
+	)
+
+	c, err := svc.ClaimNext(context.Background(), "worker-"+ws, ws)
+	s.Require().NoError(err)
+	_, err = svc.MoveStage(context.Background(), s.agent(c.Assignee, c.ClaimToken), "", c.ShortID, board.StageInReview, "", "")
+	s.Require().NoError(err)
+
+	// Sweep 1: the drift consult replaces the claim MID-SWEEP — the
+	// mint's claim-identity predicate misses.
+	s.drift.set(891, board.PRState{Closed: true, URL: "https://git.example/891"})
+	_, err = recon.Sweep(context.Background())
+	s.Require().NoError(err)
+
+	row := s.rawTask(task.ID)
+	s.Equal(board.StageInReview, row.Stage, "the raced re-entry converges NOTHING this sweep")
+	s.Equal(0, aborter.count(), "a stale snapshot deposes NOBODY")
+	spawns := len(spawner.callsSnapshot())
+	s.Equal(2, spawns, "implementer + reviewer only — a miss spawns no phantom worker for the never-landed token")
+
+	// Sweep 2: the fresh snapshot converges — the raced claim's holder
+	// is deposed, the fresh worker spawns.
+	_, err = recon.Sweep(context.Background())
+	s.Require().NoError(err)
+
+	row = s.rawTask(task.ID)
+	s.Equal(board.StageInProgress, row.Stage, "the next sweep's re-entry lands")
+	s.Equal(1, aborter.count(), "the deposal names the raced claim's holder")
+	s.Equal(task.ID+"/sess-raced", aborter.callsSlice()[0])
+	s.Equal(3, len(spawner.callsSnapshot()), "the re-entry spawns its fresh worker exactly once")
+	s.Equal(1, s.countEventsFor("reclaim_abort", task.ID))
+	_, session, reclaimEvent, _ := s.reclaimAbortEvent(task.ID)
+	s.Equal("sess-raced", session)
+	s.Equal("drift_reentry", s.eventActionFor(reclaimEvent))
 }
