@@ -1208,6 +1208,16 @@ func (c *Client) BoardRearmTask(ctx context.Context, saToken, workspaceID, sessi
 		fmt.Sprintf("/internal/v1/automation/board/tasks/%s/rearm", taskID), body)
 }
 
+// BoardDeposeTask is S5's DEPOSED directive: depose a LAPSED claim,
+// recording the salvage pointer (branch/PR/state) on the row.
+func (c *Client) BoardDeposeTask(ctx context.Context, saToken, workspaceID, sessionID, taskID string, body json.RawMessage) (*AutomationResponse, error) {
+	if err := validateBoardRef(taskID); err != nil {
+		return nil, err
+	}
+	return c.boardManagerPost(ctx, saToken, workspaceID, sessionID,
+		fmt.Sprintf("/internal/v1/automation/board/tasks/%s/depose", taskID), body)
+}
+
 // BoardManagerMoveStage is the manager-grade stage move (#1832 WS2):
 // the manager route's path — any in-workspace session (the #1747 §5
 // gate is repealed, ruling 2026-10-27 / tsk-copper-refectory-generates)
@@ -1232,7 +1242,7 @@ func (c *Client) BoardManagerMoveStageBulk(ctx context.Context, saToken, workspa
 
 // BoardManagerDeleteTasksBulk is #1836's sibling bulk delete on the
 // manager seam: the delete_task(s) batch, ONE shared reconnect flag,
-// per-item result array (board_delete_task's batch twin — delete IS a
+// per-item result array (board_delete_story's batch twin — delete IS a
 // manager action; the bulk CLAIM stays owner-surface only).
 func (c *Client) BoardManagerDeleteTasksBulk(ctx context.Context, saToken, workspaceID, sessionID string, body json.RawMessage) (*AutomationResponse, error) {
 	return c.boardManagerPost(ctx, saToken, workspaceID, sessionID,

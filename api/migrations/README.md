@@ -1,5 +1,14 @@
 # `api/migrations/` — Database migrations (canonical source)
 
+> **Naming note (Sprint Board story rename, owner ruling 2026-10-30
+> phase 2)**: the board tables and columns KEEP their `task` spellings
+> (`tasks`, `task_dependencies`, `task_id`, `tsk-` ids, the
+> board_events action vocabulary) — a documented keep, NOT a
+> migration. The DB is the platform's private wire term; the
+> user-facing vocabulary (UI + MCP tool names/keys) says story. See
+> the comment atop `pkg/board/store.go` and the CHANGELOG's
+> breaking-change entry.
+
 This is the **canonical** location for database migration files. The API
 service's local-dev `make migrate-up`/`make migrate-down` targets in
 `api/Makefile` read directly from here.

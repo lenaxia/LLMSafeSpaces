@@ -55,12 +55,19 @@ func (h *PodAutomationHandler) SetBoardService(svc *board.Service) {
 func (h *PodAutomationHandler) HasBoard() bool { return h.board != nil }
 
 // boardActor stamps the delegation: the pod's resolved owner (R7), the
-// agent surface, the presented claim token, and the resolved workspace
-// (the structural binding, r1-S1).
-func (h *PodAutomationHandler) boardActor(ownerID, workspaceID, claimToken string) board.Actor {
+// agent surface, the presented claim token, the resolved workspace
+// (the structural binding, r1-S1), and — RC-B S1 — the calling
+// session's identity when the caller supplied one (the same
+// audit-attribution probe the manager surface rides: query first, then
+// the exact-key body probe; absent = unattributed, never a refusal).
+// The identity feeds the assignee stamp's BACK-FILL: a
+// claim-token-carrying call from the chartered session is subsequent
+// evidence of the claim, and a row whose stamp was lost gets re-stamped
+// from it (engine-side, Heartbeat's backfillAssigneeStamp).
+func (h *PodAutomationHandler) boardActor(ownerID, workspaceID, claimToken, sessionID string) board.Actor {
 	return board.Actor{
 		Kind: board.ActorUser, UserID: ownerID, Surface: board.SurfaceAgent,
-		ClaimToken: claimToken, WorkspaceID: workspaceID,
+		ClaimToken: claimToken, WorkspaceID: workspaceID, SessionID: sessionID,
 	}
 }
 
@@ -84,7 +91,8 @@ func (h *PodAutomationHandler) BoardHeartbeat(c *gin.Context) {
 	if !bindBoardBody(c, raw, &req) {
 		return
 	}
-	res, err := h.board.Heartbeat(c.Request.Context(), h.boardActor(ownerID, workspaceID, req.ClaimToken),
+	res, err := h.board.Heartbeat(c.Request.Context(),
+		h.boardActor(ownerID, workspaceID, req.ClaimToken, boardSessionID(c, raw)),
 		req.TaskID, req.ShortID, req.ObservedProgressAt)
 	if err != nil {
 		renderBoardError(c, err)
@@ -113,7 +121,7 @@ func (h *PodAutomationHandler) BoardReportThrottle(c *gin.Context) {
 	if retryAfter <= 0 {
 		retryAfter = h.boardEngine.ThrottleBackoff
 	}
-	task, err := h.board.ReportThrottle(c.Request.Context(), h.boardActor(ownerID, workspaceID, req.ClaimToken),
+	task, err := h.board.ReportThrottle(c.Request.Context(), h.boardActor(ownerID, workspaceID, req.ClaimToken, ""),
 		req.TaskID, req.ShortID, retryAfter, "")
 	if err != nil {
 		renderBoardError(c, err)
@@ -141,7 +149,8 @@ func (h *PodAutomationHandler) BoardMoveStage(c *gin.Context) {
 	if !bindBoardBody(c, raw, &req) {
 		return
 	}
-	task, err := h.board.MoveStage(c.Request.Context(), h.boardActor(ownerID, workspaceID, req.ClaimToken),
+	task, err := h.board.MoveStage(c.Request.Context(),
+		h.boardActor(ownerID, workspaceID, req.ClaimToken, boardSessionID(c, raw)),
 		req.TaskID, req.ShortID, req.ToStage, req.EvidenceURL, req.RequestID)
 	if err != nil {
 		renderBoardError(c, err)
@@ -174,7 +183,8 @@ func (h *PodAutomationHandler) BoardRecordVerdict(c *gin.Context) {
 	if !bindBoardBody(c, raw, &req) {
 		return
 	}
-	task, v, err := h.board.RecordVerdict(c.Request.Context(), h.boardActor(ownerID, workspaceID, req.ClaimToken),
+	task, v, err := h.board.RecordVerdict(c.Request.Context(),
+		h.boardActor(ownerID, workspaceID, req.ClaimToken, boardSessionID(c, raw)),
 		req.TaskID, req.ShortID,
 		board.VerdictInput{
 			Verdict:     board.VerdictKind(req.Verdict),
@@ -258,7 +268,7 @@ func (h *PodAutomationHandler) BoardSetCriteriaMet(c *gin.Context) {
 		})
 		return
 	}
-	task, err := h.board.SetCriteriaMet(c.Request.Context(), h.boardActor(ownerID, workspaceID, req.ClaimToken),
+	task, err := h.board.SetCriteriaMet(c.Request.Context(), h.boardActor(ownerID, workspaceID, req.ClaimToken, ""),
 		req.TaskID, req.ShortID, *req.SetCriteriaMet, req.RequestID)
 	if err != nil {
 		renderBoardError(c, err)

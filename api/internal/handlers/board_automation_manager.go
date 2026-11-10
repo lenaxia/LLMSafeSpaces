@@ -401,7 +401,7 @@ func (h *PodAutomationHandler) BoardManagerMoveStageBulk(c *gin.Context) {
 }
 
 // BoardManagerDeleteTasksBulk is #1836's sibling bulk delete on the
-// pod seam (board_delete_task's batch twin — delete IS a manager
+// pod seam (board_delete_story's batch twin — delete IS a manager
 // action; only task_start/task_create carry the owner-only boundary,
 // so unlike the bulk claim this form legitimately lives here): up to
 // 50 destructive removals, one call, ONE shared reconnect flag.
@@ -543,6 +543,36 @@ func (h *PodAutomationHandler) BoardRearmTask(c *gin.Context) {
 		_ = bindBoardBody(c, raw, &req)
 	}
 	t, err := h.boardMgr.RearmTask(c.Request.Context(), h.managerActor(owner, ws, session), "", c.Param("id"), req.RequestID)
+	if err != nil {
+		renderBoardError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, t)
+}
+
+// BoardDeposeTask is S5's DEPOSED directive on the pod seam: the
+// orchestrator (manager route) deposes a LAPSED claim and records the
+// salvage pointer (branch/PR/last known state) on the row — the next
+// claim's charter embeds it automatically. Manager-grade actor,
+// canonical DeposeTask; a live healthy claim refuses (claim_live).
+func (h *PodAutomationHandler) BoardDeposeTask(c *gin.Context) {
+	raw, ws, owner, session, ok := h.resolveManager(c)
+	if !ok {
+		return
+	}
+	var req struct {
+		Branch    string `json:"branch"`
+		PR        string `json:"pr"`
+		Head      string `json:"head"`
+		State     string `json:"state"`
+		Note      string `json:"note"`
+		RequestID string `json:"requestId"`
+	}
+	if raw != nil {
+		_ = bindBoardBody(c, raw, &req)
+	}
+	ptr := board.SalvagePointer{Branch: req.Branch, PR: req.PR, Head: req.Head, State: req.State, Note: req.Note}
+	t, err := h.boardMgr.DeposeTask(c.Request.Context(), h.managerActor(owner, ws, session), "", c.Param("id"), ptr, req.RequestID)
 	if err != nil {
 		renderBoardError(c, err)
 		return

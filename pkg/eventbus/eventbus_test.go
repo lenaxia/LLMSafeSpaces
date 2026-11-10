@@ -16,6 +16,7 @@ import (
 
 	"github.com/alicebob/miniredis/v2"
 	"github.com/go-redis/redis/v8"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
@@ -149,6 +150,18 @@ func TestTopicVocabulary(t *testing.T) {
 	if got := LeaseWedgeTopic("tsk-1"); got != "lease.tsk-1.wedge_verdict" {
 		t.Fatalf("wedge topic = %q", got)
 	}
+	if got := LeaseRenewedTopic("tsk-1"); got != "lease.tsk-1.renewed" {
+		t.Fatalf("renewed topic = %q", got)
+	}
+	if got := LeaseReclaimedTopic("tsk-1"); got != "lease.tsk-1.reclaimed" {
+		t.Fatalf("reclaimed topic = %q", got)
+	}
+	if task, arm, ok := ParseLease("lease.tsk-3.renewed"); !ok || task != "tsk-3" || arm != "renewed" {
+		t.Fatalf("ParseLease(renewed) = %q %q %v", task, arm, ok)
+	}
+	if task, arm, ok := ParseLease("lease.tsk-3.reclaimed"); !ok || task != "tsk-3" || arm != "reclaimed" {
+		t.Fatalf("ParseLease(reclaimed) = %q %q %v", task, arm, ok)
+	}
 	if got := StreamKey("ws-1"); got != "workspace:ws-1:events" {
 		t.Fatalf("stream key = %q", got)
 	}
@@ -162,6 +175,39 @@ func TestTopicVocabulary(t *testing.T) {
 	task, arm, ok := ParseLease("lease.tsk-2.nudged")
 	if !ok || task != "tsk-2" || arm != "nudged" {
 		t.Fatalf("ParseLease = %q %q %v", task, arm, ok)
+	}
+}
+
+// TestLeasePayloadBuilders: the lease family's payload contract as
+// CONSTRUCTORS — the API publisher and the agentd consumer/tests share
+// these, so the producer↔consumer agreement is code (design 0072 S4;
+// the payload keys are what agentd's lease group reads: assignee,
+// task_short_id, nudge_id, source, reason, failure_count).
+func TestLeasePayloadBuilders(t *testing.T) {
+	assert.Equal(t, map[string]string{
+		"task": "t1", "task_short_id": "tsk-x", "nudge_id": "ndg-1", "assignee": "ses_w",
+	}, LeaseNudgePayload("t1", "tsk-x", "ndg-1", "ses_w"))
+	assert.Equal(t, map[string]string{
+		"task": "t1", "task_short_id": "tsk-x", "assignee": "ses_w", "source": "movement",
+	}, LeaseRenewPayload("t1", "tsk-x", "ses_w", "movement"))
+	assert.Equal(t, map[string]string{
+		"task": "t1", "task_short_id": "tsk-x", "assignee": "ses_w",
+		"nudge_id": "ndg-1", "verdict": "wedged", "evidence": "no session events after the sentinel",
+	}, LeaseWedgePayload("t1", "tsk-x", "ses_w", "ndg-1", "no session events after the sentinel"))
+	assert.Equal(t, map[string]string{
+		"task": "t1", "task_short_id": "tsk-x", "assignee": "",
+		"reason": "lease_lapse", "failure_count": "2",
+	}, LeaseReclaimPayload("t1", "tsk-x", "", "lease_lapse", 2))
+	// No builder output may collide with the reserved field names.
+	for _, m := range []map[string]string{
+		LeaseNudgePayload("t", "s", "n", "a"), LeaseRenewPayload("t", "s", "a", "movement"),
+		LeaseWedgePayload("t", "s", "a", "n", "e"), LeaseReclaimPayload("t", "s", "a", "r", 1),
+	} {
+		for k := range m {
+			if k == FieldTopic || k == FieldAt {
+				t.Fatalf("payload builder collides with reserved field %q", k)
+			}
+		}
 	}
 }
 
@@ -923,5 +969,105 @@ func TestNewRedisBusRefusesDeadClient(t *testing.T) {
 	}
 	if _, err := NewRedisBus(context.Background(), nil, "k", 0); err == nil {
 		t.Fatal("bus constructed over a nil client")
+	}
+}
+
+// --- S6: the board-plane vocabulary ------------------------------------------
+
+func TestBoardAndStampTopics(t *testing.T) {
+	assert.Equal(t, "board.prj-1.event", BoardEventTopic("prj-1"))
+	assert.Equal(t, "task.t1.stamped", TaskStampedTopic("t1"))
+	assert.Equal(t, "task.t1.stage_changed", TaskStageTopic("t1"))
+
+	p, ok := ParseBoardEvent("board.prj-1.event")
+	assert.True(t, ok)
+	assert.Equal(t, "prj-1", p)
+	_, ok = ParseBoardEvent("board.prj-1.other")
+	assert.False(t, ok, "only the .event arm parses")
+	_, ok = ParseBoardEvent("task.t1.stamped")
+	assert.False(t, ok)
+
+	id, arm, ok := ParseTask("task.t1.stamped")
+	assert.True(t, ok)
+	assert.Equal(t, "t1", id)
+	assert.Equal(t, "stamped", arm)
+	_, _, ok = ParseTask("lease.t1.nudged")
+	assert.False(t, ok, "ParseTask refuses the lease family")
+}
+
+func TestBoardPayloadBuilders(t *testing.T) {
+	assert.Equal(t, map[string]string{
+		"id": "evt-9", "item_kind": "task", "item_id": "t1", "action": "move_stage",
+		"actor": `{"kind":"user"}`, "payload": `{"from_stage":"backlog"}`,
+		"created_at": "2026-10-31T00:00:00Z", "owner": "user-1", "workspace": "ws-1",
+		"task_short_id": "tsk-x",
+	}, BoardEventPayload("evt-9", "task", "t1", "move_stage", `{"kind":"user"}`,
+		`{"from_stage":"backlog"}`, "2026-10-31T00:00:00Z", "user-1", "ws-1", "tsk-x"))
+
+	assert.Equal(t, map[string]string{
+		"task": "t1", "task_short_id": "tsk-x", "project_id": "prj-1",
+		"from": "backlog", "to": "in_progress", "actor_session": "ses_w",
+		"source": "user", "id": "evt-9",
+	}, TaskStagePayload("t1", "tsk-x", "prj-1", "backlog", "in_progress", "ses_w", "user", "evt-9"))
+
+	stamp := TaskStampPayload("t1", "tsk-x", "prj-1", "ses_w", "spawn", 0.019, "user-1", "ws-1")
+	assert.Equal(t, "ses_w", stamp[FieldStampAssignee])
+	assert.Equal(t, "spawn", stamp[FieldStampOrigin])
+	assert.Equal(t, "user-1", stamp[FieldBoardOwner])
+	assert.Equal(t, "ws-1", stamp[FieldBoardWorkspace])
+	assert.Equal(t, "0.019", stamp[FieldStampLagSeconds])
+
+	// No builder output may collide with the reserved field names.
+	for _, m := range []map[string]string{
+		BoardEventPayload("i", "task", "t", "a", "{}", "{}", "at", "u", "w", "s"),
+		TaskStagePayload("t", "s", "p", "f", "to", "a", "user", "e"),
+		TaskStampPayload("t", "s", "p", "a", "spawn", 1, "u", "w"),
+	} {
+		for k := range m {
+			if k == FieldTopic || k == FieldAt {
+				t.Fatalf("payload builder collides with reserved field %q", k)
+			}
+		}
+	}
+}
+
+// TestBoardEventBusRoundTrip: a board event published through the
+// transport is delivered whole to a matching consumer group (the SSE
+// join's pattern), and NOT to the pattern-excluded families (lease,
+// session) — patterns subscribe, they do not leave gaps.
+func TestBoardEventBusRoundTrip(t *testing.T) {
+	bus, _ := newTestBus(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	_, err := bus.Publish(ctx, Event{Topic: BoardEventTopic("prj-1"),
+		Payload: BoardEventPayload("evt-1", "task", "t1", "move_stage", "{}", "{}", "at", "u1", "ws-1", "tsk-x")})
+	require.NoError(t, err)
+	_, err = bus.Publish(ctx, Event{Topic: LeaseNudgeTopic("t1"), Payload: LeaseNudgePayload("t1", "s", "n", "a")})
+	require.NoError(t, err)
+
+	got := make(chan Message, 4)
+	go func() {
+		_ = bus.Consume(ctx, ConsumeOptions{
+			Group: "sse-test", Consumer: "c1",
+			Topics:  []string{"board.*.event", "task.*.stamped"},
+			StartAt: StartReplay, Block: time.Millisecond, MinIdle: time.Millisecond,
+		}, func(_ context.Context, msg Message) error {
+			got <- msg
+			return nil
+		})
+	}()
+
+	select {
+	case msg := <-got:
+		assert.Equal(t, BoardEventTopic("prj-1"), msg.Event.Topic)
+		assert.Equal(t, "move_stage", msg.Event.Payload[FieldBoardAction])
+		assert.Equal(t, "u1", msg.Event.Payload[FieldBoardOwner])
+	case <-time.After(2 * time.Second):
+		t.Fatal("board event not delivered to the sse-pattern group")
+	}
+	select {
+	case msg := <-got:
+		t.Fatalf("lease event crossed the sse pattern: %s", msg.Event.Topic)
+	case <-time.After(150 * time.Millisecond):
 	}
 }

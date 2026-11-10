@@ -161,6 +161,7 @@ func newBoardAutomationRouterWithManager(t *testing.T, svc *fakeBoardService, mg
 	b.PATCH("/tasks/:id", h.BoardUpdateTask)
 	b.POST("/tasks/:id/move-stage", h.BoardManagerMoveStage) // #1832 WS2
 	b.POST("/tasks/:id/rearm", h.BoardRearmTask)             // #1832 WS3
+	b.POST("/tasks/:id/depose", h.BoardDeposeTask)           // S5: the DEPOSED directive
 	b.POST("/tasks/:id/pause", h.BoardPauseTask)
 	b.POST("/tasks/:id/resume", h.BoardResumeTask)
 	b.DELETE("/tasks/:id", h.BoardDeleteTask)

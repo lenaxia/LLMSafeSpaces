@@ -49,6 +49,7 @@ var guardConstValues = map[string]string{
 	"GuardGraphLimit":       board.GuardGraphLimit,
 	"GuardBackpressure":     board.GuardBackpressure,
 	"GuardInput":            board.GuardInput,
+	"GuardClaimLive":        board.GuardClaimLive,    // S5: a live healthy claim refuses deposition
 	"GuardTextRejected":     board.GuardTextRejected, // #1837 P1b corruption class
 }
 

@@ -219,6 +219,17 @@ func (r *WorkspaceReconciler) buildPod(ctx context.Context, workspace *v1.Worksp
 			{Name: "sandbox-runtime", MountPath: "/sandbox-runtime"},
 			{Name: "workspace", MountPath: "/tmp", SubPath: "tmp"},
 			{Name: "workspace", MountPath: "/home/sandbox", SubPath: "home"},
+			// Design 0070 §2.4a: the exchange/ subPath — the board
+			// payload exchange dir, the ONE PVC subtree mounted RW in
+			// BOTH uid spaces (here in the runtime container for the
+			// agent's write tool; RW in the agentd sidecar too — see
+			// agentd_sidecar.go). In sidecar mode /workspace is RO to
+			// the sidecar and /platform is uid-2000-exclusive, so
+			// without this dir the 0070 auto-delete contract was
+			// unsatisfiable (every payload call cleanup_warning'd
+			// EROFS). Mounted in BOTH modes — the payload contract is
+			// mode-uniform. Holds ONLY short-lived payload files.
+			{Name: "workspace", MountPath: agentd.ExchangePath, SubPath: "exchange"},
 			// #1758: the regenerable Go cache economy. Disk-backed
 			// emptyDir (see the volume below) — GOCACHE/GOTMPDIR point
 			// here via platformBaseEnv. SubPath mounts so both dirs
@@ -288,11 +299,20 @@ func (r *WorkspaceReconciler) buildPod(ctx context.Context, workspace *v1.Worksp
 	// Single-container agentd (uid 1000) gets it from platform-init;
 	// sidecar mode defers to the uid-2000 platform-dirs init below —
 	// ownership must follow the writer.
+	//
+	// Design 0070 §2.4a: the exchange/ subPath (payload exchange dir)
+	// follows the SAME create/skip discipline — except it is dual-rw
+	// (0770 gid 1000) rather than uid-exclusive, and BOTH modes mount
+	// it: single-container platform-init (uid 1000) creates it;
+	// sidecar mode defers to the platform-dirs init alongside
+	// platform/.
 	platformFlag := "create"
+	exchangeFlag := "create"
 	if r.AgentdSidecarEnabled {
 		platformFlag = "skip"
+		exchangeFlag = "skip"
 	}
-	initContainers = append(initContainers, r.buildPlatformInit(relayBaseURL != "", platformFlag))
+	initContainers = append(initContainers, r.buildPlatformInit(relayBaseURL != "", platformFlag, exchangeFlag))
 	if r.AgentdSidecarEnabled {
 		initContainers = append(initContainers, r.buildPlatformDirsInit())
 	}

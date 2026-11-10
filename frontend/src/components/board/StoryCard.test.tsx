@@ -1,7 +1,7 @@
 // Copyright (C) 2026 Michael Kao
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-// TaskCard.test.tsx — the 2026-10-29 owner ruling's CLICK pins (review
+// StoryCard.test.tsx — the 2026-10-29 owner ruling's CLICK pins (review
 // round 1): the card's assignee ref is a router Link — clicking it
 // NAVIGATES to /chat/:workspaceId/:sessionId (the sidebar's target),
 // and the click does NOT open the card's own edit dialog (the
@@ -13,7 +13,7 @@
 import { render, screen, fireEvent } from "@testing-library/react";
 import { MemoryRouter, Route, Routes, useParams } from "react-router-dom";
 import { describe, it, expect, vi } from "vitest";
-import { TaskCard } from "./TaskCard";
+import { StoryCard } from "./StoryCard";
 import type { BoardTask } from "../../api/board";
 
 /** Renders the routed params — proof the SPA landed on the chat view. */
@@ -47,13 +47,13 @@ const TASK: BoardTask = {
   assignee_session: "amber-falcon-glides",
 };
 
-function renderCard(props: Partial<Parameters<typeof TaskCard>[0]> = {}) {
+function renderCard(props: Partial<Parameters<typeof StoryCard>[0]> = {}) {
   return render(
     <MemoryRouter initialEntries={["/board"]}>
       <Routes>
         <Route
           path="/board"
-          element={<TaskCard task={TASK} projectTasks={[]} onOpen={() => {}} onDetails={() => {}} kebabItems={[]} {...props} />}
+          element={<StoryCard task={TASK} projectTasks={[]} onOpen={() => {}} onDetails={() => {}} kebabItems={[]} {...props} />}
         />
         <Route path="/chat/:workspaceId/:sessionId" element={<ChatRouteProbe />} />
       </Routes>
@@ -61,7 +61,7 @@ function renderCard(props: Partial<Parameters<typeof TaskCard>[0]> = {}) {
   );
 }
 
-describe("TaskCard — session ref click-through (2026-10-29 owner ruling)", () => {
+describe("StoryCard — session ref click-through (2026-10-29 owner ruling)", () => {
   it("clicking the assignee link navigates to the session's chat view", () => {
     renderCard({ workspaceId: "ws-1" });
     fireEvent.click(screen.getByTestId("assignee-link-tsk-bbbb0002"));
@@ -84,5 +84,34 @@ describe("TaskCard — session ref click-through (2026-10-29 owner ruling)", () 
     });
     fireEvent.click(screen.getByTestId("assignee-link-tsk-bbbb0002"));
     expect(screen.getByTestId("chat-route-probe").textContent).toBe("ws-1/ses_ed9183a46ffeRiNw2PddpL5dAA");
+  });
+});
+
+describe("TaskCard — busy badge honesty (RC-C S2: the spinner tells the truth)", () => {
+  it("claimed+busy (assignee_busy=true) renders the spinning Agent working indicator", () => {
+    renderCard({ workspaceId: "ws-1", task: { ...TASK, assignee_busy: true } });
+    const el = screen.getByLabelText("Agent working");
+    expect(el.getAttribute("data-busy")).toBe("true");
+    expect(el.getAttribute("class")).toContain("animate-spin");
+  });
+
+  it("claimed+quiet (assignee_busy false/absent) renders the DISTINCT quiet marker — never a spin", () => {
+    const first = renderCard({ workspaceId: "ws-1", task: { ...TASK } });
+    const quiet = screen.getByLabelText("Agent claimed — quiet");
+    expect(quiet.getAttribute("data-busy")).toBe("false");
+    expect(quiet.getAttribute("class")).not.toContain("animate-spin");
+    expect(screen.queryByLabelText("Agent working")).toBeNull();
+    first.unmount();
+
+    // Explicit false — the same quiet shape.
+    renderCard({ workspaceId: "ws-1", task: { ...TASK, assignee_busy: false } });
+    expect(screen.getByLabelText("Agent claimed — quiet")).toBeInTheDocument();
+    expect(screen.queryByLabelText("Agent working")).toBeNull();
+  });
+
+  it("an unclaimed card renders NO badge state at all (nothing to be honest about)", () => {
+    renderCard({ workspaceId: "ws-1", task: { ...TASK, stage: "backlog", assignee_session: undefined } });
+    expect(screen.queryByLabelText("Agent working")).toBeNull();
+    expect(screen.queryByLabelText("Agent claimed — quiet")).toBeNull();
   });
 });

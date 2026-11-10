@@ -18,7 +18,10 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/zap"
+	"go.uber.org/zap/zapcore"
+	"go.uber.org/zap/zaptest"
 
+	"github.com/lenaxia/llmsafespaces/pkg/agent/opencode"
 	"github.com/lenaxia/llmsafespaces/pkg/eventbus"
 )
 
@@ -172,6 +175,39 @@ func TestLeaseBusConsumerUnknownArmsAck(t *testing.T) {
 		Topic:   eventbus.LeaseNudgeTopic("tsk-1"),
 		Payload: map[string]string{"task": "tsk-1"},
 	}}))
+}
+
+// TestLeaseBusConsumerLifecycleArmsLogNotMessage: the S4 observation
+// arms (renewed / reclaimed) are LOG-ONLY at this consumer — a renewed
+// worker is alive and working (a message is interruption), a reclaimed
+// row's assignee is gone (the next claimant is the engine's business).
+// The payloads are built by the SHARED pkg/eventbus constructors —
+// exactly what the API's boardLeaseEventbus publishes — so the
+// producer↔consumer agreement is code here, not copy-paste.
+func TestLeaseBusConsumerLifecycleArmsLogNotMessage(t *testing.T) {
+	var renewedLogged, reclaimedLogged bool
+	core := zaptest.NewLogger(t, zaptest.WrapOptions(zap.Hooks(func(e zapcore.Entry) error {
+		switch e.Message {
+		case "event bus: lease renewed":
+			renewedLogged = true
+		case "event bus: lease reclaimed":
+			reclaimedLogged = true
+		}
+		return nil
+	})))
+	lc := &leaseBusConsumer{seam: func() *opencode.Client { panic("log-only arms must never deliver") }, logger: core}
+
+	require.NoError(t, lc.handle(context.Background(), eventbus.Message{Event: eventbus.Event{
+		Topic:   eventbus.LeaseRenewedTopic("tsk-1"),
+		Payload: eventbus.LeaseRenewPayload("tsk-1", "tsk-crimson-finch-blooms", "ses_w", "busy_gate"),
+	}}))
+	require.True(t, renewedLogged, "the renewal is the pod's visibility — it must log")
+
+	require.NoError(t, lc.handle(context.Background(), eventbus.Message{Event: eventbus.Event{
+		Topic:   eventbus.LeaseReclaimedTopic("tsk-1"),
+		Payload: eventbus.LeaseReclaimPayload("tsk-1", "tsk-crimson-finch-blooms", "ses_w", "lease_lapse", 2),
+	}}))
+	require.True(t, reclaimedLogged, "the 2026-10-30 incident's invisible transition — the reclaim must WARN")
 }
 
 // TestRedactRedisAddr (review r1 Finding 4 + r2 hardening): credentialed

@@ -1,7 +1,7 @@
 // Copyright (C) 2026 Michael Kao
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-// TaskDrawer.test.tsx — #1832 item 4 red-first pins: the task-detail
+// StoryDrawer.test.tsx — #1832 item 4 red-first pins: the task-detail
 // drawer renders the header (charter summary: stage, claim/lease,
 // blocked-by, attempts), the charter + acceptance criteria with met
 // state, and the FULL audit timeline from the events read (stage
@@ -13,7 +13,7 @@ import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter, Route, Routes, useParams } from "react-router-dom";
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { TaskDrawer } from "./TaskDrawer";
+import { StoryDrawer } from "./StoryDrawer";
 import type { BoardTask, BoardAuditEvent } from "../../api/board";
 import { ApiClientError } from "../../api/client";
 import type { ApiError } from "../../api/types";
@@ -126,16 +126,16 @@ function fullTimeline(): BoardAuditEvent[] {
   ];
 }
 
-function renderDrawer(props: Partial<Parameters<typeof TaskDrawer>[0]> = {}) {
+function renderDrawer(props: Partial<Parameters<typeof StoryDrawer>[0]> = {}) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
     <QueryClientProvider client={qc}>
-      <TaskDrawer open onOpenChange={() => {}} task={TASK} projectTasks={[TASK, DEP]} {...props} />
+      <StoryDrawer open onOpenChange={() => {}} task={TASK} projectTasks={[TASK, DEP]} {...props} />
     </QueryClientProvider>,
   );
 }
 
-describe("TaskDrawer", () => {
+describe("StoryDrawer", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockTaskEvents.mockResolvedValue(fullTimeline());
@@ -251,7 +251,7 @@ describe("TaskDrawer", () => {
     const qc = new QueryClient();
     const { container } = render(
       <QueryClientProvider client={qc}>
-        <TaskDrawer open onOpenChange={() => {}} task={null} />
+        <StoryDrawer open onOpenChange={() => {}} task={null} />
       </QueryClientProvider>,
     );
     expect(container.textContent).toBe("");
@@ -266,7 +266,7 @@ describe("TaskDrawer", () => {
     return <div data-testid="chat-route-probe">{`${params.workspaceId}/${params.sessionId}`}</div>;
   }
 
-  function renderDrawerLinked(props: Partial<Parameters<typeof TaskDrawer>[0]> = {}) {
+  function renderDrawerLinked(props: Partial<Parameters<typeof StoryDrawer>[0]> = {}) {
     const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     return render(
       <QueryClientProvider client={qc}>
@@ -274,7 +274,7 @@ describe("TaskDrawer", () => {
           <Routes>
             <Route
               path="/board"
-              element={<TaskDrawer open onOpenChange={() => {}} task={TASK} projectTasks={[TASK, DEP]} workspaceId="ws-1" {...props} />}
+              element={<StoryDrawer open onOpenChange={() => {}} task={TASK} projectTasks={[TASK, DEP]} workspaceId="ws-1" {...props} />}
             />
             <Route path="/chat/:workspaceId/:sessionId" element={<ChatRouteProbe />} />
           </Routes>

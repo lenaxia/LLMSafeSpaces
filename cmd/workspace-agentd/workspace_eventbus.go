@@ -21,9 +21,13 @@ package main
 //	                     │       (v1 semantics,      lease.{task}.nudged
 //	                     │       bus transport)      → sentinel SessionSend
 //	                     │                                  ▲
-//	                     └── the API's nudge ladder publishes (roadmap:
-//	                         it replaces its direct send with a publish;
-//	                         the consumer stands ready and pinned).
+//	                     └── the API's nudge ladder publishes (S4,
+//	                         design 0072 §9.3 — LANDED): nudged is the
+//	                         sentinel's DELIVERY (this group sends it;
+//	                         the API's v1 direct send is the fallback),
+//	                         and renewed/wedge_verdict/reclaimed are
+//	                         the ladder's own decisions logged here —
+//	                         the observation plane's visibility).
 //
 // Rollout is additive and env-gated: AGENTD_EVENTBUS_ADDR unset (the
 // default) keeps subscriptions v1 point-to-point verbatim — the bus
@@ -156,6 +160,9 @@ func eventbusFromEnv(getenv func(string) string, logger *zap.Logger) *eventbus.R
 		_ = client.Close()
 		return nil
 	}
+	// S3: the publish counter seam — every Publish outcome (success,
+	// validation, transport) ticks the workspace's publishes_total.
+	bus.SetPublishObserver(eventbusPublishObserver(workspace))
 	logger.Info("event bus: transport wired", zap.String("stream", bus.Key()), zap.String("addr", opts.Addr))
 	return bus
 }
@@ -174,6 +181,13 @@ func runEventbusConsumers(ctx context.Context, wg *sync.WaitGroup, bus *eventbus
 	}
 	consumer := eventbusConsumerName(os.Getenv)
 	seam := func() *opencode.Client { return seamClientWithPassword(password) }
+	// S3: the consume counter seam — every dispatch outcome (group,
+	// outcome, redelivery) ticks the workspace's deliveries_total.
+	ws := workspaceIDFromEnv()
+	if ws == "" {
+		ws = "unknown"
+	}
+	onDelivery := eventbusDeliveryObserver(ws)
 
 	// notifier: session.{id}.{idle,error} → per-subscriber SessionSend
 	// (suppression §4.4, rate bound, compose — all unchanged; only the
@@ -183,9 +197,10 @@ func runEventbusConsumers(ctx context.Context, wg *sync.WaitGroup, bus *eventbus
 	go func() {
 		defer wg.Done()
 		opts := eventbus.ConsumeOptions{
-			Group:    eventbus.GroupNotifier,
-			Consumer: consumer + "-notifier",
-			Topics:   []string{"session.*.*"},
+			Group:      eventbus.GroupNotifier,
+			Consumer:   consumer + "-notifier",
+			Topics:     []string{"session.*.*"},
+			OnDelivery: onDelivery,
 			OnError: func(m eventbus.Message, err error) {
 				logger.Warn("event bus: subscription delivery failed — pending, will redeliver",
 					zap.String("topic", m.Event.Topic), zap.Error(err))
@@ -202,9 +217,10 @@ func runEventbusConsumers(ctx context.Context, wg *sync.WaitGroup, bus *eventbus
 		defer wg.Done()
 		lc := &leaseBusConsumer{seam: seam, logger: logger}
 		opts := eventbus.ConsumeOptions{
-			Group:    eventbus.GroupLease,
-			Consumer: consumer + "-lease",
-			Topics:   []string{"lease.*.*"},
+			Group:      eventbus.GroupLease,
+			Consumer:   consumer + "-lease",
+			Topics:     []string{"lease.*.*"},
+			OnDelivery: onDelivery,
 			OnError: func(m eventbus.Message, err error) {
 				logger.Warn("event bus: lease delivery failed — pending, will redeliver",
 					zap.String("topic", m.Event.Topic), zap.Error(err))
@@ -214,6 +230,11 @@ func runEventbusConsumers(ctx context.Context, wg *sync.WaitGroup, bus *eventbus
 			logger.Warn("event bus: lease consumer exited", zap.Error(err))
 		}
 	}()
+
+	// S3: the health collector — lag/pending/stalled gauges and the
+	// edge-triggered stall log lines (both topologies get it here,
+	// alongside the groups they own).
+	runEventbusHealthLoop(ctx, wg, bus, logger)
 }
 
 // ---- the lease consumer (the NudgeSender generalization) ----
@@ -263,9 +284,13 @@ func composeLeaseNudge(taskShortID, nudgeID string) string {
 // leaseBusConsumer translates lease.* topics into SessionSend
 // deliveries. nudged → the sentinel nudge above (at-least-once on the
 // group: a redelivered nudge is a duplicate sentinel — benign, the
-// ladder's ordinal anchor is latest-only); wedge_verdict → log only
-// (the verdict reclaims the row at the engine; messaging a wedged
-// worker is noise — the NEXT claimant gets the task).
+// ladder's ordinal anchor is latest-only); wedge_verdict / renewed /
+// reclaimed → log only (the S4 observation plane: the verdict reclaims
+// the row at the engine — messaging a wedged worker is noise, the NEXT
+// claimant gets the task; a renewed worker is alive and working; a
+// reclaimed row's assignee is gone. The LOUD WARN lines ARE the
+// product — the 2026-10-30 incident's reclaims were invisible until
+// transcript forensics).
 type leaseBusConsumer struct {
 	seam   func() *opencode.Client
 	logger *zap.Logger
@@ -309,7 +334,27 @@ func (c *leaseBusConsumer) handle(ctx context.Context, msg eventbus.Message) err
 		c.logger.Warn("event bus: lease wedge verdict",
 			zap.String("task", taskID),
 			zap.String("assignee", msg.Event.Payload["assignee"]),
-			zap.String("verdict", msg.Event.Payload["verdict"]))
+			zap.String("verdict", msg.Event.Payload["verdict"]),
+			zap.String("evidence", msg.Event.Payload["evidence"]))
+		return nil
+	case "renewed":
+		// The ladder answered ALIVE — which rung is the operator's
+		// "why" (heartbeat_response | movement | post_nudge_reaction |
+		// busy_gate).
+		c.logger.Info("event bus: lease renewed",
+			zap.String("task", taskID),
+			zap.String("assignee", msg.Event.Payload["assignee"]),
+			zap.String("source", msg.Event.Payload["source"]))
+		return nil
+	case "reclaimed":
+		// The 2026-10-30 incident's invisible transition — now a WARN
+		// on the pod the claim lived in: which claim lapsed, why, and
+		// the failure count it landed on.
+		c.logger.Warn("event bus: lease reclaimed",
+			zap.String("task", taskID),
+			zap.String("assignee", msg.Event.Payload["assignee"]),
+			zap.String("reason", msg.Event.Payload["reason"]),
+			zap.String("failure_count", msg.Event.Payload["failure_count"]))
 		return nil
 	default:
 		return nil // vocabulary is a convention — unknown arms ack unread

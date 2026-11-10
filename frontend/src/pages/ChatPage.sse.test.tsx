@@ -81,7 +81,11 @@ vi.mock("../hooks/useContractStream", () => ({
   }),
 }));
 
-// Mock ChatView to expose streaming text as data attributes
+// Mock ChatView to expose streaming text as data attributes.
+// The typed value is held in a module-level variable (not DOM state): a
+// re-render can replace the uncontrolled textarea node and silently drop
+// everything typed, which made identity-keyed assertions flaky.
+const mockComposerValue = { current: "" };
 vi.mock("../components/chat/ChatView", () => ({
   ChatView: (props: Record<string, unknown>) => {
     return (
@@ -93,11 +97,11 @@ vi.mock("../components/chat/ChatView", () => ({
       >
         <textarea
           disabled={props.disabled as boolean}
-          onChange={() => {}}
+          onChange={(e) => { mockComposerValue.current = (e.target as HTMLTextAreaElement).value; }}
           onKeyDown={(e) => {
             if (e.key === "Enter" && !e.shiftKey) {
               e.preventDefault();
-              (props.onSend as (t: string) => void)((e.target as HTMLTextAreaElement).value);
+              (props.onSend as (t: string) => void)(mockComposerValue.current);
             }
           }}
         />
@@ -313,6 +317,84 @@ describe("ChatPage event dispatch (contract stream + platform stream)", () => {
         const userMsgs = rendered.filter((m: { role: string }) => m.role === "user");
         expect(userMsgs).toHaveLength(1);
       }, { timeout: 5000 });
+    });
+  });
+
+  describe("MESSAGE_START landed-user reconcile (queued-message ordering)", () => {
+    // Out-of-order incident (2026-11-09): a queued message delivered
+    // minutes after its send kept the client-clock optimistic bubble
+    // pinned below live agent parts until the idle reconcile; the landed
+    // history copy belongs at its backend position the moment it exists.
+    it("MESSAGE_START USER refetches history and drops the optimistic twin", async () => {
+      // role (not the wire `type`): the mocked getHistoryPage bypasses the
+      // api-layer transform, so fixtures carry the transform's output shape.
+      const history: Array<{ id: string; role: string; parts: Array<{ type: string; text: string }> }> = [
+        { id: "m_old_q", role: "user", parts: [{ type: "text", text: "old question" }] },
+        { id: "m_old_a", role: "assistant", parts: [{ type: "text", text: "old answer" }] },
+      ];
+      const qc = makeQueryClient();
+      (messagesApi.getHistory as ReturnType<typeof vi.fn>).mockImplementation(async () => [...history]);
+      await renderReady(qc);
+      const textarea = await screen.findByRole("textbox");
+      await waitFor(() => expect(textarea).not.toBeDisabled());
+      // Drive the composer value directly: userEvent typing into the mock's
+      // uncontrolled textarea is flaky across re-renders, and the identity
+      // match under test needs the exact text.
+      mockComposerValue.current = "queued text";
+      fireEvent.keyDown(screen.getByRole("textbox"), { key: "Enter" });
+      await waitFor(() => expect(messagesApi.sendAsync).toHaveBeenCalled());
+      // Settle the send-onComplete reconcile (history still lacks the
+      // landed copy, so the optimistic bubble legitimately survives it).
+      await act(async () => { await new Promise((r) => setTimeout(r, 50)); });
+      const optimisticBefore = JSON.parse(
+        screen.getByTestId("chat-view").getAttribute("data-messages") || "[]",
+      ).filter((m: { id: string }) => typeof m.id === "string" && m.id.startsWith("local-"));
+      expect(optimisticBefore).toHaveLength(1);
+
+      // The harness lands the queued message and announces it.
+      history.push({ id: "m_land", role: "user", parts: [{ type: "text", text: "queued text" }] });
+      await act(async () => {
+        sendContractEvent(abiEvent({
+          type: 3, // MESSAGE_START
+          messageId: "msg_u1",
+          message: create(MessageSchema, { id: "msg_u1", sessionId: "sess-1", type: 1 }), // USER
+        }), 1n);
+        await new Promise((r) => setTimeout(r, 200));
+      });
+
+      await waitFor(() => {
+        const rendered = JSON.parse(
+          screen.getByTestId("chat-view").getAttribute("data-messages") || "[]",
+        );
+        expect(rendered.some((m: { id: string }) => m.id === "m_land")).toBe(true);
+        expect(
+          rendered.filter((m: { id: string }) => typeof m.id === "string" && m.id.startsWith("local-")),
+        ).toHaveLength(0);
+      }, { timeout: 5000 });
+    });
+
+    it("MESSAGE_START without a landed history copy keeps the optimistic bubble (#447)", async () => {
+      const qc = makeQueryClient();
+      (messagesApi.getHistory as ReturnType<typeof vi.fn>).mockResolvedValue([]);
+      await renderReady(qc);
+      const textarea = await screen.findByRole("textbox");
+      await waitFor(() => expect(textarea).not.toBeDisabled());
+      mockComposerValue.current = "still in queue";
+      fireEvent.keyDown(screen.getByRole("textbox"), { key: "Enter" });
+      await waitFor(() => expect(messagesApi.sendAsync).toHaveBeenCalled());
+      await act(async () => { await new Promise((r) => setTimeout(r, 50)); });
+      sendContractEvent(abiEvent({
+        type: 3,
+        messageId: "msg_u2",
+        message: create(MessageSchema, { id: "msg_u2", sessionId: "sess-1", type: 1 }),
+      }), 2n);
+      await act(async () => { await new Promise((r) => setTimeout(r, 50)); });
+      const rendered = JSON.parse(
+        screen.getByTestId("chat-view").getAttribute("data-messages") || "[]",
+      );
+      expect(
+        rendered.filter((m: { id: string }) => typeof m.id === "string" && m.id.startsWith("local-")),
+      ).toHaveLength(1);
     });
   });
 

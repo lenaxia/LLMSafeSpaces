@@ -72,6 +72,13 @@ func boardCharterPrompt(c *board.Claim) string {
 			b.WriteString("\n")
 		}
 	}
+	// S5 (the DEPOSED directive): the salvage handoff rides the charter
+	// — a claim after a deposed lapse inherits the recorded pointer
+	// (branch/PR/state), never a cold restart. RenderSalvage returns ""
+	// for a pointer-less claim: the charter stays byte-identical.
+	if salvage := board.RenderSalvage(c.Salvage); salvage != "" {
+		b.WriteString(salvage)
+	}
 	// #1832 item 5 (2/2): prior review verdicts ride the charter — the
 	// iteration history after a fail-bounce (never a failure count).
 	// #1959: the block is board.RenderVerdictChain — the SAME renderer
