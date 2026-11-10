@@ -79,7 +79,7 @@ jobs:
     uses: lenaxia/ai-workflows/.github/workflows/ai-comment.yml@v0.2.23 # pin rollback 2026-11-10: v0.2.25 route-command.sh "OUT_FILE: unbound variable" breaks every /review (#1844 escalation); restore-forward only with that fixed
     secrets: inherit
     with:
-      version: v0.2.25
+      version: v0.2.23 # pin rollback 2026-11-10: match the uses: ref — v0.2.25 route-command.sh breaks every /review
       project_name: LLMSafeSpaces
       # Trusted app-bot commenters (ai-workflows #51): without this the CLI
       # assert refuses bot /review comments pre-LLM even though the admission
