@@ -76,7 +76,7 @@ jobs:
        github.event.comment.author_association == 'MEMBER' ||
        github.event.comment.author_association == 'COLLABORATOR' ||
        contains(fromJson('["agentic-actor-coder[bot]","ai-workflows-propagation[bot]"]'), github.event.comment.user.login))
-    uses: lenaxia/ai-workflows/.github/workflows/ai-comment.yml@v0.2.25
+    uses: lenaxia/ai-workflows/.github/workflows/ai-comment.yml@v0.2.23 # pin rollback 2026-11-10: v0.2.25 route-command.sh "OUT_FILE: unbound variable" breaks every /review (#1844 escalation); restore-forward only with that fixed
     secrets: inherit
     with:
       version: v0.2.25
