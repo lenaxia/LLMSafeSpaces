@@ -15,6 +15,8 @@ package main
 // last applied payload must NOT schedule a restart; a changed value must.
 
 import (
+	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -27,6 +29,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/lenaxia/llmsafespaces/pkg/agentd"
 	"github.com/lenaxia/llmsafespaces/pkg/agentd/secrets"
 )
 
@@ -275,14 +278,15 @@ func TestApplyBatch_ConcurrentAnchorsSerializeInPipelineOrder(t *testing.T) {
 		defer close(applyDone)
 		apply(envSecretBatch("v1"))
 	}()
-	// Wait until A's restart is parked (poll count > 0 happens AFTER the
-	// blocking leg; use the handler completing its locked section by
-	// waiting for B to be able to acquire applyMu — poll the anchor file).
+	// Wait until A has written its anchor (it precedes the parked restart
+	// on every ordering — this pin covers the anchor-before-restart
+	// restructure; the lock PLACEMENT pin is
+	// TestApplyBatch_AnchorSurvivesStalledStageCredentials below).
 	anchorPath := restartPayloadPath(cfg.toPaths().SecretsEnvPath)
 	require.Eventually(t, func() bool {
 		h, err := readRestartPayloadHash(anchorPath)
 		return err == nil && h != ""
-	}, 5*time.Second, 5*time.Millisecond, "A must have written its anchor inside applyMu")
+	}, 5*time.Second, 5*time.Millisecond, "A must anchor before its parked restart completes")
 
 	// B: v2 — runs A's entire restart window inside its own locked
 	// pipeline and anchors H2.
@@ -347,4 +351,89 @@ func TestApplyBatch_UnreadablePayloadHashFailsOpen(t *testing.T) {
 
 	post(envSecretBatch("v1"))
 	assert.Equal(t, 2, proc.restartCount(), "unreadable hash must fail OPEN: restart proceeds ungated")
+}
+
+// TestApplyBatch_AnchorSurvivesStalledStageCredentials — review round-2
+// missing-case pin: the unlock→gate window. Park apply A in its
+// StageCredentials HTTP POST (post-applyMu.Unlock) by occupying the
+// pinned opencode port with a listener that accepts and never answers;
+// while A is stalled, apply B completes fully. The final anchor must be
+// B's: the gate read/compare/write serialize UNDER applyMu, so A's anchor
+// landed inside its locked section and nothing A does after the stall may
+// touch the file. Under the pre-fix ordering (gate after StageCredentials,
+// outside the lock) A wrote H1 over B's H2 and this pin went RED.
+func TestApplyBatch_AnchorSurvivesStalledStageCredentials(t *testing.T) {
+	withTestLogger(t)
+	cfg, markerPath := newPayloadTestConfig(t)
+
+	// Occupy the pinned opencode port: accepts, never answers — the
+	// StageCredentials client times out against it.
+	occupier, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", agentd.AgentPort))
+	if err != nil {
+		t.Skipf("cannot occupy the pinned opencode port %d: %v", agentd.AgentPort, err)
+	}
+	t.Cleanup(func() { _ = occupier.Close() })
+	go func() {
+		for {
+			c, err := occupier.Accept()
+			if err != nil {
+				return
+			}
+			_ = c // hold the connection open, never respond
+		}
+	}()
+
+	tracker := newSessionStatusTracker()
+	tracker.set("ses_idle", "idle")
+	proc := &mockManagedProcess{}
+
+	apply := func(batch string) {
+		req := httptest.NewRequest(http.MethodPost, "/v1/apply-batch", strings.NewReader(batch))
+		req.Header.Set("Authorization", "Basic "+basicAuth("test-pw"))
+		rec := httptest.NewRecorder()
+		applyBatchHandler(cfg, applySecretsDeps{
+			OpencodePassword:        "test-pw",
+			Proc:                    proc,
+			Tracker:                 tracker,
+			RestartReasonMarkerPath: markerPath,
+		})(rec, req)
+		require.Equal(t, http.StatusOK, rec.Code, "body=%s", rec.Body.String())
+	}
+
+	// A: llm-provider + env-secret — StageCredentials stalls on the
+	// occupied port (bounded by the client's 10s timeout).
+	const aBatch = `[{"type":"llm-provider","name":"anthropic","plaintext":"{\"kind\":\"anthropic\",\"slug\":\"anthropic\",\"apiKey\":\"sk-1\"}"},{"type":"env-secret","name":"x","metadata":{"var_name":"GH_TOKEN"},"plaintext":"v1"}]`
+	aDone := make(chan struct{})
+	go func() {
+		defer close(aDone)
+		apply(aBatch)
+	}()
+
+	// Wait for A's anchor (written inside its locked section).
+	anchorPath := restartPayloadPath(cfg.toPaths().SecretsEnvPath)
+	h1 := restartPayloadHash([]secrets.Secret{
+		{Type: "env-secret", Name: "x", Metadata: map[string]string{"var_name": "GH_TOKEN"}, Plaintext: "v1"},
+	})
+	require.Eventually(t, func() bool {
+		h, err := readRestartPayloadHash(anchorPath)
+		return err == nil && h == h1
+	}, 10*time.Second, 5*time.Millisecond, "A must anchor H1 inside its locked section")
+
+	// B: completes fully while A is stalled post-Unlock.
+	apply(envSecretBatch("v2"))
+	h2 := restartPayloadHash([]secrets.Secret{{Type: "env-secret", Name: "x", Metadata: map[string]string{"var_name": "GH_TOKEN"}, Plaintext: "v2"}})
+	stored, err := readRestartPayloadHash(anchorPath)
+	require.NoError(t, err)
+	require.Equal(t, h2, stored, "B's anchor must land while A is stalled")
+
+	// A finishes its stall; the final anchor must still be B's.
+	select {
+	case <-aDone:
+	case <-time.After(30 * time.Second):
+		t.Fatal("apply A did not finish (StageCredentials stall exceeded the client timeout + margin)")
+	}
+	stored, err = readRestartPayloadHash(anchorPath)
+	require.NoError(t, err)
+	require.Equal(t, h2, stored,
+		"A's post-Unlock work must not touch the anchor: only B's identity may survive")
 }

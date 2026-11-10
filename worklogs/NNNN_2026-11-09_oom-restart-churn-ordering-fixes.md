@@ -2,7 +2,7 @@
 
 **Date:** 2026-11-09
 **Session:** Production incident triage on the home cluster (llmsafespaces ns) + fixes for the four validated issue classes
-**Status:** Complete (review round 1 addressed)
+**Status:** Complete (review rounds 1-2 addressed)
 
 ---
 
@@ -67,6 +67,12 @@ Diagnose why chat sessions were dead in the frontend and the LLM unresponsive, t
 - Minor (accepted): `kept_spawn_window` per-row Warn folded into the same per-pass aggregate. `reap_deferred_probe` intentionally stays per-row — each line carries a distinct probe error string that an aggregate would destroy.
 - Missing tests added: concurrent-anchor race (above), unreadable-anchor fail-open (`TestApplyBatch_UnreadablePayloadHashFailsOpen`, skipped as root), sample-cap boundary (`TestSessionIndexReconcile_LogStormSampleCapBoundary`). Socket-topology composition pin deferred (suite green; ordering unpinned) — noted as follow-up.
 - CI gates repaired en route: x/net 0.62.0 + klauspost/compress 1.20.2 (fresh vuln DB findings), frontend-test + sdk-contract jobs pinned to ubuntu-24.04 (26.04 runner image broke playwright install + hurl/libxml2), epic67 test flake fixed (call-local http client), gosec G703 function-level nolint on atomicWriteAny (repo convention), staticcheck QF1012.
+
+## Review Round 2 (AI reviewer, 2026-11-10)
+
+- **Finding 1 round-2 (blocking, accepted — the round-1 "fix" was insufficient)**: the gate block had been RESTRUCTURED but still sat after `applyMu.Unlock()` — and worse, after the StageCredentials block, whose HTTP POST to opencode widens the unlock→gate window to seconds whenever a batch carries llm-provider entries. The stale-anchor interleave was reproduced by the reviewer at that head. Fixed properly: the gate read/compare/anchor write moved INSIDE the locked section, directly alongside the rev anchor; the restart decision alone remains outside. Both false comments corrected.
+- **Missing pin added**: `TestApplyBatch_AnchorSurvivesStalledStageCredentials` — occupies the pinned opencode port (127.0.0.1:4096, accept-and-never-answer) so apply A stalls in StageCredentials post-Unlock while apply B completes; asserts B's identity survives. Mutation-verified: RED under the racy ordering (anchor only landed after the stall), GREEN with the gate under the lock. The round-1 concurrent-anchor test was renamed-by-comment to reflect what it actually pins (anchor-before-restart ordering).
+- Round-2 review confirmed Finding 2 + minor fixed, security/style/project-alignment clean.
 
 ## Tests Run
 
