@@ -358,6 +358,23 @@ type Config struct {
 			Addr     string `mapstructure:"addr"`
 			Password string `mapstructure:"password"`
 		} `mapstructure:"leaseEventbus"`
+		// Eventbus arms the API-side board bus legs (design 0072 S6):
+		// the committed-board-events publisher (board.{project}.event +
+		// task.{id}.stage_changed), the stamp publisher
+		// (task.{id}.stamped), and the SSE consumer join that serves
+		// board.event frames from the stream. When unset it FALLS BACK
+		// to LeaseEventbus's values — one Redis, one arming posture,
+		// the S4 knob keeps working unchanged. Same addr spelling and
+		// same ONE POSTURE rule as LeaseEventbus (arm with the
+		// controller's --workspace-eventbus-addr; arm both or neither).
+		// Empty effective addr (the default) keeps every v1 leg
+		// verbatim: the board SSE publisher stays point-to-point and
+		// no consumer joins the streams.
+		// Env: LLMSAFESPACES_BOARD_EVENTBUS_ADDR / _PASSWORD.
+		Eventbus struct {
+			Addr     string `mapstructure:"addr"`
+			Password string `mapstructure:"password"`
+		} `mapstructure:"eventbus"`
 	} `mapstructure:"board"`
 
 	// ImageFactory holds the image-factory config (design/0046).
@@ -963,6 +980,24 @@ func applyBoardEnvOverrides(config *Config) {
 	}
 	if v := strings.TrimSpace(os.Getenv("LLMSAFESPACES_BOARD_LEASEEVENTBUS_PASSWORD")); v != "" {
 		config.Board.LeaseEventbus.Password = v
+	}
+	// Design 0072 S6: the board bus legs (stage-move/stamp publishers
+	// + the SSE consumer join). Falls back to the S4 knob's values —
+	// one Redis, one posture.
+	if v := strings.TrimSpace(os.Getenv("LLMSAFESPACES_BOARD_EVENTBUS_ADDR")); v != "" {
+		config.Board.Eventbus.Addr = v
+	}
+	if v := strings.TrimSpace(os.Getenv("LLMSAFESPACES_BOARD_EVENTBUS_PASSWORD")); v != "" {
+		config.Board.Eventbus.Password = v
+	}
+	// Per-field fallback: the S4 leaseEventbus values fill any gap —
+	// one Redis, one arming posture (the S4 knob keeps working
+	// unchanged; the canonical spelling wins field-by-field).
+	if strings.TrimSpace(config.Board.Eventbus.Addr) == "" {
+		config.Board.Eventbus.Addr = config.Board.LeaseEventbus.Addr
+	}
+	if strings.TrimSpace(config.Board.Eventbus.Password) == "" {
+		config.Board.Eventbus.Password = config.Board.LeaseEventbus.Password
 	}
 }
 

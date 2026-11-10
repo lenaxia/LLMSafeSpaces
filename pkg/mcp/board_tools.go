@@ -573,6 +573,12 @@ var boardStoryToolAliases = map[string]string{
 	"board_rearm_task":    "board_rearm_story",
 	"board_pause_task":    "board_pause_story",
 	"board_resume_task":   "board_resume_story",
+	// The orchestrator's 2026-11-02 ruling (b): board_depose_task
+	// SHIPPED to main task-prefixed via #2006 (b1a00ef67) while this
+	// lane had already renamed it story-first — the alias window
+	// exists precisely for shipped names, so the shipped spelling
+	// resolves as a deprecated alias instead of forking the naming.
+	"board_depose_task": "board_depose_story",
 }
 
 // storyDeprecationMiddleware is the notice carrier for the alias
@@ -1518,6 +1524,10 @@ func boardStoryAliasRegistrations(srv *server.MCPServer, h *handlers) {
 		"board_rearm_story":    {boardRearmStoryTool, h.boardRearmStory},
 		"board_pause_story":    {boardPauseStoryTool, h.boardPauseStory},
 		"board_resume_story":   {boardResumeStoryTool, h.boardResumeStory},
+		// Ruling (b)'s shipped-name alias: the canonical depose tool is
+		// story-first on this lane; the task-prefixed spelling that
+		// main shipped via #2006 resolves through the window.
+		"board_depose_story": {boardDeposeStoryTool, h.boardDeposeStory},
 	}
 	for _, pair := range sortedStoryAliases() {
 		reg, ok := canonical[pair.canonical]

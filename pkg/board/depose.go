@@ -110,12 +110,13 @@ func (s *Service) DeposeTask(ctx context.Context, actor Actor, taskID, shortIDOr
 
 	// deposedSession carries the pre-write assignee out of the
 	// transaction for the post-commit DEPOSED directive (the UPDATE
-	// nulls the row's copy); fromStage carries the ROW-LOCKED stage
-	// the deposition acted on (the resolve's t.Stage can go stale in
-	// the resolve→tx window — the trail row must agree with the
-	// ledger's own payload, not contradict it).
+	// nulls the row's copy); failureCountAfter feeds the lease event;
+	// fromStage carries the ROW-LOCKED stage the deposition acted on
+	// (the resolve's t.Stage can go stale in the resolve→tx window —
+	// the trail row must agree with the ledger's own payload).
 	var deposedSession, fromStage string
 	var requeued bool
+	var failureCountAfter int32
 
 	ew := &eventWriter{svc: s, projectID: p.ID, requestID: requestID,
 		action: "depose", itemKind: "task", itemID: t.ID, actor: actor}
@@ -187,6 +188,7 @@ func (s *Service) DeposeTask(ctx context.Context, actor Actor, taskID, shortIDOr
 				return nil, err
 			}
 			requeued = true
+			failureCountAfter = int32(cur.FailureCount + 1) //#nosec G115 -- FailureCount is a small consecutive-failure counter (backoff-capped); overflow is unreachable
 		case StageBacklog:
 			// The reclaim already ran (the incident's shape: the
 			// orchestrator notices post-reclaim): record the pointer
@@ -223,7 +225,9 @@ func (s *Service) DeposeTask(ctx context.Context, actor Actor, taskID, shortIDOr
 	// (dup) skips the row: the original run already recorded it, and a
 	// replay is not a second deposition. The salvage pointer rides the
 	// detail — the trail's row is the pointer WITH its context (which
-	// session, from which stage, requeued or pointer-alone).
+	// session, from which row-locked stage, requeued or pointer-alone).
+	// The requeued arm additionally records reclaimed{reason: deposed}
+	// via main's r6 emitLease above — two true facts of one action.
 	if dup == nil {
 		s.recordObservation(ctx, ObservationEvent{
 			Kind: ObservationDeposed, TaskID: t.ID, Session: deposedSession,
@@ -233,6 +237,14 @@ func (s *Service) DeposeTask(ctx context.Context, actor Actor, taskID, shortIDOr
 		})
 	}
 	if requeued {
+		// S4/S5: the depose IS a reclaim the observation plane reports
+		// (which claim went away and why — the invisible-lapse class
+		// depose exists to handle; review r6's contract-gap finding).
+		// Post-commit, fail-open — the containment is emitLease's.
+		s.emitLease(ctx, LeaseEvent{
+			Kind: LeaseEventReclaimed, TaskID: t.ID, TaskShortID: t.ShortID, ProjectID: p.ID,
+			Assignee: deposedSession, Reason: ReclaimReasonDeposed, FailureCount: failureCountAfter,
+		})
 		// The DEPOSED directive to the stale session: best-effort,
 		// post-commit (the HALT/RESUME transport precedent — the
 		// turn-boundary message, never an abort). The row no longer

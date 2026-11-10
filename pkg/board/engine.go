@@ -566,7 +566,7 @@ func (s *Service) spawnSync(ctx context.Context, claim *Claim) {
 	// the guard lost the race (the claim moved while the spawn was in
 	// flight) OR retries exhausted — the back-fill belt (Heartbeat's
 	// claim-evidence re-stamp) owns the lost-stamp recovery.
-	if !s.writeAssigneeStamp(ctx, claim.TaskID, claim.ClaimToken, sessionID, stage) {
+	if !s.writeAssigneeStamp(ctx, claim, sessionID, stage) {
 		// The guarded stamp lost the race (deleted, lapsed, or
 		// re-claimed while the spawn was in flight): the just-spawned
 		// session holds a dead charter — abort it (the merged design's

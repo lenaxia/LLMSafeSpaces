@@ -64,7 +64,15 @@ PR #2009 approved on d272c2f33 went CONFLICTING against main (#2004/#2010/#2003 
 - **No frontend health-panel rendering** — the orchestrator surface is the MCP/REST read; the panel can render `observation_events` when a human asks for it.
 - **No summarization job for aged-out rows** — "older summarized or pruned per platform conventions": the summary IS the board_events ledger (already written, already permanent); a separate summarizer would duplicate it.
 
-## 8. Merge notes for the orchestrator
+## 8. The ruling-(b) catch-up (orchestrator mandate via PR comment, 2026-11-02)
+
+The PR was approved at a623c97b3 but main moved decisively (#2006 landed S5 AND the orchestrator's union carried S4+S3+S6; #1993 landed the deflake) and the merge loop closed the PR mid-storm. The orchestrator ruled on PR #2009 (19:36Z): option (b) — canonical board_depose_story, ADD board_depose_task → board_depose_story to the alias window (the task-prefixed spelling SHIPPED via #2006, and the alias window exists precisely for shipped names); authorized me to reopen, catch up, re-push, CI, /review.
+
+The merge (origin/main @ 1f197d527): S6's evolution taken where it supersedes (eventbus vocabulary incl. task.stamped/board.event topics, the shared boardBusClient — my r1 busFor ctx fix obsoleted structurally, config's board.eventbus knob with leaseEventbus fallback, service.go's stampEvents field); S7 re-applied on top (emitLease records the trail row FIRST then the S6 sink; both stamp landing paths now emit S6's bus event AND the S7 trail row; depose re-applies fromStage + the dup-guarded deposed row onto main's r6-evolved file); reconciler kept whole from this lane (S7 superset; theirs had no unique content); the depose naming per ruling (b) — the pkg/mcp alias registration map + agentd's boardStoryToolAliases + the docs alias-table row + the parity grid's extTools (canonical + alias). CONSEQUENCE pinned: a requeued deposition now records THREE trail facts (reclaimed{reason:deposed} — main's r6 emitLease arm; deposed{salvage, from_stage, requeued} — S7's row; stamped) — the pin updated to the two-fact reality; the integration count 58 base + 10 aliases = 68.
+
+Gates on the merge head: full -race -tags=integration pkg/board 56.4s, agentd 372.9s, handlers 128s (parity green with the alias column), pkg/mcp + eventbus + config + app + repolint (docs parity with the alias row) all green, make fmt-check, golangci-lint run ./... 0.
+
+## 9. Merge notes for the orchestrator
 
 - Base is the S4∪S5 union; S6 (`s6-bus-unification`) merges on top — my `emitLease` edit (trail row before bus sink) and the rc1 obsNudged loop are the only shared-region edits, both additive to what S6's stamp-events work touches (`stamp.go`'s success arm gains one call; S6's `WithStampSink` sits in the same file but different seam).
 - Migration 000055 is the next number after S5's 000054 on this line; if another lane takes 000055 first, renumber mechanically (the file references in observation.go's comments move with it via grep).

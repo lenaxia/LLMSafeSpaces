@@ -275,6 +275,7 @@ the same window under every canonical name):
 | `board_rearm_task` | `task_id` | DEPRECATED alias of `board_rearm_story` — identical behavior |
 | `board_pause_task` | `task_id` | DEPRECATED alias of `board_pause_story` — identical behavior |
 | `board_resume_task` | `task_id` | DEPRECATED alias of `board_resume_story` — identical behavior |
+| `board_depose_task` | `task_id` | DEPRECATED alias of `board_depose_story` — identical behavior (joined the window post-hoc: the task-prefixed spelling shipped via #2006 while the story-first rename was in flight — the orchestrator's 2026-11-02 ruling (b)) |
 
 Board search and health projections join `board_read` when the engine
 seams land (#1699); epic listing rides `board_get` per epic today.

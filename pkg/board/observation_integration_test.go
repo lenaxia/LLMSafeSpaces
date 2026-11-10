@@ -223,8 +223,17 @@ func (s *BoardSuite) TestPin_ObservationTrail_DeposeCarriesSalvagePointer() {
 	s.Require().NoError(err)
 
 	rows := s.trail(task.ID)
-	s.Require().Len(rows, 2, "stamp + deposed")
-	d := rows[0]
+	// THREE facts of one deposition (main's r6 emitLease arm joined after
+	// the S6 union): reclaimed{reason: deposed} (the claim went away —
+	// emitted inside the requeue arm), deposed{salvage…} (the manager
+	// act with its pointer — both stages and both arms), stamped (the
+	// claim's stamp). Newest-first: the reclaim records at its emit, the
+	// deposed row at the dup-guarded record.
+	s.Require().Len(rows, 3, "stamp + reclaimed{deposed} + deposed")
+	s.Equal(board.ObservationReclaimed, rows[0].Kind)
+	s.Equal(board.ReclaimReasonDeposed, fmt.Sprint(rows[0].Detail["reason"]),
+		"main's r6 arm: the requeued deposition IS a reclaim the observation plane reports")
+	d := rows[1]
 	s.Equal(board.ObservationDeposed, d.Kind)
 	s.Equal(assignee, d.Session)
 	s.Equal(board.StageInProgress, fmt.Sprint(d.Detail["from_stage"]))

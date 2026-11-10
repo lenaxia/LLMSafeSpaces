@@ -41,7 +41,9 @@ Topics are dot-separated segments; the launch set:
 | Topic | Producer | Payload fields |
 |---|---|---|
 | `session.{id}.idle` / `session.{id}.error` | agentd (the notifier's settle fold) | `session`, `settle`, `title` |
-| `task.{id}.stage_changed` | API board engine (future) | `task`, `from`, `to` |
+| `task.{id}.stage_changed` | API board engine (**S6, landed 2026-10-31**) | `task`, `task_short_id`, `project_id`, `from`, `to`, `actor_session`, `source` (`user` \| `system` — the row's actor KIND, server-derived; never the client-chosen event id), `id` (the board_events row) |
+| `task.{id}.stamped` | API board engine (**S6, landed**) | `task`, `task_short_id`, `project_id`, `assignee`, `origin` (`spawn` \| `backfill`), `lag_seconds`, `owner`, `workspace` |
+| `board.{project_id}.event` | API board engine (**S6, landed**) | the committed `board_events` row (`id`, `item_kind`, `item_id`, `action`, `actor` JSON, `payload` JSON, `created_at`) + the SSE scope resolved at publish (`owner`, `workspace`, `task_short_id`) |
 | `lease.{task_id}.nudged` | API nudge ladder (**S4, landed 2026-10-31**) | `task`, `task_short_id`, `nudge_id`, `assignee` |
 | `lease.{task_id}.wedge_verdict` | API nudge ladder (**S4, landed**) | `task`, `task_short_id`, `assignee`, `nudge_id`, `verdict`, `evidence` |
 | `lease.{task_id}.renewed` | API nudge ladder (**S4, landed**) | `task`, `task_short_id`, `assignee`, `source` (`heartbeat_response` \| `movement` \| `post_nudge_reaction` \| `busy_gate`) |
@@ -216,8 +218,31 @@ covered by miniredis tests regardless.
    workspace-events variant keyed to the project; replaces per-write
    event calls only if it proves LESS indirect — the charter's own
    escape hatch).
-2. **API SSE consumer**: all topics → UI live-update frames (the
-   activity feed becomes a bus consumer).
+2. **API SSE consumer** (§9.2 — **LANDED 2026-10-31, S6, the
+   unification**): committed board events publish bus-first as
+   `board.{project}.event` (one entry per committed row, the SSE scope
+   — owner + workspace — resolved at PUBLISH time so delivery performs
+   no per-delivery project lookup), stage moves additionally publish
+   the §2 vocabulary topic `task.{id}.stage_changed`, and landed
+   assignee stamps publish `task.{id}.stamped` (a stamp writes no
+   board_events row — the bus entry is its only event surface, its
+   SSE frame the synthesized `assignee_stamped` action). The consumer
+   is a PER-REPLICA group (`sse-<hostname>`: every replica's broker is
+   fed, so a subscriber on ANY replica sees the event, and per-project
+   order follows stream order per group — the v1 single-drainer
+   parity); discovery (which workspaces carry board projects) is a
+   cheap DISTINCT read every 30s; a graceful shutdown XGROUP DESTROYs
+   this replica's groups (a crashed replica's leftover is exactly the
+   stalled-group shape S3's detector flags — loud by design). The
+   RETIRED leg: the v1 point-to-point writer→broker call with its
+   per-delivery project lookup is NOT also invoked when the bus takes
+   the event (pinned) — it remains the VERBATIM fallback for the
+   unarmed default and per-event publish failure, and the render
+   parity (bus frame == v1 frame, byte-equal) is pinned over the real
+   broker. The knob is `board.eventbus.{addr,password}` (env
+   `LLMSAFESPACES_BOARD_EVENTBUS_ADDR`/`_PASSWORD`), falling back
+   field-by-field to S4's `board.leaseEventbus.*` — one Redis, one
+   arming posture.
 3. **API nudge-ladder publisher** (§9.3 — **LANDED 2026-10-31, S4**):
    `newBoardNudger` publishes `lease.{task}.nudged` (bus first, v1
    direct send as the fallback), agentd's lease consumer (this design)

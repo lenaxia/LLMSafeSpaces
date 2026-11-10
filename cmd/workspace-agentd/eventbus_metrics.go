@@ -193,12 +193,17 @@ func classifyGroupStall(g eventbus.GroupHealth) (bool, eventbusStallReason) {
 // last stalled classification per group, so a stall LOGS when it
 // begins and when it ends — not every tick.
 type eventbusHealthState struct {
-	mu      sync.Mutex
+	mu sync.Mutex
+	// stalled carries the live stall verdicts (log-once transitions);
+	// seen carries the PREVIOUS snapshot's group names (the gauge-GC
+	// diff: a group absent from this snapshot no longer exists — its
+	// series freeze otherwise, an alert that cannot clear).
 	stalled map[string]eventbusStallReason
+	seen    map[string]bool
 }
 
 func newEventbusHealthState() *eventbusHealthState {
-	return &eventbusHealthState{stalled: map[string]eventbusStallReason{}}
+	return &eventbusHealthState{stalled: map[string]eventbusStallReason{}, seen: map[string]bool{}}
 }
 
 // collectEventbusHealth snapshots the bus once and surfaces it: raw
@@ -231,7 +236,16 @@ func collectEventbusHealth(ctx context.Context, bus *eventbus.RedisBus, ws strin
 	}
 	state.mu.Lock()
 	defer state.mu.Unlock()
+	// Gauge GC (review r6's frozen-alert finding): a group ABSENT from
+	// this snapshot no longer exists (graceful SSE teardown destroys
+	// its group BY DESIGN; operators XGROUP DESTROY crashed replicas —
+	// exactly the shape S3 exists to flag). Without this, its series
+	// freeze at the last value forever: group_stalled{...}=1 that no
+	// restart short of the process can clear. A vanished group is
+	// GONE, not eternally stalled — delete its series.
+	seen := make(map[string]bool, len(h.Groups))
 	for _, g := range h.Groups {
+		seen[g.Name] = true
 		eventbusMetrics.groupLag.WithLabelValues(ws, g.Name).Set(float64(g.Lag))
 		eventbusMetrics.groupPending.WithLabelValues(ws, g.Name).Set(float64(g.Pending))
 		eventbusMetrics.groupConsumers.WithLabelValues(ws, g.Name).Set(float64(g.Consumers))
@@ -265,6 +279,21 @@ func collectEventbusHealth(ctx context.Context, bus *eventbus.RedisBus, ws strin
 			delete(state.stalled, g.Name)
 		}
 	}
+	// Gauge GC: absent groups (destroyed by graceful teardown BY
+	// DESIGN, or XGROUP DESTROY on crashed replicas) lose their series
+	// — the stalled map's bookkeeping follows.
+	for name, prevSeen := range state.seen {
+		if seen[name] || !prevSeen {
+			continue
+		}
+		eventbusMetrics.groupLag.DeleteLabelValues(ws, name)
+		eventbusMetrics.groupPending.DeleteLabelValues(ws, name)
+		eventbusMetrics.groupConsumers.DeleteLabelValues(ws, name)
+		eventbusMetrics.groupOldestPendingIdle.DeleteLabelValues(ws, name)
+		eventbusMetrics.groupStalled.DeleteLabelValues(ws, name)
+		delete(state.stalled, name)
+	}
+	state.seen = seen
 }
 
 // runEventbusHealthLoop is the periodic collector: one snapshot at

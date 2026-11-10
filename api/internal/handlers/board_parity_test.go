@@ -236,11 +236,12 @@ var boardParityMatrix = []parityRow{
 		denyErr:    &board.GuardError{Code: board.GuardStage, Detail: "re-arm targets attempts-exhausted rows"}, denyCode: http.StatusConflict},
 	// S5 (the DEPOSED directive): the manager route's salvage handoff —
 	// three live columns like pause/rearm (a manager action; only
-	// task_start/task_create carry the owner-only boundary). Story-first
-	// from birth (the #2005 rename ruling): never shipped task-prefixed,
-	// so extTools carries NO alias entry.
+	// task_start/task_create carry the owner-only boundary). Canonical
+	// board_depose_story (story-first per the #2005 ruling) + the
+	// board_depose_task alias (ruling (b), 2026-11-02: the task-prefixed
+	// spelling shipped via #2006 while the rename was in flight).
 	{action: "depose_task", restMethods: []string{"DeposeTask"}, rest: liveCell,
-		externalMCP: liveCell, extTools: []string{"board_depose_story"}, agent: liveCell,
+		externalMCP: liveCell, extTools: []string{"board_depose_story", "board_depose_task"}, agent: liveCell,
 		agentTools: []string{"board_depose_story"},
 		denyErr:    &board.GuardError{Code: board.GuardClaimLive, Detail: "a live claim refuses deposition — the lease has not lapsed"}, denyCode: http.StatusConflict},
 	{action: "import_plan", restMethods: []string{"ImportPlan"}, rest: liveCell,

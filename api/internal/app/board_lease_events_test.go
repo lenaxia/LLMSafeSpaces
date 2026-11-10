@@ -212,10 +212,11 @@ func TestBoardLeaseEventbus_BreakerPausesOneWindow(t *testing.T) {
 
 	// ... and the window heals: force the breaker closed and confirm
 	// the publisher re-arms against a fresh transport (the eviction
-	// means the bus rewires on the next successful event).
+	// means the bus rewires on the next successful event). (S6 moved
+	// the transport into boardBusClient — the fields ride there now.)
 	mr2 := miniredis.RunT(t)
-	bus.client = redis.NewClient(&redis.Options{Addr: mr2.Addr()})
-	bus.breakerNanos.Store(0)
+	bus.tr.client = redis.NewClient(&redis.Options{Addr: mr2.Addr()})
+	bus.tr.breakerNanos.Store(0)
 	require.NoError(t, bus.publish(ctx, "ws-9", eventbus.LeaseNudgeTopic("t"), nil))
 	assert.Equal(t, publishedBefore+1, boardLeaseEventsPublished.Value())
 }

@@ -87,13 +87,16 @@ func TestIntegration_FullWorkflow(t *testing.T) {
 	// board_move_stage_bulk, board_delete_stories) + 1 board_depose_story
 	// (S5, the DEPOSED directive — riding the story-first name from
 	// birth; it never shipped task-prefixed, so it takes NO alias) = 58
-	// base, PLUS the 9 one-release deprecated story-rename aliases
+	// base, PLUS the 10 one-release deprecated story-rename aliases
 	// (story rename phase 2, owner ruling 2026-10-30: board_create_task,
 	// board_task_verdicts, board_task_events, board_start_task(s),
-	// board_delete_tasks, board_(rearm|pause|resume)_task) = 67).
+	// board_delete_tasks, board_(rearm|pause|resume)_task; PLUS
+	// board_depose_task per the orchestrator's 2026-11-02 ruling (b) —
+	// it shipped task-prefixed via #2006 while this lane had renamed
+	// it story-first) = 68).
 	toolsResp, err := mcpClient.ListTools(ctx, mcp.ListToolsRequest{})
 	require.NoError(t, err)
-	assert.Len(t, toolsResp.Tools, 67)
+	assert.Len(t, toolsResp.Tools, 68)
 
 	toolNames := make(map[string]bool)
 	toolSchemas := make(map[string]mcp.Tool)
