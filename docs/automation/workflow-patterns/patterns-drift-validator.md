@@ -109,10 +109,12 @@ nodes:
            surface lists only as a DEPRECATED ALIAS is drift: the
            examples teach the current canonical name.
         2. BOARD PAYLOADS — every fenced block tagged kind=board-payload
-           op=<op>: write its JSON body to
-           /workspace/patterns-drift/scratch/probe.json and call
-           board_validate_file {op, file}; any error-severity finding is
-           drift. Remove the probe file after each check.
+           op=<op>: write its JSON body DIRECTLY under /exchange as
+           patterns-drift-probe.json (the payload exchange dir — FLAT,
+           no subdirectories, relative paths resolve against it) and
+           call board_validate_file {op, file: "patterns-drift-probe.json"};
+           any error-severity finding is drift. Remove the probe file
+           after each check.
         3. WORKFLOW SPECS — every fenced kind=workflow-spec block: node
            types within script/agent/http/condition, script nodes
            carrying language and handler, agent nodes carrying prompt,
@@ -135,9 +137,9 @@ nodes:
         OUTPUT CONTRACT — you are read-only over the docs and
         board-native over findings:
         - You NEVER edit any example file, docs tree, repo file,
-          workflow, or trigger. Your only writes: the scratch dir above
-          (cleaned up), /workspace/patterns-drift/state.txt, and at most
-          ONE Sprint Board story.
+          workflow, or trigger. Your only writes: the probe file above
+          (removed after each check), /workspace/patterns-drift/state.txt,
+          and at most ONE Sprint Board story.
         - Drift found: file ONE story via board_create_story (manager
           route) into epic {{.epic_id}} (project {{.project_id}}):
           write the bodyFile first — title "Patterns drift: N findings

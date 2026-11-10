@@ -293,6 +293,21 @@ func TestPatternDocs_ContentPins_WorkflowCatalog(t *testing.T) {
 	for _, want := range []string{"inputFrom", "workflowId", "workflow_run"} {
 		assert.Contains(t, full, want, "workflow catalog: wiring fragment %q must stay", want)
 	}
+	// Prose PATH advice is pinned like tool names are (PR #1998 review
+	// r2: the drift-validator doc taught the pre-/exchange payload path
+	// through a green CI — fence validators cannot see prose). The
+	// board-payload probe rides the exchange contract: flat under
+	// /exchange, never the legacy workspace scratch path.
+	for _, want := range []string{
+		"DIRECTLY under /exchange",          // the canonical payload contract
+		"patterns-drift-probe.json",         // the probe file, named
+		"no subdirectories",                 // the FLAT rule stated
+		"relative paths resolve against it", // the resolution rule stated
+	} {
+		assert.Contains(t, full, want, "workflow catalog: probe-path fragment %q must stay", want)
+	}
+	assert.NotContains(t, full, "/workspace/patterns-drift/scratch",
+		"workflow catalog: the retired legacy probe path must not return — board payloads ride /exchange")
 }
 
 // TestPatternDocs_InfraNeutral_VendorBlocklist: the binding rule from
