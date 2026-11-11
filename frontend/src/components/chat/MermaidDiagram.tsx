@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { Button } from "../ui/Button";
 
 // MermaidDiagram (#1694): renders a ```mermaid fenced block as a diagram.
 //
@@ -6,6 +7,19 @@ import { useEffect, useState } from "react";
 // chunk — it is loaded via dynamic import() only when a diagram is
 // actually on screen (vite emits it as a separate lazy chunk; verified
 // by the production build output check in this PR's gates).
+//
+// Failure classification (#2013): the lazy chunk cuts both ways — minutes
+// after a deploy, a stale open tab still holds the OLD index.html asset
+// manifest, so its `import("mermaid")` asks for a hashed chunk that 404s
+// (browser phrasing: TypeError "Failed to fetch dynamically imported
+// module"). That is a LOAD failure about the APP, not a verdict on the
+// diagram — the incident's diagram was valid, and the agent burned two
+// rewrite rounds "fixing" correct mermaid because this component claimed
+// "invalid mermaid syntax". Failures are classified at the import
+// BOUNDARY (a sentinel rethrow), never by string-matching browser fetch
+// messages: anything the import() itself rejects with renders the
+// reload-class box; only failures from initialize/render keep the
+// syntax box.
 //
 // Streaming: render-on-closed-fence. During streaming the fence content
 // is partial; parsing per token would spam mermaid parse errors (and
@@ -23,6 +37,15 @@ import { useEffect, useState } from "react";
 // across React StrictMode double-invocation of effects.
 let renderSeq = 0;
 
+// Sentinel for the #2013 load class: the import() itself failed (chunk
+// 404 on a stale tab, offline, CSP). Deliberately NOT matched by message
+// text — the boundary where it is thrown is the classification.
+class MermaidChunkLoadError extends Error {}
+
+type MermaidFailure =
+  | { kind: "chunk-load"; message: string }
+  | { kind: "syntax"; message: string };
+
 interface Props {
   code: string;
   /** resolved app theme — mermaid's own theme follows it */
@@ -32,7 +55,7 @@ interface Props {
 
 export function MermaidDiagram({ code, theme, isStreaming }: Props) {
   const [svg, setSvg] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<MermaidFailure | null>(null);
 
   useEffect(() => {
     if (isStreaming) return;
@@ -45,6 +68,12 @@ export function MermaidDiagram({ code, theme, isStreaming }: Props) {
 
     const id = `lsp-mermaid-${renderSeq++}`;
     import("mermaid")
+      .catch((err: unknown) => {
+        // #2013: tag ANY import() rejection as the load class BEFORE it
+        // merges with render failures downstream — a chunk that cannot be
+        // fetched says nothing about the diagram's syntax.
+        throw new MermaidChunkLoadError(err instanceof Error ? err.message : String(err));
+      })
       .then((mod) => {
         if (cancelled) return null;
         const mermaid = mod.default;
@@ -65,10 +94,15 @@ export function MermaidDiagram({ code, theme, isStreaming }: Props) {
         // mermaid also leaves a diagnostic element (#d<id>) in the body
         // on parse failure — remove it so it can't leak into the page.
         // This runs BEFORE the cancelled check: an unmount mid-failed-parse
-        // must still clean up the bombsite (r1).
+        // must still clean up the bombsite (r1). Harmless no-op for the
+        // load class (no render was attempted, so no bombsite exists).
         document.getElementById(`d${id}`)?.remove();
         if (cancelled) return;
-        setError(err instanceof Error ? err.message : String(err));
+        setError(
+          err instanceof MermaidChunkLoadError
+            ? { kind: "chunk-load", message: err.message }
+            : { kind: "syntax", message: err instanceof Error ? err.message : String(err) },
+        );
       });
 
     return () => {
@@ -93,6 +127,46 @@ export function MermaidDiagram({ code, theme, isStreaming }: Props) {
   }
 
   if (error !== null) {
+    // #2013: the load class never claims anything about the diagram's
+    // syntax — distinct testid, distinct copy, and a reload affordance
+    // (the only remedy: the tab must re-fetch the new asset manifest).
+    if (error.kind === "chunk-load") {
+      return (
+        <div
+          data-testid="mermaid-load-error"
+          className="not-prose my-4 rounded-md border border-amber-500/30 bg-amber-500/5 px-3 py-2"
+        >
+          <p className="text-xs font-medium text-amber-600 dark:text-amber-400">
+            The app updated in the background — reload the tab to load the new version
+          </p>
+          <p className="mt-1 text-xs text-muted-foreground">
+            The diagram below could not be drawn because the app's diagram module
+            failed to load. This is not a problem with the diagram itself — your
+            text is unchanged and should render after reloading.
+          </p>
+          <details className="mt-1">
+            <summary className="cursor-pointer text-xs text-muted-foreground">
+              load error
+            </summary>
+            <pre className="overflow-x-auto touch-manipulation mt-1 text-xs font-mono text-muted-foreground whitespace-pre-wrap">
+              {error.message}
+            </pre>
+          </details>
+          <Button
+            variant="outline"
+            size="sm"
+            className="mt-2"
+            onClick={() => window.location.reload()}
+          >
+            Reload tab
+          </Button>
+          <pre className="overflow-x-auto touch-manipulation mt-2 text-xs font-mono text-muted-foreground whitespace-pre-wrap">
+            {code}
+          </pre>
+        </div>
+      );
+    }
+
     return (
       <div
         data-testid="mermaid-error"
@@ -106,7 +180,7 @@ export function MermaidDiagram({ code, theme, isStreaming }: Props) {
             parse error
           </summary>
           <pre className="overflow-x-auto touch-manipulation mt-1 text-xs font-mono text-muted-foreground whitespace-pre-wrap">
-            {error}
+            {error.message}
           </pre>
         </details>
         <pre className="overflow-x-auto touch-manipulation mt-1 text-xs font-mono text-muted-foreground whitespace-pre-wrap">

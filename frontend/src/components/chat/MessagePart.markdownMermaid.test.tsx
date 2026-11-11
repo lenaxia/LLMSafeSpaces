@@ -187,6 +187,13 @@ describe("#1694 pins 3/4/5/6 — mermaid fences", () => {
     const err = await screen.findByTestId("mermaid-error");
     expect(err.textContent).toMatch(/diagram/i);
     expect(screen.queryByTestId("mermaid-diagram")).not.toBeInTheDocument();
+    // #2013 mirror pin: a GENUINE parse failure keeps the syntax claim —
+    // the module loaded (initialize ran) and mermaid itself rejected the
+    // source, so "invalid mermaid syntax" is the honest verdict. The
+    // reload-class box must NOT appear for this failure class.
+    expect(err.textContent).toMatch(/invalid mermaid syntax/i);
+    expect(screen.queryByTestId("mermaid-load-error")).not.toBeInTheDocument();
+    expect(mockInitialize).toHaveBeenCalled();
   });
 
   it("pin 5: streaming partial mermaid fence shows a placeholder and never parses", () => {
