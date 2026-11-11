@@ -196,6 +196,32 @@ describe("#1694 pins 3/4/5/6 — mermaid fences", () => {
     expect(mockInitialize).toHaveBeenCalled();
   });
 
+  it("pin 4b (#2013 r1): a diagram-type chunk 404 INSIDE render is a load failure, never a syntax verdict", async () => {
+    // mermaid 12's Diagram.fromText awaits per-diagram-type lazy imports
+    // UNGUARDED (`await loader38()` → import("./chunks/mermaid.core/
+    // <type>Diagram-*.mjs")). On a stale tab whose mermaid CORE is already
+    // in memory, rendering a not-yet-loaded diagram type post-deploy 404s
+    // the INNER chunk and the TypeError escapes render() — the import
+    // boundary never sees it. The terminal catch must still classify this
+    // as the reload class (TypeError + fetch-failure phrasing), or the
+    // incident's false syntax verdict survives on a second channel.
+    mockRender.mockRejectedValue(
+      new TypeError(
+        "Failed to fetch dynamically imported module: https://chat.safespaces.dev/assets/ganttDiagram-R7GPNTJY.mjs",
+      ),
+    );
+    render(
+      <MessagePart part={{ type: "text", text: "```mermaid\ngantt\ndateFormat YYYY-MM-DD\ntaskA: 1d\n```" }} isUser={false} />,
+    );
+    const box = await screen.findByTestId("mermaid-load-error");
+    expect(box.textContent).toMatch(/reload the tab/i);
+    expect(box.textContent).not.toMatch(/invalid mermaid syntax/i);
+    expect(screen.queryByTestId("mermaid-error")).not.toBeInTheDocument();
+    // the module DID load — the failure was mermaid's own inner lazy import
+    expect(mockInitialize).toHaveBeenCalled();
+    expect(mockRender).toHaveBeenCalled();
+  });
+
   it("pin 5: streaming partial mermaid fence shows a placeholder and never parses", () => {
     render(
       <MessagePart

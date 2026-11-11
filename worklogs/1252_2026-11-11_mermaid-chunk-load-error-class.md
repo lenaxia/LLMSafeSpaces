@@ -2,7 +2,7 @@
 
 **Date:** 2026-11-11
 **Session:** tsk-petite-manger-speeds (issue #2013, the 2026-11-10 v0.44.12 stale-tab incident)
-**Status:** Complete — pushed for AI review
+**Status:** Complete — review round 1 remediated (nested diagram-type chunk channel), pushed on the synchronize path
 
 ---
 
@@ -48,6 +48,15 @@ The diagram was VALID — the hashed chunk 404s because the stale tab holds the 
   - L3 — the reload affordance: button present, click drives a `window.location.reload` spy.
   - Mock posture note: vitest wraps a rejecting `vi.mock` factory rejection; the original TypeError rides as `cause`. The component classifies at the import boundary, so ANY rejection shape exercises the same path a real browser 404 takes — the pin is on the boundary, not on vitest's wrapper text.
 - **`MessagePart.markdownMermaid.test.tsx` pin 4 strengthened** (the mirror, in its natural home where the mermaid mock RESOLVES and `render` rejects): the syntax box still appears with the "invalid mermaid syntax" claim, `mermaid-load-error` absent, and `mockInitialize` reached — proving that failure was genuinely downstream of the import.
+- **NEW pin 4b (review r1)**: the mermaid-12 inner channel — `Diagram.fromText`'s unguarded `await loaderNN()` per-diagram-type imports (`mermaid.core.mjs:916-927`, validated in the dist) — a `render()` rejection of `TypeError("Failed to fetch dynamically imported module: …/ganttDiagram-….mjs")` renders the reload box, never the syntax claim, with initialize/render reached. Born-RED on the boundary-only implementation (the r1 gap was real), green with the fallback.
+
+### 2b. Review round 1 (CHANGES_REQUESTED → remediated)
+
+- **Finding 1 (blocking), validated then fixed**: mermaid 12.2.0's `Diagram.fromText` awaits per-diagram-type lazy loaders UNGUARDED — on a stale tab whose mermaid CORE is already in memory, a not-yet-loaded diagram type post-deploy 404s the INNER chunk and the TypeError escapes `render()` past the boundary sentinel → false syntax verdict on a second channel. Fixed with the TypeError-gated fetch-phrase fallback at the terminal catch (`isChunkFetchFailure`: Chrome/Safari/Firefox spellings; parse errors are plain Errors with jison text, never fetch phrases — the fallback cannot swallow them). Pinned by 4b, born-RED-first.
+- Minor (addressed): load-box subline now honest for the offline/CSP members of the class ("If reloading does not fix it, check your connection") while keeping the charter-mandated headline.
+- Style trivial (addressed): L1's no-op `waitFor` wrapper dropped, orphaned import removed.
+- Non-blocking, noted not-addressed: sentinel drops the original `cause`/stack (message preserved, diagnostic-only); unmount-race pin for the load class (nothing observable past the cancelled guard — no bombsite exists for a never-attempted render); non-`Error` import-rejection `String(err)` branch unreachable under vitest's wrapper (factory rejections always arrive wrapped in an Error).
+- Reviewer adjudicated the two red CI checks as diff-independent (GO-2026-6859 stdlib advisory; `TestReseedUnderActiveStreaming` TempDir teardown flake contradicted by the race job) — matching my posted analysis.
 
 ### 3. Mutation evidence
 
@@ -62,7 +71,7 @@ The diagram was VALID — the hashed chunk 404s because the stale tab holds the 
 
 ## Key Decisions
 
-- **Boundary classification over message string-matching**: the import() rejection point IS the classification — deterministic across browsers, no phrasing table to maintain, and a rendering-stack error can never masquerade as a load failure or vice versa.
+- **Boundary classification as PRIMARY, TypeError-gated phrasing as FALLBACK**: the import() rejection point classifies the dominant case structurally (browser-phrasing-immune); review r1 proved a second channel (mermaid's own inner per-diagram-type imports) escapes `render()` untagged, so the terminal catch adds the fetch-phrase fallback — TypeError-gated so genuine parse failures (plain Errors, jison text) can never match it.
 - **Sentinel class over a flag**: `instanceof` in the outer catch reads as one expression; the sentinel stays module-private (not exported — tests exercise it through the UI, not the class).
 - **The source stays visible in the load box**: the incident's second-order failure was trust — the user/agent couldn't tell valid content from garbage. Keeping the (valid) source under a box that explicitly disclaims a syntax verdict restores the missing context.
 - **No auto-reload**: a silent mid-session `location.reload()` would eat in-flight chat state; the affordance is explicit and user-driven (same posture as ErrorBoundary).

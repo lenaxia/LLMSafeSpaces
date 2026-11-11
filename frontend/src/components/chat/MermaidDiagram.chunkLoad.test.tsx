@@ -26,7 +26,7 @@
 // NEVER reached — the module never loads.
 
 import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
-import { screen, waitFor } from "@testing-library/react";
+import { screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { render } from "../../test/utils";
 import { MessagePart } from "./MessagePart";
@@ -71,8 +71,9 @@ describe("#2013 pins — lazy-chunk load failure is a reload-class error, never 
     expect(screen.queryByTestId("mermaid-error")).not.toBeInTheDocument();
     // the diagram container never appeared
     expect(screen.queryByTestId("mermaid-diagram")).not.toBeInTheDocument();
-    // the module never loaded: no initialize, no render attempt
-    await waitFor(() => expect(mockRender).not.toHaveBeenCalled());
+    // the module never loaded: no initialize, no render attempt (r1 style:
+    // plain absence assertions — nothing async left to wait for)
+    expect(mockRender).not.toHaveBeenCalled();
     expect(mockInitialize).not.toHaveBeenCalled();
   });
 

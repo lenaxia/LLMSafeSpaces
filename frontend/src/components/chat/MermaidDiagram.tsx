@@ -15,11 +15,22 @@ import { Button } from "../ui/Button";
 // module"). That is a LOAD failure about the APP, not a verdict on the
 // diagram — the incident's diagram was valid, and the agent burned two
 // rewrite rounds "fixing" correct mermaid because this component claimed
-// "invalid mermaid syntax". Failures are classified at the import
-// BOUNDARY (a sentinel rethrow), never by string-matching browser fetch
-// messages: anything the import() itself rejects with renders the
-// reload-class box; only failures from initialize/render keep the
-// syntax box.
+// "invalid mermaid syntax". Classification is TWO-LAYERED:
+//
+//   1. PRIMARY — the import BOUNDARY: `import("mermaid")` carries a
+//      sentinel-rethrow catch (MermaidChunkLoadError), so ANY import()
+//      rejection is tagged structurally, whatever the browser phrasing.
+//   2. FALLBACK — the terminal catch, TypeError-gated message shape:
+//      mermaid 12's Diagram.fromText awaits its per-diagram-type lazy
+//      imports UNGUARDED (`await loader38()` → import("./chunks/
+//      mermaid.core/<type>Diagram-*.mjs")), so on a stale tab whose
+//      mermaid CORE is already in memory, a not-yet-loaded diagram type
+//      404s the INNER chunk and the TypeError escapes render() untagged
+//      — the boundary never sees it (#2013 review r1). A TypeError
+//      carrying one of the three engines' fetch-failure phrasings is
+//      still a load failure; a mermaid parse error is a plain Error with
+//      jison position text and never carries a fetch phrase, so this
+//      fallback cannot swallow genuine syntax failures.
 //
 // Streaming: render-on-closed-fence. During streaming the fence content
 // is partial; parsing per token would spam mermaid parse errors (and
@@ -38,9 +49,23 @@ import { Button } from "../ui/Button";
 let renderSeq = 0;
 
 // Sentinel for the #2013 load class: the import() itself failed (chunk
-// 404 on a stale tab, offline, CSP). Deliberately NOT matched by message
-// text — the boundary where it is thrown is the classification.
+// 404 on a stale tab, offline, CSP). The PRIMARY classification layer —
+// where the failure occurred, not what its message says.
 class MermaidChunkLoadError extends Error {}
+
+// FALLBACK layer (#2013 review r1): mermaid's own inner per-diagram-type
+// lazy imports reject with these browser phrases INSIDE render(), past
+// the boundary sentinel. TypeError-gated so a plain-Error parse failure
+// (or anything else) can never match; the three spellings are Chrome's,
+// Safari's, and Firefox's dynamic-import fetch failures respectively.
+function isChunkFetchFailure(err: unknown): boolean {
+  return (
+    err instanceof TypeError &&
+    /failed to fetch dynamically imported module|importing a module script failed|error loading dynamically imported module/i.test(
+      err.message,
+    )
+  );
+}
 
 type MermaidFailure =
   | { kind: "chunk-load"; message: string }
@@ -98,10 +123,11 @@ export function MermaidDiagram({ code, theme, isStreaming }: Props) {
         // load class (no render was attempted, so no bombsite exists).
         document.getElementById(`d${id}`)?.remove();
         if (cancelled) return;
+        const message = err instanceof Error ? err.message : String(err);
         setError(
-          err instanceof MermaidChunkLoadError
-            ? { kind: "chunk-load", message: err.message }
-            : { kind: "syntax", message: err instanceof Error ? err.message : String(err) },
+          err instanceof MermaidChunkLoadError || isChunkFetchFailure(err)
+            ? { kind: "chunk-load", message }
+            : { kind: "syntax", message },
         );
       });
 
@@ -142,7 +168,8 @@ export function MermaidDiagram({ code, theme, isStreaming }: Props) {
           <p className="mt-1 text-xs text-muted-foreground">
             The diagram below could not be drawn because the app's diagram module
             failed to load. This is not a problem with the diagram itself — your
-            text is unchanged and should render after reloading.
+            text is unchanged. If reloading does not fix it, check your
+            connection and try again.
           </p>
           <details className="mt-1">
             <summary className="cursor-pointer text-xs text-muted-foreground">
