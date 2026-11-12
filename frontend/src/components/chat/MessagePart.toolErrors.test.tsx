@@ -230,6 +230,60 @@ describe("MessagePart failed-tool error rendering", () => {
     );
     expect(screen.queryByTestId("tool-error")).not.toBeInTheDocument();
   });
+
+  // Review r1 item 2: the file-edit branch (structurally distinct — the
+  // pane renders a diff, not ToolInput) still carries the error sibling.
+  it("renders the error sibling for a failed file-edit tool", () => {
+    render(
+      <MessagePart
+        part={{
+          type: "tool_use",
+          name: "edit",
+          toolState: "error",
+          toolError: "oldString not found in file",
+          input: { filePath: "/w/foo.go", oldString: "aaa", newString: "bbb" },
+        }}
+        isUser={false}
+      />,
+    );
+    const err = screen.getByTestId("tool-error");
+    expect(err).toBeVisible();
+    expect(screen.getByText(/oldString not found/)).toBeVisible();
+    expect(screen.getByText(/✗ edit/)).toBeInTheDocument();
+  });
+
+  // Review r1 item 3: error state with input but NO extractable message —
+  // the pane shows the input only; no empty error block anywhere.
+  it("renders no error block for an error-state tool with input but no payload", () => {
+    render(
+      <MessagePart
+        part={{ type: "tool_use", name: "bash", toolState: "error", input: { command: "ls" } }}
+        isUser={false}
+      />,
+    );
+    expect(screen.getByText(/✗ bash/)).toBeInTheDocument();
+    expect(screen.queryByTestId("tool-error")).not.toBeInTheDocument();
+  });
+
+  // Review r1: a FAILED dev-preview call keeps its action card AND shows
+  // the WHY — the early return previously dropped state.error.
+  it("renders the error alongside a failed dev-preview action card", () => {
+    render(
+      <MessagePart
+        part={{
+          type: "tool_use",
+          name: "dev_preview_url",
+          toolState: "error",
+          toolError: "dev preview disabled for this workspace",
+          input: { port: 5173 },
+          toolOutput: "LSP_DEV_PREVIEW_V1 port=5173 origin=safespaces.dev\nOpens the preview.",
+        }}
+        isUser={false}
+      />,
+    );
+    expect(screen.getByText(/dev preview disabled for this workspace/)).toBeVisible();
+    expect(screen.getByTestId("tool-error")).toBeVisible();
+  });
 });
 
 // The extraction ladder as a unit surface: state error > JSON error
@@ -268,6 +322,14 @@ describe("extractToolError", () => {
   it("ignores non-error JSON bodies (falls back to the payload text)", () => {
     const body = '{"ok":true,"data":[1,2]}';
     expect(extractToolError(undefined, body)).toEqual({ message: body, raw: body });
+  });
+
+  // Review r1 item 4: non-object JSON top levels fall through to the
+  // payload text — never fabricated, never crashed.
+  it("falls through non-object JSON top levels (number/boolean/null) to plain text", () => {
+    for (const body of ["42", "true", "null", "[1,2,3]"]) {
+      expect(extractToolError(undefined, body)).toEqual({ message: body, raw: body });
+    }
   });
 
   it("unwraps a JSON-string-literal output payload as the message", () => {

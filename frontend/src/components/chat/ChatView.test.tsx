@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { screen, fireEvent, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import type React from "react";
 import { render } from "../../test/utils";
 import { ChatView } from "./ChatView";
 import { PermissionPrompt } from "./PermissionPrompt";
@@ -345,21 +346,25 @@ describe("ChatView streaming tool errors (tsk-copper-archer-rushes)", () => {
     onSend: vi.fn(),
     onAbort: vi.fn(),
   };
+  // Typed against ChatView's real prop (review r1: no `as never` casts —
+  // the fixture must typecheck).
+  type StreamParts = React.ComponentProps<typeof ChatView>["streamParts"];
 
   it("renders a streamed tool error's message in the bubble", () => {
+    const streamParts: StreamParts = [
+      {
+        type: "tool",
+        text: "llmsafespaces_board_epic_activate",
+        toolState: "error",
+        toolError: "invalid reference: no such role reviewerx",
+        messageID: "msg-err",
+      },
+    ];
     render(
       <ChatView
         {...baseProps}
         streaming={true}
-        streamParts={[
-          {
-            type: "tool",
-            text: "llmsafespaces_board_epic_activate",
-            toolState: "error",
-            toolError: "invalid reference: no such role reviewerx",
-            messageID: "msg-err",
-          },
-        ] as never}
+        streamParts={streamParts}
       />,
     );
     expect(screen.getByTestId("tool-error")).toBeVisible();
@@ -367,19 +372,20 @@ describe("ChatView streaming tool errors (tsk-copper-archer-rushes)", () => {
   });
 
   it("renders a streamed tool error from its output payload (no state error)", () => {
+    const streamParts: StreamParts = [
+      {
+        type: "tool",
+        text: "llmsafespaces_board_import_plan",
+        toolState: "error",
+        toolOutput: '{"error":"HTTP 409 epic_state: epic is not active"}',
+        messageID: "msg-err2",
+      },
+    ];
     render(
       <ChatView
         {...baseProps}
         streaming={true}
-        streamParts={[
-          {
-            type: "tool",
-            text: "llmsafespaces_board_import_plan",
-            toolState: "error",
-            toolOutput: '{"error":"HTTP 409 epic_state: epic is not active"}',
-            messageID: "msg-err2",
-          },
-        ] as never}
+        streamParts={streamParts}
       />,
     );
     expect(screen.getByTestId("tool-error")).toBeVisible();

@@ -312,6 +312,8 @@ export interface ToolErrorDisplay {
   raw: string | undefined;
 }
 
+const EMPTY_TOOL_ERROR: ToolErrorDisplay = { message: "", raw: undefined };
+
 /**
  * extractToolError picks the most specific message available, in order:
  *   1. the runtime's ToolState.error (plumbed as part.toolError),
@@ -356,9 +358,10 @@ export function extractToolError(toolError: string | undefined, toolOutput: stri
  * (≤ TOOL_ERROR_INLINE_MAX_LINES) inline in full; long payloads show a
  * head inline with the full text behind a "Show full error" toggle, and
  * the untouched raw payload (when distinct) behind a "Raw output" toggle.
+ * Takes the precomputed display (one extractToolError call per render).
  */
-function ToolErrorBlock({ toolError, toolOutput }: { toolError?: string; toolOutput?: string }) {
-  const { message, raw } = extractToolError(toolError, toolOutput);
+function ToolErrorBlock({ display }: { display: ToolErrorDisplay }) {
+  const { message, raw } = display;
   if (!message) return null;
   const lines = message.split("\n");
   const inline = lines.length <= TOOL_ERROR_INLINE_MAX_LINES;
@@ -612,32 +615,44 @@ export function MessagePart({ part, isUser, isStreaming }: Props) {
   if (part.type === "tool" && part.text) {
     const toolName = part.text;
     if (toolName === "dev_preview_url" && part.toolOutput) {
-      return <DevPreviewToolCard name={toolName} state={part.toolState} output={part.toolOutput} />;
+      // A FAILED dev-preview call keeps its action card but must also
+      // show the WHY (review r1: the early return dropped state.error).
+      const display = part.toolState === "error" ? extractToolError(part.toolError, part.toolOutput) : EMPTY_TOOL_ERROR;
+      return (
+        <>
+          <DevPreviewToolCard name={toolName} state={part.toolState} output={part.toolOutput} />
+          {display.message ? <ToolErrorBlock display={display} /> : null}
+        </>
+      );
     }
   }
 
   if (part.type === "tool_use" || part.type === "tool_call") {
     const toolName = part.name ?? part.text ?? "tool";
+    // Owner report 2026-11-12: a failed tool's WHY renders as a SIBLING of
+    // the (possibly collapsed) tool pane — visible without expanding
+    // anything. No payload ⇒ no block (the honest bare ✗ card stands).
+    // Computed BEFORE the dev-preview early return so that path keeps it
+    // too (review r1: the early return dropped state.error).
+    const errorDisplay = part.toolState === "error" ? extractToolError(part.toolError, part.toolOutput) : EMPTY_TOOL_ERROR;
+    const errorBlock = errorDisplay.message ? <ToolErrorBlock display={errorDisplay} /> : null;
     // dev_preview_url renders as an ALWAYS-VISIBLE action card, not inside
     // the collapsed ToolDetails pane: the button is the point of the tool,
     // and hiding it behind an expansion defeats it. Non-sentinel output
     // (older deployments) still falls through to the standard collapsed
     // rendering below.
     if (toolName === "dev_preview_url" && part.toolOutput && /^LSP_DEV_PREVIEW_V1\s/.test(part.toolOutput)) {
-      return <DevPreviewToolCard name={toolName} state={part.toolState} output={part.toolOutput} />;
+      return (
+        <>
+          <DevPreviewToolCard name={toolName} state={part.toolState} output={part.toolOutput} />
+          {errorBlock}
+        </>
+      );
     }
     const hasDetails = part.input || part.toolOutput;
     const statusIcon = part.toolState === "completed" ? "✓" : part.toolState === "error" ? "✗" : part.toolState === "running" ? "⟳" : "…";
     const borderColor = part.toolState === "error" ? "border-red-500/20 bg-red-500/5" : "border-blue-500/20 bg-blue-500/5";
     const textColor = part.toolState === "error" ? "text-red-600 dark:text-red-400" : "text-blue-600 dark:text-blue-400";
-
-    // Owner report 2026-11-12: a failed tool's WHY renders as a SIBLING of
-    // the (possibly collapsed) tool pane — visible without expanding
-    // anything. No payload ⇒ no block (the honest bare ✗ card stands).
-    const errorDisplay = part.toolState === "error" ? extractToolError(part.toolError, part.toolOutput) : { message: "", raw: undefined };
-    const errorBlock = errorDisplay.message ? (
-      <ToolErrorBlock toolError={part.toolError} toolOutput={part.toolOutput} />
-    ) : null;
 
     const input = part.input as Record<string, unknown> | undefined;
     const isFileEdit = input && typeof input === "object" && (
