@@ -77,6 +77,12 @@ export interface BoardTask {
    * session phrase — the value is the raw harness id (design-0066 cold
    * window), flagged per the #1817/#1821 SSE precedent. */
   assignee_session_deprecated?: boolean;
+  /** RC-C S2 (badge honesty): the assignee is MID-TURN right now
+   * (derived busy — streaming or an in-flight tool call) on a LIVE
+   * lease. Absent/false = claimed-but-quiet: idle, unknown, or past
+   * the lease without renewal (the busy TTL — a lapsed claim never
+   * spins). Read-edge derived; never stored. */
+  assignee_busy?: boolean;
   /** #1959 implementer identity — the session that moved the row to
    * in_review (the ORIGINAL worker; the assignee during review is the
    * reviewer). Exposed on reads per the 2026-10-29 owner ruling: a

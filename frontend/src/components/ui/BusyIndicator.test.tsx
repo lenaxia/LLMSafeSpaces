@@ -32,4 +32,17 @@ describe("BusyIndicator", () => {
     expect(el.getAttribute("class")).toContain("animate-spin");
     expect(el.getAttribute("class")).toContain("text-blue-500");
   });
+
+  it("renders the distinct quiet marker when busy=false (RC-C S2)", () => {
+    render(<BusyIndicator busy={false} />);
+    const el = screen.getByLabelText("Agent claimed — quiet");
+    expect(el.getAttribute("data-busy")).toBe("false");
+    expect(el.getAttribute("class")).not.toContain("animate-spin");
+    expect(el.getAttribute("class")).toContain("text-muted-foreground");
+  });
+
+  it("defaults to busy (back-compat: the session-activity surfaces pass no prop)", () => {
+    render(<BusyIndicator />);
+    expect(screen.getByLabelText("Agent working")).toBeInTheDocument();
+  });
 });

@@ -115,8 +115,14 @@ type BoardTask struct {
 	// AssigneeSessionDeprecated set. ImplementerSession is the #1959
 	// identity (the session that moved the row to in_review; during
 	// review the assignee is the reviewer) — same resolvable-ref shape.
-	AssigneeSession              string `json:"assignee_session,omitempty"`
-	AssigneeSessionDeprecated    bool   `json:"assignee_session_deprecated,omitempty"`
+	AssigneeSession           string `json:"assignee_session,omitempty"`
+	AssigneeSessionDeprecated bool   `json:"assignee_session_deprecated,omitempty"`
+	// AssigneeBusy (RC-C S2 badge honesty): the assignee session is
+	// MID-TURN right now (derived busy — streaming or an in-flight
+	// tool call) on a LIVE lease; false = claimed-but-quiet (idle,
+	// unknown, or past the lease without renewal — the busy TTL).
+	// Read-edge derived per poll, never stored.
+	AssigneeBusy                 bool   `json:"assignee_busy,omitempty"`
 	ImplementerSession           string `json:"implementer_session,omitempty"`
 	ImplementerSessionDeprecated bool   `json:"implementer_session_deprecated,omitempty"`
 	Attempts                     int    `json:"attempts"`

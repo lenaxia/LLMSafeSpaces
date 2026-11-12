@@ -251,8 +251,8 @@ func deliverBoardTextV1(ctx context.Context, sender boardV1Sender, what, userID,
 	}
 }
 
-// haltDirectiveText / resumeDirectiveText render the worker-facing
-// directive messages (the charter envelope's voice).
+// haltDirectiveText / resumeDirectiveText / deposedDirectiveText render
+// the worker-facing directive messages (the charter envelope's voice).
 func haltDirectiveText(shortID string) string {
 	return fmt.Sprintf("BOARD PAUSE DIRECTIVE: your task %s has been PAUSED by the owner. "+
 		"Finish your current thought, then STOP and wait. Do not move the task's stage and do not "+
@@ -264,6 +264,20 @@ func resumeDirectiveText(shortID string) string {
 	return fmt.Sprintf("BOARD RESUME DIRECTIVE: your task %s was resumed — continue working. "+
 		"If your claim lapsed while paused, your next write returns 409 claim_token: re-read the "+
 		"task with board_read; the engine may already have spawned a fresh worker.", shortID)
+}
+
+// deposedDirectiveText is the S5 DEPOSED directive: the stale session's
+// notice that its LAPSED claim was deposed and the salvage pointer
+// (branch/PR/state) was recorded for the next claim's charter. The
+// deposed worker's job is to STOP — its next token-carrying write 409s
+// (the row was requeued with the claim cleared); the pointer contents
+// live on the row for the inheritor, not here.
+func deposedDirectiveText(shortID string) string {
+	return fmt.Sprintf("BOARD DEPOSED DIRECTIVE: your lapsed claim on task %s was deposed by the "+
+		"orchestrator — a salvage pointer (branch/PR/last known state) was recorded on the row and "+
+		"the next claim's charter embeds it. STOP working on this task: the row was requeued and your "+
+		"claim token is revoked (your next write returns 409 claim_token). Do not re-claim it yourself; "+
+		"do not touch the branch further unless a fresh claim directs you to.", shortID)
 }
 
 // boardScopeResolver resolves (owner, target workspace) for a task —
@@ -325,8 +339,11 @@ func newBoardMessenger(scope boardScopeResolver, sender boardV1Sender) board.Wor
 			return fmt.Errorf("board: directive scope: %w", err)
 		}
 		text := resumeDirectiveText(taskShortID)
-		if directive == board.DirectiveHalt {
+		switch directive {
+		case board.DirectiveHalt:
 			text = haltDirectiveText(taskShortID)
+		case board.DirectiveDeposed:
+			text = deposedDirectiveText(taskShortID)
 		}
 		return deliverBoardTextV1(ctx, sender, directive+" directive", userID, workspaceID, sessionID, text, 0)
 	}

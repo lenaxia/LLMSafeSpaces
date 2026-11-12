@@ -269,3 +269,41 @@ func TestCollectEventbusHealth_ProbeFailureLogsBounded(t *testing.T) {
 	entries := logs.FilterMessageSnippet("event bus: health probe failed").All()
 	require.Len(t, entries, 2, "streak 1 and streak %d fire, the rest stay quiet", eventbusHealthErrEvery)
 }
+
+// TestCollectEventbusHealth_VanishedGroupGaugeGC — review r6's
+// frozen-alert finding: a group DESTROYED between snapshots (graceful
+// SSE teardown destroys it BY DESIGN; operators XGROUP DESTROY crashed
+// replicas — exactly the shape S3 exists to flag) must lose its gauge
+// series, not freeze at the last value forever (group_stalled=1 that
+// no restart short of the process can clear).
+func TestCollectEventbusHealth_VanishedGroupGaugeGC(t *testing.T) {
+	ws := "ws-collect-gc"
+	bus, client, _ := newEventbusMetricsBus(t, ws)
+	ctx := context.Background()
+
+	require.NoError(t, client.XGroupCreateMkStream(ctx, bus.Key(), "doomed", "$").Err())
+	_, err := bus.Publish(ctx, eventbus.Event{Topic: "session.s1.idle"})
+	require.NoError(t, err)
+
+	logger := zap.NewNop()
+	state := newEventbusHealthState()
+	errStreak := 0
+
+	collectEventbusHealth(ctx, bus, ws, logger, state, &errStreak)
+	require.Equal(t, 1.0, testutil.ToFloat64(eventbusMetrics.groupStalled.WithLabelValues(ws, "doomed")),
+		"the stalled group is visible while it exists")
+
+	// The group is destroyed (the graceful-teardown / crashed-replica
+	// shape) — the NEXT snapshot no longer lists it.
+	require.NoError(t, client.XGroupDestroy(ctx, bus.Key(), "doomed").Err())
+	collectEventbusHealth(ctx, bus, ws, logger, state, &errStreak)
+
+	require.Equal(t, 0.0, testutil.ToFloat64(eventbusMetrics.groupStalled.WithLabelValues(ws, "doomed")),
+		"the vanished group's stalled gauge is GONE — a destroyed group is not eternally stalled (DeleteLabelValues zeroes a fresh child)")
+	require.Equal(t, 0.0, testutil.ToFloat64(eventbusMetrics.groupLag.WithLabelValues(ws, "doomed")),
+		"the vanished group's lag series is gone too")
+	state.mu.Lock()
+	clean := len(state.stalled) == 0 && len(state.seen) == 0
+	state.mu.Unlock()
+	require.True(t, clean, "the health state forgets the vanished group (no eternal stall bookkeeping)")
+}

@@ -739,6 +739,16 @@ func (s *Service) Heartbeat(ctx context.Context, actor Actor, taskID, shortIDOrI
 	if !claimStage || actor.ClaimToken == "" || actor.ClaimToken != t.ClaimToken {
 		return HeartbeatResult{}, &GuardError{Code: GuardClaimToken, Detail: "heartbeat requires a live claim (stage + token)"}
 	}
+	// RC-B S1 back-fill: a heartbeat is SUBSEQUENT EVIDENCE OF THE
+	// CLAIM — the caller holds the live token only the chartered
+	// session possesses. When the row's assignee stamp is missing
+	// (lost write, exhausted retries) and the caller carries a session
+	// identity, the stamp is re-filled HERE: the observation plane
+	// (ladder refs, nudges, badge) keys on assignee_session, so this
+	// one write turns a lost stamp from permanent blindness into a
+	// bounded gap — eventually-true, never write-once. Best-effort by
+	// design: the back-fill's failure never fails the heartbeat.
+	s.backfillAssigneeStamp(ctx, t, actor)
 	serverNow := time.Now().UTC()
 	switch {
 	case observedProgressAt.After(serverNow.Add(heartbeatFutureTolerance)):
@@ -772,6 +782,15 @@ func (s *Service) Heartbeat(ctx context.Context, actor Actor, taskID, shortIDOrI
 		responded = true
 		progress = observedProgressAt
 		s.writeAudit(ctx, t.ProjectID, "heartbeat", "task", t.ID, actor)
+		// S4 (design 0072): the response-channel renewal is the
+		// observation plane's STRONGEST alive signal — the worker
+		// answered the sentinel with the tool the prose demanded.
+		// Emitted after the guarded write committed (the sink projects
+		// decisions, never attempts); fail-open like every projection.
+		s.emitLease(ctx, LeaseEvent{
+			Kind: LeaseEventRenewed, TaskID: t.ID, TaskShortID: t.ShortID, ProjectID: t.ProjectID,
+			Assignee: pick(t.AssigneeSession, actor.SessionID), Source: RenewSourceHeartbeat,
+		})
 	case errors.Is(err, pgx.ErrNoRows):
 		// No live nudge (or the claim raced away): record the arrival
 		// — the advisory shape. The lease is NOT extended (the

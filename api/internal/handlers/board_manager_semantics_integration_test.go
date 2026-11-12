@@ -123,6 +123,7 @@ func TestIntegrationBoardManagerSemantics(t *testing.T) {
 	b.POST("/epics/:id/activate", h.BoardEpicActivate)
 	b.POST("/tasks/:id/pause", h.BoardPauseTask)
 	b.POST("/tasks/:id/rearm", h.BoardRearmTask)
+	b.POST("/tasks/:id/depose", h.BoardDeposeTask)
 
 	call := func(method, path, body string) *httptest.ResponseRecorder {
 		t.Helper()

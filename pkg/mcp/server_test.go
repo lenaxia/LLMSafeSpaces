@@ -16,6 +16,7 @@ import (
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
 
+	"github.com/lenaxia/llmsafespaces/pkg/board"
 	"github.com/lenaxia/llmsafespaces/pkg/secrets"
 )
 
@@ -374,6 +375,11 @@ func (m *MockAPIClient) BoardDeleteStoriesBulk(ctx context.Context, taskIDs []st
 
 func (m *MockAPIClient) BoardRearmStory(ctx context.Context, taskID, requestID string) (json.RawMessage, error) {
 	args := m.Called(ctx, taskID, requestID)
+	return json.RawMessage(args.String(0)), args.Error(1)
+}
+
+func (m *MockAPIClient) BoardDeposeStory(ctx context.Context, taskID string, ptr board.SalvagePointer, requestID string) (json.RawMessage, error) {
+	args := m.Called(ctx, taskID, ptr, requestID)
 	return json.RawMessage(args.String(0)), args.Error(1)
 }
 

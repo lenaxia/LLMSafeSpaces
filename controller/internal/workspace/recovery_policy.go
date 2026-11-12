@@ -171,6 +171,13 @@ func (r *WorkspaceReconciler) enterRecovery(ctx context.Context, ws *v1.Workspac
 	ws.Status.Phase = v1.WorkspacePhaseCreating
 	ws.Status.PodIP = ""
 	ws.Status.Endpoint = ""
+	// RC-A r2: the failed pod is dead or dying — its skew verdict goes
+	// with it. enterRecovery is the single funnel for every failure
+	// class's Active exit (crashloop, infra, image pull, OOM): clearing
+	// here means the recovery-rebuilt pod's first comparable scrape is
+	// the only thing that can re-arm the gauge, so a workspace cycling
+	// recovery never pages on a previous pod's verdict.
+	r.clearAgentdSkewGauge(ws)
 
 	logger.Info("Recovery initiated",
 		"class", class, "failures", ws.Status.ConsecutiveFailures,

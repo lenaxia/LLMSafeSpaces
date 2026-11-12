@@ -49,6 +49,7 @@ var boardStoryToolAliases = map[string]string{
 	"board_rearm_task":   "board_rearm_story",
 	"board_pause_task":   "board_pause_story",
 	"board_resume_task":  "board_resume_story",
+	"board_depose_task":  "board_depose_story",
 }
 
 // boardStoryAliasNotice renders the deprecated-tool-name notice.

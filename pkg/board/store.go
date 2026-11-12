@@ -68,7 +68,8 @@ func (q txQ) QueryRow(ctx context.Context, sql string, args ...any) pgx.Row {
 }
 
 const taskColumns = `t.id, t.project_id, t.epic_id, t.short_id, t.title, t.description,
-	t.stage, t.pending_origin, t.pending_input, t.nudge_id, t.nudged_at, t.project_name, t.epic_name, t.tags,
+	t.stage, t.pending_origin, t.pending_input, t.nudge_id, t.nudged_at, t.salvage,
+	t.project_name, t.epic_name, t.tags,
 	t.acceptance_criteria, t.is_blocked, t.paused, t.assignee_session, t.implementer_session, t.claim_token::text,
 	t.claim_persona,
 	t.lease_expires_at, t.last_progress_at, t.attempts, t.claim_incremented_attempts,
@@ -78,9 +79,11 @@ const taskColumns = `t.id, t.project_id, t.epic_id, t.short_id, t.title, t.descr
 func scanTask(row pgx.Row) (*Task, error) {
 	var t Task
 	var criteria []byte
+	var salvage []byte
 	var token, assignee, implementer, persona, nudgeID *string
 	err := row.Scan(&t.ID, &t.ProjectID, &t.EpicID, &t.ShortID, &t.Title, &t.Description,
-		&t.Stage, &t.PendingOrigin, &t.PendingInput, &nudgeID, &t.NudgedAt, &t.ProjectName, &t.EpicName, &t.Tags,
+		&t.Stage, &t.PendingOrigin, &t.PendingInput, &nudgeID, &t.NudgedAt, &salvage,
+		&t.ProjectName, &t.EpicName, &t.Tags,
 		&criteria, &t.IsBlocked, &t.Paused, &assignee, &implementer, &token,
 		&persona,
 		&t.LeaseExpiresAt, &t.LastProgressAt, &t.Attempts, &t.ClaimIncremented,
@@ -91,6 +94,13 @@ func scanTask(row pgx.Row) (*Task, error) {
 	}
 	if nudgeID != nil {
 		t.NudgeID = *nudgeID
+	}
+	if len(salvage) > 0 {
+		var p SalvagePointer
+		if err := json.Unmarshal(salvage, &p); err != nil {
+			return nil, fmt.Errorf("board: salvage decode: %w", err)
+		}
+		t.Salvage = &p
 	}
 	if token != nil {
 		t.ClaimToken = *token

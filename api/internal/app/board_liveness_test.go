@@ -138,7 +138,7 @@ func TestLeaseNudger_DeliversSentinelAndMarksBeforeDelivery(t *testing.T) {
 	hub := newBoardLivenessHub(nil)
 	sender := &recordingV1Sender{}
 	scope := func(context.Context, string) (string, string, error) { return "user-1", "ws-1", nil }
-	nudger := newBoardNudger(scope, sender, hub)
+	nudger := newBoardNudger(scope, sender, hub, nil)
 
 	p := board.NudgePayload{NudgeID: "n-1", TaskID: "task-9", TaskShortID: "tsk-x"}
 	err := nudger(context.Background(), "ses_worker", p)
@@ -163,7 +163,7 @@ func TestLeaseNudger_ScopeErrorIsTheSeamError(t *testing.T) {
 	hub := newBoardLivenessHub(nil)
 	sender := &recordingV1Sender{}
 	scope := func(context.Context, string) (string, string, error) { return "", "", context.DeadlineExceeded }
-	nudger := newBoardNudger(scope, sender, hub)
+	nudger := newBoardNudger(scope, sender, hub, nil)
 	err := nudger(context.Background(), "ses_worker", board.NudgePayload{NudgeID: "n-2", TaskID: "t"})
 	require.Error(t, err, "a nudge that could not be attempted reports it (the engine's wall-clock fall-back keys on this)")
 	assert.Zero(t, sender.count())
@@ -436,7 +436,7 @@ func TestIntegrationLeaseLiveness_ProductionWiring_BusyWorkerNeverWedges(t *test
 	// The PRODUCTION nudger composition (scope resolver + V1 sender +
 	// the hub's send-mark), wrapped only to count: the ordinal question
 	// the wedge verdict answers needs the mark the real sender records.
-	prodNudger := newBoardNudger(boardScopeFor(pool), &recordingV1Sender{}, hub)
+	prodNudger := newBoardNudger(boardScopeFor(pool), &recordingV1Sender{}, hub, nil)
 	var nudges atomicInt
 	recon := board.NewReconciler(pool, cfg,
 		board.WithLivenessSource(hub),

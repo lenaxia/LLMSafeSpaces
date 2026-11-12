@@ -321,6 +321,8 @@ type Config struct {
 	//   LLMSAFESPACES_BOARD_MAXNODESPEREPIC     (default 64 — #1747 DAG blast-radius bound)
 	//   LLMSAFESPACES_BOARD_WORKERSESSIONCAP    (default 50 — #1966 worker-session hard cap per workspace)
 	//   LLMSAFESPACES_BOARD_WORKERSESSIONGRACESECONDS (default 3600 — #1966 retention grace floor)
+	//   LLMSAFESPACES_BOARD_LEASEEVENTBUS_ADDR  (default unset — design 0072 S4: the nudge ladder's event publisher; unset keeps the v1 point-to-point leg verbatim. Arm WITH the controller's --workspace-eventbus-addr, same Redis)
+	//   LLMSAFESPACES_BOARD_LEASEEVENTBUS_PASSWORD (the secretKeyRef spelling; a URL addr's own credentials win)
 	Board struct {
 		Enabled                bool `mapstructure:"enabled"`
 		AttemptsCap            int  `mapstructure:"attemptsCap"`
@@ -340,6 +342,39 @@ type Config struct {
 		// the retainer.
 		WorkerSessionCap       int `mapstructure:"workerSessionCap"`
 		WorkerSessionGraceSecs int `mapstructure:"workerSessionGraceSeconds"`
+		// LeaseEventbus arms the API-side nudge-ladder publisher (design
+		// 0072 S4): the ladder's decisions (nudge/renewal/wedge/reclaim)
+		// publish onto the per-workspace event stream, where agentd's
+		// lease consumer group delivers. Addr is host:port or a
+		// credentialess redis:// URL; the password is the
+		// secretKeyRef spelling (a URL's own credentials win).
+		// ONE POSTURE WITH THE AGENTD EDGE: arm this together with the
+		// controller's --workspace-eventbus-addr against the SAME
+		// Redis — arm both or neither (a published nudge whose
+		// workspace runs an unarmed agentd has no consumer). Empty addr
+		// (the default) keeps the v1 point-to-point leg verbatim.
+		// Env: LLMSAFESPACES_BOARD_LEASEEVENTBUS_ADDR / _PASSWORD.
+		LeaseEventbus struct {
+			Addr     string `mapstructure:"addr"`
+			Password string `mapstructure:"password"`
+		} `mapstructure:"leaseEventbus"`
+		// Eventbus arms the API-side board bus legs (design 0072 S6):
+		// the committed-board-events publisher (board.{project}.event +
+		// task.{id}.stage_changed), the stamp publisher
+		// (task.{id}.stamped), and the SSE consumer join that serves
+		// board.event frames from the stream. When unset it FALLS BACK
+		// to LeaseEventbus's values — one Redis, one arming posture,
+		// the S4 knob keeps working unchanged. Same addr spelling and
+		// same ONE POSTURE rule as LeaseEventbus (arm with the
+		// controller's --workspace-eventbus-addr; arm both or neither).
+		// Empty effective addr (the default) keeps every v1 leg
+		// verbatim: the board SSE publisher stays point-to-point and
+		// no consumer joins the streams.
+		// Env: LLMSAFESPACES_BOARD_EVENTBUS_ADDR / _PASSWORD.
+		Eventbus struct {
+			Addr     string `mapstructure:"addr"`
+			Password string `mapstructure:"password"`
+		} `mapstructure:"eventbus"`
 	} `mapstructure:"board"`
 
 	// ImageFactory holds the image-factory config (design/0046).
@@ -936,6 +971,33 @@ func applyBoardEnvOverrides(config *Config) {
 	}
 	if n, ok := envInt("LLMSAFESPACES_BOARD_WORKERSESSIONGRACESECONDS"); ok {
 		config.Board.WorkerSessionGraceSecs = n
+	}
+	// Design 0072 S4: the API-side nudge-ladder event publisher. String
+	// knobs (an addr is a URL-or-host:port spelling, not an int); the
+	// empty default keeps the v1 point-to-point leg verbatim.
+	if v := strings.TrimSpace(os.Getenv("LLMSAFESPACES_BOARD_LEASEEVENTBUS_ADDR")); v != "" {
+		config.Board.LeaseEventbus.Addr = v
+	}
+	if v := strings.TrimSpace(os.Getenv("LLMSAFESPACES_BOARD_LEASEEVENTBUS_PASSWORD")); v != "" {
+		config.Board.LeaseEventbus.Password = v
+	}
+	// Design 0072 S6: the board bus legs (stage-move/stamp publishers
+	// + the SSE consumer join). Falls back to the S4 knob's values —
+	// one Redis, one posture.
+	if v := strings.TrimSpace(os.Getenv("LLMSAFESPACES_BOARD_EVENTBUS_ADDR")); v != "" {
+		config.Board.Eventbus.Addr = v
+	}
+	if v := strings.TrimSpace(os.Getenv("LLMSAFESPACES_BOARD_EVENTBUS_PASSWORD")); v != "" {
+		config.Board.Eventbus.Password = v
+	}
+	// Per-field fallback: the S4 leaseEventbus values fill any gap —
+	// one Redis, one arming posture (the S4 knob keeps working
+	// unchanged; the canonical spelling wins field-by-field).
+	if strings.TrimSpace(config.Board.Eventbus.Addr) == "" {
+		config.Board.Eventbus.Addr = config.Board.LeaseEventbus.Addr
+	}
+	if strings.TrimSpace(config.Board.Eventbus.Password) == "" {
+		config.Board.Eventbus.Password = config.Board.LeaseEventbus.Password
 	}
 }
 
