@@ -234,6 +234,11 @@ export interface MessagePart {
   hash?: string;
   toolState?: string;
   toolOutput?: string;
+  // Error message from the runtime's ToolState.error (the WHY of a failed
+  // tool call — present on both the SSE and history wires). Threading it
+  // here lets the transcript render the failure reason next to the ✗
+  // instead of a bare marker (owner report 2026-11-12).
+  toolError?: string;
   // ISO timestamp when the tool call started (design 0050 D5): drives the
   // elapsed badge on running tools. Absent on older API payloads.
   toolStartedAt?: string;

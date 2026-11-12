@@ -2,7 +2,7 @@ import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react"
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import rehypeSanitize from "rehype-sanitize";
-import { Brain, Check, Copy, Wrench, Server, ExternalLink } from "lucide-react";
+import { Brain, Check, Copy, Wrench, Server, ExternalLink, AlertCircle } from "lucide-react";
 import { cn } from "../../lib/utils";
 import { useUserSetting } from "../../hooks/useUserSettings";
 import { useNow } from "../../hooks/useNow";
@@ -295,6 +295,107 @@ function ToolDetails({ borderColor, textColor, statusIcon, toolName, filePath, b
   );
 }
 
+// Owner report 2026-11-12: a failed tool call rendered as a bare ✗ +
+// invocation parameters — the WHY never showed. The runtime sends
+// ToolState.error on both wires (SSE + history); the block below always
+// renders the most specific message available, OUTSIDE any collapsed
+// pane (the 1eee7f28 precedent: content behind the collapsed LazyDetails
+// effectively does not exist).
+const TOOL_ERROR_INLINE_MAX_LINES = 10;
+// How many leading lines of a long error show inline above the toggle.
+const TOOL_ERROR_HEAD_LINES = 3;
+
+export interface ToolErrorDisplay {
+  /** The most specific human-readable message available. */
+  message: string;
+  /** The full raw payload when it differs from the message, else undefined. */
+  raw: string | undefined;
+}
+
+/**
+ * extractToolError picks the most specific message available, in order:
+ *   1. the runtime's ToolState.error (plumbed as part.toolError),
+ *   2. a JSON body's `error` field — a string, an object's `message`,
+ *      or the stringified object,
+ *   3. the payload's own plain text.
+ * `raw` carries the untouched output payload whenever it holds anything
+ * beyond the extracted message (for the expand control).
+ */
+export function extractToolError(toolError: string | undefined, toolOutput: string | undefined): ToolErrorDisplay {
+  const stateError = toolError?.trim();
+  const raw = toolOutput && toolOutput.trim() ? toolOutput : undefined;
+  if (stateError) {
+    return { message: stateError, raw };
+  }
+  if (!raw) {
+    return { message: "", raw: undefined };
+  }
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    if (parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)) {
+      const err = (parsed as Record<string, unknown>).error;
+      if (typeof err === "string" && err.trim()) {
+        return { message: err.trim(), raw };
+      }
+      if (err !== null && typeof err === "object") {
+        const msg = (err as Record<string, unknown>).message;
+        if (typeof msg === "string" && msg.trim()) {
+          return { message: msg.trim(), raw };
+        }
+        return { message: JSON.stringify(err, null, 2), raw };
+      }
+    }
+  } catch {
+    // not JSON — the plain text payload is its own message
+  }
+  return { message: raw, raw };
+}
+
+/**
+ * ToolErrorBlock renders a failed tool's error visibly: short messages
+ * (≤ TOOL_ERROR_INLINE_MAX_LINES) inline in full; long payloads show a
+ * head inline with the full text behind a "Show full error" toggle, and
+ * the untouched raw payload (when distinct) behind a "Raw output" toggle.
+ */
+function ToolErrorBlock({ toolError, toolOutput }: { toolError?: string; toolOutput?: string }) {
+  const { message, raw } = extractToolError(toolError, toolOutput);
+  if (!message) return null;
+  const lines = message.split("\n");
+  const inline = lines.length <= TOOL_ERROR_INLINE_MAX_LINES;
+  const rawDiffers = raw !== undefined && raw !== message;
+  return (
+    <div data-testid="tool-error" className="my-1 rounded-md border border-red-500/20 bg-red-500/5 px-3 py-2">
+      <div className="flex items-center gap-2 text-xs font-medium text-red-600 dark:text-red-400">
+        <AlertCircle className="h-3.5 w-3.5 flex-shrink-0" />
+        <span>Error</span>
+      </div>
+      <pre className="mt-1 overflow-x-auto touch-manipulation text-xs font-mono whitespace-pre-wrap break-words text-red-600 dark:text-red-400">
+        {inline ? message : lines.slice(0, TOOL_ERROR_HEAD_LINES).join("\n")}
+      </pre>
+      {!inline && (
+        <details className="mt-1">
+          <summary className="cursor-pointer text-xs text-muted-foreground hover:text-foreground">
+            Show full error ({lines.length} lines)
+          </summary>
+          <pre className="mt-1 overflow-x-auto touch-manipulation max-h-60 overflow-y-auto text-xs font-mono whitespace-pre-wrap break-words text-red-600 dark:text-red-400">
+            {message}
+          </pre>
+        </details>
+      )}
+      {rawDiffers && (
+        <details className="mt-1 border-t border-red-500/10 pt-1">
+          <summary className="cursor-pointer text-xs text-muted-foreground hover:text-foreground">
+            Raw output ({raw!.length > 200 ? `${Math.ceil(raw!.length / 1024)}KB` : `${raw!.length} chars`})
+          </summary>
+          <pre className="mt-1 overflow-x-auto touch-manipulation max-h-60 overflow-y-auto text-xs text-muted-foreground whitespace-pre-wrap break-words font-mono">
+            {raw}
+          </pre>
+        </details>
+      )}
+    </div>
+  );
+}
+
 function ToolDiffView({ oldStr, newStr, isDark }: { oldStr: string; newStr: string; isDark: boolean }) {
   return (
     <Suspense fallback={<pre className="px-3 text-xs text-muted-foreground">Loading diff...</pre>}>
@@ -530,6 +631,14 @@ export function MessagePart({ part, isUser, isStreaming }: Props) {
     const borderColor = part.toolState === "error" ? "border-red-500/20 bg-red-500/5" : "border-blue-500/20 bg-blue-500/5";
     const textColor = part.toolState === "error" ? "text-red-600 dark:text-red-400" : "text-blue-600 dark:text-blue-400";
 
+    // Owner report 2026-11-12: a failed tool's WHY renders as a SIBLING of
+    // the (possibly collapsed) tool pane — visible without expanding
+    // anything. No payload ⇒ no block (the honest bare ✗ card stands).
+    const errorDisplay = part.toolState === "error" ? extractToolError(part.toolError, part.toolOutput) : { message: "", raw: undefined };
+    const errorBlock = errorDisplay.message ? (
+      <ToolErrorBlock toolError={part.toolError} toolOutput={part.toolOutput} />
+    ) : null;
+
     const input = part.input as Record<string, unknown> | undefined;
     const isFileEdit = input && typeof input === "object" && (
       ("oldString" in input && "newString" in input) || ("oldStr" in input && "newStr" in input)
@@ -539,63 +648,72 @@ export function MessagePart({ part, isUser, isStreaming }: Props) {
 
     if (!hasDetails) {
       return (
-        <div className={cn("my-1.5 rounded-md border px-3 py-2", borderColor)}>
-          <div className={cn("flex items-center gap-2 text-xs font-medium overflow-hidden", textColor)}>
-            <Wrench className="h-3.5 w-3.5 flex-shrink-0" />
-            <span className="truncate">{statusIcon} {toolName || "tool"}</span>
-            {part.toolState === "running" && part.toolStartedAt && (
-              <ToolElapsedBadge startedAt={part.toolStartedAt} now={now} />
-            )}
+        <>
+          <div className={cn("my-1.5 rounded-md border px-3 py-2", borderColor)}>
+            <div className={cn("flex items-center gap-2 text-xs font-medium overflow-hidden", textColor)}>
+              <Wrench className="h-3.5 w-3.5 flex-shrink-0" />
+              <span className="truncate">{statusIcon} {toolName || "tool"}</span>
+              {part.toolState === "running" && part.toolStartedAt && (
+                <ToolElapsedBadge startedAt={part.toolStartedAt} now={now} />
+              )}
+            </div>
           </div>
-        </div>
+          {errorBlock}
+        </>
       );
     }
 
     return (
-      <ToolDetails
-        borderColor={borderColor}
-        textColor={textColor}
-        statusIcon={statusIcon}
-        toolName={toolName}
-        filePath={filePath}
-        badge={part.toolState === "running" && part.toolStartedAt ? <ToolElapsedBadge startedAt={part.toolStartedAt} now={now} /> : undefined}
-      >
-        {isFileEdit ? (
-          <ToolDiffView
-            oldStr={String((input as Record<string, unknown>).oldString ?? (input as Record<string, unknown>).oldStr ?? "")}
-            newStr={String((input as Record<string, unknown>).newString ?? (input as Record<string, unknown>).newStr ?? "")}
-            isDark={resolved === "dark"}
-          />
-        ) : isFileWrite ? (
-          <pre className="overflow-x-auto touch-manipulation text-xs text-muted-foreground whitespace-pre-wrap font-mono max-h-60 overflow-y-auto px-3 py-1">
-            {String((input as Record<string, unknown>).content ?? "")}
-          </pre>
-        ) : (
-          <>
-            {part.input != null && (
-              <div className="px-3 py-1">
-                <ToolInput input={part.input} />
-              </div>
-            )}
-            {part.toolOutput && (
-              toolName === "dev_preview_url" ? (
-                <div className="border-t border-muted">
-                  <DevPreviewOutput output={part.toolOutput} />
+      <>
+        <ToolDetails
+          borderColor={borderColor}
+          textColor={textColor}
+          statusIcon={statusIcon}
+          toolName={toolName}
+          filePath={filePath}
+          badge={part.toolState === "running" && part.toolStartedAt ? <ToolElapsedBadge startedAt={part.toolStartedAt} now={now} /> : undefined}
+        >
+          {isFileEdit ? (
+            <ToolDiffView
+              oldStr={String((input as Record<string, unknown>).oldString ?? (input as Record<string, unknown>).oldStr ?? "")}
+              newStr={String((input as Record<string, unknown>).newString ?? (input as Record<string, unknown>).newStr ?? "")}
+              isDark={resolved === "dark"}
+            />
+          ) : isFileWrite ? (
+            <pre className="overflow-x-auto touch-manipulation text-xs text-muted-foreground whitespace-pre-wrap font-mono max-h-60 overflow-y-auto px-3 py-1">
+              {String((input as Record<string, unknown>).content ?? "")}
+            </pre>
+          ) : (
+            <>
+              {part.input != null && (
+                <div className="px-3 py-1">
+                  <ToolInput input={part.input} />
                 </div>
-              ) : (
-                <details className="border-t border-muted">
-                  <summary className="px-3 py-1 text-xs text-muted-foreground cursor-pointer hover:text-foreground">
-                    Output ({part.toolOutput.length > 200 ? `${Math.ceil(part.toolOutput.length / 1024)}KB` : `${part.toolOutput.length} chars`})
-                  </summary>
-                  <pre className="overflow-x-auto touch-manipulation text-xs text-muted-foreground whitespace-pre-wrap font-mono max-h-60 overflow-y-auto px-3 py-1">
-                    {part.toolOutput}
-                  </pre>
-                </details>
-              )
-            )}
-          </>
-        )}
-      </ToolDetails>
+              )}
+              {/* The output of a FAILED tool renders via the error block
+                  below (message + raw behind its own toggle) — the inner
+                  "Output" toggle would only duplicate it. */}
+              {part.toolOutput && !errorBlock && (
+                toolName === "dev_preview_url" ? (
+                  <div className="border-t border-muted">
+                    <DevPreviewOutput output={part.toolOutput} />
+                  </div>
+                ) : (
+                  <details className="border-t border-muted">
+                    <summary className="px-3 py-1 text-xs text-muted-foreground cursor-pointer hover:text-foreground">
+                      Output ({part.toolOutput.length > 200 ? `${Math.ceil(part.toolOutput.length / 1024)}KB` : `${part.toolOutput.length} chars`})
+                    </summary>
+                    <pre className="overflow-x-auto touch-manipulation text-xs text-muted-foreground whitespace-pre-wrap font-mono max-h-60 overflow-y-auto px-3 py-1">
+                      {part.toolOutput}
+                    </pre>
+                  </details>
+                )
+              )}
+            </>
+          )}
+        </ToolDetails>
+        {errorBlock}
+      </>
     );
   }
 

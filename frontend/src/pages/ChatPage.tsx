@@ -43,7 +43,7 @@ import { PermissionPrompt } from "../components/chat/PermissionPrompt";
 import { useIsMobile } from "../hooks/useMediaQuery";
 import { useClearPendingUnread, useClearSessionBusy, useAddPendingQuestion, useAddPendingPermission, useRemovePendingAction, useDropPendingAction, usePendingQuestionsForSession, usePendingPermissionsForSession, useClearSessionPendingPrompts, useIsSessionBusy, useIsSessionDeleted, useWhileAwayStalenessSweep } from "../providers/SessionActivityProvider";
 
-type StreamPart = { type: "text" | "thinking" | "tool" | "file_notice"; text: string; partID?: string; toolState?: string; toolStartedAt?: string; toolCallID?: string; toolInput?: unknown; toolOutput?: string; messageID?: string };
+type StreamPart = { type: "text" | "thinking" | "tool" | "file_notice"; text: string; partID?: string; toolState?: string; toolError?: string; toolStartedAt?: string; toolCallID?: string; toolInput?: unknown; toolOutput?: string; messageID?: string };
 
 // Dwell before the stuck-session auto-abort fires once all evidence
 // conditions hold. Guards the sub-second race where a question registers
@@ -93,6 +93,7 @@ function partToStreamPart(part: Part, messageID: string | undefined): StreamPart
         text: tool.name || "",
         partID: part.id,
         toolState: toolStateLabel(tool.state?.status),
+        toolError: tool.state?.error || undefined,
         toolCallID: tool.callId || undefined,
         toolInput: toolJsonBytes(tool.input),
         toolOutput: toolOutputText(tool.output),
