@@ -10,7 +10,11 @@
  * parents. Grouping is presentation-only: the list query still fetches
  * every session (search composes server-side over the same listing),
  * and worker rows stay fully usable when expanded. The group hides
- * entirely when the workspace has no board workers.
+ * entirely when the workspace has no board workers. The group header
+ * also carries an aggregate activity spinner (next to the count):
+ * lit iff ANY worker row is busy — worker-scoped (a busy user session
+ * never lights it), absent when all workers are idle, and it flips
+ * live with busy/idle transitions (provider aggregate: useAnySessionBusy).
  */
 import { describe, expect, it, vi, beforeEach } from "vitest";
 import { screen, waitFor, render, fireEvent } from "@testing-library/react";
@@ -27,6 +31,7 @@ const pendingActionSessions = new Set<string>();
 vi.mock("../../providers/SessionActivityProvider", () => ({
   useIsSessionAborted: () => false,
   useIsSessionBusy: (sid: string) => busySessions.has(sid),
+  useAnySessionBusy: (sids: string[]) => sids.some((sid) => busySessions.has(sid)),
   useIsSessionUnread: () => false,
   useWorkspaceBusyCount: () => busySessions.size,
   useWorkspaceHung: () => false,
@@ -102,8 +107,11 @@ describe("Sidebar — Workers group (#1966/ruling 6)", () => {
     });
   });
 
-  function renderSidebar(initialPath = "/chat/ws-1") {
-    return render(
+  // The activity-spinner transition test re-renders the same tree after
+  // mutating the (live, module-level) busy set — this exposes the exact
+  // element so view.rerender(ui()) rebuilds it against the same qc.
+  function sidebarUi(initialPath = "/chat/ws-1") {
+    return (
       <QueryClientProvider client={qc}>
         <AuthProvider>
           <MemoryRouter initialEntries={[initialPath]}>
@@ -113,8 +121,12 @@ describe("Sidebar — Workers group (#1966/ruling 6)", () => {
             </Routes>
           </MemoryRouter>
         </AuthProvider>
-      </QueryClientProvider>,
+      </QueryClientProvider>
     );
+  }
+
+  function renderSidebar(initialPath = "/chat/ws-1") {
+    return render(sidebarUi(initialPath));
   }
 
   it("hides the group entirely when the workspace has no board workers — even with subagents present", async () => {
@@ -197,6 +209,68 @@ describe("Sidebar — Workers group (#1966/ruling 6)", () => {
       .filter((el) => /^(Busy|Idle) worker$/.test(el.textContent ?? "") && el.children.length === 0)
       .map((el) => el.textContent);
     expect(titles.indexOf("Busy worker")).toBeLessThan(titles.indexOf("Idle worker"));
+  });
+
+  it("shows the aggregate activity spinner next to the count when ANY worker is busy — idle co-worker keeps the count honest", async () => {
+    // Mixed: one busy worker + one idle worker. The group header lights
+    // the spinner (aggregate over the WORKER ids only) and the count
+    // badge still reports BOTH workers.
+    busySessions.add("ses-worker-busy");
+    (workspacesApi.getSessions as ReturnType<typeof vi.fn>).mockResolvedValue([
+      session("ses-user", "My chat"),
+      session("ses-worker-idle", "Idle worker", { origin: "worker" }),
+      session("ses-worker-busy", "Busy worker", { origin: "worker" }),
+    ]);
+    renderSidebar();
+    const group = await waitFor(() => {
+      const el = screen.getByTestId("workers-group");
+      expect(el).toBeTruthy();
+      return el;
+    });
+    // Spinner present, inside the group header (next to the count) —
+    // and the BusyIndicator glyph itself carries the spin class.
+    const spinner = screen.getByTestId("workers-group-spinner");
+    expect(group.contains(spinner)).toBe(true);
+    expect(spinner.querySelector(".animate-spin")).toBeTruthy();
+    // Count badge: BOTH workers count (the busy one is not substituted
+    // for the count — spinner and count are neighbors, not alternatives).
+    expect(screen.getByText("2")).toBeTruthy();
+  });
+
+  it("hides the activity spinner when every worker is idle — even with a busy NON-worker session", async () => {
+    // All workers idle → no spinner. A busy USER session must not leak
+    // into the workers aggregate (the signal is worker-scoped, unlike
+    // useWorkspaceBusyCount which counts the whole workspace).
+    busySessions.add("ses-user-busy-chat");
+    (workspacesApi.getSessions as ReturnType<typeof vi.fn>).mockResolvedValue([
+      session("ses-user-busy-chat", "My busy chat"),
+      session("ses-worker-1", "Quiet worker", { origin: "worker" }),
+      session("ses-worker-2", "Also quiet", { origin: "worker" }),
+    ]);
+    renderSidebar();
+    await waitFor(() => expect(screen.getByTestId("workers-group")).toBeTruthy());
+    expect(screen.queryByTestId("workers-group-spinner")).toBeNull();
+    expect(screen.getByText("2")).toBeTruthy();
+  });
+
+  it("flips the activity spinner as worker busy state transitions (idle → busy → idle)", async () => {
+    (workspacesApi.getSessions as ReturnType<typeof vi.fn>).mockResolvedValue([
+      session("ses-user", "My chat"),
+      session("ses-worker-1", "Flappy worker", { origin: "worker" }),
+    ]);
+    const view = renderSidebar();
+    await waitFor(() => expect(screen.getByTestId("workers-group")).toBeTruthy());
+    expect(screen.queryByTestId("workers-group-spinner")).toBeNull();
+
+    // Worker turns busy → the header spinner appears without a refetch.
+    busySessions.add("ses-worker-1");
+    view.rerender(sidebarUi());
+    expect(screen.getByTestId("workers-group-spinner")).toBeTruthy();
+
+    // Worker goes idle again → the spinner disappears.
+    busySessions.delete("ses-worker-1");
+    view.rerender(sidebarUi());
+    expect(screen.queryByTestId("workers-group-spinner")).toBeNull();
   });
 
   it("nests a worker's genuine subagent children beneath it inside the group", async () => {
