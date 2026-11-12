@@ -331,3 +331,61 @@ describe("ChatView streaming tool start time (#892 D5)", () => {
 
 });
 
+
+// Owner report 2026-11-12 (tsk-copper-archer-rushes): a failed tool call
+// on the LIVE streaming path showed ✗ + input but never the error. The
+// streaming part must carry toolError through partitionStreamPartsByMessage
+// into the rendered transcript bubble, visible without expanding anything.
+describe("ChatView streaming tool errors (tsk-copper-archer-rushes)", () => {
+  const baseProps = {
+    messages: [] as Message[],
+    streaming: false,
+    streamParts: [] as Array<{ type: "thinking" | "text" | "tool"; text: string }>,
+    disabled: false,
+    onSend: vi.fn(),
+    onAbort: vi.fn(),
+  };
+
+  it("renders a streamed tool error's message in the bubble", () => {
+    render(
+      <ChatView
+        {...baseProps}
+        streaming={true}
+        streamParts={[
+          {
+            type: "tool",
+            text: "llmsafespaces_board_epic_activate",
+            toolState: "error",
+            toolError: "invalid reference: no such role reviewerx",
+            messageID: "msg-err",
+          },
+        ] as never}
+      />,
+    );
+    expect(screen.getByTestId("tool-error")).toBeVisible();
+    expect(screen.getByText(/no such role reviewerx/)).toBeVisible();
+  });
+
+  it("renders a streamed tool error from its output payload (no state error)", () => {
+    render(
+      <ChatView
+        {...baseProps}
+        streaming={true}
+        streamParts={[
+          {
+            type: "tool",
+            text: "llmsafespaces_board_import_plan",
+            toolState: "error",
+            toolOutput: '{"error":"HTTP 409 epic_state: epic is not active"}',
+            messageID: "msg-err2",
+          },
+        ] as never}
+      />,
+    );
+    expect(screen.getByTestId("tool-error")).toBeVisible();
+    // The extracted message is the block's message pre (the raw JSON —
+    // which contains the same substring — rides behind the toggle).
+    const err = screen.getByTestId("tool-error");
+    expect(err.querySelector("pre")?.textContent).toBe("HTTP 409 epic_state: epic is not active");
+  });
+});

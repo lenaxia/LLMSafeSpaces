@@ -156,6 +156,26 @@ describe("MessageBubble", () => {
       }])).toBe("[Tool: bash]\nOutput: result");
     });
 
+    // Owner report 2026-11-12 (tsk-copper-archer-rushes): copying a failed
+    // tool's transcript text must carry the error (the owner was forced to
+    // re-quote errors manually).
+    it("formats failed tool parts with their error", () => {
+      expect(extractMessageText([{
+        type: "tool_use",
+        text: "bash",
+        toolError: "exit status 1",
+      }])).toBe("[Tool: bash]\nError: exit status 1");
+    });
+
+    it("formats failed tool parts with error and output", () => {
+      expect(extractMessageText([{
+        type: "tool_use",
+        text: "bash",
+        toolError: "exit status 1",
+        toolOutput: "stderr noise",
+      }])).toBe("[Tool: bash]\nError: exit status 1\nOutput: stderr noise");
+    });
+
     it("formats tool parts without output", () => {
       expect(extractMessageText([{ type: "tool_use", text: "read" }])).toBe("[Tool: read]");
     });
