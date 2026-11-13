@@ -919,6 +919,34 @@ jobs:
           cache-from: type=gha,scope=pi-${{ matrix.platform }}
           cache-to: type=gha,scope=pi-${{ matrix.platform }},mode=max
 
+      # Mode-pin guard (r2: the ci.yml check, cloned — the RELEASED
+      # artifact must carry the same tree-contract assertion as the CI
+      # one; the 2026-09-19 /plugins incident class). The --load rebuild
+      # reads the builder's local layer cache from the push build above.
+      - name: Overlay tree mode pin (traversable /pi, adjacent package.json)
+        if: matrix.platform == 'linux/amd64'
+        run: |
+          docker buildx build --load -f runtimes/pi/Dockerfile -t lsp-pi-mode-pin:rel runtimes/pi >/dev/null
+          cid=$(docker create lsp-pi-mode-pin:rel true)
+          docker export "$cid" -o /tmp/pi-fs.tar
+          docker rm "$cid" >/dev/null
+          dmode=$(tar -tvf /tmp/pi-fs.tar | awk '$NF == "pi/" || $NF == "pi" {print $1}' | head -1)
+          fmode=$(tar -tvf /tmp/pi-fs.tar | awk '$NF == "pi/pi" {print $1}' | head -1)
+          pj=$(tar -tf /tmp/pi-fs.tar | grep -c '^pi/package.json$' || true)
+          echo "/pi mode: ${dmode:-MISSING}; binary mode: ${fmode:-MISSING}; package.json: ${pj}"
+          [ -n "$dmode" ] || { echo "::error::/pi missing from the image"; exit 1; }
+          [ "$pj" = "1" ] || { echo "::error::pi/package.json missing — the bun package.json-autoload adjacency the tree layout ruling depends on is broken"; exit 1; }
+          other_x=$(printf '%s' "$dmode" | cut -c10)
+          if [ "$other_x" != "x" ]; then
+            echo "::error::/pi mode $dmode lacks the other-execute (traversal) bit — uid 1000 cannot traverse the overlay tree (2026-09-19 incident class)"; exit 1
+          fi
+          [ -n "$fmode" ] || { echo "::error::/pi/pi binary missing from the image"; exit 1; }
+          bin_r=$(printf '%s' "$fmode" | cut -c8)
+          bin_x=$(printf '%s' "$fmode" | cut -c10)
+          if [ "$bin_r" != "r" ] || [ "$bin_x" != "x" ]; then
+            echo "::error::/pi/pi mode $fmode lacks other-read or other-execute — uid 1000 cannot read/exec the pinned binary"; exit 1
+          fi
+
       - name: Export binary sha256
         run: |
           arch="${{ matrix.platform == 'linux/arm64' && 'arm64' || 'amd64' }}"
@@ -1272,7 +1300,7 @@ jobs:
               frontend) image_ref="${{ env.REGISTRY }}/${{ env.FRONTEND_IMAGE }}:${VERSION}" ;;
               agentd) image_ref="${{ env.REGISTRY }}/${{ env.AGENTD_IMAGE }}:${VERSION}" ;;
               opencode) image_ref="${{ env.REGISTRY }}/${{ env.OPENCODE_IMAGE }}:${VERSION}" ;;
-              pi) image_ref="${{ env.REGISTRY }}/${{ env.PI_IMAGE }}:${VERSION }}" ;;
+              pi) image_ref="${{ env.REGISTRY }}/${{ env.PI_IMAGE }}:${VERSION}" ;;
               relay-router) image_ref="${{ env.REGISTRY }}/${{ env.RELAY_ROUTER_IMAGE }}:${VERSION}" ;;
               relay-proxy) image_ref="${{ env.REGISTRY }}/${{ env.RELAY_PROXY_IMAGE }}:${VERSION}" ;;
             esac
@@ -1333,7 +1361,7 @@ jobs:
               frontend) image_ref="${{ env.REGISTRY }}/${{ env.FRONTEND_IMAGE }}:${VERSION}" ;;
               agentd) image_ref="${{ env.REGISTRY }}/${{ env.AGENTD_IMAGE }}:${VERSION}" ;;
               opencode) image_ref="${{ env.REGISTRY }}/${{ env.OPENCODE_IMAGE }}:${VERSION}" ;;
-              pi) image_ref="${{ env.REGISTRY }}/${{ env.PI_IMAGE }}:${VERSION }}" ;;
+              pi) image_ref="${{ env.REGISTRY }}/${{ env.PI_IMAGE }}:${VERSION}" ;;
               relay-router) image_ref="${{ env.REGISTRY }}/${{ env.RELAY_ROUTER_IMAGE }}:${VERSION}" ;;
               relay-proxy) image_ref="${{ env.REGISTRY }}/${{ env.RELAY_PROXY_IMAGE }}:${VERSION}" ;;
             esac
@@ -1436,7 +1464,7 @@ jobs:
               frontend) image_ref="${{ env.REGISTRY }}/${{ env.FRONTEND_IMAGE }}:${VERSION}" ;;
               agentd) image_ref="${{ env.REGISTRY }}/${{ env.AGENTD_IMAGE }}:${VERSION}" ;;
               opencode) image_ref="${{ env.REGISTRY }}/${{ env.OPENCODE_IMAGE }}:${VERSION}" ;;
-              pi) image_ref="${{ env.REGISTRY }}/${{ env.PI_IMAGE }}:${VERSION }}" ;;
+              pi) image_ref="${{ env.REGISTRY }}/${{ env.PI_IMAGE }}:${VERSION}" ;;
               relay-router) image_ref="${{ env.REGISTRY }}/${{ env.RELAY_ROUTER_IMAGE }}:${VERSION}" ;;
               relay-proxy) image_ref="${{ env.REGISTRY }}/${{ env.RELAY_PROXY_IMAGE }}:${VERSION}" ;;
             esac

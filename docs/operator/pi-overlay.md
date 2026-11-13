@@ -99,9 +99,26 @@ failure episode — a should-never-fire signal (page on any occurrence).
 `PiVerified=True` is stamped once a pod carrying the overlay is observed
 running clean.
 
+Ordering note: at the supervisor's boot seam the verifies run
+agentd → opencode → pi; a pod with MULTIPLE tampered trees exits on the
+first failure only (fail-closed with a single observable exit — the
+sibling artifact's verify is starved until the first is fixed).
+
 > The **controller process** also exits 85 for "relay staging not armed"
 > (design 0061 §3) — a different process on a different pod;
 > attribution is by which pod crashed.
+
+## Upgrading from a pre-pi install
+
+The `controller.piDelivery.image` value is **mandatory from this
+chart's first pi-carrying version** — an existing deployment's next
+`helm upgrade` fails the render with
+`controller.piDelivery.image is mandatory` until the value is set. Take
+the digest from the `merge-pi` job's printed values block (the
+`piDelivery` notice on the release/merge run that built the artifact you
+want to pin), or the release's published image tag+digest; hashes are
+optional (they resolve from the index annotations, cached in
+`llmsafespaces-pi-pins`).
 
 ## Pin resolution and the ConfigMap cache
 

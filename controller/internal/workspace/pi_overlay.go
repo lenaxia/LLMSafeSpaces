@@ -107,6 +107,9 @@ func (r *WorkspaceReconciler) wirePiOverlay(mainContainer *corev1.Container, vol
 	})
 	mainContainer.Env = append(mainContainer.Env,
 		corev1.EnvVar{Name: piOverlayEnvKey, Value: "1"},
+		// piBinaryRelPath is an absolute IN-IMAGE path segment appended to
+		// the mount (the sibling-named opencodeBinaryRelPath pattern);
+		// "/pi" + "/pi" = "/pi/pi" — the upstream tree-root layout.
 		corev1.EnvVar{Name: "LLMSAFESPACES_PI_BINARY", Value: piMountPath + piBinaryRelPath},
 		corev1.EnvVar{Name: "LLMSAFESPACES_PI_SHA256_AMD64", Value: r.PiBinarySHA256AMD64},
 		corev1.EnvVar{Name: "LLMSAFESPACES_PI_SHA256_ARM64", Value: r.PiBinarySHA256ARM64},
