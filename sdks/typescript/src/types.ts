@@ -70,6 +70,17 @@ export interface WorkspaceStatusResult {
   credentialState: { available: boolean; reason?: string; message?: string };
   agentHealth: { status: string; providersConfigured: number; agentVersion?: string };
   supervisor?: SupervisorStatus;
+  /**
+   * RUNNING agentd's self-reported build version from its healthz
+   * (RC-A, 2026-10-30) — e.g. "0.44.7". Empty while the pod is
+   * unreachable. The AgentdVersionStale condition flags a version
+   * older than the fleet release.
+   */
+  agentdVersion?: string;
+  /** RUNNING agentd's self-reported git commit ("unknown" when unstamped). */
+  agentdCommit?: string;
+  /** RUNNING agentd's self-reported UTC build timestamp. */
+  agentdBuildTime?: string;
   sessions?: { id: string; title?: string; status: string }[];
   diskUsedBytes?: number;
   diskTotalBytes?: number;

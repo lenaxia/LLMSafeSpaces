@@ -107,6 +107,16 @@ type WorkspaceStatusResult struct {
 	// baked-in delivery.
 	AgentdEffectiveDigest string `json:"agentdEffectiveDigest,omitempty"`
 	AgentdPendingDigest   string `json:"agentdPendingDigest,omitempty"`
+	// AgentdVersion / AgentdCommit / AgentdBuildTime (RC-A, 2026-10-30
+	// incident): the RUNNING agentd's self-reported build identity,
+	// scraped from the pod's /v1/healthz by the controller's liveness
+	// poll — the same fields the incident needed a manual
+	// `curl localhost:4098/v1/healthz` to see. Empty while the pod is
+	// unreachable. The AgentdVersionStale condition (in Conditions)
+	// flags a version older than the fleet release.
+	AgentdVersion   string `json:"agentdVersion,omitempty"`
+	AgentdCommit    string `json:"agentdCommit,omitempty"`
+	AgentdBuildTime string `json:"agentdBuildTime,omitempty"`
 	// Supervisor (#1760): the supervisor/watchdog agent-restart slice —
 	// lifetime restart count, the last restart's attribution
 	// (reason/verdict/lastError/at), and the suppression count. Nil when

@@ -488,7 +488,12 @@ jobs:
 
   frontend-test:
     name: Frontend (unit + typecheck + e2e)
-    runs-on: ubuntu-latest
+    # Pinned (2026-11-09): the ubuntu-latest image rolled to 26.04 and the
+    # pinned @playwright/test 1.60.0 cannot install chromium there
+    # ("Playwright does not support chromium on ubuntu26.04-x64") — this
+    # broke the job for every PR with zero code change. Unpin when
+    # @playwright/test is bumped past the 26.04 support boundary.
+    runs-on: ubuntu-24.04
     needs: [changes]
     if: github.event_name != 'pull_request' || needs.changes.outputs.docs_only != 'true'
     # No `needs: [lint]` — see the comment on the `test` job.
@@ -638,7 +643,11 @@ jobs:
 
   sdk-contract:
     name: SDK Contract Tests
-    runs-on: ubuntu-latest
+    # Pinned (2026-11-09): the ubuntu-latest image rolled to 26.04, which
+    # dropped libxml2.so.2 — the pinned hurl 5.0.1 binary cannot load
+    # (all SDK language suites still pass). Same runner-image break as
+    # the frontend-test pin above; unpin together with it.
+    runs-on: ubuntu-24.04
     needs: [test, test-full, frontend-test]
     steps:
       - uses: actions/checkout@v6

@@ -1229,6 +1229,41 @@ func applySecretsBatch(ctx context.Context, cfg materializeConfig, deps applySec
 		setRevAnchorAfterApply(revAnchorPath(cfg.toPaths().SecretsEnvPath), rev, os.Stderr)
 	}
 
+	// Restart-gate bookkeeping — still UNDER applyMu, alongside the rev
+	// anchor above (review finding 1, PR #2011, round 2): the gate read,
+	// compare, and anchor write must serialize with the pipeline in apply
+	// order. The window between applyMu.Unlock() and a post-unlock gate
+	// write is seconds-wide in practice (the StageCredentials block below
+	// blocks on a real HTTP POST to opencode whenever the batch carries
+	// llm-provider entries) — an apply parked there let a LATER apply's
+	// anchor land first and then overwrote it with an OLDER payload
+	// identity, so a re-apply of that older payload was wrongly suppressed
+	// while the child's env held the newer one. The gate only does tmpfs
+	// file I/O (the same class as the rev-anchor write); the restart
+	// DECISION itself stays OUTSIDE the lock below (the ~5s SIGTERM window
+	// must not hold applyMu) and consumes suppressRestart from here.
+	payloadHash := restartPayloadHash(batch)
+	payloadPath := restartPayloadPath(cfg.toPaths().SecretsEnvPath)
+	suppressRestart := false
+	if proc != nil && shouldRestart(batch) {
+		if prior, rErr := readRestartPayloadHash(payloadPath); rErr == nil && prior != "" && prior == payloadHash {
+			suppressRestart = true
+			log.Info("secrets apply: restart-relevant payload unchanged since last apply; suppressing agent restart",
+				zap.String("payloadHash", payloadHash[:min(12, len(payloadHash))]))
+		} else if rErr != nil && !os.IsNotExist(rErr) {
+			log.Warn("secrets apply: restart-payload hash unreadable; restart proceeds ungated", zap.Error(rErr))
+		}
+		// Persist the payload identity only when the applied state is
+		// complete — a partial apply must not anchor a hash the on-disk
+		// state cannot vouch for (mirrors the rev-anchor semantics). When
+		// suppressed this is an idempotent rewrite of the same hash.
+		if payloadHash != "" && !result.HasFailures() {
+			if wErr := writeRestartPayloadHash(payloadPath, payloadHash); wErr != nil {
+				log.Warn("secrets apply: failed to persist restart-payload hash", zap.Error(wErr))
+			}
+		}
+	}
+
 	applyMu.Unlock()
 
 	mat, skip, fail := result.Counts()
@@ -1255,7 +1290,7 @@ func applySecretsBatch(ctx context.Context, cfg materializeConfig, deps applySec
 	}
 
 	restarted := false
-	if proc != nil && shouldRestart(batch) {
+	if proc != nil && shouldRestart(batch) && !suppressRestart {
 		if reason, names := classifySecretRestartReason(batch); reason != "" {
 			if err := writeRestartReasonMarker(markerPath, reason, names); err != nil {
 				log.Error("failed to write restart-reason marker", zap.Error(err))

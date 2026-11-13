@@ -76,10 +76,10 @@ jobs:
        github.event.comment.author_association == 'MEMBER' ||
        github.event.comment.author_association == 'COLLABORATOR' ||
        contains(fromJson('["agentic-actor-coder[bot]","ai-workflows-propagation[bot]"]'), github.event.comment.user.login))
-    uses: lenaxia/ai-workflows/.github/workflows/ai-comment.yml@v0.2.25
+    uses: lenaxia/ai-workflows/.github/workflows/ai-comment.yml@v0.2.26 # pin 2026-11-12: Build-prompt export re-bind fix (a9da186) — the v0.2.2x route_command export does not survive on the self-hosted runners (#1844)"OUT_FILE: unbound variable" breaks every /review (#1844 escalation); restore-forward only with that fixed
     secrets: inherit
     with:
-      version: v0.2.25
+      version: v0.2.26 # match uses: ref
       project_name: LLMSafeSpaces
       # Trusted app-bot commenters (ai-workflows #51): without this the CLI
       # assert refuses bot /review comments pre-LLM even though the admission

@@ -194,6 +194,78 @@ by the live client (`pkg/agent/opencode/loopback_board_wire_1746_test.go`).
 A wire-form change must land as a NEW frozen set (or a `/internal/v2`
 route) — never a silent mutation of v1.
 
+## Version visibility & skew detection (RC-A, 2026-10-30)
+
+An N-1 fleet is the **by-design** posture of `OnRefresh` — but an
+INVISIBLE one is not. On 2026-10-30 a pod ran agentd v0.44.7
+(commit `6ce1859f`, built Oct 29 02:08) for ~15 hours after v0.44.9
+shipped a spawn fix; discovering the skew required manually curling the
+pod's admin healthz (`localhost:4098/v1/healthz`). The controller's
+15s liveness poll of that SAME endpoint now closes the gap:
+
+**Visibility** — every live pod's RUNNING agentd build identity rides
+the Workspace status (and the API's `GET /workspaces/{id}/status`):
+
+- `status.agentdVersion` / `status.agentdCommit` /
+  `status.agentdBuildTime` — the self-reported `version` /
+  `commit_sha` / `build_time` from healthz. Cleared while the pod is
+  unreachable; `GET /workspaces/{id}/status` omits them when empty.
+
+**Skew detection** — the reported version is compared against the
+fleet release the controller itself was deployed with (the chart
+`appVersion`; the release pipeline stamps the controller and every
+agentd with the same version). Older ⇒ four automatic flags:
+
+| Surface | Signal |
+|---|---|
+| Condition | `AgentdVersionStale=True` (`ReasonAgentdVersionStale`) with both versions in the message; `False/AgentdVersionCurrent` when current; `False/AgentdVersionUnknown` when not comparable (an unstamped build on either side — reported honestly, never guessed) |
+| Event | `AgentdVersionStale` Warning exactly-once per (agentd, fleet) version pair |
+| Metrics | `llmsafespaces_workspace_agentd_version_skew{workspace_id}` = 1 while stale (alert on persistence) and `..._version_skew_detected_total` once per episode |
+| Alert | `LLMSafeSpacesAgentdVersionSkew` (warning, `for: 2h`) — N-1 for hours is expected; N-1 for hours AFTER the alert means the runbook below has not been run |
+
+**Gauge lifecycle — the series dies with the pod.** A verdict is a
+property of a live pod's running agentd, so the controller deletes the
+series on every indefinite no-pod exit: workspace termination (the
+runbook's "gauge drops to 0" convergence is always achievable),
+suspension (a suspended workspace rebuilds with the CURRENT digest at
+resume — converges by construction), the health-restart path, and the
+legacy Failed self-heal. A TRANSIENT unreachable scrape deliberately
+does not clear it (the last live verdict stays latched; a truly dead
+pod reaches the health-failure restart within the 3-failure threshold,
+which does clear it) — so the alert can never be held open by a
+workspace whose pod no longer exists, and never flaps on blips.
+
+**Comparison semantics**: numeric dot segments compared left-to-right
+(`0.44.7 < 0.44.11`), tolerating a `v` prefix, ignoring prerelease and
+build-metadata suffixes. An agentd NEWER than the controller (a Renovate
+digest bump between releases) reads as current — ahead is not this
+failure class. A pre-2026-08-15 agentd (healthz `version` carried
+OPENCODE's version; the `commit_sha`/`build_time` identity fields did
+not exist) is reported `AgentdVersionUnknown` — its version is never
+mirrored or compared. Digest drift (`agentdPendingDigest`, above)
+remains the authoritative "your pod was not rebuilt" signal; the
+version surfaces make it human-readable and alertable.
+
+### Runbook: refreshing workspace agentds on a fleet release
+
+Detection is automatic (above); the roll is a choice, by policy:
+
+1. **Default (`OnRefresh`)**: do nothing — each workspace picks up the
+   new agentd at its next natural pod recreation (compute refresh,
+   suspend/resume). The skew alert persists until then; that is the
+   posture working as designed.
+2. **Polite fleet roll**: set `controller.agentdDelivery.updatePolicy:
+   Rolling` (Helm, instance-wide) or patch a single workspace — pods
+   recreate on drift through the #761 session drain (deferred behind
+   busy sessions).
+3. **Immediate (security-critical)**: `kubectl patch workspace <name>
+   --type=merge -p '{"spec":{"agentdDelivery":{"forceRoll":true}}}'` —
+   roll NOW, drain bypassed; clear the flag after use.
+
+After any roll, confirm convergence: the `AgentdVersionStale` condition
+flips to `False/AgentdVersionCurrent`, the per-workspace gauge drops to
+0, and `status.agentdVersion` reports the fleet release.
+
 ## Behavior on verification failure
 
 | Supervisor self-verify outcome | Exit | What happens |

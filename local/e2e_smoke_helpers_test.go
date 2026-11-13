@@ -76,6 +76,13 @@ const smokeKubectlShim = `#!/usr/bin/env bash
 # registry_admits, pod_of.) Every invocation appends to
 # SMOKE_KC_TRACE when set (off unless a test arms it).
 printf '%s\n' "$*" >> "${SMOKE_KC_TRACE:-/dev/null}"
+# Drain stdin for -f - invocations: the REAL kubectl consumes it, and a
+# shim that exits without reading lets the script's heredoc writer hit
+# EPIPE/SIGPIPE (exit 141) when scheduling loses the race — pipefail then
+# kills the script before its verdict gate (CI flake, 2026-11-10).
+for a in "$@"; do
+  if [[ "${a}" == "-" ]]; then cat >/dev/null; break; fi
+done
 for a in "$@"; do
   case "${a}" in
     jsonpath='{.status.phase}'*) printf '%s\n' "${SMOKE_PHASE_ANSWER:-Active}"; exit 0 ;;
