@@ -14,7 +14,7 @@
 # The compacted arm applies the SAME restructure
 # payload the relay-router (cmd/relay-router agedarg.go) applies in-path
 # — the python stub is byte-identical to the Go stub (pinned by
-# TestAgedArgStubMatchesReplayHarness, which executes this script's
+# TestAgedArgRenderMatchesReplayHarness, which executes this script's
 # --print-stub and compares bytes).
 #
 # Arms:
@@ -22,8 +22,9 @@
 #               the harness must NOT runaway on its own)
 #   poisoned  — old-shape bulk-first llmsafespaces_* prior calls in the
 #               in-context history, new (post-#1929 bulk-last) schemas
-#   compacted — the poisoned body with aged llmsafespaces_* arguments
-#               stubbed (recent window untouched, results untouched)
+#   compacted — the poisoned body with prior tool usage RESTRUCTURED
+#               into markdown bullets (lossless — v3; window 0 = every
+#               call)
 #
 # Scorer signatures (the #1929/#1849 classes): duplicate JSON keys,
 # degenerate fragment tiling (>=10x), malformed arguments, native-markup
@@ -56,7 +57,9 @@ TOOL_PREFIX = "llmsafespaces_"
 # cross-context (myriad 3/3, quick-panda 3/3 clean on exact live
 # replays). Supersedes v1 (prose-note stub — leaked, failed) and v2
 # (value-dotting — clean but lossy).
-RECENT_TOOL_CALLS = 0  # 0 = restructure every tool call (validated)
+RECENT_TOOL_CALLS = 0  # 0 = restructure every tool call (validated).
+# NOTE: the mirror always restructures all calls (window-0 semantics);
+# the window>0 tuning knob is Go-only (agedarg.go) and not mirrored.
 # Gate mirroring the Go kill switch (BYO_AGED_ARG_RECENT_TOOL_CALLS=-1
 # == False). Wired into restructure() below.
 RESTRUCTURE_TOOL_CALLS = True
@@ -268,14 +271,22 @@ def restructure_messages(msgs):
     while i < len(msgs):
         m = msgs[i]
         calls = m.get("tool_calls") if isinstance(m, dict) else None
-        if not calls:
+        if not isinstance(calls, list) or not calls:
             out.append(m)
             i += 1
             continue
-        # unknown assistant fields → passthrough span
+        # unknown assistant fields → passthrough span; role must be
+        # EXACTLY "assistant" (r3 finding 1 — the merge hardcodes it;
+        # reshaping a user/role-less span is fabrication). Defensive
+        # type checks mirror Go's passthrough-on-surprise.
         if isinstance(m, dict):
             extra = set(m.keys()) - {"role", "content", "tool_calls"}
             if extra:
+                out.append(m)
+                i += 1
+                continue
+            role = m.get("role")
+            if role != "assistant":
                 out.append(m)
                 i += 1
                 continue
@@ -292,7 +303,13 @@ def restructure_messages(msgs):
         parsed = []
         ok = True
         for c in calls:
-            fn = c.get("function") or {}
+            if not isinstance(c, dict):
+                ok = False
+                break
+            fn = c.get("function")
+            if not isinstance(fn, dict):
+                ok = False
+                break
             name = fn.get("name")
             cid = c.get("id")
             args = fn.get("arguments")
@@ -582,7 +599,7 @@ def main():
     ap.add_argument("--max-tokens", type=int, default=6000)
     ap.add_argument("--print-stub", action="store_true",
                     help="print the stub payload (byte-parity pin for the Go "
-                         "transform; used by TestAgedArgStubMatchesReplayHarness) "
+                         "transform; used by TestAgedArgRenderMatchesReplayHarness) "
                          "and exit")
     args = ap.parse_args()
 
@@ -629,8 +646,8 @@ def main():
                     and isinstance(m.get("tool_calls"), list)
                     for c in m["tool_calls"]
                     if (c.get("function") or {}).get("name", "").startswith(TOOL_PREFIX))
-        print(f"  arm={arm} llmsafespaces_* prior calls={n_old} stubbed={stubbed} "
-              f"body={len(body_bytes)}B")
+        print(f"  arm={arm} llmsafespaces_* prior calls={n_old} restructured={stubbed} "
+              f"body={len(body_bytes)}B")  # label NOTE: 'stubbed' == restructured (v3)
         results[arm] = run_arm(arm, body_bytes.encode(), args.runs, base, key, model, args.pace)
 
     expected = {"neutral": "CLEAN", "poisoned": "RUNAWAY", "compacted": "CLEAN"}

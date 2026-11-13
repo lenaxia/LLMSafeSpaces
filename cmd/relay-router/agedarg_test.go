@@ -324,6 +324,19 @@ func TestAgedArgCompaction_UnconsumedResultPassthrough(t *testing.T) {
 	assert.Equal(t, string(body), string(out), "byte-verbatim")
 }
 
+func TestAgedArgCompaction_NullResultContentPassthrough(t *testing.T) {
+	// r2 finding 3 / r4 review: null RESULT content — JSON null into
+	// *string is a silent no-op in Go; the v3 draft rendered an empty
+	// Result line while consuming the message. Passthrough.
+	body := []byte(`{"model":"m","messages":[` +
+		`{"role":"assistant","content":"","tool_calls":[{"id":"call_1","type":"function","function":{"name":"llmsafespaces_session_list","arguments":"{\"includeArchived\":true}"}}]},` +
+		`{"role":"tool","tool_call_id":"call_1","content":null},` +
+		`{"role":"user","content":"go"}]}`)
+	out, stats := newAgedArgCompactorWindow(0).Compact(body)
+	assert.False(t, stats.Changed, "null result content → span passthrough")
+	assert.Equal(t, string(body), string(out), "byte-verbatim")
+}
+
 func TestAgedArgCompaction_NullToolCallIDPassthrough(t *testing.T) {
 	// r2 finding 2: null tool_call_id — null-into-string is a silent
 	// no-op in Go; the v3 draft landed it in resultByID[""] (deleted).

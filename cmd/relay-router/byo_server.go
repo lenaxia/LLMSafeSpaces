@@ -101,7 +101,7 @@ type byoServer struct {
 	client   *http.Client
 	metrics  *byoMetrics
 
-	// agedArgs (#1949) stubs aged llmsafespaces_* tool-call arguments in
+	// agedArgs (#1949, v3) restructures prior tool usage in
 	// chat-completion request bodies before they are forwarded upstream
 	// — the poisoned-context emission cure. Nil-safe (Compact on a nil
 	// compactor is a passthrough).
