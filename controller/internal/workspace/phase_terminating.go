@@ -28,6 +28,12 @@ func (r *WorkspaceReconciler) handleTerminating(ctx context.Context, workspace *
 	// Delete pod.
 	r.deletePodByName(ctx, name, workspace.Namespace)
 
+	// RC-A review r1: the skew gauge series dies with the pod — a
+	// workspace deleted while N-1 must not hold the
+	// LLMSafeSpacesAgentdVersionSkew alert open forever (the runbook's
+	// "gauge drops to 0" convergence has to be achievable).
+	r.clearAgentdSkewGauge(workspace)
+
 	// Delete PVC — best-effort (#772). The PVC carries a controller owner
 	// reference to the Workspace (SetControllerReference in handlePending),
 	// so Kubernetes GC deletes it once the Workspace object is removed.

@@ -48,3 +48,89 @@ The API knob and the controller's `--workspace-eventbus-addr` are ONE posture: a
 
 - S2 lane (busy TTL/badge): active in the shared checkout on `pkg/board/{busy.go,reads.go,rows.go}` and (briefly, mid-edit) `service.go`. Zero file overlap with this lane's committed set; the service.go adjacency was resolved by this lane's worktree extraction. Merge note for the orchestrator: this lane adds a field to `Service` (`leaseEvents`) directly below `nudger` — S2's `busySrc` hunk sits in the same struct; trivial union.
 - S5 (DEPOSED, committed `9c17803b9` before this lane forked) and S1 (stamp hardening) are IN this branch's base — their suites pass with the new seam installed.
+
+## 8. Rework round (PR #2007 r2, the orchestrator's findings)
+
+1. **Main moved under the lane** — #2005 (the story-machinery rename) merged INTO this branch per the orchestrator's direction. Every conflict was S1/S5-vs-rename (this lane's own S4 files merged clean): the schemas union S1's `sessionId` self-identification with main's `storyId` spellings; the allowlists take main's story forms.
+2. **The S5 depose tool ported to canonical story form everywhere it rides this branch** (it shipped task-named on the integration branch and never met the rename): `board_depose_story` + `story_id`/`storyId` keys on both catalogs (registration, dispatch, allowlists, the origin plugin's INJECTED_SESSION_TOOLS, the parity grid), `BoardDeposeStory` on pkg/mcp's integrator surface (the agentd loopback and REST wire keep their task spelling — the rename's own wire decision); `board_depose_task` joins BOTH one-release alias windows (agentd's call-time map + pkg/mcp's registered DEPRECATED-ALIAS tools), because the task name is what v0.44.x prod served.
+3. **TestDocs_MCPTools_Parity (the canary finding)**: docs/api/mcp.md gains the canonical `board_depose_story` row (required args + guards) and the `board_depose_task` deprecated-alias row — the parity test reads table rows as the documented contract, and the alias is a REGISTERED tool on the external surface, so both rows are demanded.
+4. **Lint contextcheck (board_lease_events.go)**: `busFor` now takes the caller's ctx and derives the wire timeout from it (no fresh Background window inside a request-bounded call path).
+5. **Worklog renumber**: main's rename lane had already taken 1241 — this lane's worklog is 1242 (repolint's duplicate check caught the collision; the gap list is the tolerated historical class).
+6. Gates rerun serially on the merged tree, all green: make lint (golangci-lint, contextcheck included) 0 issues; make repolint + pkg/repolint (both parity canaries); make fmt-check; pkg/eventbus, pkg/mcp, pkg/board -tags integration (40s), api/internal/{app,config,handlers} (handlers 84s full), cmd/workspace-agentd full (376s).
+
+## 9. Rework round 3 (PR #2007 r3 — the S6 unification landed under the lane)
+
+#2008 (S6: board events + stamps ride the bus, SSE joins the stream) merged into
+sprint-board-story-machinery at 16:25Z carrying THIS LANE'S r1 work (the S6 lane
+had forked off it), S3's health surface, and S6's own legs. The merge bounce was
+the overlap; the reconciliation:
+
+- **The transport belongs to S6's shared shape**: `board_bus.go`'s `boardBusClient`
+  (one transport, many legs — lease/board-events/stamps, per-leg expvar counters
+  injected at publish) supersedes this lane's private client/breaker/buses
+  machinery. Resolution: TAKE THEIRS for `board_lease_events.go`(+test) and
+  `pkg/eventbus/eventbus.go` — the r2 contextcheck fix is architecturally
+  subsumed (their `busFor(ctx, …)` takes the caller's ctx), and every r2 test
+  (breaker fail-fast, address spellings) rides their file.
+- **The unions**: service.go gains S2's `busySrc` + S6's `stampEvents` beside
+  this lane's `leaseEvents`; app.go gains S2's `WithBusySource` + S6's
+  boardBusPublisher/SSE-join wiring beside this lane's `boardLeaseBus`; config
+  gains S6's `board.eventbus.*` with field-by-field fallback to this lane's
+  `board.leaseEventbus.*` (one Redis, one posture); design 0072's §2 table
+  gains S6's landed rows; CHANGELOG/COORDINATE additive.
+- **This lane's r2 (depose story-form, docs canary) survives untouched** — S6's
+  merge never touched those files; the docs/api/mcp.md hunk resolves to the
+  story-form rows (main's rename + the depose row).
+- **Worklog number**: the S6 lane's review round had renumbered this worklog
+  1241→1243 on their branch; this lane's 1242 (the r2 rename) consolidated INTO
+  their 1243 — one file, the r1+r2+r3 record.
+- Gates rerun on the merged tree (serial): build, golangci-lint, fmt-check,
+  repolint, pkg/eventbus, pkg/board -tags integration, api/internal/{app,config,
+  handlers}, cmd/workspace-agentd full.
+
+## 10. Rework round 4 (PR #2007 — the final catch-up: #2006's lineage landed on main)
+
+#2006 (S5 depose, whose lineage carried S4/S6/S3's files through the shared
+branch) merged to main at b1a00ef67; the base-branch deletion auto-closed this
+PR; reopened, retargeted to main. The catch-up merge of origin/main (1f197d527)
+under the lane, per the orchestrator's reconciliation shape:
+
+- **TAKE THEIRS on every conflicted transport/machinery file** (19 conflicts):
+  board_bus.go(+test), pkg/board/{lease_events.go,depose.go(+integration test)},
+  eventbus_metrics.go(+test), the story-alias surface (board_story_alias.go(+test),
+  mcp_server.go, board_manager_tools.go, mcp_board_tools_test.go),
+  pkg/mcp/{board_tools.go,client.go,integration_test.go}, docs/api/mcp.md.
+  Theirs is the post-#2005/#2006 lineage (S5's ReclaimReasonDeposed + the
+  emitLease panic containment ride in lease_events.go; the exchange-dir wording
+  rides the tool descriptions). The E2E delta ours→theirs is EXACTLY the r3
+  blocker's two-line fix: the depose arms speak the canonical
+  `board_depose_story` at the dispatch seam.
+- **Unions**: service.go/app.go auto-merged carrying all three lanes' seams
+  (leaseEvents + busySrc + stampEvents; boardLeaseBus + WithBusySource +
+  the S6 boardBusPublisher); CHANGELOG/COORDINATE take theirs (the newer
+  superset).
+- **Worklog dedupe**: main's S5-lineage renumber created twins — kept this
+  lane's 1242/1243 (COORDINATE-referenced, and 1243 is the full r1-r4 record),
+  removed main's byte-identical 1246 / subset 1249; kept main's numbered
+  1244/1245/1247/1248/1250, removed this lane's NNNN twins (identical or
+  subset content; the depose twin's richer post-r5 rounds live in 1248).
+- **The r3 review's two inherited follow-ups, dispositioned this round**:
+  1. The flaky `TestBoardBusPublisher_OverflowFallsBack` — ALREADY FIXED on
+     main (review r6 of the #2006 lineage): the pin asserts the drop-free
+     BOUNDS instead of a scheduling-dependent count. Verified, not assumed:
+     the taken board_bus_test.go carries the bounds assertion + the
+     run-41224144128 comment; 5/5 green under -race on this tree.
+  2. The config-posture asymmetry (canonical `board.eventbus.*` alone left
+     the lease publisher disarmed) — FIXED here (TDD: the new
+     TestBoardEnvOverrides_EventbusArmsLease red → the per-field fallback
+     made BIDIRECTIONAL in config.go → green; the full config package green).
+
+- Gates on the merged tree (serial, PG 16 local with all 54 migrations
+  applied): go build ./...; go vet (touched pkgs); -race: pkg/eventbus,
+  api/internal/config, pkg/mcp, api/internal/app, cmd/workspace-agentd full
+  (465s), pkg/board -tags integration (19.6s); api/internal/handlers (101s);
+  TestIntegrationBoardManagerE2E -tags integration PASS (the r3 blocker, on
+  this exact tree); repolint + pkg/repolint (the docs parity canary);
+  golangci-lint v2.13.1 (contextcheck included) 0 issues; gofmt clean on the
+  tracked tree (the local fmt-check diffs are the CI runner's own untracked
+  .ai-workflows artifacts, invisible to CI's fresh checkout).
