@@ -117,8 +117,7 @@ func TestAgedArgCompaction_WindowProtectsRecentVerbatim(t *testing.T) {
 		}
 	}
 	assert.Equal(t, 4, verbatim, "the window-protected calls (old_5, its bash, new_0, new_1) stay in 4 verbatim messages")
-	_ = stats
-	_ = out
+
 }
 
 // TestAgedArgCompaction_IdempotentAcrossTurns — re-applying the
@@ -186,9 +185,14 @@ func TestAgedArgRenderMatchesReplayHarness(t *testing.T) {
 		lastErr     error
 		lastOut     []byte
 	)
+	// The sample carries < and & — the r2 finding 5 divergence (Go's
+	// default Marshal HTML-escapes them; both sides now emit raw bytes).
+	// KNOWN, DOCUMENTED divergence NOT covered here: non-integer number
+	// FORMATS (Go json.Number preserves "1.50"; python re-serializes
+	// "1.5") — semantic parity only for number formatting.
 	sampleBody := []byte(`{"model":"glm-5.3","messages":[` +
-		`{"role":"user","content":"go"},` +
-		`{"role":"assistant","content":"working","tool_calls":[{"id":"call_1","type":"function","function":{"name":"llmsafespaces_board_create_task","arguments":"{\"epicId\":\"epc-1\",\"title\":\"t\"}"}}]},` +
+		`{"role":"user","content":"go < & >"},` +
+		`{"role":"assistant","content":"working","tool_calls":[{"id":"call_1","type":"function","function":{"name":"llmsafespaces_board_create_task","arguments":"{\"epicId\":\"epc-1 < & >\",\"title\":\"t\"}"}}]},` +
 		`{"role":"tool","tool_call_id":"call_1","content":"{\"ok\":true}"}]}`)
 	goOut, _ := newAgedArgCompactorWindow(0).Compact(sampleBody)
 	var goParsed struct {
@@ -299,11 +303,76 @@ func TestAgedArgCompaction_UnnameableCallPassthrough(t *testing.T) {
 	assert.Equal(t, string(body), string(out), "byte-verbatim")
 }
 
+func TestAgedArgCompaction_UnconsumedResultPassthrough(t *testing.T) {
+	// r2 finding 1: an ORPHAN riding alongside a COMPLETE pair — the
+	// one-directional v3 draft consumed and deleted it. Pairing must be
+	// exactly bijective.
+	body := []byte(`{"model":"m","messages":[` +
+		`{"role":"assistant","content":"","tool_calls":[{"id":"call_1","type":"function","function":{"name":"llmsafespaces_session_list","arguments":"{\"includeArchived\":true}"}}]},` +
+		`{"role":"tool","tool_call_id":"call_1","content":"{\"ok\":true}"},` +
+		`{"role":"tool","tool_call_id":"call_UNKNOWN","content":"{\"orphan\":true}"},` +
+		`{"role":"user","content":"go"}]}`)
+	out, stats := newAgedArgCompactorWindow(0).Compact(body)
+	assert.False(t, stats.Changed, "orphan result alongside a complete pair → span passthrough")
+	assert.Equal(t, string(body), string(out), "byte-verbatim")
+}
+
+func TestAgedArgCompaction_NullToolCallIDPassthrough(t *testing.T) {
+	// r2 finding 2: null tool_call_id — null-into-string is a silent
+	// no-op in Go; the v3 draft landed it in resultByID[""] (deleted).
+	body := []byte(`{"model":"m","messages":[` +
+		`{"role":"assistant","content":"","tool_calls":[{"id":"call_1","type":"function","function":{"name":"llmsafespaces_session_list","arguments":"{\"includeArchived\":true}"}}]},` +
+		`{"role":"tool","tool_call_id":null,"content":"{\"vanishing\":true}"},` +
+		`{"role":"user","content":"go"}]}`)
+	out, stats := newAgedArgCompactorWindow(0).Compact(body)
+	assert.False(t, stats.Changed, "null tool_call_id → span passthrough")
+	assert.Equal(t, string(body), string(out), "byte-verbatim")
+}
+
+func TestAgedArgCompaction_UnknownAssistantFieldPassthrough(t *testing.T) {
+	// r2 finding 3: a real glm wire field (reasoning_content) must not be
+	// silently dropped by the {role, content} merge marshal.
+	body := []byte(`{"model":"m","messages":[` +
+		`{"role":"assistant","content":"working","reasoning_content":"hidden chain","tool_calls":[{"id":"call_1","type":"function","function":{"name":"llmsafespaces_session_list","arguments":"{\"includeArchived\":true}"}}]},` +
+		`{"role":"tool","tool_call_id":"call_1","content":"{\"ok\":true}"},` +
+		`{"role":"user","content":"go"}]}`)
+	out, stats := newAgedArgCompactorWindow(0).Compact(body)
+	assert.False(t, stats.Changed, "unknown assistant fields → span passthrough (lossless)")
+	assert.Equal(t, string(body), string(out), "byte-verbatim")
+}
+
+func TestAgedArgCompaction_DuplicateCallIDPassthrough(t *testing.T) {
+	// r2 finding 7: duplicate CALL ids — one result would render on both
+	// bullets (inconsistent with the any-anomaly-passthrough contract).
+	body := []byte(`{"model":"m","messages":[` +
+		`{"role":"assistant","content":"","tool_calls":[` +
+		`{"id":"call_1","type":"function","function":{"name":"llmsafespaces_session_list","arguments":"{\"a\":1}"}},` +
+		`{"id":"call_1","type":"function","function":{"name":"llmsafespaces_session_list","arguments":"{\"a\":2}"}}]},` +
+		`{"role":"tool","tool_call_id":"call_1","content":"{\"ok\":true}"},` +
+		`{"role":"user","content":"go"}]}`)
+	out, stats := newAgedArgCompactorWindow(0).Compact(body)
+	assert.False(t, stats.Changed, "duplicate call ids → span passthrough")
+	assert.Equal(t, string(body), string(out), "byte-verbatim")
+}
+
+func TestAgedArgRenderArguments_TrailingBracketVerbatim(t *testing.T) {
+	// r2 finding 4: More() is FALSE for a trailing `]` and Token()
+	// ERRORS on it — the v3 draft fell through to a partial bullet.
+	out := renderArguments(`{"a":1} ]`)
+	assert.Contains(t, out, `"a":1} ]`, "the trailing ] rides verbatim (raw render, total function)")
+}
+
+func TestAgedArgRenderArguments_TrailingTokenVerbatim(t *testing.T) {
+	// a trailing VALID token must also render raw (not silently dropped)
+	out := renderArguments(`{"a":1} 42`)
+	assert.Contains(t, out, `"a":1} 42`, "trailing valid token rides verbatim")
+}
+
+// TestAgedArgRenderArguments_MalformedTrailingContentVerbatim — a
+// payload that parses as an object but carries trailing garbage renders
+// the RAW inner text verbatim (total function; r1 finding 6: the draft
+// rendered a partial bullet).
 func TestAgedArgRenderArguments_MalformedTrailingContentVerbatim(t *testing.T) {
-	// A payload that parses as an object but carries trailing garbage
-	// renders the RAW inner text as one JSON-escaped string — lossless,
-	// deterministic (r1 finding 6: the v3 draft rendered a partial
-	// bullet).
 	out := renderArguments(`{"epicId":"epc-1"} GARBAGE`)
 	assert.Contains(t, out, `"epicId":"epc-1"} GARBAGE`, "the raw payload rides verbatim inside the bullet (total function)")
 }

@@ -51,11 +51,11 @@ func newByoMetrics() *byoMetrics {
 		}, []string{"path", "status"}),
 		agedArgRequests: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "llm_relay_byo_aged_arg_compactions_total",
-			Help: "Chat-completion requests where aged llmsafespaces_* tool-call arguments were stubbed (#1949; silent history rewriting is the failure mode — every fire is counted).",
+			Help: "Chat-completion requests where prior tool usage was restructured into markdown bullets (aged-arg v3, #1949; silent history rewriting is the failure mode — every fire is counted).",
 		}, []string{"workspace", "provider"}),
 		agedArgStubbed: prometheus.NewCounterVec(prometheus.CounterOpts{
-			Name: "llm_relay_byo_aged_arg_calls_stubbed_total",
-			Help: "Aged llmsafespaces_* tool-call arguments stubbed by relay aged-arg compaction (#1949).",
+			Name: "llm_relay_byo_aged_arg_calls_restructured_total",
+			Help: "Tool calls restructured into markdown bullets by relay aged-arg compaction v3 (#1949).",
 		}, []string{"workspace", "provider"}),
 		agedArgBytesSaved: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "llm_relay_byo_aged_arg_bytes_saved_total",
@@ -100,9 +100,9 @@ func (m *byoMetrics) recordInternal(path string, status int) {
 }
 
 // recordAgedArgCompaction counts one compaction fire (#1949): the
-// request, the stubbed-call count, and the body bytes removed. The
+// request, the restructured-call count, and the body bytes removed. The
 // bytes delta is CLAMPED at zero: a small aged payload (e.g. a 17-byte
-// board_read arg) is LARGER than the ~110-byte stub, so the rewritten
+// board_read arg) can be SMALLER than the restructured bullets, so the
 // body can grow — Prometheus Counter.Add panics on negatives (the r3
 // review's reproduced crash), and observability must never be able to
 // kill the request it observes.

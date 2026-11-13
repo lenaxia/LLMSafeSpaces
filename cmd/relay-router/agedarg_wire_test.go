@@ -229,7 +229,7 @@ func TestAgedArgSyntheticReplayCure(t *testing.T) {
 	// every other message holds zero protected calls → restructured).
 	out, stats := newAgedArgCompactorWindow(2).Compact(body)
 	require.True(t, stats.Changed)
-	require.Equal(t, 7, stats.CallsStubbed, "run_1 + 3 charters + 3 of the 4 bashes restructured (bash_3 and bash_3 and call_recent stay verbatim in-window)")
+	require.Equal(t, 7, stats.CallsStubbed, "run_1 + 3 charters + 3 of the 4 bashes restructured (bash_3 and call_recent stay verbatim in-window)")
 
 	// Scorer cleanliness gates on the compacted body.
 	var parsed struct {

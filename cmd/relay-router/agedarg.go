@@ -267,6 +267,18 @@ func tryRestructureSpan(msg json.RawMessage, span []json.RawMessage, calls []jso
 	}
 	// Assistant content must be a string (or absent). Array/parts-shaped
 	// content → passthrough (r1 finding 4).
+	//
+	// r2 finding 3: the assistant message must carry NO fields beyond
+	// role/content/tool_calls — a real glm wire field (reasoning_content)
+	// would be silently dropped by the {role, content} merge marshal.
+	// Lossless means lossless: unknown fields → passthrough span.
+	for k := range m {
+		switch k {
+		case "role", "content", "tool_calls":
+		default:
+			return nil, 0, false
+		}
+	}
 	assistantPrefix := ""
 	if contentRaw, ok := m["content"]; ok {
 		var cs string
@@ -332,8 +344,15 @@ func tryRestructureSpan(msg json.RawMessage, span []json.RawMessage, calls []jso
 		if !ok {
 			return nil, 0, false // r1 finding 7: id-less tool message → passthrough
 		}
-		var id string
-		if err := json.Unmarshal(idRaw, &id); err != nil {
+		// r2 finding 2: JSON null into *string unmarshals as a no-op —
+		// a null id is PRESENT-but-invalid: reject explicitly (the v3
+		// draft landed it in resultByID[""], unreachable → deleted).
+		var idPtr *string
+		if err := json.Unmarshal(idRaw, &idPtr); err != nil || idPtr == nil {
+			return nil, 0, false
+		}
+		id := *idPtr
+		if id == "" {
 			return nil, 0, false
 		}
 		if seenIDs[id] {
@@ -344,16 +363,33 @@ func tryRestructureSpan(msg json.RawMessage, span []json.RawMessage, calls []jso
 		if !ok {
 			return nil, 0, false // r1 finding 3: absent content → passthrough
 		}
-		var content string
-		if err := json.Unmarshal(contentRaw, &content); err != nil {
-			return nil, 0, false // r1 finding 3: non-string content → passthrough
+		// r2 finding 7: null content is PRESENT-but-invalid — same
+		// null-into-string no-op class as the id. Passthrough.
+		var contentPtr *string
+		if err := json.Unmarshal(contentRaw, &contentPtr); err != nil || contentPtr == nil {
+			return nil, 0, false
 		}
-		resultByID[id] = content
+		resultByID[id] = *contentPtr
+	}
+	// r2 finding 1: the pairing must be EXACTLY bijective — every result
+	// consumed (this direction was missing; an orphan riding alongside a
+	// complete pair was silently deleted) and every call paired.
+	if len(resultByID) != len(parsed) {
+		return nil, 0, false
 	}
 	for _, pc := range parsed {
 		if _, ok := resultByID[pc.id]; !ok {
-			return nil, 0, false // r1 finding 1: orphaned result or missing pair → passthrough
+			return nil, 0, false
 		}
+	}
+	// r2 finding 7: duplicate CALL ids — one result would render on both
+	// bullets. Any duplicate call id → passthrough.
+	seenCalls := make(map[string]bool, len(parsed))
+	for _, pc := range parsed {
+		if seenCalls[pc.id] {
+			return nil, 0, false
+		}
+		seenCalls[pc.id] = true
 	}
 
 	// Render.
@@ -374,13 +410,22 @@ func tryRestructureSpan(msg json.RawMessage, span []json.RawMessage, calls []jso
 		b.WriteString("\n")
 		rendered++
 	}
-	out, err := json.Marshal(map[string]string{
+	// The span was validated to carry ONLY role/content/tool_calls, so
+	// {role, content} is lossless here (r2 finding 3 handled by the
+	// unknown-field gate above, not by a wider marshal). Marshal with
+	// HTML escaping DISABLED — matching the determinism contract and the
+	// python mirror's ensure_ascii=False (r2 finding 5: <, &, > ride the
+	// wire raw, not as \u003c escapes).
+	var buf strings.Builder
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(map[string]string{
 		"role":    "assistant",
 		"content": b.String(),
-	})
-	if err != nil {
+	}); err != nil {
 		return nil, 0, false
 	}
+	out := json.RawMessage(strings.TrimRight(buf.String(), "\n"))
 	return out, rendered, true
 }
 
@@ -430,11 +475,12 @@ func renderArguments(inner string) string {
 	if _, err := dec.Token(); err != nil { // closing brace
 		return inner
 	}
-	if dec.More() {
-		return inner // trailing content after the object → raw verbatim
-	}
-	if _, err := dec.Token(); err == nil {
-		return inner // trailing token after the object → raw verbatim
+	// Anything after the closing brace — a trailing token, or garbage
+	// the decoder would ERROR on (e.g. `]`: More() is false and Token()
+	// errors, so neither decoder probe catches it — r1 finding 4) —
+	// means a non-object payload: raw verbatim. Byte-offset peek, total.
+	if rest := strings.TrimLeft(inner[dec.InputOffset():], " \t\r\n"); rest != "" {
+		return inner
 	}
 	parts := make([]string, 0, len(order))
 	for _, k := range order {

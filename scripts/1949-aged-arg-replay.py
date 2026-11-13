@@ -10,9 +10,8 @@
 #   poisoned old-shape history + new schemas -> RUNAWAY (last row)
 #   poisoned history + aged-arg compaction   -> CLEAN   (row 4 — the cure)
 #
-# The poisoned arm reproduces the mechanism on CURRENT main behavior:
-# main has NO relay-side compaction, so what the model sees is exactly
-# what this harness sends. The compacted arm applies the SAME stub
+# The poisoned arm reproduces the mechanism on CURRENT main behavior.
+# The compacted arm applies the SAME restructure
 # payload the relay-router (cmd/relay-router agedarg.go) applies in-path
 # — the python stub is byte-identical to the Go stub (pinned by
 # TestAgedArgStubMatchesReplayHarness, which executes this script's
@@ -57,7 +56,9 @@ TOOL_PREFIX = "llmsafespaces_"
 # cross-context (myriad 3/3, quick-panda 3/3 clean on exact live
 # replays). Supersedes v1 (prose-note stub — leaked, failed) and v2
 # (value-dotting — clean but lossy).
-RECENT_TOOL_CALLS = 0
+RECENT_TOOL_CALLS = 0  # 0 = restructure every tool call (validated)
+# Gate mirroring the Go kill switch (BYO_AGED_ARG_RECENT_TOOL_CALLS=-1
+# == False). Wired into restructure() below.
 RESTRUCTURE_TOOL_CALLS = True
 
 WORDS = ("drain ledger reclaim wedge sentinel charter posture seam verdict "
@@ -255,8 +256,12 @@ def render_arguments(args_str):
 
 
 def restructure_messages(msgs):
-    # Merge each assistant tool-call message and its following
-    # role:"tool" results into ONE plain-text assistant message.
+    # v3 validate-then-merge (mirror of Go tryRestructureSpan): a span is
+    # merged ONLY when it validates perfectly clean — every call named
+    # with a unique string id, every result paired exactly-once with
+    # string content, no unknown assistant fields. ANY anomaly → the
+    # span forwards VERBATIM (lossless by construction; the r1 draft
+    # dropped orphans — reproduced and fixed).
     out = []
     i = 0
     n = 0
@@ -267,24 +272,63 @@ def restructure_messages(msgs):
             out.append(m)
             i += 1
             continue
+        # unknown assistant fields → passthrough span
+        if isinstance(m, dict):
+            extra = set(m.keys()) - {"role", "content", "tool_calls"}
+            if extra:
+                out.append(m)
+                i += 1
+                continue
         j = i + 1
-        results = {}
+        span_tools = []
         while j < len(msgs):
             t = msgs[j]
             if isinstance(t, dict) and t.get("role") == "tool":
-                results[t.get("tool_call_id")] = t.get("content", "")
+                span_tools.append(t)
                 j += 1
                 continue
             break
+        # validate calls
+        parsed = []
+        ok = True
+        for c in calls:
+            fn = c.get("function") or {}
+            name = fn.get("name")
+            cid = c.get("id")
+            args = fn.get("arguments")
+            if not isinstance(name, str) or not name or not isinstance(cid, str) or not cid or not isinstance(args, str):
+                ok = False
+                break
+            parsed.append((cid, name, args))
+        if not ok:
+            out.extend(msgs[i:j])
+            i = j
+            continue
+        # validate results: string ids, unique, string content,
+        # exactly bijective with the rendered calls
+        result_by_id = {}
+        seen = set()
+        for t in span_tools:
+            cid = t.get("tool_call_id")
+            content = t.get("content")
+            if not isinstance(cid, str) or not cid or cid in seen:
+                ok = False
+                break
+            if not isinstance(content, str):
+                ok = False
+                break
+            seen.add(cid)
+            result_by_id[cid] = content
+        if not ok or len(result_by_id) != len(parsed) or any(cid not in result_by_id for cid, _, _ in parsed):
+            out.extend(msgs[i:j])
+            i = j
+            continue
         lines = []
         if isinstance(m.get("content"), str) and m["content"].strip():
             lines.append(m["content"].strip())
-        for c in calls:
-            fn = c.get("function") or {}
-            lines.append("- Called `" + fn.get("name", "") + "`(" + render_arguments(fn.get("arguments", "")) + ")")
-            cid = c.get("id")
-            if cid in results:
-                lines.append(f"  - Result: {results[cid]}")
+        for cid, name, args in parsed:
+            lines.append("- Called `" + name + "`(" + render_arguments(args) + ")")
+            lines.append("  - Result: " + result_by_id[cid])
             n += 1
         merged = {"role": "assistant", "content": "\n".join(lines) + "\n"}
         out.append(merged)
@@ -293,6 +337,10 @@ def restructure_messages(msgs):
 
 
 def restructure(body):
+    # RESTRUCTURE_TOOL_CALLS gates the whole transform (the Go kill
+    # switch mirror: BYO_AGED_ARG_RECENT_TOOL_CALLS=-1 == False).
+    if not RESTRUCTURE_TOOL_CALLS:
+        return json.dumps(body, separators=(",", ":"), ensure_ascii=False), 0
     msgs = body.get("messages")
     if not isinstance(msgs, list):
         return json.dumps(body), 0
@@ -304,11 +352,11 @@ def restructure(body):
 SAMPLE_BODY = {
     "model": "glm-5.3",
     "messages": [
-        {"role": "user", "content": "go"},
+        {"role": "user", "content": "go < & >"},
         {"role": "assistant", "content": "working",
          "tool_calls": [{"id": "call_1", "type": "function", "function": {
              "name": "llmsafespaces_board_create_task",
-             "arguments": json.dumps({"epicId": "epc-1", "title": "t"}, separators=(",", ":"))}}]},
+             "arguments": json.dumps({"epicId": "epc-1 < & >", "title": "t"}, separators=(",", ":"))}}]},
         {"role": "tool", "tool_call_id": "call_1", "content": json.dumps({"ok": True}, separators=(",", ":"))},
     ],
 }
