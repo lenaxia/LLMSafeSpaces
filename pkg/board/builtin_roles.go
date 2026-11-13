@@ -30,8 +30,6 @@ package board
 // via board_record_verdict; findings with pointers; no drive-by
 // merging), with domain flavor only where it matters.
 
-import "strings"
-
 // BuiltinBoardRole is one shipped role definition: the identity the
 // seeded agent role carries plus the charter (its system prompt).
 type BuiltinBoardRole struct {
@@ -121,31 +119,11 @@ var builtinBoardRoles = []BuiltinBoardRole{
 }
 
 // BuiltinBoardRoles returns the shipped stage-persona vocabulary
-// (defensive copy — callers must not mutate the single source).
+// (defensive copy — callers must not mutate the single source). The
+// seed keys on slugs (present-map of the platform vocabulary); no
+// per-slug lookup helper exists because nothing looks one up.
 func BuiltinBoardRoles() []BuiltinBoardRole {
 	out := make([]BuiltinBoardRole, len(builtinBoardRoles))
 	copy(out, builtinBoardRoles)
 	return out
-}
-
-// BuiltinBoardRoleBySlug resolves one shipped role by its slug (nil
-// when the slug names no built-in) — the seed's lookup arm.
-func BuiltinBoardRoleBySlug(slug string) *BuiltinBoardRole {
-	for i := range builtinBoardRoles {
-		if builtinBoardRoles[i].Slug == slug {
-			r := builtinBoardRoles[i]
-			return &r
-		}
-	}
-	return nil
-}
-
-// BuiltinBoardRoleSlugs renders the shipped vocabulary's slugs (the
-// "which built-ins exist" line for logs and error detail).
-func BuiltinBoardRoleSlugs() string {
-	slugs := make([]string, len(builtinBoardRoles))
-	for i := range builtinBoardRoles {
-		slugs[i] = builtinBoardRoles[i].Slug
-	}
-	return strings.Join(slugs, ", ")
 }

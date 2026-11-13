@@ -5,6 +5,7 @@ package app
 
 import (
 	"context"
+	"fmt"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -30,9 +31,13 @@ type fakeBuiltinRoleSeedStore struct {
 	roles   []*types.AgentRole // the standing vocabulary
 	created []*types.AgentRole // every CreateAgentRole input, in order
 	cfgs    [][]byte           // every CreateAgentRole config jsonb, in order
+	listErr error              // when set, ListAgentRoles fails (the outage shape)
 }
 
 func (f *fakeBuiltinRoleSeedStore) ListAgentRoles(_ context.Context, scope, _ string) ([]*types.AgentRole, error) {
+	if f.listErr != nil {
+		return nil, f.listErr
+	}
 	var out []*types.AgentRole
 	for _, r := range f.roles {
 		if r != nil && r.Scope == scope {
@@ -148,6 +153,49 @@ func TestSeedBuiltinBoardRoles_PartialVocabularySeedsOnlyGaps(t *testing.T) {
 	assert.True(t, got["implementer-data-analysis"])
 	assert.True(t, got["implementer-writing"])
 	assert.True(t, got["reviewer-data-analysis"])
+}
+
+// TestSeedBuiltinBoardRoles_StoreErrorsPropagate — a store failure is
+// NEVER swallowed into a silent partial vocabulary: a list outage and
+// a mid-vocabulary create failure both return the error to the caller
+// (app.go warns; the next boot heals the partial state — the heal
+// shape itself pinned by PartialVocabularySeedsOnlyGaps above).
+func TestSeedBuiltinBoardRoles_StoreErrorsPropagate(t *testing.T) {
+	// The list outage: the error surfaces verbatim, nothing seeds.
+	store := &fakeBuiltinRoleSeedStore{listErr: fmt.Errorf("role store unreachable")}
+	err := seedBuiltinBoardRoles(context.Background(), store)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "role store unreachable")
+	assert.Empty(t, store.created, "nothing seeds when the vocabulary cannot be read")
+
+	// The mid-vocabulary create failure: the error surfaces (the
+	// already-created prefix stays persisted — healable, not duplicated).
+	failing := &failingCreateRoleSeedStore{failAfter: 2}
+	err = seedBuiltinBoardRoles(context.Background(), failing)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "create blew up")
+	assert.Len(t, failing.created, 2, "the first two creates persisted before the third failed")
+}
+
+// failingCreateRoleSeedStore lets CreateAgentRole succeed failAfter
+// times, then fail (the mid-vocabulary outage shape).
+type failingCreateRoleSeedStore struct {
+	fakeBuiltinRoleSeedStore
+	failAfter int
+	fails     int
+	created   []*types.AgentRole
+}
+
+func (f *failingCreateRoleSeedStore) CreateAgentRole(_ context.Context, role *types.AgentRole, _ []byte) (*types.AgentRole, error) {
+	if f.fails >= f.failAfter {
+		return nil, fmt.Errorf("create blew up")
+	}
+	f.fails++
+	f.created = append(f.created, role)
+	out := *role
+	out.ID = "66666666-6666-6666-6666-666666666661"
+	f.roles = append(f.roles, &out)
+	return &out, nil
 }
 
 // TestSeedBuiltinBoardRoles_VisibleToPersonaSelection — the seeded

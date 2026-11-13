@@ -284,7 +284,7 @@ domain, the names carrying the stage each seat is meant for:
 
 Plus the pre-existing built-in `reviewer` (the default reviewer's
 verdict-channel charter). All are platform-scope roles — they appear in
-every persona picker (`GET /api/v1/me/agent-roles`) and validate like
+every persona picker (`GET /api/v1/auth/me/agent-roles`) and validate like
 any other reference. Seeding is idempotent: a restart re-seeds only
 what is missing, and an owner-curated platform role under the same slug
 is left untouched.

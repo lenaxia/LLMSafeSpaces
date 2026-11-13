@@ -31,14 +31,18 @@ Six `BuiltinBoardRole` definitions beside the existing `DefaultReviewerRoleSlug`
 
 `docs/api/mcp.md` Sprint Board section gains "Board configuration and stage personas" (config tiers, role-reference model, the six-role table, idempotency note, the no-enforcement ruling). MCP `board_get_config` description names the built-in pairs. CHANGELOG `[Unreleased]` entry added.
 
+### Review round 1 (AI reviewer, CHANGES_REQUESTED → addressed)
+
+Findings and fixes: (1) the new docs advertised `GET /api/v1/me/agent-roles` — a nonexistent route (the real registration is `meGroup.GET("/me/agent-roles")` under `/api/v1/auth` → `GET /api/v1/auth/me/agent-roles`); fixed in docs/api/mcp.md, the CHANGELOG entry, this worklog, and the PRE-EXISTING stale comment at `api/internal/handlers/agent_roles.go:385` (same mistake, one-word fix). (2) `BuiltinBoardRoleBySlug` + `BuiltinBoardRoleSlugs` shipped with zero non-test callers and a factually wrong "the seed's lookup arm" comment — removed both; the seed keys on its own present-map. (3) The reviewer's missing-test note: store-error propagation now pinned (`TestSeedBuiltinBoardRoles_StoreErrorsPropagate` — list outage and mid-vocabulary create failure both propagate, the persisted prefix healable). The Security-scan red on the first head was triaged as pre-existing stdlib noise (govulncheck GO-2026-6859, go1.26.10 toolchain vs go1.26.11 fix, failing identically on main).
+
 ---
 
 ## Key Decisions
 
 - **Uniform `implementer:`/`reviewer:` prefixes for the writing pair** (not `writer:`/`editor:`): the owner's example convention is `"implementer: coding" / "reviewer: coding"`, and the uniform prefix keeps the stage intent self-describing across all domains (an `editor:` prefix reads as a domain word, not a stage signal). The writer/editor semantics ride the descriptions and charters.
 - **Per-role idempotency via one list + missing-only creates** (not a slug-by-slug exists-check): fewer round trips, and partial vocabularies (owner curated some slugs) heal without touching curated rows.
-- **No new config-view surface**: the built-ins appear wherever platform roles already list (picker via `/me/agent-roles`, set-path validation via the directory) — platform scope IS the existing built-in marker convention. board_get_config renders their refs cleanly when selected (pinned); a fresh tier keeps the default-reviewer posture (pinned unchanged).
-- **No frontend change**: the picker enumerates `/me/agent-roles`; seeded platform roles appear automatically with the existing "(platform)" marker.
+- **No new config-view surface**: the built-ins appear wherever platform roles already list (picker via `GET /api/v1/auth/me/agent-roles`, set-path validation via the directory) — platform scope IS the existing built-in marker convention. board_get_config renders their refs cleanly when selected (pinned); a fresh tier keeps the default-reviewer posture (pinned unchanged).
+- **No frontend change**: the picker enumerates `GET /api/v1/auth/me/agent-roles`; seeded platform roles appear automatically with the existing "(platform)" marker.
 
 ---
 

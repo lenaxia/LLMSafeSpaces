@@ -47,14 +47,6 @@ func TestBuiltinBoardRoles_ExactNamesAndSlugs(t *testing.T) {
 		require.False(t, seen[r.Slug], "slugs are unique (platform-scope seeding keys on them)")
 		seen[r.Slug] = true
 	}
-	// The lookup arm resolves every shipped slug and nothing else.
-	for _, w := range want {
-		r := BuiltinBoardRoleBySlug(w.slug)
-		require.NotNil(t, r)
-		assert.Equal(t, w.name, r.Name)
-	}
-	assert.Nil(t, BuiltinBoardRoleBySlug("reviewer"), "the default reviewer is NOT one of the six (it keeps its own seed)")
-	assert.Nil(t, BuiltinBoardRoleBySlug("nope"))
 	// The defensive copy: mutating the returned slice cannot touch the
 	// single source.
 	roles[0].Name = "mutated"
