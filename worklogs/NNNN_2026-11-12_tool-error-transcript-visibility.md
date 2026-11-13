@@ -2,7 +2,7 @@
 
 **Date:** 2026-11-12
 **Session:** tsk-copper-archer-rushes (epic "Frontend reliability mopup", owner report 2026-11-12)
-**Status:** Review round 1 (CHANGES_REQUESTED) remediated — e2e gate added, re-pushed
+**Status:** APPROVED (round 2, head 0dcc2d2e2); main catch-up merged (0574db771 — 2007/1998/2016 landed), gates re-run green on the merge, /review re-dispatched
 
 ---
 
