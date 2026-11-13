@@ -86,7 +86,6 @@ RUN apt-get update \
 # release's SHA256SUMS entry BEFORE building (stronger than the opencode
 # overlay's TLS-only posture: pi publishes checksums).
 RUN set -eux; \
-    echo "${PI_SOURCE_SHA256}  /tmp/pi-source.tar.gz" | sha256sum -c - ; \
     curl --fail --show-error --location --retry 5 --retry-delay 3 --retry-all-errors \
         "https://github.com/earendil-works/pi/releases/download/v${PI_VERSION}/pi-${PI_VERSION}-source.tar.gz" \
         -o /tmp/pi-source.tar.gz; \
@@ -124,6 +123,7 @@ RUN set -eux; \
     case "${TARGETARCH}" in \
         amd64) PI_PLATFORM=linux-x64 ;; \
         arm64) PI_PLATFORM=linux-arm64 ;; \
+        *) echo "unsupported TARGETARCH=${TARGETARCH}" >&2; exit 1 ;; \
     esac; \
     npm ci --ignore-scripts; \
     ./scripts/build-binaries.sh \
