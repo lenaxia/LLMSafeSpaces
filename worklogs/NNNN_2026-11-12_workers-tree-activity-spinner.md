@@ -70,7 +70,7 @@ exists but only renders once the group is expanded.
 
 ## Test commands
 
-- frontend: `npx vitest run` (229 files / 2608 tests, green)
+- frontend: `npx vitest run` (228 files / 2605 tests, green)
 - e2e: `npx playwright test tests/e2e/sidebar-workers-activity.spec.ts`
 - `npm run typecheck`, `npm run lint` (0 errors; 7 pre-existing
   warnings in generated protobuf files + BoardPage, none in touched
