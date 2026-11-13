@@ -195,6 +195,10 @@ func TestAgedArgRenderMatchesReplayHarness(t *testing.T) {
 		`{"role":"assistant","content":"working","tool_calls":[{"id":"call_1","type":"function","function":{"name":"llmsafespaces_board_create_task","arguments":"{\"epicId\":\"epc-1 < & >\",\"title\":\"t\"}"}}]},` +
 		`{"role":"tool","tool_call_id":"call_1","content":"{\"ok\":true}"}]}`)
 	goOut, _ := newAgedArgCompactorWindow(0).Compact(sampleBody)
+	// RAW-BYTES leg (r3 finding 3): parsed comparison cannot see HTML
+	// escaping — \u003c parses back to < — so assert the literal bytes.
+	assert.Contains(t, string(goOut), `epc-1 < & >`,
+		"Go wire bytes carry < & > LITERALLY (no \u003c escaping — marshalTop and the merge marshal are escape-free)")
 	var goParsed struct {
 		Messages []struct{ Content string } `json:"messages"`
 	}
@@ -210,10 +214,13 @@ func TestAgedArgRenderMatchesReplayHarness(t *testing.T) {
 		foundInterp, lastPath = true, path
 		captured, xerr := exec.Command(path, script, "--print-stub").CombinedOutput()
 		if xerr == nil {
+			pyRaw := strings.TrimSpace(string(captured))
+			assert.Contains(t, pyRaw, `epc-1 < & >`,
+				"python wire bytes carry < & > literally (ensure_ascii=False)")
 			var pyParsed struct {
 				Messages []struct{ Content string } `json:"messages"`
 			}
-			require.NoError(t, json.Unmarshal([]byte(strings.TrimSpace(string(captured))), &pyParsed))
+			require.NoError(t, json.Unmarshal([]byte(pyRaw), &pyParsed))
 			require.Len(t, pyParsed.Messages, 2)
 			assert.Equal(t, goRendered, pyParsed.Messages[1].Content,
 				"python mirror renders byte-identical markdown to the Go transform")
@@ -339,6 +346,31 @@ func TestAgedArgCompaction_UnknownAssistantFieldPassthrough(t *testing.T) {
 	out, stats := newAgedArgCompactorWindow(0).Compact(body)
 	assert.False(t, stats.Changed, "unknown assistant fields → span passthrough (lossless)")
 	assert.Equal(t, string(body), string(out), "byte-verbatim")
+}
+
+func TestAgedArgCompaction_RoleFabricationPassthrough(t *testing.T) {
+	// r3 finding 1: a span whose role is absent or not "assistant" is
+	// never reshaped into an assistant turn (the merge hardcodes
+	// role:assistant — fabrication).
+	for _, tc := range []struct{ name, roleJSON string }{
+		{"absent role", ""},
+		{"user role", `"role":"user",`},
+		{"null role", `"role":null,`},
+	} {
+		_ = tc
+		var roleJSON string
+		if tc.roleJSON != "" {
+			roleJSON = tc.roleJSON
+		}
+		body := []byte(`{"model":"m","messages":[` +
+			`{"role":"user","content":"hi"},` +
+			`{` + roleJSON + `"content":"","tool_calls":[{"id":"call_1","type":"function","function":{"name":"llmsafespaces_session_list","arguments":"{\"includeArchived\":true}"}}]},` +
+			`{"role":"tool","tool_call_id":"call_1","content":"{\"ok\":true}"},` +
+			`{"role":"user","content":"go"}]}`)
+		out, stats := newAgedArgCompactorWindow(0).Compact(body)
+		assert.False(t, stats.Changed, tc.name+" → span passthrough (no role fabrication)")
+		assert.Equal(t, string(body), string(out), "byte-verbatim")
+	}
 }
 
 func TestAgedArgCompaction_DuplicateCallIDPassthrough(t *testing.T) {

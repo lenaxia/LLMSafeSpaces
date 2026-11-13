@@ -29,8 +29,11 @@ import (
 // replacing the assistant tool_calls entry and its paired role:"tool"
 // messages. The model re-plans with ZERO tool_call JSON anywhere in its
 // history — the emission template is gone — while parameters AND
-// outputs stay fully visible (lossless, unlike v1 stubbing / v2
-// dotting).
+// outputs stay fully visible. LOSSLESS, precisely: parameters and
+// outputs are preserved VERBATIM in the bullets; assistant prose is
+// preserved with edge whitespace trimmed (r3 finding 5 — the bare
+// "lossless" claim was overstated; content is exact, formatting is
+// normalized). Unlike v1 stubbing / v2 dotting, nothing is dropped.
 //
 // Verified (exact-context replays via litellm, glm-5.3, 2026-11-13):
 //
@@ -265,6 +268,17 @@ func tryRestructureSpan(msg json.RawMessage, span []json.RawMessage, calls []jso
 	if err := json.Unmarshal(msg, &m); err != nil {
 		return nil, 0, false
 	}
+	// Role must be EXACTLY "assistant" — the merge hardcodes it, and
+	// silently reshaping a user/role-less span into an assistant turn is
+	// role fabrication (r3 finding 1, probe-reproduced).
+	if roleRaw, ok := m["role"]; ok {
+		var role string
+		if err := json.Unmarshal(roleRaw, &role); err != nil || role != "assistant" {
+			return nil, 0, false
+		}
+	} else {
+		return nil, 0, false
+	}
 	// Assistant content must be a string (or absent). Array/parts-shaped
 	// content → passthrough (r1 finding 4).
 	//
@@ -412,21 +426,19 @@ func tryRestructureSpan(msg json.RawMessage, span []json.RawMessage, calls []jso
 	}
 	// The span was validated to carry ONLY role/content/tool_calls, so
 	// {role, content} is lossless here (r2 finding 3 handled by the
-	// unknown-field gate above, not by a wider marshal). Marshal with
-	// HTML escaping DISABLED — matching the determinism contract and the
-	// python mirror's ensure_ascii=False (r2 finding 5: <, &, > ride the
-	// wire raw, not as \u003c escapes).
-	var buf strings.Builder
-	enc := json.NewEncoder(&buf)
-	enc.SetEscapeHTML(false)
-	if err := enc.Encode(map[string]string{
-		"role":    "assistant",
-		"content": b.String(),
-	}); err != nil {
+	// unknown-field gate above, not by a wider marshal). Key order
+	// role-first (matches the python mirror's dict insertion order —
+	// cosmetic parity, r2 finding 5 note), HTML-escape-free.
+	var obuf strings.Builder
+	oenc := json.NewEncoder(&obuf)
+	oenc.SetEscapeHTML(false)
+	if err := oenc.Encode(struct {
+		Role    string `json:"role"`
+		Content string `json:"content"`
+	}{Role: "assistant", Content: b.String()}); err != nil {
 		return nil, 0, false
 	}
-	out := json.RawMessage(strings.TrimRight(buf.String(), "\n"))
-	return out, rendered, true
+	return json.RawMessage(strings.TrimRight(obuf.String(), "\n")), rendered, true
 }
 
 // renderArguments renders one tool-call arguments payload (a JSON string
@@ -572,11 +584,17 @@ func marshalTop(top map[string]json.RawMessage, msgs []json.RawMessage) ([]byte,
 		for k, v := range top {
 			m[k] = v
 		}
-		newMsgs, err := json.Marshal(msgs)
-		if err != nil {
+		// Re-compact WITHOUT HTML escaping — plain json.Marshal would
+		// turn literal <, >, & into \u003c/\u003e/\u0026, defeating the
+		// no-escaping contract (r3 finding 2, probe: x<y&z rode the wire
+		// as \u003c...).
+		var mbuf strings.Builder
+		menc := json.NewEncoder(&mbuf)
+		menc.SetEscapeHTML(false)
+		if err := menc.Encode(msgs); err != nil {
 			return nil, err
 		}
-		m["messages"] = newMsgs
+		m["messages"] = json.RawMessage(strings.TrimRight(mbuf.String(), "\n"))
 	}
 	first := make([]string, 0, len(m))
 	for k := range m {
