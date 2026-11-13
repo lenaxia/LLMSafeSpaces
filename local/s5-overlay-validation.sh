@@ -204,7 +204,7 @@ OPENCODE_REF=$(digest_ref opencode)
 PI_REF=$(digest_ref pi)
 AGENTD_SHA=$(binary_sha agentd /usr/local/bin/workspace-agentd)
 OPENCODE_SHA=$(binary_sha opencode /usr/local/bin/opencode)
-PI_SHA=$(binary_sha pi /pi/pi)
+PI_SHA=$(binary_sha pi /pi)
 [ -n "$AGENTD_SHA" ] && [ -n "$OPENCODE_SHA" ] && [ -n "$PI_SHA" ] || { log "binary hashing failed"; exit 1; }
 log "pins: agentd=${AGENTD_REF} sha=${AGENTD_SHA:0:12}… opencode=${OPENCODE_REF} sha=${OPENCODE_SHA:0:12}… pi=${PI_REF} sha=${PI_SHA:0:12}…"
 

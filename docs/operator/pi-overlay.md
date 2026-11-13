@@ -10,9 +10,12 @@ authorized this see the pi second-harness scoping report (§2) and design
 
 ## What ships
 
-`ghcr.io/lenaxia/llmsafespaces/pi` — a `FROM scratch` image carrying the
-[pi](https://github.com/earendil-works/pi) coding agent as a **directory
-tree at `/pi`**:
+`ghcr.io/lenaxia/llmsafespaces/pi` — a `FROM scratch` image whose
+ROOTFS IS the [pi](https://github.com/earendil-works/pi) release tree.
+Image-volume semantics concatenate the mount path with the in-image
+path (the opencode precedent: image `/usr/local/bin/opencode` mounted at
+`/opencode` → pod `/opencode/usr/local/bin/opencode`), so the tree at
+the image root mounted at `/pi` lands in the pod as:
 
 ```
 /pi/pi                      the bun-compiled executable (~123 MB, dynamically linked)
@@ -21,6 +24,11 @@ tree at `/pi`**:
 /pi/theme/ /pi/assets/ /pi/export-html/ /pi/docs/ /pi/examples/
 /pi/photon_rs_bg.wasm       runtime wasm
 ```
+
+(An earlier draft nested the tree under an in-image `/pi/` — the mount
+then double-nests to `/pi/pi/pi` and the supervisor exits
+`PiOverlayMissing(86)`. The kind S5.2 leg caught it; the layout ruling
+below is why the tree must stay contiguous either way.)
 
 The image volume mounts **read-only at `/pi` on the workspace container
 only** (the supervisor lives there; neither the agentd sidecar nor init

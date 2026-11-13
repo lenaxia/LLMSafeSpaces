@@ -210,7 +210,7 @@ else
         *) die "could not determine pi digest" ;;
     esac
     P_CID=$(docker create localhost:5001/llmsafespaces/pi:${IMAGE_TAG} no-start)
-    docker cp "${P_CID}:/pi/pi" /tmp/lss-pi >/dev/null 2>&1 || { docker rm -f "${P_CID}"; die "pi binary extract failed"; }
+    docker cp "${P_CID}:/pi" /tmp/lss-pi >/dev/null 2>&1 || { docker rm -f "${P_CID}"; die "pi binary extract failed"; }
     docker rm -f "${P_CID}" >/dev/null 2>&1
     PI_BINARY_SHA=$(sha256sum /tmp/lss-pi | cut -d' ' -f1)
     [ -n "${PI_BINARY_SHA}" ] || die "pi binary hash failed"

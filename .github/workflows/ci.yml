@@ -2108,12 +2108,12 @@ jobs:
           cid=$(docker create lsp-pi-mode-pin:ci true)
           docker export "$cid" -o /tmp/pi-fs.tar
           docker rm "$cid" >/dev/null
-          dmode=$(tar -tvf /tmp/pi-fs.tar | awk '$NF == "pi/" || $NF == "pi" {print $1}' | head -1)
-          fmode=$(tar -tvf /tmp/pi-fs.tar | awk '$NF == "pi/pi" {print $1}' | head -1)
-          pj=$(tar -tf /tmp/pi-fs.tar | grep -c '^pi/package.json$' || true)
-          echo "/pi mode: ${dmode:-MISSING}; binary mode: ${fmode:-MISSING}; package.json: ${pj}"
-          [ -n "$dmode" ] || { echo "::error::/pi missing from the image"; exit 1; }
-          [ "$pj" = "1" ] || { echo "::error::pi/package.json missing — the bun package.json-autoload adjacency the tree layout ruling depends on is broken"; exit 1; }
+          dmode=$(tar -tvf /tmp/pi-fs.tar | awk '$NF == "native/" || $NF == "native" {print $1}' | head -1)
+          fmode=$(tar -tvf /tmp/pi-fs.tar | awk '$NF == "pi" {print $1}' | head -1)
+          pj=$(tar -tf /tmp/pi-fs.tar | grep -c '^package.json$' || true)
+          echo "tree dir mode: ${dmode:-MISSING}; binary mode: ${fmode:-MISSING}; package.json: ${pj}"
+          [ -n "$dmode" ] || { echo "::error::the tree's native/ dir missing from the image root"; exit 1; }
+          [ "$pj" = "1" ] || { echo "::error::package.json missing at the image root — the bun package.json-autoload adjacency the tree layout ruling depends on is broken"; exit 1; }
           # uid 1000 is NOT the owner: traversal needs the OTHER-execute
           # bit (tar mode char 10); the binary additionally needs
           # other-read (char 8) and other-execute (char 10).
@@ -2121,18 +2121,19 @@ jobs:
           if [ "$other_x" != "x" ]; then
             echo "::error::/pi mode $dmode lacks the other-execute (traversal) bit — uid 1000 cannot traverse the overlay tree (2026-09-19 incident class)"; exit 1
           fi
-          [ -n "$fmode" ] || { echo "::error::/pi/pi binary missing from the image"; exit 1; }
+          [ -n "$fmode" ] || { echo "::error::pi binary missing from the image root"; exit 1; }
           bin_r=$(printf '%s' "$fmode" | cut -c8)
           bin_x=$(printf '%s' "$fmode" | cut -c10)
           if [ "$bin_r" != "r" ] || [ "$bin_x" != "x" ]; then
-            echo "::error::/pi/pi mode $fmode lacks other-read or other-execute — uid 1000 cannot read/exec the pinned binary"; exit 1
+            echo "::error::pi binary mode $fmode lacks other-read or other-execute — uid 1000 cannot read/exec the pinned binary"; exit 1
           fi
 
       - name: Export binary sha256
         if: github.event_name != 'pull_request'
         run: |
           # The chart pins the BINARY sha256 (the supervisor self-verifies
-          # the file at /pi/pi — hash-the-binary; the rest of the tree is
+          # the file at the image root (/pi, pod path /pi/pi) —
+          # hash-the-binary; the rest of the tree is
           # covered by the image digest). Same extract-and-hash flow as
           # opencode, adjusted for the tree-root layout.
           arch="${{ matrix.platform == 'linux/arm64' && 'arm64' || 'amd64' }}"
@@ -2141,8 +2142,8 @@ jobs:
           docker buildx imagetools create -t "$tag" "$src"
           docker pull --platform ${{ matrix.platform }} "$tag"
           cid="pi-extract-$GITHUB_RUN_ID"
-          docker create --platform ${{ matrix.platform }} --name "$cid" "$tag"             /pi/pi >/dev/null
-          docker cp "$cid":/pi/pi /tmp/pi-bin
+          docker create --platform ${{ matrix.platform }} --name "$cid" "$tag"             /pi >/dev/null
+          docker cp "$cid":/pi /tmp/pi-bin
           docker rm -f "$cid" >/dev/null
           sha256sum /tmp/pi-bin | awk '{print $1}' > "/tmp/pi-binary-${arch}.sha256"
           echo "arch=$arch binary-sha256=$(cat /tmp/pi-binary-$arch.sha256)"

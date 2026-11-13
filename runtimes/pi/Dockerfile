@@ -30,8 +30,10 @@
 #     consumed by the pinned binary itself.
 #
 # TREE LAYOUT RULING: the image preserves the UPSTREAM release layout
-# byte-for-byte (binary at the tree root /pi/pi, package.json adjacent)
-# rather than the sketched /pi/bin/pi. bun's --compile-autoload-package-
+# byte-for-byte — the tree IS the image rootfs (binary at image /pi,
+# package.json adjacent at the image root), so the /pi image-volume
+# mount lands the pod tree as /pi/pi + /pi/package.json — rather than
+# the sketched /pi/bin/pi. bun's --compile-autoload-package-
 # json resolves a package.json NEXT TO the executable (upstream's build
 # enables it so extension dependencies resolve), and the native prebuilds
 # live at their fixed relative path — relocating the binary inside the
@@ -141,15 +143,25 @@ RUN set -eux; \
 
 FROM scratch
 
-# The upstream release tree, unmodified: binary at /pi/pi with
-# package.json, assets, and native prebuilds at their fixed relative
-# paths (see the TREE LAYOUT RULING above). Plain COPY preserves the
-# build stage's modes — bun emits the binary 0755 and the script's
-# mkdir/cp emit 0755 dirs / 0644 data files; the uid-1000 runtime uid
-# needs the other-execute traversal bit on /pi and other-read+execute on
-# the binary (the 2026-09-19 /plugins incident class). The CI mode-pin
-# check (build-pi) asserts exactly those bits on every build.
-COPY --from=build /tree/ /pi/
+# The upstream release tree, unmodified, AS THE IMAGE ROOTFS: the binary
+# at image path /pi with package.json, assets, and native prebuilds at
+# their fixed relative paths. Image-volume semantics CONCATENATE the
+# mount path with the in-image path (the opencode precedent: image
+# /usr/local/bin/opencode mounted at /opencode → pod
+# /opencode/usr/local/bin/opencode) — so the tree at the image root
+# mounted read-only at /pi lands in the pod as /pi/pi (binary) +
+# /pi/package.json (adjacent) + /pi/native/…: the tree stays contiguous
+# and the layout ruling holds. (Copying the tree under an in-image /pi/
+# instead double-nests to /pi/pi/pi — the kind S5.2 leg caught exactly
+# that on first run.)
+#
+# Plain COPY preserves the build stage's modes — bun emits the binary
+# 0755 and the script's mkdir/cp emit 0755 dirs / 0644 data files; the
+# uid-1000 runtime uid needs the other-execute traversal bit on the tree
+# dirs and other-read+execute on the binary (the 2026-09-19 /plugins
+# incident class). The CI mode-pin check (build-pi) asserts exactly
+# those bits on every build.
+COPY --from=build /tree/ /
 
 # Not a runnable image by itself (no entrypoint) — it is consumed only as
 # an image volume mounted read-only at /pi in workspace pods.

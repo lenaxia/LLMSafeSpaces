@@ -269,7 +269,7 @@ jobs:
             *) echo "could not determine pi digest"; exit 1 ;;
           esac
           PI_CID=$(docker create localhost:5001/llmsafespaces/pi:$IMAGE_TAG no-start)
-          docker cp "$PI_CID:/pi/pi" /tmp/pi-bin >/dev/null 2>&1 || { docker rm -f "$PI_CID"; echo "pi binary extract failed"; exit 1; }
+          docker cp "$PI_CID:/pi" /tmp/pi-bin >/dev/null 2>&1 || { docker rm -f "$PI_CID"; echo "pi binary extract failed"; exit 1; }
           docker rm -f "$PI_CID" >/dev/null 2>&1
           PI_BINARY_SHA=$(sha256sum /tmp/pi-bin | cut -d' ' -f1)
           [ -n "$PI_BINARY_SHA" ] || { echo "pi binary hash failed"; exit 1; }
