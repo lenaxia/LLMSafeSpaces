@@ -2,7 +2,7 @@
 
 **Date:** 2026-11-13
 **Session:** tsk-secluded-sitar-squeals (epic "Frontend reliability mopup", project "Agent DX: reference patterns")
-**Status:** Complete — pushed for AI review
+**Status:** Complete — review round 1 remediated (e2e pair added), pushed on the synchronize path
 
 ---
 
@@ -39,9 +39,16 @@ The owner ask 2026-11-13: the frontend Sprint Board had no way to manually activ
 - **Drawer unwrap** (the latent-bug pin): the existing drawer activate test now mocks the wrapper — RED pre-fix (drawer blanked), GREEN post-fix.
 - `board.test.ts`: activate's 200 wrapper returned verbatim (`epic` + `initial_ready_set`).
 
+### 4b. Review round 1 (CHANGES_REQUESTED → remediated)
+
+- **Finding 1 (blocking), addressed**: the new band-kebab workflow shipped with no e2e coverage while the analogous project-kebab lifecycle has a happy+unhappy Playwright pair (`board.spec.ts`). Added the epic twin — the mock harness gains the `activate`/`pause` routes on the flat epic group (activate fulfills the WRAPPER, pause the bare epic, both mutating `state.epics` so the status survives the invalidation refetch; an `epicActivateRefuse` lever arms the `epic_state` guard) and three specs: activate a zero-task draft epic (wire address asserted on the request, badge flip consistent through refetch, notice names the epic, kebab re-opens on Pause), pause an active epic (paused badge lands), failed activate (guard code rendered, nothing flipped, retry recovers and clears the error). Born-RED 3/3 on the pre-change BoardPage.
+- Reviewer's correctness/robustness/security/alignment sections all verified clean; the non-blocking observation (no `acknowledgeInactiveDeps` affordance anywhere in the UI — the guard's remedy is API/MCP-only) is pre-existing drawer behavior, honestly pinned by the failure tests; follow-up material, not this lane.
+- The red `Security scan` check was adjudicated pre-existing on main (GO-2026-6859, Go stdlib — this diff is frontend-only).
+
 ## Verification
 
 - Full frontend suite: **2609/2609 green (228 files)** on the worktree; `tsc --noEmit` clean; `eslint` 0 errors on touched files (one pre-existing exhaustive-deps warning in `BoardPage.tsx:779` — `openEpicDrawer`, not this lane's code; my hook carries the dep).
+- e2e (review r1): the 3 new board.spec.ts specs green locally (Chromium via the mock harness); born-RED 3/3 against the pre-change band.
 - Born-RED: 3/3 band-kebab pins + the drawer-unwrap pin fail on the pre-fix `BoardPage.tsx` (`git checkout` swap, re-run, restore).
 - `make fmt-check` green.
 

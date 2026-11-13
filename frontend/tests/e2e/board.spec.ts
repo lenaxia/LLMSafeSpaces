@@ -95,6 +95,9 @@ interface BoardState {
   /** Unhappy-path levers: force the two creation POSTs to 500. */
   failEpicCreate?: boolean;
   failTaskCreate?: boolean;
+  /** Unhappy-path lever: the activate route's epic_state guard arm
+   * (the cross-epic-deps-into-inactive-epics refusal — #1747). */
+  epicActivateRefuse?: boolean;
 }
 
 type E2EEpic = {
@@ -347,6 +350,40 @@ async function setupBoardMocks(page: Page, state: BoardState) {
       progress_done: 0, progress_total: 0, progress_derived: false,
     });
   });
+  // Owner ask 2026-11-13: the epic lifecycle pair on the flat group —
+  // activate's 200 is the {epic, initial_ready_set} WRAPPER (hurl
+  // board.hurl); pause returns the bare epic (epicLifecycle shape).
+  // state.epics rows are the mutable server truth (task-derived rows
+  // are rebuilt "active" on every list read, so the lifecycle specs
+  // ride zero-task epics whose status actually persists).
+  for (const lifecycle of ["activate", "pause"] as const) {
+    await page.route(`${API}/me/epics/*/${lifecycle}`, (r: Route) => {
+      if (r.request().method() !== "POST") {
+        void r.continue();
+        return;
+      }
+      const url = new URL(r.request().url());
+      const epicIdOrShort = url.pathname.split("/epics/")[1]?.split("/")[0] ?? "";
+      const epic = state.epics.find((e) => e.short_id === epicIdOrShort || e.id === epicIdOrShort);
+      if (!epic) {
+        void r.fulfill(j({ error: `board: epic "${epicIdOrShort}" not found` }, 404));
+        return;
+      }
+      if (lifecycle === "activate" && state.epicActivateRefuse) {
+        void r.fulfill(j({
+          error: "board: guard epic_state: 2 cross-epic dependenc(ies) enter inactive epics — acknowledge (acknowledgeInactiveDeps) or resolve them first",
+          code: "epic_state",
+        }, 409));
+        return;
+      }
+      epic.status = lifecycle === "activate" ? "active" : "paused";
+      if (lifecycle === "activate") {
+        void r.fulfill(j({ epic, initial_ready_set: [] }));
+        return;
+      }
+      void r.fulfill(j(epic));
+    });
+  }
   // #1832 item 2: epic-scoped task creation — POST /me/epics/:id/tasks.
   // Appends to the shared state so the post-invalidation refetch shows
   // the new row in the backlog column and beneath the epic band.
@@ -1054,6 +1091,106 @@ test.describe("#1832 item 3 — kebab menus + delete flows", () => {
     await page.getByRole("menuitem", { name: "Archive project" }).click();
     await expect(page.getByTestId(`swimlane-${PROJECT_A}`)).toHaveCount(0, { timeout: 8000 });
     await expect(page.getByTestId("archived-projects-drawer")).toBeVisible();
+    await expect(page.locator("[data-board-error]")).toHaveCount(0);
+  });
+
+  // --- Epic lifecycle on the band kebab (owner ask 2026-11-13) -------------
+  // Zero-task server-truth epics (the #1832 r2 read): task-derived
+  // rows are rebuilt "active" on every list read, so a draft/paused
+  // status that SURVIVES the invalidation refetch only exists on
+  // state.epics rows.
+
+  test("epic kebab: activate a draft epic from the band (wrapper 200, band flips)", async ({ page }) => {
+    await openBoard(page, {
+      epics: [{
+        id: "epic-draft", project_id: PROJECT_A, short_id: wireEpicShortId("epic-draft"),
+        title: "Dormant lane", outcome: "Ship the mop-up", status: "draft", tags: [],
+        created_at: "2026-10-01T00:00:00Z", updated_at: "2026-10-01T00:00:00Z",
+        progress_done: 0, progress_total: 0, progress_derived: false,
+      }],
+    });
+
+    const lane = page.getByTestId(`swimlane-${PROJECT_A}`);
+    const band = lane.getByTestId("epic-band-epic-draft");
+    await expect(band).toBeVisible();
+    await expect(band.getByText("draft")).toBeVisible();
+
+    await lane.getByTestId("epic-kebab-epic-draft").click();
+    const menu = page.getByRole("menu");
+    await expect(menu.getByRole("menuitem", { name: "Activate epic" })).toBeVisible();
+    const reqP = page.waitForRequest((r) => r.method() === "POST" && r.url().endsWith(`/me/epics/${wireEpicShortId("epic-draft")}/activate`));
+    await menu.getByRole("menuitem", { name: "Activate epic" }).click();
+    const req = await reqP;
+    expect(req.url()).toContain(`/me/epics/${wireEpicShortId("epic-draft")}/activate`);
+
+    // Flipped and CONSISTENT through the invalidation refetch: the
+    // draft badge is gone, the notice names the epic, and the kebab
+    // now offers the deactivate direction.
+    await expect(band.getByText("draft")).toHaveCount(0, { timeout: 8000 });
+    await expect(page.getByTestId("board-notice")).toContainText("Dormant lane: activated");
+    await lane.getByTestId("epic-kebab-epic-draft").click();
+    await expect(page.getByRole("menu").getByRole("menuitem", { name: "Pause epic" })).toBeVisible();
+  });
+
+  test("epic kebab: pause an active epic from the band (bare 200, paused badge lands)", async ({ page }) => {
+    await openBoard(page, {
+      epics: [{
+        id: "epic-live", project_id: PROJECT_A, short_id: wireEpicShortId("epic-live"),
+        title: "Hot lane", outcome: "", status: "active", tags: [],
+        created_at: "2026-10-01T00:00:00Z", updated_at: "2026-10-01T00:00:00Z",
+        progress_done: 0, progress_total: 0, progress_derived: false,
+      }],
+    });
+
+    const lane = page.getByTestId(`swimlane-${PROJECT_A}`);
+    const band = lane.getByTestId("epic-band-epic-live");
+    await expect(band).toBeVisible();
+
+    await lane.getByTestId("epic-kebab-epic-live").click();
+    const menu = page.getByRole("menu");
+    await expect(menu.getByRole("menuitem", { name: "Pause epic" })).toBeVisible();
+    const reqP = page.waitForRequest((r) => r.method() === "POST" && r.url().endsWith(`/me/epics/${wireEpicShortId("epic-live")}/pause`));
+    await menu.getByRole("menuitem", { name: "Pause epic" }).click();
+    await reqP;
+
+    await expect(band.getByText("paused")).toBeVisible({ timeout: 8000 });
+    await expect(page.getByTestId("board-notice")).toContainText("Hot lane: paused");
+  });
+
+  test("epic kebab: failed activate surfaces the epic_state guard; band stays draft, retry recovers", async ({ page }) => {
+    const state = await openBoard(page, {
+      epicActivateRefuse: true,
+      epics: [{
+        id: "epic-draft", project_id: PROJECT_A, short_id: wireEpicShortId("epic-draft"),
+        title: "Dormant lane", outcome: "", status: "draft", tags: [],
+        created_at: "2026-10-01T00:00:00Z", updated_at: "2026-10-01T00:00:00Z",
+        progress_done: 0, progress_total: 0, progress_derived: false,
+      }],
+    });
+
+    const lane = page.getByTestId(`swimlane-${PROJECT_A}`);
+    const band = lane.getByTestId("epic-band-epic-draft");
+    await expect(band.getByText("draft")).toBeVisible();
+
+    await lane.getByTestId("epic-kebab-epic-draft").click();
+    await page.getByRole("menuitem", { name: "Activate epic" }).click();
+
+    // The refusal is SURFACED with its guard code, not swallowed —
+    // and nothing flipped: the badge survives, the kebab still
+    // offers Activate (no rollback artifact).
+    const notice = page.locator("[data-board-error]");
+    await expect(notice).toHaveAttribute("data-board-error", "epic_state", { timeout: 8000 });
+    await expect(notice).toContainText("cross-epic dependenc");
+    await expect(band.getByText("draft")).toBeVisible();
+    await lane.getByTestId("epic-kebab-epic-draft").click();
+    await expect(page.getByRole("menu").getByRole("menuitem", { name: "Activate epic" })).toBeVisible();
+
+    // Recovery: the guard condition resolved server-side; the retry
+    // activates and clears the page error.
+    state.epicActivateRefuse = false;
+    await page.getByRole("menuitem", { name: "Activate epic" }).click();
+    await expect(band.getByText("draft")).toHaveCount(0, { timeout: 8000 });
+    await expect(page.getByTestId("board-notice")).toContainText("Dormant lane: activated");
     await expect(page.locator("[data-board-error]")).toHaveCount(0);
   });
 
