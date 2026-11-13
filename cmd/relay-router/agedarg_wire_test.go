@@ -103,7 +103,7 @@ func TestAgedArgTinyAgedArgsNoPanic(t *testing.T) {
 	token := rig.mint(t, nil)
 
 	// 17-byte args — far below the ~110-byte stub.
-	body := `{"model":"glm-4.7","messages":[{"role":"assistant","content":"","tool_calls":[{"id":"c_tiny","type":"function","function":{"name":"llmsafespaces_board_read","arguments":` + jsonString(t, `{"taskId":"t1"}`) + `}}]},{"role":"user","content":"go"}]}`
+	body := `{"model":"glm-4.7","messages":[{"role":"assistant","content":"","tool_calls":[{"id":"c_tiny","type":"function","function":{"name":"llmsafespaces_board_read","arguments":` + jsonString(t, `{"taskId":"t1"}`) + `}}]},{"role":"tool","tool_call_id":"c_tiny","content":"{\"ok\":true}"},{"role":"user","content":"go"}]}`
 	resp, err := rig.do(http.MethodPost, "/w/ws-1/zai/v1/chat/completions", token, body, nil)
 	require.NoError(t, err, "the request must complete — observability never kills the request")
 	defer resp.Body.Close()

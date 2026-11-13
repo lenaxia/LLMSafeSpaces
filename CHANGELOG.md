@@ -7,7 +7,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [Unreleased]
 
 ### Fixed — the glm-5.3 tool-call tiling runaway: aged-arg compaction v3 renders prior tool usage as lossless markdown (issue #1949, PR follow-up to #1954)
 

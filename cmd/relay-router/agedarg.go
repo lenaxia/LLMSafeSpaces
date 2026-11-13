@@ -6,7 +6,6 @@ package main
 import (
 	"bytes"
 	"encoding/json"
-	"fmt"
 	"slices"
 	"strings"
 )
@@ -66,7 +65,6 @@ import (
 // calls (any tool, flattened across messages) in verbatim tool-call
 // form (untested tuning knob — the validated setting is 0).
 const (
-	agedArgToolPrefix  = "llmsafespaces_"
 	agedArgDefaultWins = 0
 
 	agedArgBulletPrefix = "- Called `"
@@ -85,18 +83,17 @@ type agedArgStats struct {
 // chat-completion request bodies. RecentToolCalls < 0 disables the
 // transform entirely (kill switch); 0 restructures every tool call.
 type agedArgCompactor struct {
-	ToolPrefix string
 	// RecentToolCalls is the number of most-recent tool calls (any tool,
 	// flattened across messages) left in verbatim tool-call form.
 	RecentToolCalls int
 }
 
 func newAgedArgCompactor() *agedArgCompactor {
-	return &agedArgCompactor{ToolPrefix: agedArgToolPrefix, RecentToolCalls: agedArgDefaultWins}
+	return &agedArgCompactor{RecentToolCalls: agedArgDefaultWins}
 }
 
 func newAgedArgCompactorWindow(window int) *agedArgCompactor {
-	return &agedArgCompactor{ToolPrefix: agedArgToolPrefix, RecentToolCalls: window}
+	return &agedArgCompactor{RecentToolCalls: window}
 }
 
 // recentWindow reports the configured recent-window size (nil-safe —
@@ -136,7 +133,6 @@ func (c *agedArgCompactor) Compact(body []byte) ([]byte, agedArgStats) {
 	// Pass 1 (backward): flatten tool-call positions to decide the
 	// protected verbatim window. Window <= 0 protects nothing (0 =
 	// restructure every tool call — the validated setting).
-	type callPos struct{ msg, idx int }
 	var flat []callPos
 	if c.RecentToolCalls > 0 {
 		for mi := len(msgs) - 1; mi >= 0; mi-- {
@@ -162,10 +158,11 @@ func (c *agedArgCompactor) Compact(body []byte) ([]byte, agedArgStats) {
 
 	// Pass 2 (forward): merge each assistant tool-call message and its
 	// following role:"tool" results into one plain-text assistant
-	// message. Unmatched trailing tool messages (no home) are left
-	// untouched rather than dropped — never destroy what we cannot
-	// pair; the wire tolerates a trailing tool message after an
-	// assistant text message no worse than before.
+	// message — but ONLY when the whole span validates clean (see
+	// tryRestructureSpan). Any anomaly → the span is forwarded
+	// VERBATIM: lossless-by-construction beats cleverness (r1 review:
+	// the v3 draft silently dropped orphaned/duplicate/non-string
+	// results and array-shaped assistant content).
 	out := make([]json.RawMessage, 0, len(msgs))
 	i := 0
 	for i < len(msgs) {
@@ -176,63 +173,23 @@ func (c *agedArgCompactor) Compact(body []byte) ([]byte, agedArgStats) {
 			i++
 			continue
 		}
-		// Any protected call in this message → keep the message verbatim
-		// (and its results, which follow it untouched).
-		anyProtected := false
-		for ci := range calls {
-			if protected[callPos{i, ci}] {
-				anyProtected = true
-				break
-			}
-		}
-		if anyProtected {
-			out = append(out, raw)
-			i++
-			// keep the directly following tool-result messages verbatim
-			for i < len(msgs) {
-				if role, ok := messageRole(msgs[i]); ok && role == "tool" {
-					out = append(out, msgs[i])
-					i++
-					continue
-				}
-				break
-			}
-			continue
-		}
-		// Collect the paired results (immediately following tool msgs).
+		// Find the span: the message + its directly following tool msgs.
 		j := i + 1
-		results := make(map[string]json.RawMessage, len(calls))
-		var order []string
 		for j < len(msgs) {
 			role, ok := messageRole(msgs[j])
 			if !ok || role != "tool" {
 				break
 			}
-			var tm map[string]json.RawMessage
-			if err := json.Unmarshal(msgs[j], &tm); err != nil {
-				break
-			}
-			id, ok := tm["tool_call_id"]
-			if !ok {
-				break
-			}
-			var idStr string
-			if err := json.Unmarshal(id, &idStr); err != nil {
-				break
-			}
-			results[idStr] = msgs[j]
-			order = append(order, idStr)
 			j++
 		}
-		rendered, n, err := renderCallsAsText(raw, calls, results, order)
-		if err != nil || n == 0 {
-			// Nothing renderable (or a surprise): leave this message and
-			// its results exactly as they were.
-			out = append(out, raw)
-			i++
+		merged, n, ok := tryRestructureSpan(raw, msgs[i:j], calls, protected, i)
+		if !ok {
+			// Anomaly (or fully protected): forward the span verbatim.
+			out = append(out, msgs[i:j]...)
+			i = j
 			continue
 		}
-		out = append(out, rendered)
+		out = append(out, merged)
 		stats.CallsStubbed += n
 		stats.Changed = true
 		i = j
@@ -282,96 +239,164 @@ func toolCallsOf(msg json.RawMessage) ([]json.RawMessage, bool) {
 	return calls, true
 }
 
-// renderCallsAsText builds the merged plain-text assistant message for
-// one assistant tool-call message plus its paired results. n = number
-// of calls actually rendered.
-func renderCallsAsText(msg json.RawMessage, calls []json.RawMessage, results map[string]json.RawMessage, order []string) (json.RawMessage, int, error) {
-	var m map[string]json.RawMessage
-	if err := json.Unmarshal(msg, &m); err != nil {
-		return nil, 0, err
-	}
-	var b strings.Builder
-	if content, ok := m["content"]; ok {
-		var cs string
-		if err := json.Unmarshal(content, &cs); err == nil && strings.TrimSpace(cs) != "" {
-			b.WriteString(strings.TrimSpace(cs))
-			b.WriteString("\n")
+// callPos identifies one tool call position (message index, call index)
+// within the flattened history — the window bookkeeping key.
+type callPos struct{ msg, idx int }
+
+// tryRestructureSpan validates and renders one span (an assistant
+// tool-call message plus its following tool messages) as a single
+// plain-text assistant message. ok=false means the span carries ANY
+// anomaly — protected calls, non-string assistant content, unpairable
+// ids, duplicate ids, non-string ids, non-string result content, or a
+// call missing its name — and must be forwarded verbatim. Lossless by
+// construction: we never drop or reshape what we cannot perfectly
+// pair (r1 review findings 1-5,7).
+func tryRestructureSpan(msg json.RawMessage, span []json.RawMessage, calls []json.RawMessage, protected map[callPos]bool, msgIdx int) (json.RawMessage, int, bool) {
+	// Window: a span holding ANY protected call stays verbatim (per-
+	// message granularity — r1-reviewed; the validated production
+	// setting is window 0 = protect nothing).
+	for ci := range calls {
+		if protected[callPos{msgIdx, ci}] {
+			return nil, 0, false
 		}
 	}
-	rendered := 0
-	for ci, call := range calls {
+
+	var m map[string]json.RawMessage
+	if err := json.Unmarshal(msg, &m); err != nil {
+		return nil, 0, false
+	}
+	// Assistant content must be a string (or absent). Array/parts-shaped
+	// content → passthrough (r1 finding 4).
+	assistantPrefix := ""
+	if contentRaw, ok := m["content"]; ok {
+		var cs string
+		if err := json.Unmarshal(contentRaw, &cs); err != nil {
+			return nil, 0, false
+		}
+		if strings.TrimSpace(cs) != "" {
+			assistantPrefix = strings.TrimSpace(cs)
+		}
+	}
+
+	// Parse every call: name (string), arguments (string), id (string).
+	type parsedCall struct {
+		id, name, argsBullet string
+	}
+	parsed := make([]parsedCall, 0, len(calls))
+	for _, call := range calls {
 		var c map[string]json.RawMessage
 		if err := json.Unmarshal(call, &c); err != nil {
-			return nil, 0, err
+			return nil, 0, false
 		}
 		fn, ok := c["function"]
 		if !ok {
-			continue
+			return nil, 0, false
 		}
 		var f map[string]json.RawMessage
 		if err := json.Unmarshal(fn, &f); err != nil {
-			continue
-		}
-		nameRaw, ok := f["name"]
-		if !ok {
-			continue
+			return nil, 0, false
 		}
 		var name string
-		if err := json.Unmarshal(nameRaw, &name); err != nil {
-			continue
+		nameRaw, hasName := f["name"]
+		if !hasName || json.Unmarshal(nameRaw, &name) != nil || name == "" {
+			return nil, 0, false // r1 finding 5: unnameable call → passthrough span
 		}
-		b.WriteString(agedArgBulletPrefix)
-		b.WriteString(name)
-		b.WriteString("`(")
-		b.WriteString(renderArguments(f["arguments"]))
-		b.WriteString(")\n")
-		rendered++
-		// result line: prefer the paired result in call order
-		var idStr string
-		if idRaw, ok := c["id"]; ok {
-			_ = json.Unmarshal(idRaw, &idStr)
+		var id string
+		idRaw, hasID := c["id"]
+		if !hasID || json.Unmarshal(idRaw, &id) != nil || id == "" {
+			return nil, 0, false // r1 finding 5: non-string/absent id → passthrough span
 		}
-		if res, ok := results[idStr]; ok {
-			var tm map[string]json.RawMessage
-			if err := json.Unmarshal(res, &tm); err == nil {
-				if contentRaw, ok := tm["content"]; ok {
-					var content string
-					if err := json.Unmarshal(contentRaw, &content); err == nil {
-						b.WriteString(agedArgResultPrefix)
-						b.WriteString(content)
-						b.WriteString("\n")
-					}
-				}
-			}
+		argsRaw, hasArgs := f["arguments"]
+		if !hasArgs {
+			return nil, 0, false
 		}
-		_ = ci
-		_ = order
+		var argsInner string
+		if err := json.Unmarshal(argsRaw, &argsInner); err != nil {
+			return nil, 0, false
+		}
+		parsed = append(parsed, parsedCall{id: id, name: name, argsBullet: renderArguments(argsInner)})
 	}
-	if rendered == 0 {
-		return nil, 0, fmt.Errorf("no renderable calls")
+
+	// Pair results: every tool message in the span must carry a string
+	// tool_call_id matching exactly one parsed call, exactly once, with
+	// string content. Anything else → passthrough span (r1 findings
+	// 1,2,3,7).
+	resultByID := make(map[string]string, len(span))
+	seenIDs := make(map[string]bool, len(span))
+	for _, t := range span[1:] {
+		var tm map[string]json.RawMessage
+		if err := json.Unmarshal(t, &tm); err != nil {
+			return nil, 0, false
+		}
+		idRaw, ok := tm["tool_call_id"]
+		if !ok {
+			return nil, 0, false // r1 finding 7: id-less tool message → passthrough
+		}
+		var id string
+		if err := json.Unmarshal(idRaw, &id); err != nil {
+			return nil, 0, false
+		}
+		if seenIDs[id] {
+			return nil, 0, false // r1 finding 2: duplicate result id → passthrough
+		}
+		seenIDs[id] = true
+		contentRaw, ok := tm["content"]
+		if !ok {
+			return nil, 0, false // r1 finding 3: absent content → passthrough
+		}
+		var content string
+		if err := json.Unmarshal(contentRaw, &content); err != nil {
+			return nil, 0, false // r1 finding 3: non-string content → passthrough
+		}
+		resultByID[id] = content
+	}
+	for _, pc := range parsed {
+		if _, ok := resultByID[pc.id]; !ok {
+			return nil, 0, false // r1 finding 1: orphaned result or missing pair → passthrough
+		}
+	}
+
+	// Render.
+	var b strings.Builder
+	if assistantPrefix != "" {
+		b.WriteString(assistantPrefix)
+		b.WriteString("\n")
+	}
+	rendered := 0
+	for _, pc := range parsed {
+		b.WriteString(agedArgBulletPrefix)
+		b.WriteString(pc.name)
+		b.WriteString("`(")
+		b.WriteString(pc.argsBullet)
+		b.WriteString(")\n")
+		b.WriteString(agedArgResultPrefix)
+		b.WriteString(resultByID[pc.id])
+		b.WriteString("\n")
+		rendered++
 	}
 	out, err := json.Marshal(map[string]string{
 		"role":    "assistant",
 		"content": b.String(),
 	})
 	if err != nil {
-		return nil, 0, err
+		return nil, 0, false
 	}
-	return out, rendered, nil
+	return out, rendered, true
 }
 
-// renderArguments renders one tool-call arguments payload (a JSON
-// string on the wire) as a deterministic parameter list: "**k**: v"
+// renderArguments renders one tool-call arguments payload (a JSON string
+// on the wire) as a deterministic parameter list: "**k**: v"
 // comma-separated, in the payload's OWN key order (token-decoded —
-// never Go maps), values as compact JSON with numbers byte-preserved
-// via json.Number and HTML escaping disabled. Unparseable payloads
-// render verbatim.
-func renderArguments(raw json.RawMessage) string {
-	var inner string
-	if err := json.Unmarshal(raw, &inner); err != nil {
-		// arguments absent or not a string: render the raw bytes
-		return string(raw)
-	}
+// never Go maps), duplicate keys COLLAPSED last-wins-first-position
+// (matching the python mirror's dict semantics — and removing the
+// duplicate-key attractor rather than re-rendering it, r1 finding 8),
+// values as compact JSON with numbers byte-preserved (json.Number) and
+// HTML escaping disabled. TOTAL function: ANY parse deviation — a
+// non-object payload, a mid-payload break, or trailing content after
+// the object (r1 finding 6's `{"…"} GARBAGE` splice shape) — renders
+// the RAW inner text verbatim, never a partial bullet and never an
+// error upward. Lossless and deterministic on every input.
+func renderArguments(inner string) string {
 	dec := json.NewDecoder(strings.NewReader(inner))
 	dec.UseNumber()
 	tok, err := dec.Token()
@@ -382,28 +407,43 @@ func renderArguments(raw json.RawMessage) string {
 	if !ok || d != '{' {
 		return inner
 	}
-	var parts []string
+	var order []string
+	values := make(map[string]json.RawMessage)
 	for dec.More() {
 		kt, err := dec.Token()
 		if err != nil {
-			break
+			return inner
 		}
 		key, ok := kt.(string)
 		if !ok {
-			break
+			return inner
 		}
 		var val json.RawMessage
 		if err := dec.Decode(&val); err != nil {
-			break
+			return inner
 		}
-		pv, err := compactJSON(val)
-		if err != nil {
-			break
+		if _, seen := values[key]; !seen {
+			order = append(order, key)
 		}
-		parts = append(parts, "**"+key+"**: "+pv)
+		values[key] = val // last value wins, first position kept
 	}
-	// consume the closing brace
-	_, _ = dec.Token()
+	if _, err := dec.Token(); err != nil { // closing brace
+		return inner
+	}
+	if dec.More() {
+		return inner // trailing content after the object → raw verbatim
+	}
+	if _, err := dec.Token(); err == nil {
+		return inner // trailing token after the object → raw verbatim
+	}
+	parts := make([]string, 0, len(order))
+	for _, k := range order {
+		pv, err := compactJSON(values[k])
+		if err != nil {
+			return inner
+		}
+		parts = append(parts, "**"+k+"**: "+pv)
+	}
 	return strings.Join(parts, ", ")
 }
 

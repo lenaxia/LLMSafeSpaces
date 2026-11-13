@@ -227,17 +227,99 @@ func TestAgedArgRenderMatchesReplayHarness(t *testing.T) {
 // tool_calls entries are malformed is forwarded as-is; the transform
 // never breaks a request over garbage it cannot parse.
 func TestAgedArgCompaction_MalformedEntriesLeftUntouched(t *testing.T) {
-	body := []byte(`{"model":"m","messages":[{"role":"assistant","tool_calls":["garbage", 42]},{"role":"assistant","tool_calls":[{"id":"x","type":"function","function":{"name":"llmsafespaces_session_list","arguments":"{\"includeArchived\":true}"}}]}]}`)
+	body := []byte(`{"model":"m","messages":[{"role":"assistant","tool_calls":["garbage", 42]},{"role":"assistant","tool_calls":[{"id":"x","type":"function","function":{"name":"llmsafespaces_session_list","arguments":"{\"includeArchived\":true,\"sessionId\":\"ses-1\"}"}}]},{"role":"tool","tool_call_id":"x","content":"{\"ok\":true}"}]}`)
 	out, stats := newAgedArgCompactorWindow(0).Compact(body)
-	assert.True(t, stats.Changed, "the well-formed call is still restructured")
+	assert.True(t, stats.Changed, "the well-formed call (with its paired result) is still restructured")
 	assert.Contains(t, string(out), `"garbage"`, "malformed entry preserved verbatim")
+	assert.Contains(t, string(out), `**sessionId**: \"ses-1\"`, "params visible in the bullet")
+}
+
+// --- r1-review adversarial passthrough pins: the lossless-by-
+// construction contract. Each anomaly span forwards VERBATIM — we never
+// drop or reshape what we cannot perfectly pair (findings 1,2,3,5,7).
+
+func TestAgedArgCompaction_OrphanResultPassthrough(t *testing.T) {
+	// A tool message whose id matches no rendered call → the span is
+	// forwarded verbatim (r1 finding 1: silently deleted in the v3 draft).
+	body := []byte(`{"model":"m","messages":[` +
+		`{"role":"assistant","content":"","tool_calls":[{"id":"call_1","type":"function","function":{"name":"llmsafespaces_session_list","arguments":"{\"includeArchived\":true}"}}]},` +
+		`{"role":"tool","tool_call_id":"call_UNKNOWN","content":"{\"ok\":true}"},` +
+		`{"role":"user","content":"go"}]}`)
+	out, stats := newAgedArgCompactorWindow(0).Compact(body)
+	assert.False(t, stats.Changed, "unpairable result → span passthrough")
+	assert.Equal(t, string(body), string(out), "byte-verbatim")
+}
+
+func TestAgedArgCompaction_DuplicateResultIDPassthrough(t *testing.T) {
+	// Two tool messages sharing one tool_call_id → passthrough (r1
+	// finding 2: last-wins dropped the first result).
+	body := []byte(`{"model":"m","messages":[` +
+		`{"role":"assistant","content":"","tool_calls":[{"id":"call_1","type":"function","function":{"name":"llmsafespaces_session_list","arguments":"{\"includeArchived\":true}"}}]},` +
+		`{"role":"tool","tool_call_id":"call_1","content":"{\"first\":true}"},` +
+		`{"role":"tool","tool_call_id":"call_1","content":"{\"second\":true}"},` +
+		`{"role":"user","content":"go"}]}`)
+	out, stats := newAgedArgCompactorWindow(0).Compact(body)
+	assert.False(t, stats.Changed, "duplicate result ids → span passthrough")
+	assert.Equal(t, string(body), string(out), "byte-verbatim")
+}
+
+func TestAgedArgCompaction_NonStringResultContentPassthrough(t *testing.T) {
+	// Array-shaped (parts) result content → passthrough (r1 finding 3:
+	// content was dropped while the message was consumed).
+	body := []byte(`{"model":"m","messages":[` +
+		`{"role":"assistant","content":"","tool_calls":[{"id":"call_1","type":"function","function":{"name":"llmsafespaces_session_list","arguments":"{\"includeArchived\":true}"}}]},` +
+		`{"role":"tool","tool_call_id":"call_1","content":[{"type":"text","text":"parts-shaped"}]},` +
+		`{"role":"user","content":"go"}]}`)
+	out, stats := newAgedArgCompactorWindow(0).Compact(body)
+	assert.False(t, stats.Changed, "non-string result content → span passthrough")
+	assert.Equal(t, string(body), string(out), "byte-verbatim")
+}
+
+func TestAgedArgCompaction_ArrayAssistantContentPassthrough(t *testing.T) {
+	// Array-shaped assistant content → passthrough (r1 finding 4: the
+	// content was silently dropped while bullets still rendered).
+	body := []byte(`{"model":"m","messages":[` +
+		`{"role":"assistant","content":[{"type":"text","text":"parts-shaped thinking"}],"tool_calls":[{"id":"call_1","type":"function","function":{"name":"llmsafespaces_session_list","arguments":"{\"includeArchived\":true}"}}]},` +
+		`{"role":"tool","tool_call_id":"call_1","content":"{\"ok\":true}"},` +
+		`{"role":"user","content":"go"}]}`)
+	out, stats := newAgedArgCompactorWindow(0).Compact(body)
+	assert.False(t, stats.Changed, "array assistant content → span passthrough")
+	assert.Equal(t, string(body), string(out), "byte-verbatim")
+}
+
+func TestAgedArgCompaction_UnnameableCallPassthrough(t *testing.T) {
+	// A call missing its function.name → the whole span passes through
+	// (r1 finding 5: the call was skipped while its result was consumed).
+	body := []byte(`{"model":"m","messages":[` +
+		`{"role":"assistant","content":"","tool_calls":[{"id":"call_1","type":"function","function":{"arguments":"{\"a\":1}"}}]},` +
+		`{"role":"tool","tool_call_id":"call_1","content":"{\"ok\":true}"},` +
+		`{"role":"user","content":"go"}]}`)
+	out, stats := newAgedArgCompactorWindow(0).Compact(body)
+	assert.False(t, stats.Changed, "unnameable call → span passthrough")
+	assert.Equal(t, string(body), string(out), "byte-verbatim")
+}
+
+func TestAgedArgRenderArguments_MalformedTrailingContentVerbatim(t *testing.T) {
+	// A payload that parses as an object but carries trailing garbage
+	// renders the RAW inner text as one JSON-escaped string — lossless,
+	// deterministic (r1 finding 6: the v3 draft rendered a partial
+	// bullet).
+	out := renderArguments(`{"epicId":"epc-1"} GARBAGE`)
+	assert.Contains(t, out, `"epicId":"epc-1"} GARBAGE`, "the raw payload rides verbatim inside the bullet (total function)")
+}
+
+func TestAgedArgRenderArguments_DuplicateKeysCollapseLastWins(t *testing.T) {
+	// r1 finding 8: Go and python must agree on duplicate keys — last
+	// value wins, first position kept, ONE bullet (the per-occurrence
+	// rendering re-created the duplicate-key attractor).
+	out := renderArguments(`{"epicId":"epc-first","epicId":"epc-second","force":true}`)
+	assert.Equal(t, `**epicId**: "epc-second", **force**: true`, out)
 }
 
 // TestAgedArgCompactorDefaults — the default window matches the
 // documented constant (0 = restructure every tool call; <0 disables).
 func TestAgedArgCompactorDefaults(t *testing.T) {
 	c := newAgedArgCompactor()
-	assert.Equal(t, agedArgToolPrefix, c.ToolPrefix)
 	assert.Equal(t, 0, c.RecentToolCalls,
 		"default restructures every tool call — the validated configuration")
 	var nilC *agedArgCompactor
