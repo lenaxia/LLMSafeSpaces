@@ -2119,7 +2119,7 @@ jobs:
           # other-read (char 8) and other-execute (char 10).
           other_x=$(printf '%s' "$dmode" | cut -c10)
           if [ "$other_x" != "x" ]; then
-            echo "::error::/pi mode $dmode lacks the other-execute (traversal) bit — uid 1000 cannot traverse the overlay tree (2026-09-19 incident class)"; exit 1
+            echo "::error::native/ mode $dmode lacks the other-execute (traversal) bit — uid 1000 cannot traverse the overlay tree (2026-09-19 incident class)"; exit 1
           fi
           [ -n "$fmode" ] || { echo "::error::pi binary missing from the image root"; exit 1; }
           bin_r=$(printf '%s' "$fmode" | cut -c8)

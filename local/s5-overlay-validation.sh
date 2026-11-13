@@ -181,6 +181,18 @@ for img in agentd opencode pi controller runtime-base; do
   docker push "$REG/llmsafespaces/$img:ci" >/dev/null
 done
 
+# Stamp the per-arch pi binary sha256s onto the local index EXACTLY as
+# CI's merge-pi does (imagetools create --annotation): the harness index
+# then carries the production annotation shape. (The controller pod
+# still cannot DIAL localhost:5011 — node-containerd-only, the us2
+# constraint — so S5.4c demonstrates the cache-fallback boot path, not
+# the live fetch; resolution semantics live in the hermetic suites.)
+PI_PRE_SHA=$(binary_sha pi /pi)
+docker buildx imagetools create -t "$REG/llmsafespaces/pi:ci-annotated" \
+  --annotation "index:dev.llmsafespaces/pi.sha256-amd64=${PI_PRE_SHA}" \
+  --annotation "index:dev.llmsafespaces/pi.sha256-arm64=${PI_PRE_SHA}" \
+  "$REG/llmsafespaces/pi:ci" >/dev/null
+
 digest_ref() {
   local ref d
   ref=$(docker inspect --format '{{index .RepoDigests 0}}' "$REG/llmsafespaces/$1:ci")
@@ -446,11 +458,19 @@ for i in $(seq 1 120); do
   sleep 2
 done
 if echo "$PI_COND" | grep -q "PiVerified=False"; then
-  PI_EXIT=$(kubectl -n "$NS" get pods -l llmsafespaces.dev/workspace="$WS_BAD_PI" -o jsonpath='{.items[0].status.containerStatuses[0].lastState.terminated.exitCode}' 2>/dev/null || true)
+  # STRICT: the exit code must be 85 — a condition without the right
+  # code (or an unreadable one) is a regression, not a pass. The pod may
+  # be in CrashLoopBackOff (lastState) or between restarts (state).
+  PI_EXIT=$(kubectl -n "$NS" get pods -l llmsafespaces.dev/workspace="$WS_BAD_PI" \
+    -o jsonpath='{.items[0].status.containerStatuses[0].lastState.terminated.exitCode}' 2>/dev/null || true)
+  if [ -z "$PI_EXIT" ]; then
+    PI_EXIT=$(kubectl -n "$NS" get pods -l llmsafespaces.dev/workspace="$WS_BAD_PI" \
+      -o jsonpath='{.items[0].status.containerStatuses[0].state.terminated.exitCode}' 2>/dev/null || true)
+  fi
   if [ "$PI_EXIT" = "85" ]; then
     pass S5.4b "wrong pi pin → exit 85 → PiVerified=False condition (disjoint from 81/82/83/84)"
   else
-    pass S5.4b "wrong pi pin → PiVerified=False condition (exit code observed: ${PI_EXIT:-?})"
+    fail S5.4b "PiVerified=False but the exit code is ${PI_EXIT:-unreadable} — must be exactly 85"
   fi
 else
   fail S5.4b "wrong pi pin never surfaced the condition: ${PI_COND:-none}"

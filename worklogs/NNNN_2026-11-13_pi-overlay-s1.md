@@ -49,6 +49,12 @@ Deliver the delivery foundation for the second harness per design 0053 §5.4 ("a
 4. **Supervisor verify now, spawn later**: the verify exists in S1 because the mount does — delivered-but-unverified pins would be decorative and PiVerified vacuous. S2's harness driver will consume the verified tree.
 5. **us2-kind-integration.sh left untouched**: it has been render-broken since 2026-08-30 (never pins opencodeDelivery; pre-existing, orthogonal to pi — it fails at the second gate before ever reaching the pi gate). Flagged for the owners rather than fixed in this story.
 
+### Review rounds r2–r4 (AI reviewer + dispatched kind runs)
+
+- **r2 (CHANGES_REQUESTED)**: release.yml pi case arms carried a stray brace (`${VERSION }}` — bad substitution at tag time; sign/scan/SBOM would fail); release build-pi lacked the mode-pin clone; docs wanted the verify-ordering note + an upgrade note. All fixed (e7a471844).
+- **r3 (the dispatched kind run caught a real bug)**: the healthy pod exited 86 `PiOverlayMissing` — the tree was copied under an in-image `/pi/`, but image-volume semantics CONCATENATE mount path + in-image path (the opencode precedent), so the binary landed at `/pi/pi/pi` while the supervisor verified `/pi/pi`. Fix: the tree IS the FROM-scratch image rootfs (binary at image `/pi`, package.json at the root) → pod `/pi/pi` binary + `/pi/package.json` adjacency. All nine image-side touch points moved (CI/release sha extraction, mode-pin probes, s5/bootstrap/pipeline extracts); pod-side contracts were already correct. Re-dispatched run on the fixed head: S5.2a–e green (tri-overlay Active, `PiVerified=True`), S5.4b green with the REAL exit 85, S5.5 cold-pull 17s with three overlays evicted, S5.6 gVisor green (df941c8b2, run 43363364911).
+- **r4**: S5.4c failed by construction — image-only pin resolution needs the controller pod to dial the registry named in the reference, and `localhost:5011` is node-containerd-only (the us2 constraint). Rewritten to pre-seed `llmsafespaces-pi-pins` exactly as a successful resolution writes it and assert the cache survives a controller restart intact (the AC's literal claim) — which exercises the registry-OUTAGE fallback boot path on a real cluster. Plus: the harness index now carries the production annotation shape (imagetools create --annotation, as merge-pi), S5.4b made STRICT (exit code must be exactly 85, `.state.terminated` fallback), and the ci.yml/bootstrap comment nits.
+
 ## Blockers
 
 None. (Full local pi source build not runnable on the authoring sandbox — no docker and only ~800 MB free disk; the Dockerfile's RUN sequence was validated input-by-input against primary sources instead, and the PR's `build-pi` job builds both arches as the reproducibility evidence.)
@@ -58,7 +64,7 @@ None. (Full local pi source build not runnable on the authoring sandbox — no d
 - `go build ./...` — clean.
 - `go test ./controller/... ./cmd/workspace-agentd/ ./helm/ ./local/ ./pkg/repolint/ ./pkg/apis/... -count=1` — all ok (workspace 68s, agentd 374s incl. subprocess legs).
 - `make repolint` — all checks passed. `gofmt -l`/`goimports -l` — clean. `bash -n` on every touched script. `helm template` render checks via the chart tests (helm 3.16.4 locally).
-- kind legs (s5-overlay-validation S5.1c/S5.2d-e/S5.4b/S5.4c) run via the weekly/dispatch workflow on a real kubelet.
+- kind legs EXECUTED via dispatched s5-overlay-validation runs on this branch: run 43363364911 (S5.1c, S5.2a-e, S5.3, S5.4, S5.4b-exit-85, S5.5, S5.6 all PASS; S5.4c failed by harness construction → rewritten) and the follow-up run on the rewritten head.
 
 ## Next Steps
 

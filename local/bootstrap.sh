@@ -200,7 +200,8 @@ else
 
     # Design 0053 §5.4: the third delivery artifact (pi overlay) — built
     # from the pi release source archive (~10 min cold). Pinned the same
-    # way; the binary hash covers /pi/pi (hash-the-binary +
+    # way; the binary hash covers the tree-root binary (pod path
+    # /pi/pi — hash-the-binary +
     # digest-the-tree — runtimes/pi/Dockerfile).
     docker build --network=host         -f runtimes/pi/Dockerfile -t localhost:5001/llmsafespaces/pi:${IMAGE_TAG} runtimes/pi
     docker push localhost:5001/llmsafespaces/pi:${IMAGE_TAG} >/dev/null
