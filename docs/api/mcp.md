@@ -259,6 +259,40 @@ external actors hold no claim tokens.
 | `board_add_dependency` | `story_id`, `depends_on` | Add a structural dependency edge — story→story within a workspace (cross-epic allowed, never cross-workspace; cycles rejected with did-you-mean suggestions; duplicates are idempotent no-ops; per-node caps, #1747). Optional: `request_id` |
 | `board_remove_dependency` | `story_id`, `depends_on` | Remove a dependency edge |
 
+#### Board configuration and stage personas
+
+`board_get_config` / `board_set_config` manage the two config tiers —
+the user's board-wide defaults and a project's overrides (`reviewColumn`,
+`autoAssignReviewer`, `defaultWorkerSlots`, `stagePersonas`). The
+`stagePersonas` key maps each persona-eligible stage (`in_progress`,
+`in_review`) to a platform agent-role reference (bare id or slug — the
+referenced role's model/tools/system-prompt are the spawned worker's
+single source of behavior; owner ruling 2026-10-29).
+
+The platform seeds these **built-in roles** at startup, so a board is
+useful before any custom role exists — an implementer/reviewer pair per
+domain, the names carrying the stage each seat is meant for:
+
+| Slug | Name | Meant for |
+|------|------|-----------|
+| `implementer-coding` | `implementer: coding` | `in_progress` — coding worker (worktree off origin/main, conventional commits, tests before done) |
+| `reviewer-coding` | `reviewer: coding` | `in_review` — code reviewer (criteria walk with execution evidence, tests/regression checks, verdict via `board_record_verdict`) |
+| `implementer-data-analysis` | `implementer: data analysis` | `in_progress` — analyst (methodology and sources stated, data validated before interpretation) |
+| `reviewer-data-analysis` | `reviewer: data analysis` | `in_review` — analytical QA (methodology, data validity, interpretation) |
+| `implementer-writing` | `implementer: writing` | `in_progress` — writer (audience-accurate drafting) |
+| `reviewer-writing` | `reviewer: writing` | `in_review` — editor (clarity, accuracy, structure) |
+
+Plus the pre-existing built-in `reviewer` (the default reviewer's
+verdict-channel charter). All are platform-scope roles — they appear in
+every persona picker (`GET /api/v1/me/agent-roles`) and validate like
+any other reference. Seeding is idempotent: a restart re-seeds only
+what is missing, and an owner-curated platform role under the same slug
+is left untouched.
+
+The naming conveys stage intent ONLY — deliberately (owner ruling) there
+is **no stage enforcement**: any role may sit in any stage, and a
+reviewer-named role in `in_progress` is a legal, accepted assignment.
+
 Deprecated aliases (the story rename's one-release window — accepted
 through v0.45.x, removed in v0.46.0; every answer carries the
 deprecation notice, and the legacy `task_id`/`task_ids` input keys ride
