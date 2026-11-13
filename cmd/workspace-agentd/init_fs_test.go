@@ -33,6 +33,7 @@ package main
 
 import (
 	"bytes"
+	"embed"
 	"fmt"
 	"os"
 	"os/exec"
@@ -177,6 +178,32 @@ func TestInitFS_HappyPath_FreshPVC(t *testing.T) {
 	docBytes, err := os.ReadFile(filepath.Join(tr.rt, "docs", gateScriptPatternsDocName))
 	require.NoError(t, err, "gate-script patterns doc must materialize at $runtimeDir/docs/")
 	assert.Equal(t, string(gateScriptPatternsDoc), string(docBytes))
+
+	// Worked-pattern example directories (2026-10-30 owner ruling): the
+	// Sprint Board story patterns and the workflow DAG patterns
+	// materialize one-file-per-example under $runtimeDir/docs/ — the
+	// stable pod paths the board_create_task/board_import_plan and
+	// workflow_create descriptions point agents at.
+	patternDirs := []struct {
+		fsys     embed.FS
+		embedded string
+		pod      string
+	}{
+		{sprintBoardPatternsFS, "sprint_board_patterns", "sprint-board-patterns"},
+		{workflowPatternsFS, "workflow_patterns", "workflow-patterns"},
+	}
+	for _, d := range patternDirs {
+		entries, err := d.fsys.ReadDir(d.embedded)
+		require.NoError(t, err)
+		require.NotEmpty(t, entries, "%s must embed at least one example", d.embedded)
+		for _, e := range entries {
+			want, err := d.fsys.ReadFile(filepath.Join(d.embedded, e.Name()))
+			require.NoError(t, err)
+			got, err := os.ReadFile(filepath.Join(tr.rt, "docs", d.pod, e.Name()))
+			require.NoError(t, err, "%s/%s must materialize at $runtimeDir/docs/%s/", d.embedded, e.Name(), d.pod)
+			assert.Equal(t, string(want), string(got))
+		}
+	}
 }
 
 // TestInitFS_PrePlantedSymlink_ReplacedWithoutFollowing is the attack
@@ -306,6 +333,72 @@ func TestInitFS_GateDocCopyBlocked_NeverBlocksBoot(t *testing.T) {
 		"the blocked copy must be logged loudly (the bytes live in the binary — degradation is to the pointer alone)")
 	assert.Contains(t, stderr, "init-fs: ok",
 		"the init must run to completion past the failed copy")
+}
+
+// TestInitFS_PatternDocsCopyBlocked_NeverBlocksBoot pins step 8's
+// best-effort contract — the worked-pattern example directories carry
+// exactly the same never-block-boot posture as the step-7 gate doc
+// (PR #1998 review: the wiring-level failure posture of the new boot
+// step was unpinned; a future edit routing it through fail() would
+// crash-loop every workspace pod at Init:Error and redden nothing).
+// A directory planted at one embedded example's stable pod path breaks
+// that dir's per-file rename; init-fs must still exit 0, log THAT dir's
+// failure loudly as non-fatal, complete the init, and the OTHER dir
+// must still materialize in full (the two copies are independent —
+// one blocked dir never degrades its sibling).
+func TestInitFS_PatternDocsCopyBlocked_NeverBlocksBoot(t *testing.T) {
+	bin := buildAgentdBinary(t)
+
+	for _, tc := range []struct {
+		name        string
+		blockedFile string // a planted DIRECTORY at this embedded example's pod path
+		blockedLog  string // the non-fatal line that must fire
+		healthyPod  string // the sibling-dir example that must still materialize
+		healthyFS   embed.FS
+		healthySrc  string
+	}{
+		{
+			name:        "board dir blocked",
+			blockedFile: "sprint-board-patterns/code-story.md",
+			blockedLog:  "sprint-pattern-docs copy failed (non-fatal)",
+			healthyPod:  "workflow-patterns/placeholder-rules.md",
+			healthyFS:   workflowPatternsFS,
+			healthySrc:  "workflow_patterns/placeholder-rules.md",
+		},
+		{
+			name:        "workflow dir blocked",
+			blockedFile: "workflow-patterns/placeholder-rules.md",
+			blockedLog:  "workflow-pattern-docs copy failed (non-fatal)",
+			healthyPod:  "sprint-board-patterns/process-discipline.md",
+			healthyFS:   sprintBoardPatternsFS,
+			healthySrc:  "sprint_board_patterns/process-discipline.md",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			tr := newInitFSTree(t)
+			tr.writePasswordSource(t, "pw\n", "")
+
+			// Block the copy: a directory where one embedded example
+			// belongs makes that file's temp-file rename fail (a file
+			// cannot replace a directory — the step-7 blocker shape).
+			require.NoError(t, os.MkdirAll(filepath.Join(tr.rt, "docs", filepath.FromSlash(tc.blockedFile)), 0o755))
+
+			exit, stderr := runInitFSSubcommand(t, bin, tr.args()...)
+			require.Equal(t, 0, exit, "a failed pattern-docs copy must NEVER block boot; stderr=%q", stderr)
+			assert.Contains(t, stderr, tc.blockedLog,
+				"the blocked copy must be logged loudly (the bytes live in the binary — degradation is to the pointer alone)")
+			assert.Contains(t, stderr, "init-fs: ok",
+				"the init must run to completion past the failed copy")
+
+			// The sibling dir materializes in full — one blocked dir is
+			// never collateral damage for the other.
+			want, err := tc.healthyFS.ReadFile(tc.healthySrc)
+			require.NoError(t, err)
+			got, err := os.ReadFile(filepath.Join(tr.rt, "docs", filepath.FromSlash(tc.healthyPod)))
+			require.NoError(t, err, "the unblocked sibling dir must still materialize")
+			assert.Equal(t, string(want), string(got))
+		})
+	}
 }
 
 // TestInitFS_MissingPasswordSource_Fails: G46 class — a workspace
