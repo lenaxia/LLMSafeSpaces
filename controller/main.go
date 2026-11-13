@@ -326,9 +326,7 @@ func main() {
 		"Design 0053 §4.2: OPTIONAL per-image override — sha256 (64 hex) of the arm64 opencode "+
 			"binary inside --opencode-image. Normally unset: hashes resolve from the image index "+
 			"annotations at startup (single Renovate-updatable coordinate). Set BOTH hashes or NEITHER.")
-	// Design 0053 §5.4 (second harness): the pi overlay pin — the
-	// register-helper pattern (like the agentd hash flags) keeps main()'s
-	// funlen budget intact.
+	// Design 0053 §5.4 (second harness): the pi overlay pin.
 	piDeliveryFlag := registerPiDeliveryFlags()
 	// Epic 72 / US-72.3 (design 0058): relay-only key delivery — the
 	// controller staging pass. Default OFF until the US-72.5 flip; off
@@ -425,10 +423,8 @@ func main() {
 			"image", opencodeImage, "sha256Amd64", opencodeBinarySHA256AMD64, "sha256Arm64", opencodeBinarySHA256ARM64)
 	}
 
-	// Design 0053 §5.4: pi overlay delivery — same contract shape and pin
-	// resolution as agentd/opencode above (independent pin and cadence;
-	// exit 85/86 disjoint from 81/82 and 83/84). No baked fallback: an
-	// empty --pi-image is fatal (pi never shipped in runtimes/base).
+	// Design 0053 §5.4: pi overlay delivery — same contract as agentd/
+	// opencode above; no baked fallback (empty --pi-image is fatal).
 	piImage, piBinarySHA256AMD64, piBinarySHA256ARM64 := validateAndResolvePiDelivery(setupLog, piDeliveryFlag)
 
 	setupLog.Info("starting controller", "version", version.Version, "commit", version.CommitSHA, "built", version.BuildTime)
