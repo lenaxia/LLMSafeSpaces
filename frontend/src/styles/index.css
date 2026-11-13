@@ -209,4 +209,13 @@ html.dark .shiki span {
   .animate-unread-pulse {
     animation: none;
   }
+
+  /* Workers-tree activity spinner (the collapsed group's aggregate
+   * busy glyph): the Loader2 glyph stays visible as a static activity
+   * marker, but never animates for reduced-motion users — same
+   * convention as .animate-unread-pulse above. Scoped to the group
+   * header wrapper so this never changes other spinners. */
+  .workers-activity .animate-spin {
+    animation: none;
+  }
 }

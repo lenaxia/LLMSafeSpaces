@@ -2195,6 +2195,16 @@ export function useWorkspaceBusyCount(workspaceId: string): number {
   return ctx.workspaceBusyCount(workspaceId);
 }
 
+// useAnySessionBusy: true iff ANY of the given session ids is busy —
+// the workers-tree header's aggregate activity signal. Same busy map
+// and same liveness semantics as useIsSessionBusy (an aggregation over
+// it, never a second source of truth); an empty id set is never busy.
+export function useAnySessionBusy(sessionIds: string[]): boolean {
+  const ctx = useContext(SessionActivityContext);
+  if (!ctx) return false;
+  return sessionIds.some((sessionId) => ctx.isSessionBusy(sessionId));
+}
+
 export function useClearPendingUnread(): (sessionId: string) => void {
   const ctx = useContext(SessionActivityContext);
   if (!ctx) return () => {};
