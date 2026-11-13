@@ -619,8 +619,12 @@ export function BoardPage() {
   );
 
   const lifecycleMutation = useMutation({
-    mutationFn: async ({ epic, action }: { epic: BoardEpic; action: "activate" | "pause" }) =>
-      action === "activate" ? boardApi.activateEpic(epic.short_id.startsWith("epc-") ? epic.short_id : epic.id) : boardApi.pauseEpic(epic.short_id.startsWith("epc-") ? epic.short_id : epic.id),
+    // Activate's 200 is the {epic, initial_ready_set} wrapper (hurl
+    // board.hurl) — unwrap here so downstream state holds a true row.
+    mutationFn: async ({ epic, action }: { epic: BoardEpic; action: "activate" | "pause" }) => {
+      const idOrShort = epic.short_id.startsWith("epc-") ? epic.short_id : epic.id;
+      return action === "activate" ? (await boardApi.activateEpic(idOrShort)).epic : boardApi.pauseEpic(idOrShort);
+    },
     onSuccess: (epic) => {
       setDrawerError(null);
       rememberEpic(epic);
@@ -630,6 +634,35 @@ export function BoardPage() {
     // r1: a failed activate/pause is a rendered notice, never a swallow.
     onError: (err) => setDrawerError(toBoardError(err)),
   });
+
+  // The owner ask 2026-11-13: activate/pause ON the epic band's kebab —
+  // no drawer trip needed. Same shape as handleProjectLifecycle: the
+  // server's returned row flips the band immediately (rememberEpic
+  // supersedes until the invalidated read lands), success names the
+  // epic in a page notice, failure renders the page-level error (the
+  // drawer is not open — drawerError would be invisible here). No
+  // confirmation: activation/pause is not destructive and the drawer's
+  // own buttons never confirm (codebase convention).
+  const handleEpicLifecycle = useCallback(
+    async (epic: BoardEpic, action: "activate" | "pause"): Promise<void> => {
+      setPageError(null);
+      const idOrShort = epic.short_id.startsWith("epc-") ? epic.short_id : epic.id;
+      try {
+        const updated =
+          action === "activate" ? (await boardApi.activateEpic(idOrShort)).epic : await boardApi.pauseEpic(idOrShort);
+        rememberEpic(updated);
+        await queryClient.invalidateQueries({ queryKey: ["board"] });
+        setPageNotice(
+          action === "activate"
+            ? `${epic.title}: activated — ready stories start feeding to fresh workers.`
+            : `${epic.title}: paused (in-flight leases run out; new claims stopped).`,
+        );
+      } catch (err) {
+        setPageError(toBoardError(err));
+      }
+    },
+    [queryClient, rememberEpic],
+  );
 
   // task_start (§4.2): the manual one-off dispatch — the designed UI exit
   // for backlog rows. Renders the engine's Claim honestly (escalated =
@@ -891,8 +924,11 @@ export function BoardPage() {
                       {epic.progress_done}/{epic.progress_total}
                     </span>
                     {epic.status === "paused" && <Badge variant="warning" className="shrink-0 px-1.5 py-0 text-[10px]">paused</Badge>}
+                    {epic.status === "draft" && <Badge variant="muted" className="shrink-0 px-1.5 py-0 text-[10px]">draft</Badge>}
                     {selected && <Badge variant="default" className="shrink-0 px-1.5 py-0 text-[10px]">selected</Badge>}
-                    {/* #1832 item 3: epic kebab — the delete flow
+                    {/* #1832 item 3: epic kebab — the lifecycle item
+                     * (owner ask 2026-11-13: activate/pause directly on
+                     * the band, no drawer trip) plus the delete flow
                      * (in-flight surfacing + refuse/force-confirm
                      * inside the modal). The trigger stops
                      * propagation: the kebab never toggles the
@@ -902,6 +938,14 @@ export function BoardPage() {
                         ariaLabel={`Epic actions for ${epic.title}`}
                         testId={`epic-kebab-${epic.id}`}
                         items={[
+                          {
+                            // Same rule as the drawer: anything not
+                            // active activates (draft/paused/completed/
+                            // archived are all legal sources — the
+                            // engine's allowed-map); active pauses.
+                            label: epic.status === "active" ? "Pause epic" : "Activate epic",
+                            onClick: () => void handleEpicLifecycle(epic, epic.status === "active" ? "pause" : "activate"),
+                          },
                           {
                             label: "Delete epic…",
                             destructive: true,

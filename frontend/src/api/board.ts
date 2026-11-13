@@ -49,6 +49,14 @@ export interface BoardAcceptanceCriterion {
   met: boolean;
 }
 
+/** The activate 200 wrapper (handler shape, pinned by hurl board.hurl):
+ * the updated epic PLUS the engine's initial-ready-set report (#1747).
+ * Pause/archive/unarchive return the bare epic — only activate wraps. */
+export interface BoardEpicActivateResponse {
+  epic: BoardEpic;
+  initial_ready_set: string[];
+}
+
 export interface BoardTask {
   id: string;
   project_id: string;
@@ -337,8 +345,8 @@ export const boardApi = {
     api.get<BoardEpic>(`/me/epics/${encodeURIComponent(idOrShort)}`),
   updateEpic: (idOrShort: string, input: BoardEpicInput): Promise<BoardEpic> =>
     api.patch<BoardEpic>(`/me/epics/${encodeURIComponent(idOrShort)}`, { ...input, requestId: newBoardRequestId() }),
-  activateEpic: (idOrShort: string): Promise<BoardEpic> =>
-    api.post<BoardEpic>(`/me/epics/${encodeURIComponent(idOrShort)}/activate`),
+  activateEpic: (idOrShort: string): Promise<BoardEpicActivateResponse> =>
+    api.post<BoardEpicActivateResponse>(`/me/epics/${encodeURIComponent(idOrShort)}/activate`),
   pauseEpic: (idOrShort: string): Promise<BoardEpic> =>
     api.post<BoardEpic>(`/me/epics/${encodeURIComponent(idOrShort)}/pause`),
   archiveEpic: (idOrShort: string): Promise<BoardEpic> =>

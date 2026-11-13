@@ -10,6 +10,7 @@ import {
   seedBoard,
   defaultTasks,
   mockListProjects,
+  mockListProjectEpics,
   mockWorkspacesList,
   mockStartTask,
   mockDeleteTask,
@@ -92,7 +93,8 @@ describe("BoardPage r1 — delete / lifecycle / start / feed / concurrency", () 
 
   it("activates a paused epic from the drawer: status flips + board invalidates", async () => {
     mockGetEpic.mockResolvedValue({ ...EPIC_ROW, status: "paused" });
-    mockActivateEpic.mockResolvedValue({ ...EPIC_ROW, status: "active" });
+    // Activate's 200 is the {epic, initial_ready_set} wrapper (hurl).
+    mockActivateEpic.mockResolvedValue({ epic: { ...EPIC_ROW, status: "active" }, initial_ready_set: ["tsk-aaaa0001"] });
     renderBoard();
     await screen.findByTestId("task-card-tsk-aaaa0001");
     // 2026-10-28 ruling 1: chips are gone — the epic ROW's double-click
@@ -138,6 +140,86 @@ describe("BoardPage r1 — delete / lifecycle / start / feed / concurrency", () 
     const notice = await screen.findByRole("alert");
     expect(notice.getAttribute("data-board-error")).toBe("epic_state");
     expect(screen.getByTestId("epic-status").textContent).toBe("paused");
+  });
+
+  // --- Epic lifecycle ON THE BAND (owner ask 2026-11-13: the kebab's ---------
+  // activate/pause item — no drawer trip). Server-truth epics via the
+  // #1832 r2 read (mockListProjectEpics), so the band renders the
+  // engine's real status, not a task-derived placeholder.
+
+  /** The Apollo lane's server-truth epic row, status carried per-test. */
+  const EPIC_LIFECYCLE = {
+    id: "epic-uuid-lc", project_id: PROJECT_A.id, short_id: "epc-1c1c1111", title: "LC",
+    outcome: "Owner steer", status: "draft", tags: [], created_at: "", updated_at: "",
+    progress_done: 0, progress_total: 1, progress_derived: true,
+  };
+
+  function seedLifecycleEpic(status: string) {
+    const epic = { ...EPIC_LIFECYCLE, status };
+    mockListProjectEpics.mockImplementation(async (pid: string) => (pid === PROJECT_A.id ? [epic] : []));
+    return epic;
+  }
+
+  it("band kebab: a draft epic offers Activate, the call fires, and the band flips to active", async () => {
+    const epic = seedLifecycleEpic("draft");
+    mockActivateEpic.mockImplementation(async () => {
+      epic.status = "active"; // the server's post-write truth
+      return { epic: { ...epic }, initial_ready_set: [] };
+    });
+    renderBoard();
+    const lane = await screen.findByTestId("swimlane-prj-aaaa1111");
+    const band = within(lane).getByTestId("epic-band-epic-uuid-lc");
+    expect(within(band).getByText("draft")).toBeInTheDocument();
+
+    fireEvent.click(within(lane).getByTestId("epic-kebab-epic-uuid-lc"));
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Activate epic" }));
+
+    await waitFor(() => expect(mockActivateEpic).toHaveBeenCalledWith("epc-1c1c1111"));
+    // Flipped: the draft badge is gone, the kebab now offers Pause.
+    await waitFor(() => expect(within(band).queryByText("draft")).toBeNull());
+    const notice = await screen.findByTestId("board-notice");
+    expect(notice.textContent).toContain("LC: activated");
+    fireEvent.click(within(lane).getByTestId("epic-kebab-epic-uuid-lc"));
+    expect(await screen.findByRole("menuitem", { name: "Pause epic" })).toBeInTheDocument();
+  });
+
+  it("band kebab: an active epic offers Pause, the call fires, and the band flips to paused", async () => {
+    const epic = seedLifecycleEpic("active");
+    mockPauseEpic.mockImplementation(async () => {
+      epic.status = "paused";
+      return { ...epic };
+    });
+    renderBoard();
+    const lane = await screen.findByTestId("swimlane-prj-aaaa1111");
+    const band = within(lane).getByTestId("epic-band-epic-uuid-lc");
+
+    fireEvent.click(within(lane).getByTestId("epic-kebab-epic-uuid-lc"));
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Pause epic" }));
+
+    await waitFor(() => expect(mockPauseEpic).toHaveBeenCalledWith("epc-1c1c1111"));
+    await waitFor(() => expect(within(band).getByText("paused")).toBeInTheDocument());
+    expect(screen.getByTestId("board-notice").textContent).toContain("LC: paused");
+  });
+
+  it("band kebab: a FAILED activate renders the page error and the band stays draft (rollback)", async () => {
+    seedLifecycleEpic("draft");
+    mockActivateEpic.mockRejectedValue(
+      boardError(409, { error: "board: guard epic_state: 2 cross-epic dependenc(ies) enter inactive epics", code: "epic_state" }),
+    );
+    renderBoard();
+    const lane = await screen.findByTestId("swimlane-prj-aaaa1111");
+    const band = within(lane).getByTestId("epic-band-epic-uuid-lc");
+
+    fireEvent.click(within(lane).getByTestId("epic-kebab-epic-uuid-lc"));
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Activate epic" }));
+
+    await waitFor(() => expect(mockActivateEpic).toHaveBeenCalled());
+    const notice = await screen.findByRole("alert");
+    expect(notice.getAttribute("data-board-error")).toBe("epic_state");
+    // Nothing flipped: the badge survives and the kebab still offers Activate.
+    expect(within(band).getByText("draft")).toBeInTheDocument();
+    fireEvent.click(within(lane).getByTestId("epic-kebab-epic-uuid-lc"));
+    expect(await screen.findByRole("menuitem", { name: "Activate epic" })).toBeInTheDocument();
   });
 
   // --- task_start (the backlog exit the engine enumerates) -------------------
