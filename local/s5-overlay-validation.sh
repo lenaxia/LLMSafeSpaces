@@ -459,43 +459,48 @@ kubectl -n "$NS" delete workspace "$WS_BAD_PI" --wait=false >/dev/null 2>&1 || t
 
 # --- S5.4c: pi pins ConfigMap survives a controller restart --------------------
 #
-# The startup resolver (overlay_pins.go) caches the per-arch binary pins
-# per digest in llmsafespaces-pi-pins; a controller pod restart after the
-# resolution must find the cache intact (registry-outage resilience). The
-# leg installs image-ONLY pi pins (the Renovate form) so the controller
-# resolves them from the index annotations and writes the cache; then the
-# controller pod is deleted and the cache re-read.
-log "S5.4c: annotation-resolution install, then controller restart"
+# The AC's claim is cache PERSISTENCE across controller restarts. The
+# annotation-RESOLUTION path cannot run in this harness: the controller
+# resolves pins by dialing the registry named in the image reference,
+# and localhost:5011 is node-containerd-only (the us2 script's
+# documented limitation — same reason every leg here uses break-glass
+# pins). So this leg pre-seeds llmsafespaces-pi-pins exactly as a
+# successful resolution would have written it, restarts the controller,
+# and asserts (a) the cache survives, (b) the controller boots clean
+# against it. The resolution semantics themselves (annotation extract,
+# cache write/fallback, stale-digest refusal) are pinned hermetically in
+# pi_pins_test.go + the overlay_pins envtest suite.
+log "S5.4c: pre-seeded pi-pins cache + controller restart"
 helm upgrade --install "$RELEASE" helm -n "$NS" \
-  "${HELM_LEAN_ARGS[@]}" \
-  --set "controller.agentdDelivery.image=${AGENTD_REF}" \
-  --set "controller.agentdDelivery.binarySHA256Amd64=${AGENTD_SHA}" \
-  --set "controller.agentdDelivery.binarySHA256Arm64=${AGENTD_SHA}" \
-  --set "controller.opencodeDelivery.image=${OPENCODE_REF}" \
-  --set "controller.opencodeDelivery.binarySHA256Amd64=${OPENCODE_SHA}" \
-  --set "controller.opencodeDelivery.binarySHA256Arm64=${OPENCODE_SHA}" \
-  --set "controller.piDelivery.image=${PI_REF}" \
-  >/dev/null 2>&1 || log "S5.4c: annotation-resolution upgrade reported an error (continuing)"
+  "${HELM_LEAN_ARGS[@]}" "${HELM_PIN_ARGS[@]}" \
+  >/dev/null 2>&1 || log "S5.4c: restore upgrade reported an error (continuing)"
+kubectl -n "$NS" apply -f - >/dev/null <<EOF2
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: llmsafespaces-pi-pins
+  namespace: $NS
+data:
+  image: "${PI_REF}"
+  sha256-amd64: "${PI_SHA}"
+  sha256-arm64: "${PI_SHA}"
+EOF2
 kubectl -n "$NS" rollout status deployment/"${RELEASE}-llmsafespaces-controller" --timeout=300s >/dev/null 2>&1 \
-  || fail S5.4c "controller did not roll (annotation-resolution leg cannot run)"
-PI_CM_DIGEST=""
-for i in $(seq 1 30); do
-  PI_CM_DIGEST=$(kubectl -n "$NS" get configmap llmsafespaces-pi-pins -o jsonpath='{.data.image}' 2>/dev/null || true)
-  [ -n "$PI_CM_DIGEST" ] && break
-  sleep 2
-done
+  || fail S5.4c "controller did not roll (restart leg cannot run)"
+PI_CM_DIGEST=$(kubectl -n "$NS" get configmap llmsafespaces-pi-pins -o jsonpath='{.data.image}' 2>/dev/null || true)
 if [ -n "$PI_CM_DIGEST" ]; then
   kubectl -n "$NS" rollout restart deployment/"${RELEASE}-llmsafespaces-controller" >/dev/null 2>&1 || true
   kubectl -n "$NS" rollout status deployment/"${RELEASE}-llmsafespaces-controller" --timeout=300s >/dev/null 2>&1 \
     || fail S5.4c "controller did not come back after restart"
   PI_CM_AFTER=$(kubectl -n "$NS" get configmap llmsafespaces-pi-pins -o jsonpath='{.data.image}' 2>/dev/null || true)
-  if [ "$PI_CM_AFTER" = "$PI_CM_DIGEST" ]; then
-    pass S5.4c "llmsafespaces-pi-pins survives a controller restart (digest ${PI_CM_DIGEST:0:20}…)"
+  PI_CM_SHA_AFTER=$(kubectl -n "$NS" get configmap llmsafespaces-pi-pins -o jsonpath='{.data.sha256-amd64}' 2>/dev/null || true)
+  if [ "$PI_CM_AFTER" = "$PI_CM_DIGEST" ] && [ "$PI_CM_SHA_AFTER" = "$PI_SHA" ]; then
+    pass S5.4c "llmsafespaces-pi-pins survives a controller restart intact (digest ${PI_CM_DIGEST:0:20}…)"
   else
     fail S5.4c "pi-pins ConfigMap changed across restart: ${PI_CM_DIGEST:0:20}… → ${PI_CM_AFTER:0:20}…"
   fi
 else
-  fail S5.4c "llmsafespaces-pi-pins ConfigMap absent after image-only install"
+  fail S5.4c "llmsafespaces-pi-pins ConfigMap seed did not land"
 fi
 
 log "restoring correct pins (controller rolls in background; S5.5 waits for readiness)"
