@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [Unreleased]
+
+### Fixed — the glm-5.3 tool-call tiling runaway: aged-arg compaction v3 renders prior tool usage as lossless markdown (issue #1949, PR follow-up to #1954)
+
+- **The root behavior (60/60 events across three workspaces)**: glm-5.3 pattern-continues its OWN prior tool-call structures in history; a new same-family call latches into a duplicate-key/fragment tiling that burns to the token cap (unparseable arguments, 16k+ tokens, ~100s per event; 10 production runaways post-#1954-deployment on the very workspace the v1 compactor protected).
+- **v1 post-mortem (why #1954 failed)**: the prose-note stub was word-bearing — the tiling attractor itself (controlled pair on the live Nov-12 context: prose stub → cap-burn, `{"note":"..."}` → clean) — and the stub sentence leaked into 4 delivered agent messages. window=30 left dozens of real-valued calls as live fuel.
+- **v3 (this change)**: prior tool usage (all families — the validated config) renders as plain markdown inside the assistant message that made the calls (`- Called \`tool\`(**param**: value, ...)` bullets + `  - Result:` lines), replacing the tool_calls entry and its paired results. **Lossless** (params and outputs fully visible — unlike v2 dotting) and **structure-free** (the emission template is gone). Determinism contract pinned: pure function of message bytes (own-key-order token decode, json.Number byte-preservation, no HTML escaping, no timestamps) — one prefix-cache bust per message at enablement, byte-stable forever.
+- **Verified end-to-end** (exact-context replays via litellm, glm-5.3): myriad live-cascade context 1/1 runaway → **5/5 clean** (3 python mirror + 2 shipped-Go bytes); quick-panda send_message context 3/4 runaway → **5/5 clean**. The model still emits correct, well-formed new calls (batched import_plans with the right plan files; proper send_messages).
+- Pinned by: the rewritten agedarg suite (restructure correctness, byte-determinism, idempotence, passthrough safety, per-message window granularity, kill switch, synthetic replay cure with no surviving tiling signatures, and an executed Go↔python render-parity pin on a fixed sample). The v1 prose stub is forbidden by a NotContains pin in both the Go tests and the checked-in replay harness (`scripts/1949-aged-arg-replay.py`, updated to the same rendering). Default window 0 (restructure every call — any real-valued survivor re-seeds); `BYO_AGED_ARG_RECENT_TOOL_CALLS=-1` remains the kill switch.
+
 ### Added — the workers-tree header lights an aggregate activity spinner when ANY worker is busy (tsk-upland-marigold-masks)
 
 - **The gesture**: the workspace view's tree carries a "Workers" group (collapsed by default) whose header shows a count badge. The count says how many workers exist but nothing about what they are DOING — with the group collapsed (its normal state), a busy board worker was invisible until expanded. The header now renders an animated spinner glyph next to the count iff at least one worker row is busy; all idle → no spinner (the count stands alone exactly as before).

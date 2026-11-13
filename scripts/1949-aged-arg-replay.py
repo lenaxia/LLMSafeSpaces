@@ -49,11 +49,16 @@ import urllib.error
 import urllib.request
 
 TOOL_PREFIX = "llmsafespaces_"
-# Mirror of the Go default (cmd/relay-router/agedarg.go): the most recent
-# 30 tool calls (any tool) form the untouched recent window.
-RECENT_TOOL_CALLS = 30
-STUB_NOTE = ("arguments removed by relay aged-arg compaction "
-             "(full text preserved in the session audit trail)")
+# v3 HISTORY RESTRUCTURE (2026-11-13) — python mirror of
+# cmd/relay-router/agedarg.go: prior tool usage is rendered as PLAIN
+# MARKUP inside the assistant message ("- Called `name`(**k**: v)"
+# bullets + "  - Result:" lines), removing the tool_call STRUCTURE the
+# tiling pattern-continues, at zero information cost. Verified
+# cross-context (myriad 3/3, quick-panda 3/3 clean on exact live
+# replays). Supersedes v1 (prose-note stub — leaked, failed) and v2
+# (value-dotting — clean but lossy).
+RECENT_TOOL_CALLS = 0
+RESTRUCTURE_TOOL_CALLS = True
 
 WORDS = ("drain ledger reclaim wedge sentinel charter posture seam verdict "
          "thumbprint cadence harness relay compact stub aged emission "
@@ -230,44 +235,91 @@ FINAL_REQUEST = ("Create one more task in epic epc-drill3 titled 'Final replay "
 
 # ---- the compaction (python mirror of cmd/relay-router/agedarg.go) ----
 
-def stub_json():
-    # The stub payload, byte-identical to the Go transform's
-    # json.Marshal (cmd/relay-router/agedarg.go agedArgStub) — compact
-    # separators, no space after the colon. The parity is PINNED by
-    # TestAgedArgStubMatchesReplayHarness, which executes this script
-    # (--print-stub) and compares bytes.
-    return json.dumps({"note": STUB_NOTE}, separators=(",", ":"))
+def _compact_json(v):
+    # Mirror Go: compact separators, no HTML escaping, numbers via
+    # json.Number-style byte preservation (json.dumps keeps the literal).
+    return json.dumps(v, separators=(",", ":"), ensure_ascii=False)
 
 
-def compact(body, recent_tool_calls=RECENT_TOOL_CALLS):
+def render_arguments(args_str):
+    # Deterministic parameter list in the payload's OWN key order:
+    # "**k**: v" comma-separated, values compact-JSON. Unparseable
+    # payloads render verbatim.
+    try:
+        obj = json.loads(args_str)
+    except (json.JSONDecodeError, TypeError):
+        return args_str
+    if not isinstance(obj, dict):
+        return args_str
+    return ", ".join(f"**{k}**: {_compact_json(v)}" for k, v in obj.items())
+
+
+def restructure_messages(msgs):
+    # Merge each assistant tool-call message and its following
+    # role:"tool" results into ONE plain-text assistant message.
+    out = []
+    i = 0
+    n = 0
+    while i < len(msgs):
+        m = msgs[i]
+        calls = m.get("tool_calls") if isinstance(m, dict) else None
+        if not calls:
+            out.append(m)
+            i += 1
+            continue
+        j = i + 1
+        results = {}
+        while j < len(msgs):
+            t = msgs[j]
+            if isinstance(t, dict) and t.get("role") == "tool":
+                results[t.get("tool_call_id")] = t.get("content", "")
+                j += 1
+                continue
+            break
+        lines = []
+        if isinstance(m.get("content"), str) and m["content"].strip():
+            lines.append(m["content"].strip())
+        for c in calls:
+            fn = c.get("function") or {}
+            lines.append("- Called `" + fn.get("name", "") + "`(" + render_arguments(fn.get("arguments", "")) + ")")
+            cid = c.get("id")
+            if cid in results:
+                lines.append(f"  - Result: {results[cid]}")
+            n += 1
+        merged = {"role": "assistant", "content": "\n".join(lines) + "\n"}
+        out.append(merged)
+        i = j
+    return out, n
+
+
+def restructure(body):
     msgs = body.get("messages")
     if not isinstance(msgs, list):
         return json.dumps(body), 0
-    flat = []  # (msg_idx, call_idx) of every tool call, forward order
-    for mi, m in enumerate(msgs):
-        if isinstance(m, dict) and isinstance(m.get("tool_calls"), list):
-            for ci in range(len(m["tool_calls"])):
-                flat.append((mi, ci))
-    protected = set(flat[-recent_tool_calls:]) if recent_tool_calls > 0 else set()
-    stubbed = 0
-    stub = stub_json()
-    for mi, ci in flat:
-        if (mi, ci) in protected:
-            continue
-        call = msgs[mi]["tool_calls"][ci]
-        if not isinstance(call, dict):
-            continue
-        fn = call.get("function")
-        if not isinstance(fn, dict):
-            continue
-        name = fn.get("name", "")
-        if not isinstance(name, str) or not name.startswith(TOOL_PREFIX):
-            continue
-        if fn.get("arguments") == stub:
-            continue  # already stubbed (idempotent across turns)
-        fn["arguments"] = stub
-        stubbed += 1
-    return json.dumps(body), stubbed
+    new_msgs, n = restructure_messages(msgs)
+    body["messages"] = new_msgs
+    return json.dumps(body, separators=(",", ":"), ensure_ascii=False), n
+
+
+SAMPLE_BODY = {
+    "model": "glm-5.3",
+    "messages": [
+        {"role": "user", "content": "go"},
+        {"role": "assistant", "content": "working",
+         "tool_calls": [{"id": "call_1", "type": "function", "function": {
+             "name": "llmsafespaces_board_create_task",
+             "arguments": json.dumps({"epicId": "epc-1", "title": "t"}, separators=(",", ":"))}}]},
+        {"role": "tool", "tool_call_id": "call_1", "content": json.dumps({"ok": True}, separators=(",", ":"))},
+    ],
+}
+
+
+def print_sample():
+    # Deterministic-rendering pin: the restructured form of the fixed
+    # sample body, byte-for-byte (the Go test replicates this body).
+    out, _ = restructure(json.loads(json.dumps(SAMPLE_BODY)))
+    print(out)
+    return 0
 
 
 # ---- scorer ----
@@ -487,7 +539,7 @@ def main():
     args = ap.parse_args()
 
     if args.print_stub:
-        print(stub_json())
+        print_sample()
         return 0
 
     base = os.environ.get("REPLAY_BASE_URL", "")
@@ -522,7 +574,7 @@ def main():
                 "max_tokens": args.max_tokens}
         stubbed = 0
         if arm == "compacted":
-            body_bytes, stubbed = compact(body)
+            body_bytes, stubbed = restructure(body)
         else:
             body_bytes = json.dumps(body)
         n_old = sum(1 for m in msgs if isinstance(m, dict)
