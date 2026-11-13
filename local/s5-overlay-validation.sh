@@ -181,18 +181,6 @@ for img in agentd opencode pi controller runtime-base; do
   docker push "$REG/llmsafespaces/$img:ci" >/dev/null
 done
 
-# Stamp the per-arch pi binary sha256s onto the local index EXACTLY as
-# CI's merge-pi does (imagetools create --annotation): the harness index
-# then carries the production annotation shape. (The controller pod
-# still cannot DIAL localhost:5011 — node-containerd-only, the us2
-# constraint — so S5.4c demonstrates the cache-fallback boot path, not
-# the live fetch; resolution semantics live in the hermetic suites.)
-PI_PRE_SHA=$(binary_sha pi /pi)
-docker buildx imagetools create -t "$REG/llmsafespaces/pi:ci-annotated" \
-  --annotation "index:dev.llmsafespaces/pi.sha256-amd64=${PI_PRE_SHA}" \
-  --annotation "index:dev.llmsafespaces/pi.sha256-arm64=${PI_PRE_SHA}" \
-  "$REG/llmsafespaces/pi:ci" >/dev/null
-
 digest_ref() {
   local ref d
   ref=$(docker inspect --format '{{index .RepoDigests 0}}' "$REG/llmsafespaces/$1:ci")
@@ -219,6 +207,17 @@ OPENCODE_SHA=$(binary_sha opencode /usr/local/bin/opencode)
 PI_SHA=$(binary_sha pi /pi)
 [ -n "$AGENTD_SHA" ] && [ -n "$OPENCODE_SHA" ] && [ -n "$PI_SHA" ] || { log "binary hashing failed"; exit 1; }
 log "pins: agentd=${AGENTD_REF} sha=${AGENTD_SHA:0:12}… opencode=${OPENCODE_REF} sha=${OPENCODE_SHA:0:12}… pi=${PI_REF} sha=${PI_SHA:0:12}…"
+
+# Stamp the per-arch pi binary sha256s onto the local index EXACTLY as
+# CI's merge-pi does (imagetools create --annotation): the harness index
+# then carries the production annotation shape. (The controller pod
+# still cannot DIAL localhost:5011 — node-containerd-only, the us2
+# constraint — so S5.4c demonstrates the cache-fallback boot path, not
+# the live fetch; resolution semantics live in the hermetic suites.)
+docker buildx imagetools create -t "$REG/llmsafespaces/pi:ci-annotated" \
+  --annotation "index:dev.llmsafespaces/pi.sha256-amd64=${PI_SHA}" \
+  --annotation "index:dev.llmsafespaces/pi.sha256-arm64=${PI_SHA}" \
+  "$REG/llmsafespaces/pi:ci" >/dev/null
 
 # --- Chart (controller-lean, BOTH pins — the mandatory S3 shape) ------------
 
