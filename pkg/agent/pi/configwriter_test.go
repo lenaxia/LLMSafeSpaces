@@ -626,6 +626,7 @@ func TestNewConfigWriter_CorruptOwnedFilesLeftAlone(t *testing.T) {
 	dir := t.TempDir()
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "auth.json"), []byte(`{not json`), 0o660))
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "settings.json"), []byte(`{not json`), 0o640))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "mcp.json"), []byte(`{not json`), 0o640))
 
 	w := NewConfigWriter(dir, WithModelResolutionWarningPath(filepath.Join(dir, modelResolutionWarningFile)))
 	_, err := w.Apply(agent.AgentConfigInput{
@@ -633,12 +634,149 @@ func TestNewConfigWriter_CorruptOwnedFilesLeftAlone(t *testing.T) {
 	})
 	require.NoError(t, err)
 
+	for name, want := range map[string]string{
+		"auth.json":     `{not json`,
+		"settings.json": `{not json`,
+		"mcp.json":      `{not json`,
+	} {
+		raw, err := os.ReadFile(filepath.Join(dir, name))
+		require.NoError(t, err, name)
+		assert.Equal(t, want, string(raw), "an unparseable pi/user-owned %s is never clobbered", name)
+	}
+}
+
+// --- restart round-trip regressions (review round 2: the load path must
+// be the inverse of the render path) ------------------------------------
+
+func TestRoundTrip_FirstPartyProviderWithModels_KeepsCredential(t *testing.T) {
+	// C1: a first-party provider WITH a declared model list renders a
+	// models-only models.json entry (its credential rides auth.json) —
+	// a writer restart must not lose that credential.
+	formatted := []byte(`{
+	  "$schema": "https://opencode.ai/config.json",
+	  "provider": {
+	    "anthropic": {
+	      "options": {"apiKey": "sk-ant-first-party"},
+	      "models": {"claude-sonnet-5": {"name": "Claude Sonnet 5"}}
+	    }
+	  }
+	}`)
+	dir := t.TempDir()
+	w := NewConfigWriter(dir, WithModelResolutionWarningPath(filepath.Join(dir, modelResolutionWarningFile)))
+	_, err := w.Apply(agent.AgentConfigInput{Providers: &agent.AgentProvidersChange{Formatted: formatted}})
+	require.NoError(t, err)
+	require.FileExists(t, filepath.Join(dir, "auth.json"))
+
+	w2 := NewConfigWriter(dir, WithModelResolutionWarningPath(filepath.Join(dir, modelResolutionWarningFile)))
+	_, err = w2.Apply(agent.AgentConfigInput{})
+	require.NoError(t, err)
+
+	auth := readJSON(t, filepath.Join(dir, "auth.json"))
+	require.Contains(t, auth, "anthropic", "credential survives the restart")
+	var entry struct {
+		Type string `json:"type"`
+		Key  string `json:"key"`
+	}
+	require.NoError(t, json.Unmarshal(auth["anthropic"], &entry))
+	assert.Equal(t, authTypeAPIKey, entry.Type)
+	assert.Equal(t, "sk-ant-first-party", entry.Key)
+
+	// The models-only entry survives too (idempotent provider surface).
+	providers := readModelsProviders(t, dir)
+	require.Contains(t, providers, "anthropic")
+}
+
+func TestRoundTrip_FirstPartyNoModels_CredentialDeletableAfterRestart(t *testing.T) {
+	// C4: a first-party provider with NO declared model list renders
+	// nothing in models.json — after a restart its auth.json entry must
+	// still be removable by a Providers clear (not preserved forever as
+	// an undeletable foreign extra).
+	dir := t.TempDir()
+	w := NewConfigWriter(dir, WithModelResolutionWarningPath(filepath.Join(dir, modelResolutionWarningFile)))
+	_, err := w.Apply(agent.AgentConfigInput{Providers: &agent.AgentProvidersChange{Formatted: opencodeShapedProviders()}})
+	require.NoError(t, err) // includes first-party anthropic, no model list
+	require.FileExists(t, filepath.Join(dir, "auth.json"))
+
+	// Restart, then clear the provider source.
+	w2 := NewConfigWriter(dir, WithModelResolutionWarningPath(filepath.Join(dir, modelResolutionWarningFile)))
+	_, err = w2.Apply(agent.AgentConfigInput{Providers: &agent.AgentProvidersChange{}})
+	require.NoError(t, err)
+
 	authRaw, err := os.ReadFile(filepath.Join(dir, "auth.json"))
+	absent := os.IsNotExist(err)
+	if !absent {
+		require.NoError(t, err)
+		var auth map[string]json.RawMessage
+		require.NoError(t, json.Unmarshal(authRaw, &auth))
+		assert.NotContains(t, auth, "anthropic", "stale platform credential must be deletable across a restart")
+	}
+}
+
+func TestRoundTrip_PiNativeAPIField_Preserved(t *testing.T) {
+	// C2: a pi-native provider declaring a non-openai protocol keeps it
+	// on render AND across a restart.
+	formatted := []byte(`{"providers":{"acme-anthropic":{"baseUrl":"https://api.acme.test","api":"anthropic-messages","apiKey":"sk-x","models":[{"id":"acme-claude"}]}}}`)
+	dir := t.TempDir()
+	w := NewConfigWriter(dir, WithModelResolutionWarningPath(filepath.Join(dir, modelResolutionWarningFile)))
+	_, err := w.Apply(agent.AgentConfigInput{Providers: &agent.AgentProvidersChange{Formatted: formatted}})
 	require.NoError(t, err)
-	assert.Equal(t, `{not json`, string(authRaw), "an unparseable pi-owned auth.json is never clobbered")
-	settingsRaw, err := os.ReadFile(filepath.Join(dir, "settings.json"))
+
+	providers := readModelsProviders(t, dir)
+	var entry struct {
+		API string `json:"api"`
+	}
+	require.NoError(t, json.Unmarshal(providers["acme-anthropic"], &entry))
+	assert.Equal(t, "anthropic-messages", entry.API, "declared api wins over the openai-completions default")
+
+	// Restart round-trip preserves it.
+	w2 := NewConfigWriter(dir, WithModelResolutionWarningPath(filepath.Join(dir, modelResolutionWarningFile)))
+	_, err = w2.Apply(agent.AgentConfigInput{})
 	require.NoError(t, err)
-	assert.Equal(t, `{not json`, string(settingsRaw))
+	providers = readModelsProviders(t, dir)
+	require.NoError(t, json.Unmarshal(providers["acme-anthropic"], &entry))
+	assert.Equal(t, "anthropic-messages", entry.API, "api field survives the restart")
+}
+
+func TestRoundTrip_FirstPartyStartupModelSelection_Survives(t *testing.T) {
+	// C3: a settings.json-persisted selection targeting a first-party
+	// provider must survive a writer restart without a spurious
+	// model-resolution warning (the 2026-08-16 incident class, triggered
+	// by the writer's own lifecycle in review round 1).
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "settings.json"),
+		[]byte(`{"defaultProvider":"anthropic","defaultModel":"claude-sonnet-5"}`), 0o640))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "auth.json"),
+		[]byte(`{"anthropic":{"type":"api_key","key":"sk-ant-first-party"}}`), 0o660))
+
+	w := NewConfigWriter(dir, WithModelResolutionWarningPath(filepath.Join(dir, modelResolutionWarningFile)))
+	_, err := w.Apply(agent.AgentConfigInput{}) // boot normalize
+	require.NoError(t, err)
+
+	settings := readJSON(t, filepath.Join(dir, "settings.json"))
+	assert.Equal(t, `"anthropic"`, string(settings["defaultProvider"]), "selection survives the restart")
+	assert.Equal(t, `"claude-sonnet-5"`, string(settings["defaultModel"]))
+	assert.NoFileExists(t, filepath.Join(dir, modelResolutionWarningFile), "no spurious unresolvable-model marker")
+}
+
+func TestRoundTrip_CorruptMCPFile_ExplicitStagingTakesOwnership(t *testing.T) {
+	// C5 complement: the leave-alone rule protects against deletion, but
+	// an explicitly staged MCPServers source must still be able to write.
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "mcp.json"), []byte(`{not json`), 0o640))
+
+	w := NewConfigWriter(dir, WithModelResolutionWarningPath(filepath.Join(dir, modelResolutionWarningFile)))
+	_, err := w.Apply(agent.AgentConfigInput{}) // boot normalize: leaves the corrupt file alone
+	require.NoError(t, err)
+	raw, err := os.ReadFile(filepath.Join(dir, "mcp.json"))
+	require.NoError(t, err)
+	assert.Equal(t, `{not json`, string(raw))
+
+	_, err = w.Apply(agent.AgentConfigInput{MCPServers: &agent.MCPServerChange{Servers: []agent.MCPServerEntry{
+		{Name: "docs", Transport: "http", URL: "https://docs.example.test/mcp"},
+	}}})
+	require.NoError(t, err)
+	servers := readMCPServers(t, dir)
+	assert.Contains(t, servers, "docs", "explicit staging takes ownership of the file")
 }
 
 // --- concurrency ---------------------------------------------------------

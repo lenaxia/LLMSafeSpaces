@@ -218,9 +218,10 @@ type ConfigWriter struct {
 
 	// captured state (construction-time disk reads, preserved across
 	// renders unless a source supersedes them)
-	authExtra    map[string]json.RawMessage // auth.json entries not owned by this writer (user/pi OAuth creds)
+	authExtra    map[string]json.RawMessage // auth.json entries not owned by this writer (pi OAuth creds, unknown types)
 	authExtrasOK bool                       // auth.json was absent or valid JSON at construction
 	mcpRaw       map[string]json.RawMessage // on-disk mcpServers when no staged source has ever superseded it
+	mcpOK        bool                       // mcp.json was absent or parseable at construction
 	settingsRaw  map[string]json.RawMessage // settings.json minus the writer-owned model keys
 	settingsOK   bool                       // settings.json was absent or valid JSON at construction
 
@@ -234,8 +235,9 @@ type ConfigWriter struct {
 // subcommand / a prior writer lifetime / pre-boot relay injection), plus
 // the admin-prompt side-car file. Absent or corrupt files mean the
 // corresponding source starts empty — correct for zero-credential users;
-// for settings.json/auth.json a corrupt file is LEFT ALONE (pi owns it;
-// the writer refuses to clobber what it cannot parse).
+// for auth.json/settings.json/mcp.json an unparseable file is LEFT ALONE
+// (pi or the user owns it; the writer refuses to clobber what it cannot
+// parse, and refuses to delete it too).
 func NewConfigWriter(dir string, opts ...ConfigWriterOption) *ConfigWriter {
 	w := &ConfigWriter{dir: dir, relayAPIKey: defaultRelayAPIKey}
 	for _, opt := range opts {
@@ -314,8 +316,12 @@ func (w *ConfigWriter) Apply(in agent.AgentConfigInput) (bool, error) {
 	if in.MCPServers != nil {
 		// A staged input (even an empty clear) supersedes the captured
 		// on-disk section — staged state is authoritative (opencode
-		// writer parity).
+		// writer parity). An explicitly staged source also takes
+		// ownership of the file from an unparseable on-disk one (the
+		// leave-alone rule guards against DELETING what the writer
+		// cannot understand, not against explicit platform direction).
 		w.mcpRaw = nil
+		w.mcpOK = true
 		if len(in.MCPServers.Servers) > 0 {
 			w.mcpServers = append([]agent.MCPServerEntry(nil), in.MCPServers.Servers...)
 		} else {
@@ -433,6 +439,7 @@ func (w *ConfigWriter) loadExistingModels() {
 	var doc struct {
 		Providers map[string]struct {
 			BaseURL string `json:"baseUrl"`
+			API     string `json:"api"`
 			APIKey  string `json:"apiKey"`
 			Models  []struct {
 				ID            string   `json:"id"`
@@ -462,7 +469,7 @@ func (w *ConfigWriter) loadExistingModels() {
 			w.relay = relay
 			continue
 		}
-		entry := providerEntry{ID: id, BaseURL: p.BaseURL, APIKey: p.APIKey}
+		entry := providerEntry{ID: id, BaseURL: p.BaseURL, API: p.API, APIKey: p.APIKey}
 		for _, m := range p.Models {
 			pm := providerModel{ID: m.ID, Name: m.Name, Context: m.ContextWindow, Output: m.MaxTokens}
 			for _, in := range m.Input {
@@ -478,11 +485,28 @@ func (w *ConfigWriter) loadExistingModels() {
 	w.providers = entries
 }
 
-// loadExistingAuth captures auth.json entries this writer does not own.
-// Fail-closed heuristic (injectedDirs parity): an entry whose key equals
-// a seeded provider id — or the relay id — is treated as writer-owned
-// (it would be re-rendered identically); everything else (pi-written
-// OAuth credentials, user-staged keys) is preserved verbatim.
+// loadExistingAuth classifies auth.json entries and re-hydrates the
+// provider set. Ownership rule (round-2 review, C1/C4): an entry the
+// writer itself renders — {"type":"api_key"} — is writer-owned
+// regardless of whether the provider appears in models.json:
+//
+//   - a seeded provider with an empty APIKey (first-party providers
+//     render models-only entries; their credential lives only here)
+//     gets its key re-hydrated, completing the restart round-trip;
+//   - an id absent from models.json (a first-party provider with no
+//     declared model list renders nothing there) becomes a seeded
+//     first-party providerEntry — so a later Providers clear or
+//     key rotation can actually remove/replace the entry instead of
+//     preserving it as an undeletable foreign extra forever.
+//
+// Everything else (pi-written OAuth credentials, unknown types) is a
+// foreign extra preserved verbatim. The relay id never hydrates (its
+// credential rides models.json apiKey, never auth.json). In the
+// platform context provider keys are platform-managed (headless RPC
+// pi, materialize re-applies the full set each boot) — adopting
+// type-api_key entries as writer-owned is the fail-closed direction
+// for a platform-managed file. An unparseable file sets authExtrasOK
+// false so renders leave it alone.
 func (w *ConfigWriter) loadExistingAuth() {
 	data, err := os.ReadFile(w.authPath())
 	if err != nil {
@@ -496,33 +520,62 @@ func (w *ConfigWriter) loadExistingAuth() {
 		return
 	}
 	w.authExtrasOK = true
-	owned := map[string]bool{relayProviderID: true}
-	for _, p := range w.providers {
-		owned[p.ID] = true
-	}
 	extras := make(map[string]json.RawMessage, len(auth))
 	for k, v := range auth {
-		if !owned[k] {
-			extras[k] = v
+		if !isRelayID(k) {
+			var entry authEntryJSON
+			if json.Unmarshal(v, &entry) == nil && entry.Type == authTypeAPIKey {
+				if p := w.seededProvider(k); p != nil {
+					if p.APIKey == "" {
+						p.APIKey = entry.Key
+					}
+				} else {
+					w.providers = append(w.providers, providerEntry{ID: k, APIKey: entry.Key})
+				}
+				continue
+			}
+		}
+		extras[k] = v
+	}
+	sortProviders(w.providers)
+	w.authExtra = extras
+}
+
+// seededProvider returns the seeded provider entry with id, or nil.
+func (w *ConfigWriter) seededProvider(id string) *providerEntry {
+	for i := range w.providers {
+		if w.providers[i].ID == id {
+			return &w.providers[i]
 		}
 	}
-	w.authExtra = extras
+	return nil
 }
 
 // loadExistingMCP captures the on-disk mcpServers section (user-staged
 // servers); re-emitted until a staged MCPServers source supersedes it.
+// An unparseable file (or a non-object mcpServers value) sets mcpOK
+// false — the same fail-closed leave-alone contract as corrupt
+// auth.json/settings.json (round-2 review C5): a boot normalize must
+// not delete user-staged MCP state the writer could not understand.
 func (w *ConfigWriter) loadExistingMCP() {
+	w.mcpOK = true
 	data, err := os.ReadFile(w.mcpPath())
 	if err != nil || len(data) == 0 {
 		return
 	}
 	var doc struct {
-		MCPServers map[string]json.RawMessage `json:"mcpServers"`
+		MCPServers json.RawMessage `json:"mcpServers"`
 	}
-	if json.Unmarshal(data, &doc) != nil || doc.MCPServers == nil {
+	if json.Unmarshal(data, &doc) != nil || len(doc.MCPServers) == 0 {
+		w.mcpOK = false
 		return
 	}
-	w.mcpRaw = doc.MCPServers
+	var servers map[string]json.RawMessage
+	if json.Unmarshal(doc.MCPServers, &servers) != nil {
+		w.mcpOK = false
+		return
+	}
+	w.mcpRaw = servers // nil (a JSON null) counts as parseable-empty
 }
 
 // loadExistingSettings captures settings.json minus the writer-owned
@@ -711,8 +764,12 @@ func (w *ConfigWriter) renderedProvidersLocked() []providerEntry {
 func (w *ConfigWriter) buildModelsJSON(providerSet []providerEntry) ([]byte, fileAction) {
 	providers := make(map[string]providerJSON, len(providerSet))
 	for _, p := range providerSet {
-		entry := providerJSON{APIKey: p.APIKey, BaseURL: p.BaseURL}
+		entry := providerJSON{API: p.API, APIKey: p.APIKey, BaseURL: p.BaseURL}
 		if entry.API == "" && p.BaseURL != "" {
+			// Custom endpoint without a declared protocol: the platform's
+			// formatter shapes all custom endpoints OpenAI-compatible (the
+			// opencode npm "@ai-sdk/openai-compatible" ⇔ baseURL pairing).
+			// A pi-native declared api (e.g. anthropic-messages) wins.
 			entry.API = openaiCompletionsAPI
 		}
 		for _, m := range p.Models {
@@ -786,8 +843,12 @@ func (w *ConfigWriter) buildAuthJSON(providerSet []providerEntry) ([]byte, fileA
 
 // buildMCPJSON renders mcp.json: staged servers are authoritative; with
 // no staged source the section captured at construction is re-emitted.
-// fileRemove when nothing is left to declare.
+// fileLeave when the on-disk file was unparseable (pi/user-owned —
+// never clobbered); fileRemove when nothing is left to declare.
 func (w *ConfigWriter) buildMCPJSON() ([]byte, fileAction, error) {
+	if !w.mcpOK {
+		return nil, fileLeave, nil
+	}
 	servers := make(map[string]mcpEntryJSON)
 	if len(w.mcpServers) > 0 {
 		for _, srv := range w.mcpServers {
