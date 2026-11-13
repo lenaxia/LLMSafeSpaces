@@ -13,6 +13,7 @@ import { SLASH_COMMANDS } from "./slashCommands";
 import type { SlashCommandContext } from "./slashCommands";
 import { InlinePopup } from "./InlinePopup";
 import { usePromptLibrary } from "../../hooks/usePromptLibrary";
+import { useSessionDraft } from "../../hooks/useSessionDraft";
 import { useQueryClient } from "@tanstack/react-query";
 import { CircleHelp } from "lucide-react";
 import { formatBytes } from "../../lib/format";
@@ -153,7 +154,11 @@ export function Composer({
   sessionId,
   onNewSession,
 }: Props) {
-  const [text, setText] = useState("");
+  // Per-session draft (owner ask 2026-11-13): the text state persists
+  // under (workspaceId, sessionId) so switching sessions and returning
+  // restores what was typed; sending ("") consumes the stored draft.
+  // Unkeyed (no session yet) it degrades to a plain useState.
+  const [text, setText] = useSessionDraft(workspaceId, sessionId);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const sendOnEnter = useUserSetting("sendOnEnter", false);

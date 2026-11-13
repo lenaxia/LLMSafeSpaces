@@ -28,6 +28,11 @@ beforeEach(() => {
     removeEventListener: () => {},
     dispatchEvent: () => false,
   }) as unknown as MediaQueryList);
+  // The real Composer (below) persists per-session drafts since the
+  // 2026-11-13 drafts feature: these tests all mount ws-1/sess-1, so
+  // without this a previous test's history-navigation setText would
+  // hydrate into the next test's composer.
+  localStorage.removeItem("llmsafespaces_session_drafts");
 });
 
 vi.mock("../api/workspaces", () => ({
