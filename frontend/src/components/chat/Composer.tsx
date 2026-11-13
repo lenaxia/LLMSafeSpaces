@@ -291,6 +291,13 @@ export function Composer({
       setCommandNotice({ kind: "error", text: `${cmd.label} ${unmet}.` });
       return;
     }
+    // Drafts note (review r2, documented decision): a slash command
+    // does NOT consume the persisted draft. The cursor is deliberately
+    // NOT reset here — while browsing, the persistOverride keeps the
+    // pre-browse snapshot as the stored draft, so executing /model or
+    // /compact mid-browse clears the box but the draft survives (a
+    // switch away and back restores it). Sending (handleSubmit) is the
+    // only draft consumer.
     setText("");
     setHelpOpen(false);
     await cmd.run(args, commandCtx);
@@ -336,6 +343,15 @@ export function Composer({
   }, [navTick, text]);
 
   useEffect(() => {
+    // Drafts coherence (review r2): exiting browse mode MUST restore
+    // the pre-browse draft into the box. Resetting the cursor alone
+    // left the recalled entry visible with browsing off — and with the
+    // drafts persistOverride keyed on the cursor, the write-through
+    // would then persist the RECALLED entry over the real draft
+    // (silent loss on an ordinary mid-browse history refetch: stream
+    // finalization, load-earlier — the F4 reset effect fires on any
+    // userMessageHistory identity change).
+    if (historyCursor !== -1) setText(savedDraft ?? "");
     setHistoryCursor(-1);
     setSavedDraft(null);
   }, [userMessageHistory]);

@@ -155,6 +155,23 @@ describe("sessionDrafts store", () => {
     });
   });
 
+  it("prototype-polluting key names are dropped, never assigned (review r2)", () => {
+    // A __proto__ bucket must vanish (assigning it would set the
+    // object's prototype instead of an own key); sibling data survives.
+    localStorage.setItem(
+      KEY,
+      JSON.stringify({ __proto__: { x: { text: "poison", updatedAt: Date.now() } }, "ws-1": { "sess-1": { text: "fine", updatedAt: Date.now() } } }),
+    );
+    expect(loadSessionDraft("__proto__", "x")).toBe("");
+    expect(loadSessionDraft("ws-1", "sess-1")).toBe("fine");
+    // And a write on top never gains a prototype own-key.
+    saveSessionDraft("ws-1", "sess-2", "also fine");
+    const raw = JSON.parse(localStorage.getItem(KEY)!);
+    expect(raw["ws-1"]["sess-2"].text).toBe("also fine");
+    expect(Object.prototype.hasOwnProperty.call(raw, "__proto__")).toBe(false);
+    expect(({} as Record<string, unknown>).x).toBeUndefined(); // the prototype was never polluted
+  });
+
   it("a quota failure on write never throws (typing must not break)", () => {
     saveSessionDraft("ws-1", "sess-1", "first");
     const spy = vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {

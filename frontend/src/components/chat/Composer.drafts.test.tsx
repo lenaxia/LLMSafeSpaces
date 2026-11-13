@@ -6,7 +6,7 @@
  * REAL Composer through its textarea (send path included).
  */
 import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
-import { screen } from "@testing-library/react";
+import { screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { render } from "../../test/utils";
 import { Composer } from "./Composer";
@@ -109,5 +109,43 @@ describe("Composer per-session drafts", () => {
     await type("never sent");
     r1.unmount();
     expect(loadSessionDraft("ws-1", "sess-1")).toBe("never sent");
+  });
+
+  it("review r2: a history refetch MID-BROWSE restores the draft, never persists the recalled entry", async () => {
+    const user = userEvent.setup();
+    // userMessageHistory with one recallable entry; the draft hook is
+    // keyed (ws-1/sess-1) so persistence is live.
+    const r = render(
+      <Composer onSend={vi.fn()} workspaceId="ws-1" sessionId="sess-1" userMessageHistory={["an old sent question"]} />,
+    );
+    const box = screen.getByPlaceholderText("Type a message...") as HTMLTextAreaElement;
+    await user.type(box, "my real draft");
+
+    // Up-recall: the box shows the recalled entry; the store keeps the
+    // draft (r1's persistOverride).
+    box.setSelectionRange(0, 0);
+    await user.keyboard("{ArrowUp}");
+    await waitFor(() => expect(box).toHaveValue("an old sent question"));
+    expect(loadSessionDraft("ws-1", "sess-1")).toBe("my real draft");
+
+    // The history list reference changes mid-browse (stream finalized,
+    // load-earlier, refetch): the F4 reset must restore the draft into
+    // the box — resetting the cursor alone would leave the recalled
+    // entry visible with browsing off, and the write-through would
+    // then persist the recalled entry over the real draft.
+    r.rerender(
+      <Composer onSend={vi.fn()} workspaceId="ws-1" sessionId="sess-1" userMessageHistory={["newer entry", "an old sent question"]} />,
+    );
+    expect(box).toHaveValue("my real draft");
+    expect(loadSessionDraft("ws-1", "sess-1")).toBe("my real draft");
+
+    // Follow-on (the reviewer's second path): another Up snapshots the
+    // DRAFT (not the recalled entry) as the pre-browse draft — the
+    // store keeps the real draft through a second browse cycle.
+    box.setSelectionRange(0, 0);
+    await user.keyboard("{ArrowUp}");
+    await waitFor(() => expect(box).toHaveValue("newer entry"));
+    expect(loadSessionDraft("ws-1", "sess-1")).toBe("my real draft");
+    r.unmount();
   });
 });

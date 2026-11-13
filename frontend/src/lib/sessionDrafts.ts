@@ -85,13 +85,22 @@ function isDraftEntry(v: unknown): v is DraftEntry {
   );
 }
 
+// Prototype-polluting key names never become store keys: `out[k] = v`
+// with k === "__proto__" would assign the prototype, not an own
+// property (the bucket silently vanishing on the next write). Keys are
+// server-generated workspace/session ids, so these are unreachable in
+// practice — dropped defensively (review r2).
+const UNSAFE_KEYS = new Set(["__proto__", "constructor", "prototype"]);
+
 function sanitizeStore(parsed: unknown): DraftStore {
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
   const out: DraftStore = {};
   for (const [wsId, sessions] of Object.entries(parsed as Record<string, unknown>)) {
+    if (UNSAFE_KEYS.has(wsId)) continue;
     if (!sessions || typeof sessions !== "object" || Array.isArray(sessions)) continue;
     const bucket: Record<string, DraftEntry> = {};
     for (const [sessionId, entry] of Object.entries(sessions as Record<string, unknown>)) {
+      if (UNSAFE_KEYS.has(sessionId)) continue;
       if (isDraftEntry(entry)) bucket[sessionId] = entry;
     }
     if (Object.keys(bucket).length > 0) out[wsId] = bucket;

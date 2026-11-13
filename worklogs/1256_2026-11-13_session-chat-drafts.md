@@ -2,7 +2,7 @@
 
 **Date:** 2026-11-13
 **Session:** tsk-sober-oxbow-indicates (owner ask 2026-11-13; epic "Frontend reliability mopup")
-**Status:** Complete — review round 1 remediated (crash-shape fix, recall-override, comment correction), pushed for re-review
+**Status:** Complete — review rounds 1+2 remediated (r2: mid-browse refetch draft restore, `__proto__` key drop, slash-command decision documented), pushed for re-review
 
 ---
 
@@ -66,9 +66,17 @@ The reviewer mutation-verified the architecture (reverting the Composer wiring f
 
 Reviewer non-blocking notes recorded: PIN (b) also passes on pre-PR code trivially (it pins consume-semantics, not wiring); govulncheck red is pre-existing stdlib advisories in untouched Go files (zero Go files in this diff).
 
+### 4d. Review round 2 (CHANGES_REQUESTED → remediated)
+
+r1's findings 1 and 3 ruled RESOLVED by the reviewer (sanitizer covers every consumer, born-RED pins verified, comment accurate). One BLOCKING residual on finding 2, plus two minors:
+
+1. **BLOCKING — mid-browse history refetch persisted the recalled entry over the real draft (reviewer-executed twice on the exact head)**: the F4 reset effect fires on any `userMessageHistory` identity change — reachable in production because the composer is NOT disabled during a running stream (stream finalization refetches the messages query) and "Load earlier messages" pages in. The reset cleared `historyCursor`/`savedDraft` WITHOUT restoring `text`: the box still showed the recalled entry, the persistOverride flipped to undefined, and the write-through refired (persistOverride is in its deps) — persisting the RECALLED entry as the draft. Follow-on: a second Up then snapshotted the recalled text as `savedDraft`. My r1 fix upgraded the pre-existing cosmetic box quirk to silent persistent data loss. Fix: the F4 reset now restores the pre-browse draft into the box (`if (historyCursor !== -1) setText(savedDraft ?? "")`) — cursor, box, override, and store stay coherent on every path. Pinned by `Composer.drafts.test.tsx` "a history refetch MID-BROWSE restores the draft" — the reviewer's exact probe shape (rerender with a changed history list mid-browse + the follow-on second-Up path), mutation-verified born-RED without the restore.
+2. **Minor — `__proto__` keys in sanitizeStore**: `out[k] = v` with a `__proto__` key assigns the prototype, not an own property. Unreachable with server-generated ids, but closed anyway: `UNSAFE_KEYS` (__proto__/constructor/prototype) dropped for both bucket and entry keys. Pinned by the prototype-pollution test.
+3. **Minor — executeCommand mid-browse (documented decision)**: a slash command does NOT consume the persisted draft (the cursor is deliberately not reset, so the override keeps the snapshot as the stored draft); sending remains the only consumer. Comment added at executeCommand.
+
 ## Verification
 
-- `vitest run` full frontend suite: **2640/2640 green (233 files)** post-r1 (+45 new; was 2638 at the first push, 2595 pre-change).
+- `vitest run` full frontend suite: **2642/2642 green (233 files)** post-r2 (+47 new; 2638 at the first push, 2595 pre-change).
 - `tsc --noEmit` clean; `eslint src/` 0 errors (warnings all pre-existing in generated `src/abi/*_pb.ts` — none in touched files); `make fmt-check` green; `make repolint` green.
 - Isolated worktree `/tmp/opencode/drafts-wt` (branch `feat/session-drafts` off `origin/main` @ d5a638fae); `node_modules` symlinked from the shared checkout.
 
