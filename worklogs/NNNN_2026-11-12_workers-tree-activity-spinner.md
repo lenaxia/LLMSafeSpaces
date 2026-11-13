@@ -77,6 +77,23 @@ exists but only renders once the group is expanded.
   files)
 - `make fmt-check` (clean)
 
+## Merge currency (catch-up round, 2026-11-13)
+
+origin/main moved (2007/1998/2016 merged) and the PR went CONFLICTING.
+One catch-up merge onto the branch (`a232c92c6`): the ONLY conflicted
+file was `CHANGELOG.md` — both sides inserted `### Added` blocks under
+`## [Unreleased]`; resolved keeping both, PR entry first (newest
+merged). No frontend file on either side overlapped; the merged head's
+`frontend/` tree is byte-identical to the approved head `f1901446b`,
+so every r2 review finding and CI-green evidence transfers. Re-verified
+on the merged head: `npm run typecheck` clean, `npx vitest run`
+2605/2605 green, `npm run lint` 0 errors, `make fmt-check` clean (the
+only gofmt flags were the local untracked `.ai-workflows/` copies —
+excluded via `.git/info/exclude`, never seen by CI; gofmt'd locally).
+The merged Go surface (`go.mod`, `pkg/`, `api/`, `cmd/`, `controller/`)
+is byte-identical to origin/main, so main's green Go CI evidence
+applies unchanged.
+
 ## Design choice
 
 Aggregate hook vs. reading `busySessions` directly in the Sidebar:
