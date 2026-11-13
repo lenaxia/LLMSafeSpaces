@@ -57,17 +57,6 @@ func parseMessages(t *testing.T, body []byte) []map[string]json.RawMessage {
 	return top.Messages
 }
 
-func toolCallsOfMap(t *testing.T, m map[string]json.RawMessage) []map[string]any {
-	t.Helper()
-	raw, ok := m["tool_calls"]
-	if !ok {
-		return nil
-	}
-	var calls []map[string]any
-	require.NoError(t, json.Unmarshal(raw, &calls))
-	return calls
-}
-
 // TestAgedArgCompaction_StubsAgedLLMSafeSpacesArgs — v3: aged tool usage
 // is restructured into plain text (params + results as bullets); call
 // identity, results, and platform calls all survive as content; the

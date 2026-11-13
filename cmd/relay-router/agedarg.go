@@ -396,7 +396,11 @@ func renderArguments(raw json.RawMessage) string {
 		if err := dec.Decode(&val); err != nil {
 			break
 		}
-		parts = append(parts, "**"+key+"**: "+compactJSON(val))
+		pv, err := compactJSON(val)
+		if err != nil {
+			break
+		}
+		parts = append(parts, "**"+key+"**: "+pv)
 	}
 	// consume the closing brace
 	_, _ = dec.Token()
@@ -405,15 +409,19 @@ func renderArguments(raw json.RawMessage) string {
 
 // compactJSON renders one value as compact JSON with HTML escaping
 // disabled and numbers byte-preserved (json.Number) — deterministic.
-func compactJSON(raw json.RawMessage) string {
+func compactJSON(raw json.RawMessage) (string, error) {
 	dec := json.NewDecoder(strings.NewReader(string(raw)))
 	dec.UseNumber()
-	dec.Decode(&raw)
+	if err := dec.Decode(&raw); err != nil {
+		return "", err
+	}
 	var buf strings.Builder
 	enc := json.NewEncoder(&buf)
 	enc.SetEscapeHTML(false)
-	enc.Encode(raw)
-	return strings.TrimRight(buf.String(), "\n")
+	if err := enc.Encode(raw); err != nil {
+		return "", err
+	}
+	return strings.TrimRight(buf.String(), "\n"), nil
 }
 
 // marshalOrderedMap marshals m with the named keys first (in the given
