@@ -95,11 +95,13 @@ RUN set -eux; \
 
 # bun 1.4.4 — the version upstream's release workflow pins. TLS to
 # github releases + the versioned asset name (upstream publishes no
-# per-asset signatures for setup-bun either).
+# per-asset signatures for setup-bun either). NOTE bun's linux asset
+# vocabulary: x64 and AARCH64 (not arm64) — the 404 class the first CI
+# run caught.
 RUN set -eux; \
     case "${TARGETARCH}" in \
         amd64) BUN_ARCH=x64 ;; \
-        arm64) BUN_ARCH=arm64 ;; \
+        arm64) BUN_ARCH=aarch64 ;; \
         *) echo "unsupported TARGETARCH=${TARGETARCH}" >&2; exit 1 ;; \
     esac; \
     curl --fail --show-error --location --retry 5 --retry-delay 3 --retry-all-errors \
