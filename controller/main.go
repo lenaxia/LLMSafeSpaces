@@ -326,22 +326,10 @@ func main() {
 		"Design 0053 §4.2: OPTIONAL per-image override — sha256 (64 hex) of the arm64 opencode "+
 			"binary inside --opencode-image. Normally unset: hashes resolve from the image index "+
 			"annotations at startup (single Renovate-updatable coordinate). Set BOTH hashes or NEITHER.")
-	var piImage string
-	flag.StringVar(&piImage, "pi-image", "",
-		"Design 0053 §5.4 (second harness): digest-pinned pi image (ghcr.io/.../pi@sha256:...) delivered to "+
-			"workspace pods via a read-only image volume mounted at /pi (workspace container only). MANDATORY — "+
-			"pi was never baked into the base image; the supervisor verifies the binary's sha256 against the "+
-			"per-arch pins before any harness spawn (exit 85/86).")
-	var piBinarySHA256AMD64 string
-	flag.StringVar(&piBinarySHA256AMD64, "pi-binary-sha256-amd64", "",
-		"Design 0053 §5.4: OPTIONAL per-image override — sha256 (64 hex) of the amd64 pi binary "+
-			"inside --pi-image. Normally unset: hashes resolve from the image index annotations at "+
-			"startup (single Renovate-updatable coordinate). Set BOTH hashes or NEITHER.")
-	var piBinarySHA256ARM64 string
-	flag.StringVar(&piBinarySHA256ARM64, "pi-binary-sha256-arm64", "",
-		"Design 0053 §5.4: OPTIONAL per-image override — sha256 (64 hex) of the arm64 pi binary "+
-			"inside --pi-image. Normally unset: hashes resolve from the image index annotations at "+
-			"startup (single Renovate-updatable coordinate). Set BOTH hashes or NEITHER.")
+	// Design 0053 §5.4 (second harness): the pi overlay pin — the
+	// register-helper pattern (like the agentd hash flags) keeps main()'s
+	// funlen budget intact.
+	piDeliveryFlag := registerPiDeliveryFlags()
 	// Epic 72 / US-72.3 (design 0058): relay-only key delivery — the
 	// controller staging pass. Default OFF until the US-72.5 flip; off
 	// means zero behavior change (raw-key path, byte-identical batches).
@@ -441,27 +429,7 @@ func main() {
 	// resolution as agentd/opencode above (independent pin and cadence;
 	// exit 85/86 disjoint from 81/82 and 83/84). No baked fallback: an
 	// empty --pi-image is fatal (pi never shipped in runtimes/base).
-	if err := workspace.ValidatePiDelivery(piImage, piBinarySHA256AMD64, piBinarySHA256ARM64); err != nil {
-		setupLog.Error(err, "invalid pi delivery configuration")
-		os.Exit(1)
-	}
-	if piImage != "" && (piBinarySHA256AMD64 == "" || piBinarySHA256ARM64 == "") {
-		pinCtx, pinCancel := context.WithTimeout(context.Background(), 30*time.Second)
-		pins, err := workspace.ResolvePiPinsWithCache(pinCtx, piImage, piBinarySHA256AMD64, piBinarySHA256ARM64)
-		pinCancel()
-		if err != nil {
-			if errors.Is(err, workspace.ErrPiPinsUnavailable) {
-				setupLog.Error(err, "pi delivery: registry unreachable and no usable pin cache — either restore registry access or pin hashes manually via --pi-binary-sha256-amd64/-arm64 (both)")
-			} else {
-				setupLog.Error(err, "pi delivery: unable to resolve binary pins from image index (annotations missing or malformed) — the image is not pi-delivery compatible, or pin hashes manually to override")
-			}
-			os.Exit(1)
-		}
-		piBinarySHA256AMD64 = pins.SHA256AMD64
-		piBinarySHA256ARM64 = pins.SHA256ARM64
-		setupLog.Info("pi delivery: binary pins resolved from image index annotations",
-			"image", piImage, "sha256Amd64", piBinarySHA256AMD64, "sha256Arm64", piBinarySHA256ARM64)
-	}
+	piImage, piBinarySHA256AMD64, piBinarySHA256ARM64 := validateAndResolvePiDelivery(setupLog, piDeliveryFlag)
 
 	setupLog.Info("starting controller", "version", version.Version, "commit", version.CommitSHA, "built", version.BuildTime)
 
@@ -789,6 +757,66 @@ func registerAgentdBinaryHashFlags() (amd64, arm64 *string) {
 			"binary inside --agentd-image. Normally unset: hashes resolve from the image index "+
 			"annotations at startup (single Renovate-updatable coordinate). Set BOTH hashes or NEITHER.")
 	return amd64, arm64
+}
+
+// piDeliveryFlags holds the second-harness overlay's flag pointers
+// (design 0053 §5.4) — the register-helper pattern keeps main()'s funlen
+// budget intact.
+type piDeliveryFlags struct {
+	image    *string
+	shaAMD64 *string
+	shaARM64 *string
+}
+
+// registerPiDeliveryFlags registers --pi-image (MANDATORY — pi was never
+// baked into the base image) and the optional per-image binary hash
+// overrides (set BOTH or NEITHER).
+func registerPiDeliveryFlags() *piDeliveryFlags {
+	f := &piDeliveryFlags{image: new(string), shaAMD64: new(string), shaARM64: new(string)}
+	flag.StringVar(f.image, "pi-image", "",
+		"Design 0053 §5.4 (second harness): digest-pinned pi image (ghcr.io/.../pi@sha256:...) delivered to "+
+			"workspace pods via a read-only image volume mounted at /pi (workspace container only). MANDATORY — "+
+			"pi was never baked into the base image; the supervisor verifies the binary's sha256 against the "+
+			"per-arch pins before any harness spawn (exit 85/86).")
+	flag.StringVar(f.shaAMD64, "pi-binary-sha256-amd64", "",
+		"Design 0053 §5.4: OPTIONAL per-image override — sha256 (64 hex) of the amd64 pi binary "+
+			"inside --pi-image. Normally unset: hashes resolve from the image index annotations at "+
+			"startup (single Renovate-updatable coordinate). Set BOTH hashes or NEITHER.")
+	flag.StringVar(f.shaARM64, "pi-binary-sha256-arm64", "",
+		"Design 0053 §5.4: OPTIONAL per-image override — sha256 (64 hex) of the arm64 pi binary "+
+			"inside --pi-image. Normally unset: hashes resolve from the image index annotations at "+
+			"startup (single Renovate-updatable coordinate). Set BOTH hashes or NEITHER.")
+	return f
+}
+
+// validateAndResolvePiDelivery runs the pi overlay's startup guard and
+// pin resolution (mirroring the agentd/opencode blocks inline in main,
+// extracted for main()'s funlen budget): validation is fatal on an
+// empty/unpinned image, then image-only pins resolve from the index
+// annotations with the ConfigMap cache for registry outages.
+func validateAndResolvePiDelivery(setupLog logr.Logger, f *piDeliveryFlags) (image, amd64, arm64 string) {
+	image, amd64, arm64 = *f.image, *f.shaAMD64, *f.shaARM64
+	if err := workspace.ValidatePiDelivery(image, amd64, arm64); err != nil {
+		setupLog.Error(err, "invalid pi delivery configuration")
+		os.Exit(1)
+	}
+	if image != "" && (amd64 == "" || arm64 == "") {
+		pinCtx, pinCancel := context.WithTimeout(context.Background(), 30*time.Second)
+		pins, err := workspace.ResolvePiPinsWithCache(pinCtx, image, amd64, arm64)
+		pinCancel()
+		if err != nil {
+			if errors.Is(err, workspace.ErrPiPinsUnavailable) {
+				setupLog.Error(err, "pi delivery: registry unreachable and no usable pin cache — either restore registry access or pin hashes manually via --pi-binary-sha256-amd64/-arm64 (both)")
+			} else {
+				setupLog.Error(err, "pi delivery: unable to resolve binary pins from image index (annotations missing or malformed) — the image is not pi-delivery compatible, or pin hashes manually to override")
+			}
+			os.Exit(1)
+		}
+		amd64, arm64 = pins.SHA256AMD64, pins.SHA256ARM64
+		setupLog.Info("pi delivery: binary pins resolved from image index annotations",
+			"image", image, "sha256Amd64", amd64, "sha256Arm64", arm64)
+	}
+	return image, amd64, arm64
 }
 
 // registerAgentdUpdatePolicyFlag registers --agentd-update-policy (#1746):
