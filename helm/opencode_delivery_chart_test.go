@@ -66,6 +66,8 @@ func TestOpencodeDelivery_ConfiguredRendersAllFlags(t *testing.T) {
     image: ghcr.io/lenaxia/llmsafespaces/opencode:1.18.10@sha256:fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210
     binarySHA256Amd64: cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc
     binarySHA256Arm64: dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd
+  piDelivery:
+    image: ghcr.io/lenaxia/llmsafespaces/pi@sha256:9999999999999999999999999999999999999999999999999999999999999999
 `)
 	require.Len(t, flags, 3, "full manual pin renders image + both overrides: %v", flags)
 	require.Contains(t, flags, "--opencode-image=ghcr.io/lenaxia/llmsafespaces/opencode:1.18.10@sha256:fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210")
@@ -80,6 +82,8 @@ func TestOpencodeDelivery_ImageOnlyRendersSingleFlag(t *testing.T) {
 	flags := opencodeFlags(t, `controller:
   opencodeDelivery:
     image: ghcr.io/lenaxia/llmsafespaces/opencode:1.18.10@sha256:fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210
+  piDelivery:
+    image: ghcr.io/lenaxia/llmsafespaces/pi@sha256:9999999999999999999999999999999999999999999999999999999999999999
 `)
 	require.Equal(t, []string{"--opencode-image=ghcr.io/lenaxia/llmsafespaces/opencode:1.18.10@sha256:fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210"}, flags,
 		"image-only must render exactly one flag")
@@ -95,6 +99,8 @@ func TestOpencodeDelivery_OneSidedHashOverrideFailsRender(t *testing.T) {
   opencodeDelivery:
     image: ghcr.io/lenaxia/llmsafespaces/opencode:1.18.10@sha256:fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210
     binarySHA256Amd64: cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc
+  piDelivery:
+    image: ghcr.io/lenaxia/llmsafespaces/pi@sha256:9999999999999999999999999999999999999999999999999999999999999999
 `), 0o600))
 	cmd := exec.Command("helm", "template", "test-release", chartDir(t), "-n", "test-ns",
 		"--kube-version", testKubeVersion,
@@ -116,6 +122,8 @@ func TestOpencodeDelivery_OneSidedArm64OverrideFailsRender(t *testing.T) {
   opencodeDelivery:
     image: ghcr.io/lenaxia/llmsafespaces/opencode:1.18.10@sha256:fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210
     binarySHA256Arm64: dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd
+  piDelivery:
+    image: ghcr.io/lenaxia/llmsafespaces/pi@sha256:9999999999999999999999999999999999999999999999999999999999999999
 `), 0o600))
 	cmd := exec.Command("helm", "template", "test-release", chartDir(t), "-n", "test-ns",
 		"--kube-version", testKubeVersion,
@@ -140,6 +148,8 @@ func TestOpencodeDelivery_HashesWithoutImageFailsRender(t *testing.T) {
 	require.NoError(t, os.WriteFile(valuesPath, []byte(`controller:
   opencodeDelivery:
     binarySHA256Amd64: cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc
+  piDelivery:
+    image: ghcr.io/lenaxia/llmsafespaces/pi@sha256:9999999999999999999999999999999999999999999999999999999999999999
 `), 0o600))
 
 	cmd := exec.Command("helm", "template", "test-release", chartDir(t), "-n", "test-ns",
@@ -163,6 +173,8 @@ func TestOpencodeDelivery_PinsRBACGrantRenders(t *testing.T) {
 	docs := helmTemplate(t, `controller:
   opencodeDelivery:
     image: ghcr.io/lenaxia/llmsafespaces/opencode@sha256:fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210
+  piDelivery:
+    image: ghcr.io/lenaxia/llmsafespaces/pi@sha256:9999999999999999999999999999999999999999999999999999999999999999
   inferenceRelay:
     enabled: false
   freeModelsRefresher:
@@ -228,6 +240,8 @@ func TestOpencodeDelivery_DoesNotGateAgentdSidecar(t *testing.T) {
     image: ghcr.io/lenaxia/llmsafespaces/agentd@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
   opencodeDelivery:
     image: ghcr.io/lenaxia/llmsafespaces/opencode@sha256:fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210
+  piDelivery:
+    image: ghcr.io/lenaxia/llmsafespaces/pi@sha256:9999999999999999999999999999999999999999999999999999999999999999
   agentdSidecar:
     enabled: true
 `), 0o600))
@@ -243,6 +257,8 @@ func TestOpencodeDelivery_DoesNotGateAgentdSidecar(t *testing.T) {
     image: ghcr.io/lenaxia/llmsafespaces/agentd@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
   opencodeDelivery:
     image: ghcr.io/lenaxia/llmsafespaces/opencode@sha256:fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210
+  piDelivery:
+    image: ghcr.io/lenaxia/llmsafespaces/pi@sha256:9999999999999999999999999999999999999999999999999999999999999999
 `), 0o600))
 	out, err = exec.Command("helm", "template", "test-release", chartDir(t), "-n", "test-ns",
 		"--kube-version", testKubeVersion,

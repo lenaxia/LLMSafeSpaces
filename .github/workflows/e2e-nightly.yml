@@ -30,7 +30,7 @@ jobs:
     # 60m: the Epic 70 US-70.1 secret-delivery step provisions a
     # RESUME_SCALE=10 (AC-13) batch of workspaces; prior steps had ~30m
     # of headroom.
-    timeout-minutes: 60
+    timeout-minutes: 75  # +15m: the pi source-archive build (mandatory third overlay pin)
     steps:
       - uses: actions/checkout@v6
 
@@ -128,6 +128,26 @@ jobs:
           echo "OPENCODE_REF=$OPENCODE_REF" >> "$GITHUB_ENV"
           echo "OPENCODE_BINARY_SHA=$OPENCODE_BINARY_SHA" >> "$GITHUB_ENV"
 
+          # Second-harness pi delivery artifact (design 0053 §5.4) → same
+          # local-registry pattern. Built from the pi release source
+          # archive (npm ci + build:offline + bun compile, ~10 min cold —
+          # the artifact-under-test price of the mandatory third pin).
+          docker build --network host \
+            -f runtimes/pi/Dockerfile -t localhost:5001/llmsafespaces/pi:$IMAGE_TAG runtimes/pi
+          docker push localhost:5001/llmsafespaces/pi:$IMAGE_TAG >/dev/null
+          PI_REF=$(docker inspect --format '{{index .RepoDigests 0}}' localhost:5001/llmsafespaces/pi:$IMAGE_TAG)
+          case "$PI_REF" in
+            *@sha256:*) PI_REF="localhost:5001/llmsafespaces/pi:$IMAGE_TAG@${PI_REF##*@}" ;;
+            *) echo "could not determine pi digest"; exit 1 ;;
+          esac
+          PI_CID=$(docker create localhost:5001/llmsafespaces/pi:$IMAGE_TAG no-start)
+          docker cp "$PI_CID:/pi/pi" /tmp/pi-bin >/dev/null 2>&1 || { docker rm -f "$PI_CID"; echo "pi binary extract failed"; exit 1; }
+          docker rm -f "$PI_CID" >/dev/null 2>&1
+          PI_BINARY_SHA=$(sha256sum /tmp/pi-bin | cut -d' ' -f1)
+          [ -n "$PI_BINARY_SHA" ] || { echo "pi binary hash failed"; exit 1; }
+          echo "PI_REF=$PI_REF" >> "$GITHUB_ENV"
+          echo "PI_BINARY_SHA=$PI_BINARY_SHA" >> "$GITHUB_ENV"
+
           # Retag runtime-base with the ghcr.io/lenaxia/ prefix so the
           # RuntimeEnvironment validating webhook's image allow-list accepts
           # it (the webhook requires ghcr.io/lenaxia/ prefixed images).
@@ -213,6 +233,9 @@ jobs:
             --set "controller.opencodeDelivery.image=${{ env.OPENCODE_REF }}" \
             --set "controller.opencodeDelivery.binarySHA256Amd64=${{ env.OPENCODE_BINARY_SHA }}" \
             --set "controller.opencodeDelivery.binarySHA256Arm64=${{ env.OPENCODE_BINARY_SHA }}" \
+            --set "controller.piDelivery.image=${{ env.PI_REF }}" \
+            --set "controller.piDelivery.binarySHA256Amd64=${{ env.PI_BINARY_SHA }}" \
+            --set "controller.piDelivery.binarySHA256Arm64=${{ env.PI_BINARY_SHA }}" \
             --set controller.agentdSidecar.enabled=true \
             --set networkPolicy.allowRelayRouterEgress=true \
             --set "api.extraEnv[0].name=LLMSAFESPACES_SECRETS_RECONCILE_INTERVAL,api.extraEnv[0].value=5s" \

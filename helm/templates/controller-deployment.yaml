@@ -253,6 +253,14 @@ spec:
             {{- if not .Values.controller.opencodeDelivery.image }}
             {{- fail "controller.opencodeDelivery.image is mandatory (design 0053 §4.5 — no baked fallback; pin the digest-pinned opencode delivery image)" }}
             {{- end }}
+            {{- /* Design 0053 §5.4: the pi overlay pin is MANDATORY from
+                    day one — pi was never baked into the base image, so
+                    there is no legacy mode to fall back to; empty fails
+                    here and at controller startup (ValidatePiDelivery)
+                    with the same operator hint. */}}
+            {{- if not .Values.controller.piDelivery.image }}
+            {{- fail "controller.piDelivery.image is mandatory (design 0053 §5.4 — no baked fallback exists for pi; pin the digest-pinned pi delivery image)" }}
+            {{- end }}
             {{- if and (not .Values.controller.agentdDelivery.image) (or .Values.controller.agentdDelivery.binarySHA256Amd64 .Values.controller.agentdDelivery.binarySHA256Arm64) }}
             {{- fail "controller.agentdDelivery.image is required when binarySHA256* values are set (they are per-image overrides)" }}
             {{- end }}
@@ -354,6 +362,30 @@ spec:
             {{- end }}
             {{- with $.Values.controller.opencodeDelivery.binarySHA256Arm64 }}
             - --opencode-binary-sha256-arm64={{ . }}
+            {{- end }}
+            {{- end }}
+            {{- /* Design 0053 §5.4: pi overlay delivery (image volume).
+                    Same guards as opencodeDelivery: hashes are per-image
+                    overrides (both or neither — one-sided renders fail
+                    below; hashes without an image fail above via the
+                    mandatory gate). Independent artifact on an
+                    independent cadence — never bundled. */}}
+            {{- if and (not .Values.controller.piDelivery.image) (or .Values.controller.piDelivery.binarySHA256Amd64 .Values.controller.piDelivery.binarySHA256Arm64) }}
+            {{- fail "controller.piDelivery.image is required when binarySHA256* values are set (they are per-image overrides)" }}
+            {{- end }}
+            {{- if and .Values.controller.piDelivery.image (ne (len .Values.controller.piDelivery.binarySHA256Amd64) 0) (eq (len .Values.controller.piDelivery.binarySHA256Arm64) 0) }}
+            {{- fail "controller.piDelivery.binarySHA256*: set BOTH hashes or NEITHER (image-only resolves them from the index annotations)" }}
+            {{- end }}
+            {{- if and .Values.controller.piDelivery.image (ne (len .Values.controller.piDelivery.binarySHA256Arm64) 0) (eq (len .Values.controller.piDelivery.binarySHA256Amd64) 0) }}
+            {{- fail "controller.piDelivery.binarySHA256*: set BOTH hashes or NEITHER (image-only resolves them from the index annotations)" }}
+            {{- end }}
+            {{- with .Values.controller.piDelivery.image }}
+            - --pi-image={{ . }}
+            {{- with $.Values.controller.piDelivery.binarySHA256Amd64 }}
+            - --pi-binary-sha256-amd64={{ . }}
+            {{- end }}
+            {{- with $.Values.controller.piDelivery.binarySHA256Arm64 }}
+            - --pi-binary-sha256-arm64={{ . }}
             {{- end }}
             {{- end }}
             {{- /* Epic 51 S51.2: per-tenant resource quotas. Only wired when

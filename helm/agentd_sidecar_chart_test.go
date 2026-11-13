@@ -44,7 +44,8 @@ func TestChart_AgentdSidecar_DefaultOff(t *testing.T) {
 	out, err := exec.Command("helm", "template", "test-release", sidecarChartDir(t), "-n", "test-ns",
 		"--kube-version", testKubeVersion,
 		"--set-string", "controller.agentdDelivery.image=ghcr.io/lenaxia/llmsafespaces/agentd@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
-		"--set-string", "controller.opencodeDelivery.image=ghcr.io/lenaxia/llmsafespaces/opencode@sha256:fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210").CombinedOutput()
+		"--set-string", "controller.opencodeDelivery.image=ghcr.io/lenaxia/llmsafespaces/opencode@sha256:fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210",
+		"--set-string", "controller.piDelivery.image=ghcr.io/lenaxia/llmsafespaces/pi@sha256:9999999999999999999999999999999999999999999999999999999999999999").CombinedOutput()
 	require.NoError(t, err, "helm output: %s", out)
 	require.NotContains(t, string(out), "--agentd-sidecar=true",
 		"default render must not enable the sidecar (single-container mode unchanged)")
@@ -58,6 +59,7 @@ func TestChart_AgentdSidecar_EnabledWiresFlag(t *testing.T) {
 		"--kube-version", testKubeVersion,
 		"--set-string", "controller.agentdDelivery.image=ghcr.io/lenaxia/llmsafespaces/agentd@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
 		"--set-string", "controller.opencodeDelivery.image=ghcr.io/lenaxia/llmsafespaces/opencode@sha256:fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210",
+		"--set-string", "controller.piDelivery.image=ghcr.io/lenaxia/llmsafespaces/pi@sha256:9999999999999999999999999999999999999999999999999999999999999999",
 		"--set-string", "controller.agentdSidecar.enabled=true").CombinedOutput()
 	require.NoError(t, err, "helm output: %s", out)
 	require.Contains(t, string(out), "--agentd-sidecar=true")

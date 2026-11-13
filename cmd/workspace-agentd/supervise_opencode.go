@@ -191,6 +191,10 @@ func runSuperviseOpencodeCommand(_ []string) int {
 // env and records spawned_rev at the point of consumption (I4).
 func newSupervisorProcess(ctx context.Context) (*managedProcess, *managedProcAdapter) {
 	base := opencodeSpawnBaseFactory()
+	// Second-harness pi overlay (design 0053 §5.4): verify at the same
+	// construction seam — before the socket, before any child. No-op
+	// without PI_IMAGE_VOLUME; exits 85/86 on tamper (pi_overlay.go).
+	verifyPiOverlayAtBoot()
 	a := &managedProcAdapter{
 		baseCmdFactory: base,
 		puller:         newSpawnEnvPuller(spawnEnvPullAddr(), supervisorSpawnCredential()),

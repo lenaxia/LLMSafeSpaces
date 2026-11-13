@@ -355,6 +355,11 @@ const (
 	// Only set when opencode overlay delivery is enabled; absent when
 	// the binary stays baked into runtimes/base.
 	WorkspaceConditionOpencodeVerified WorkspaceConditionType = "OpencodeVerified"
+	// WorkspaceConditionPiVerified reports the integrity state of the
+	// image-volume-delivered pi binary (the second-harness overlay,
+	// design 0053 §5.4). Only set when the pod carries the pi overlay
+	// wiring (PI_IMAGE_VOLUME=1).
+	WorkspaceConditionPiVerified WorkspaceConditionType = "PiVerified"
 	// WorkspaceConditionBootReady reports the platform boot phase
 	// (design 0051 sidecar migration, step 1): init-fs, bootstrap, and
 	// materialize as executed by the platform containers. False with
@@ -501,6 +506,13 @@ const (
 	ReasonOpencodeVerificationFailed = "OpencodeVerificationFailed"
 	ReasonOpencodeOverlayMissing     = "OpencodeOverlayMissing"
 	ReasonOpencodeVerified           = "OpencodeVerified"
+	// Second-harness pi overlay delivery: supervisor sha256
+	// verification outcomes (exit codes 85/86, distinct from agentd's
+	// 81/82 and opencode's 83/84 so a tri-overlay pod's failure
+	// attribution never crosses artifacts).
+	ReasonPiVerificationFailed = "PiVerificationFailed"
+	ReasonPiOverlayMissing     = "PiOverlayMissing"
+	ReasonPiVerified           = "PiVerified"
 	// Design 0051 sidecar migration step 1: platform boot-phase outcomes
 	// (init-fs / bootstrap / materialize in the platform containers).
 	ReasonPlatformBootFailed = "PlatformBootFailed"

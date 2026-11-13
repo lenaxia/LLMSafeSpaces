@@ -265,6 +265,17 @@ func (r *WorkspaceReconciler) handleActive(ctx context.Context, workspace *v1.Wo
 		return ctrl.Result{RequeueAfter: opencodeVerifyFailureRequeue}, nil
 	}
 
+	// Second-harness pi overlay: same detector contract; exit codes
+	// 85/86 are disjoint from 81/82 and 83/84, so a tri-overlay pod's
+	// failure attribution never crosses artifacts.
+	if r.detectPiVerificationFailure(ctx, workspace, pod) {
+		if err := r.Status().Update(ctx, workspace); err != nil {
+			recordStatusUpdateConflictOnError("handleActive_pi_verify", err)
+			return ctrl.Result{}, err
+		}
+		return ctrl.Result{RequeueAfter: piVerifyFailureRequeue}, nil
+	}
+
 	for _, cs := range pod.Status.ContainerStatuses {
 		if cs.State.Waiting != nil && cs.State.Waiting.Reason == "CrashLoopBackOff" {
 			obs := observePod(pod)
@@ -285,6 +296,8 @@ func (r *WorkspaceReconciler) handleActive(ctx context.Context, workspace *v1.Wo
 	r.markAgentdVerified(pod, workspace)
 	// Design 0053 §4.2: same for the opencode overlay.
 	r.markOpencodeVerified(pod, workspace)
+	// Design 0053 §5.4: same for the pi overlay.
+	r.markPiVerified(pod, workspace)
 
 	// Pod running — check timeout.
 	if workspace.Spec.Timeout > 0 && workspace.Status.StartTime != nil {

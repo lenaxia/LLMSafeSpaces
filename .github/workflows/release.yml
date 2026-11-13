@@ -47,6 +47,7 @@ env:
   RELAY_PROXY_IMAGE: lenaxia/llmsafespaces/relay-proxy
   AGENTD_IMAGE: lenaxia/llmsafespaces/agentd
   OPENCODE_IMAGE: lenaxia/llmsafespaces/opencode
+  PI_IMAGE: lenaxia/llmsafespaces/pi
 
 jobs:
   # Gate: refuse to release a tag whose CHANGELOG section is missing.
@@ -870,6 +871,159 @@ jobs:
               image: ${{ env.REGISTRY }}/${{ env.OPENCODE_IMAGE }}@${{ steps.create.outputs.digest }}
           EOF
 
+  # Second-harness pi overlay (design 0053 §5.4): same release pipeline
+  # shape as opencode — per-arch native builds from the release source
+  # archive (runtimes/pi/Dockerfile), binary sha256 annotations stamped
+  # onto the index (dev.llmsafespaces/pi.sha256-{amd64,arm64}), digest
+  # printed in the piDelivery values block.
+  build-pi:
+    name: Build Pi (${{ matrix.platform }})
+    needs: [verify-changelog, prepare, test, test-full, frontend-test]
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux/amd64
+            runner: ubuntu-latest
+          - platform: linux/arm64
+            runner: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: docker/setup-buildx-action@v4
+
+      - uses: docker/login-action@v4
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: docker/metadata-action@v6
+        id: meta
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.PI_IMAGE }}
+
+      - uses: docker/build-push-action@v7
+        id: build
+        with:
+          context: runtimes/pi
+          file: runtimes/pi/Dockerfile
+          platforms: ${{ matrix.platform }}
+          push: true
+          labels: ${{ steps.meta.outputs.labels }}
+          outputs: type=image,name=${{ env.REGISTRY }}/${{ env.PI_IMAGE }},push-by-digest=true,name-canonical=true,push=true
+          cache-from: type=gha,scope=pi-${{ matrix.platform }}
+          cache-to: type=gha,scope=pi-${{ matrix.platform }},mode=max
+
+      - name: Export binary sha256
+        run: |
+          arch="${{ matrix.platform == 'linux/arm64' && 'arm64' || 'amd64' }}"
+          tag="${{ env.REGISTRY }}/${{ env.PI_IMAGE }}:sha-${{ github.sha }}-${arch}"
+          src="${{ env.REGISTRY }}/${{ env.PI_IMAGE }}@${{ steps.build.outputs.digest }}"
+          docker buildx imagetools create -t "$tag" "$src"
+          docker pull --platform ${{ matrix.platform }} "$tag"
+          cid="pi-extract-$GITHUB_RUN_ID"
+          docker create --platform ${{ matrix.platform }} --name "$cid" "$tag"             /pi/pi >/dev/null
+          docker cp "$cid":/pi/pi /tmp/pi-bin
+          docker rm -f "$cid" >/dev/null
+          sha256sum /tmp/pi-bin | awk '{print $1}' > "/tmp/pi-binary-${arch}.sha256"
+          echo "arch=$arch binary-sha256=$(cat /tmp/pi-binary-$arch.sha256)"
+
+      - name: Upload binary sha256
+        uses: actions/upload-artifact@v7
+        with:
+          name: pi-binary-sha256-${{ matrix.platform == 'linux/arm64' && 'arm64' || 'amd64' }}
+          path: /tmp/pi-binary-*.sha256
+          if-no-files-found: error
+          retention-days: 90
+
+      - name: Export digest
+        run: |
+          mkdir -p /tmp/digests
+          digest="${{ steps.build.outputs.digest }}"
+          touch "/tmp/digests/${digest#sha256:}"
+
+      - name: Upload digest
+        uses: actions/upload-artifact@v7
+        with:
+          name: pi-digests-${{ matrix.runner }}
+          path: /tmp/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  merge-pi:
+    name: Merge Pi Manifest
+    needs: [build-pi, prepare]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: docker/setup-buildx-action@v4
+
+      - uses: docker/login-action@v4
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: docker/metadata-action@v6
+        id: meta
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.PI_IMAGE }}
+          tags: |
+            type=sha,prefix=sha-
+            type=raw,value=${{ needs.prepare.outputs.version }}
+
+      - name: Download digests
+        uses: actions/download-artifact@v8
+        with:
+          path: /tmp/digests
+          pattern: pi-digests-*
+          merge-multiple: true
+
+      - name: Download binary sha256s
+        uses: actions/download-artifact@v8
+        with:
+          path: /tmp/sha
+          pattern: pi-binary-sha256-*
+          merge-multiple: true
+
+      - name: Create manifest list and push
+        id: create
+        working-directory: /tmp/digests
+        run: |
+          amd64="$(cat /tmp/sha/pi-binary-amd64.sha256)"
+          arm64="$(cat /tmp/sha/pi-binary-arm64.sha256)"
+          docker buildx imagetools create \
+            $(jq -cr '.tags | map("-t " + .) | join(" ")' <<< "$DOCKER_METADATA_OUTPUT_JSON") \
+            --annotation "index:dev.llmsafespaces/pi.sha256-amd64=${amd64}" \
+            --annotation "index:dev.llmsafespaces/pi.sha256-arm64=${arm64}" \
+            --annotation "index:dev.llmsafespaces/version=${{ needs.prepare.outputs.version }}" \
+            $(printf '${{ env.REGISTRY }}/${{ env.PI_IMAGE }}@sha256:%s ' *)
+          digest="$(docker buildx imagetools inspect ${{ env.REGISTRY }}/${{ env.PI_IMAGE }}:sha-${GITHUB_SHA:0:7} --format '{{ json .Manifest.Digest }}' | tr -d '"')"
+          echo "digest=${digest}" >> "$GITHUB_OUTPUT"
+
+      - name: Print Helm values block for piDelivery
+        run: |
+          amd64="$(cat /tmp/sha/pi-binary-amd64.sha256)"
+          arm64="$(cat /tmp/sha/pi-binary-arm64.sha256)"
+          echo "::notice::piDelivery values for this release (Renovate-friendly: image-only):"
+          cat <<EOF
+          controller:
+            piDelivery:
+              image: ${{ env.REGISTRY }}/${{ env.PI_IMAGE }}@${{ steps.create.outputs.digest }}
+              # break-glass overrides (both or neither):
+              # binarySHA256Amd64: "${amd64}"
+              # binarySHA256Arm64: "${arm64}"
+          EOF
+
   build-relay-router:
     name: Build Relay Router (${{ matrix.platform }})
     needs: [verify-changelog, prepare, test, test-full, frontend-test]
@@ -1085,7 +1239,7 @@ jobs:
   #     --certificate-oidc-issuer "https://token.actions.githubusercontent.com"
   sign-images:
     name: Sign images (cosign keyless)
-    needs: [verify-changelog, merge-api, merge-controller, merge-frontend, merge-agentd, merge-opencode, merge-relay-router, merge-relay-proxy]
+    needs: [verify-changelog, merge-api, merge-controller, merge-frontend, merge-agentd, merge-opencode, merge-pi, merge-relay-router, merge-relay-proxy]
     runs-on: ubuntu-latest
     env:
       VERSION: ${{ needs.verify-changelog.outputs.version }}
@@ -1111,13 +1265,14 @@ jobs:
         # pass them as flags (those are for `cosign verify`, not `cosign sign`).
         # The signature is recorded in Rekor automatically.
         run: |
-          for img in api controller frontend agentd opencode relay-router relay-proxy; do
+          for img in api controller frontend agentd opencode pi relay-router relay-proxy; do
             case "$img" in
               api) image_ref="${{ env.REGISTRY }}/${{ env.API_IMAGE }}:${VERSION}" ;;
               controller) image_ref="${{ env.REGISTRY }}/${{ env.CONTROLLER_IMAGE }}:${VERSION}" ;;
               frontend) image_ref="${{ env.REGISTRY }}/${{ env.FRONTEND_IMAGE }}:${VERSION}" ;;
               agentd) image_ref="${{ env.REGISTRY }}/${{ env.AGENTD_IMAGE }}:${VERSION}" ;;
               opencode) image_ref="${{ env.REGISTRY }}/${{ env.OPENCODE_IMAGE }}:${VERSION}" ;;
+              pi) image_ref="${{ env.REGISTRY }}/${{ env.PI_IMAGE }}:${VERSION }}" ;;
               relay-router) image_ref="${{ env.REGISTRY }}/${{ env.RELAY_ROUTER_IMAGE }}:${VERSION}" ;;
               relay-proxy) image_ref="${{ env.REGISTRY }}/${{ env.RELAY_PROXY_IMAGE }}:${VERSION}" ;;
             esac
@@ -1131,7 +1286,7 @@ jobs:
   # (catches vulns in base images, installed packages, etc.).
   scan-images:
     name: Scan images (Trivy)
-    needs: [verify-changelog, merge-api, merge-controller, merge-frontend, merge-agentd, merge-opencode, merge-relay-router, merge-relay-proxy]
+    needs: [verify-changelog, merge-api, merge-controller, merge-frontend, merge-agentd, merge-opencode, merge-pi, merge-relay-router, merge-relay-proxy]
     runs-on: ubuntu-latest
     env:
       VERSION: ${{ needs.verify-changelog.outputs.version }}
@@ -1171,13 +1326,14 @@ jobs:
         #   - Wait for Debian bookworm's next point release.
         run: |
           fail=0
-          for img in api controller frontend agentd opencode relay-router relay-proxy; do
+          for img in api controller frontend agentd opencode pi relay-router relay-proxy; do
             case "$img" in
               api) image_ref="${{ env.REGISTRY }}/${{ env.API_IMAGE }}:${VERSION}" ;;
               controller) image_ref="${{ env.REGISTRY }}/${{ env.CONTROLLER_IMAGE }}:${VERSION}" ;;
               frontend) image_ref="${{ env.REGISTRY }}/${{ env.FRONTEND_IMAGE }}:${VERSION}" ;;
               agentd) image_ref="${{ env.REGISTRY }}/${{ env.AGENTD_IMAGE }}:${VERSION}" ;;
               opencode) image_ref="${{ env.REGISTRY }}/${{ env.OPENCODE_IMAGE }}:${VERSION}" ;;
+              pi) image_ref="${{ env.REGISTRY }}/${{ env.PI_IMAGE }}:${VERSION }}" ;;
               relay-router) image_ref="${{ env.REGISTRY }}/${{ env.RELAY_ROUTER_IMAGE }}:${VERSION}" ;;
               relay-proxy) image_ref="${{ env.REGISTRY }}/${{ env.RELAY_PROXY_IMAGE }}:${VERSION}" ;;
             esac
@@ -1247,7 +1403,7 @@ jobs:
   # grype, or similar.
   generate-sbom:
     name: Generate SBOM
-    needs: [verify-changelog, merge-api, merge-controller, merge-frontend, merge-agentd, merge-opencode, merge-relay-router, merge-relay-proxy]
+    needs: [verify-changelog, merge-api, merge-controller, merge-frontend, merge-agentd, merge-opencode, merge-pi, merge-relay-router, merge-relay-proxy]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -1273,13 +1429,14 @@ jobs:
           VERSION: ${{ needs.verify-changelog.outputs.version }}
         run: |
           mkdir -p sbom-out
-          for img in api controller frontend agentd opencode relay-router relay-proxy; do
+          for img in api controller frontend agentd opencode pi relay-router relay-proxy; do
             case "$img" in
               api) image_ref="${{ env.REGISTRY }}/${{ env.API_IMAGE }}:${VERSION}" ;;
               controller) image_ref="${{ env.REGISTRY }}/${{ env.CONTROLLER_IMAGE }}:${VERSION}" ;;
               frontend) image_ref="${{ env.REGISTRY }}/${{ env.FRONTEND_IMAGE }}:${VERSION}" ;;
               agentd) image_ref="${{ env.REGISTRY }}/${{ env.AGENTD_IMAGE }}:${VERSION}" ;;
               opencode) image_ref="${{ env.REGISTRY }}/${{ env.OPENCODE_IMAGE }}:${VERSION}" ;;
+              pi) image_ref="${{ env.REGISTRY }}/${{ env.PI_IMAGE }}:${VERSION }}" ;;
               relay-router) image_ref="${{ env.REGISTRY }}/${{ env.RELAY_ROUTER_IMAGE }}:${VERSION}" ;;
               relay-proxy) image_ref="${{ env.REGISTRY }}/${{ env.RELAY_PROXY_IMAGE }}:${VERSION}" ;;
             esac
@@ -1339,7 +1496,7 @@ jobs:
   # Create the GitHub Release with notes from CHANGELOG.md.
   create-release:
     name: Create GitHub Release
-    needs: [verify-changelog, merge-api, merge-controller, merge-frontend, merge-agentd, merge-opencode, merge-relay-router, merge-relay-proxy, sign-images, scan-images, publish-chart, generate-sbom, build-relay-binaries]
+    needs: [verify-changelog, merge-api, merge-controller, merge-frontend, merge-agentd, merge-opencode, merge-pi, merge-relay-router, merge-relay-proxy, sign-images, scan-images, publish-chart, generate-sbom, build-relay-binaries]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -1388,6 +1545,7 @@ jobs:
           | Frontend | \`ghcr.io/lenaxia/llmsafespaces/frontend:${VERSION}\` |
           | Agentd | \`ghcr.io/lenaxia/llmsafespaces/agentd:${VERSION}\` |
           | Opencode | \`ghcr.io/lenaxia/llmsafespaces/opencode:${VERSION}\` |
+          | Pi | \`ghcr.io/lenaxia/llmsafespaces/pi:${VERSION}\` |
           | Relay router | \`ghcr.io/lenaxia/llmsafespaces/relay-router:${VERSION}\` |
           | Relay proxy | \`ghcr.io/lenaxia/llmsafespaces/relay-proxy:${VERSION}\` |
 
