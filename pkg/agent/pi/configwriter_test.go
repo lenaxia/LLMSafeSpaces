@@ -779,6 +779,74 @@ func TestRoundTrip_CorruptMCPFile_ExplicitStagingTakesOwnership(t *testing.T) {
 	assert.Contains(t, servers, "docs", "explicit staging takes ownership of the file")
 }
 
+func TestApply_FailedStagedMCPApply_RollbackKeepsLeaveAloneContract(t *testing.T) {
+	// N1 (round-2 review): a staged MCPServers Apply whose render fails
+	// must roll back mcpOK with the sources — otherwise the corrupt
+	// user-owned mcp.json the staging would have superseded becomes
+	// deletable by any LATER Apply (the leave-alone contract permanently
+	// disarmed by the failed attempt).
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "mcp.json"), []byte(`{not json`), 0o640))
+
+	w := NewConfigWriter(dir, WithModelResolutionWarningPath(filepath.Join(dir, modelResolutionWarningFile)))
+
+	// Force a mid-render failure AFTER the MCP source merge: block the
+	// first file managed by applyFile (models.json) with a NON-EMPTY
+	// directory — neither the fileRemove (ENOTEMPTY) nor an atomic
+	// rename onto it can succeed — so the staged Apply fails inside
+	// applyFile with the sources already updated.
+	require.NoError(t, os.Mkdir(filepath.Join(dir, "models.json"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "models.json", "blocker"), []byte("x"), 0o640))
+	_, err := w.Apply(agent.AgentConfigInput{MCPServers: &agent.MCPServerChange{Servers: []agent.MCPServerEntry{
+		{Name: "docs", Transport: "http", URL: "https://docs.example.test/mcp"},
+	}}})
+	require.Error(t, err, "the blocked models.json path must fail the render")
+
+	// Unblock and run ANY later Apply (boot normalize is the floor).
+	require.NoError(t, os.RemoveAll(filepath.Join(dir, "models.json")))
+	_, err = w.Apply(agent.AgentConfigInput{})
+	require.NoError(t, err)
+
+	raw, err := os.ReadFile(filepath.Join(dir, "mcp.json"))
+	require.NoError(t, err)
+	assert.Equal(t, `{not json`, string(raw), "a failed staged Apply must not disarm the corrupt-file leave-alone contract")
+}
+
+func TestRoundTrip_DegenerateAndAnnotatedAPIKeyEntries_PreservedVerbatim(t *testing.T) {
+	// O2/O3 (round-2 review): the writer adopts auth.json entries it
+	// could itself have rendered — EXACTLY {"type":"api_key","key":non-
+	// empty} and nothing else. A degenerate empty-key entry and an
+	// annotated api_key entry (extra fields) are foreign: preserved
+	// byte-verbatim across restarts, never adopted, never dropped.
+	dir := t.TempDir()
+	original := `{
+  "annotated": {
+    "type": "api_key",
+    "key": "sk-annotated",
+    "note": "hand-written by the user"
+  },
+  "degenerate": {
+    "type": "api_key",
+    "key": ""
+  },
+  "github": {
+    "type": "oauth",
+    "access_token": "gho_x"
+  }
+}`
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "auth.json"), []byte(original), 0o660))
+
+	w := NewConfigWriter(dir, WithModelResolutionWarningPath(filepath.Join(dir, modelResolutionWarningFile)))
+	_, err := w.Apply(agent.AgentConfigInput{})
+	require.NoError(t, err)
+
+	// All three survive (degenerate included — the writer re-emits the
+	// captured extra verbatim, it does not tidy foreign bytes).
+	got, err := os.ReadFile(filepath.Join(dir, "auth.json"))
+	require.NoError(t, err)
+	assert.JSONEq(t, original, string(got), "foreign api_key-shaped entries are preserved, not adopted or dropped")
+}
+
 // --- concurrency ---------------------------------------------------------
 
 func TestApply_ConcurrentAppliesSerialize(t *testing.T) {

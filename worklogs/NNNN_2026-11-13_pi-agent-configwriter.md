@@ -83,7 +83,22 @@ restart; C5 corrupt mcp.json deleted instead of left alone). Fixes:
 - mcp.json gains the same mcpOK leave-alone contract as auth/settings,
   with staged-source ownership override — C5.
 - Five regression tests, one per defect, all failing on the pre-fix
-  code paths.
+  code paths (round-1 fixes; mutation-verified by the AI reviewer's
+  scratch reverts).
+
+## Review round 3 (close-out)
+
+- **N1** (new in round 2, reviewer-reproduced): `mcpOK` was absent
+  from Apply's rollback snapshot — a failed staged MCPServers Apply
+  permanently disarmed the corrupt-mcp.json leave-alone contract, and a
+  later Apply (including boot normalize) deleted the file. Fixed:
+  `mcpOK` captured/restored; pinned by a failure-path test
+  (blocked-render injection), mutation-verified red without the fix.
+- **O2/O3**: adoption tightened to entries the writer could itself
+  have rendered — exactly `{"type":"api_key","key":<non-empty>}` with
+  no other fields. Degenerate (empty-key) and annotated (extra-field)
+  api_key entries are foreign extras preserved byte-verbatim; pinned
+  by a round-trip JSONEq test.
 
 ## Tests
 

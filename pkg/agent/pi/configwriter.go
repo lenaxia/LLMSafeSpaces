@@ -353,6 +353,7 @@ type writerSnapshot struct {
 	relay       *agent.RelayState
 	mcpServers  []agent.MCPServerEntry
 	mcpRaw      map[string]json.RawMessage
+	mcpOK       bool
 	adminPrompt string
 }
 
@@ -363,6 +364,7 @@ func (w *ConfigWriter) snapshotLocked() writerSnapshot {
 		relay:       w.relay,
 		mcpServers:  w.mcpServers,
 		mcpRaw:      w.mcpRaw,
+		mcpOK:       w.mcpOK,
 		adminPrompt: w.adminPrompt,
 	}
 }
@@ -373,6 +375,7 @@ func (w *ConfigWriter) restoreLocked(s writerSnapshot) {
 	w.relay = s.relay
 	w.mcpServers = s.mcpServers
 	w.mcpRaw = s.mcpRaw
+	w.mcpOK = s.mcpOK
 	w.adminPrompt = s.adminPrompt
 }
 
@@ -487,8 +490,10 @@ func (w *ConfigWriter) loadExistingModels() {
 
 // loadExistingAuth classifies auth.json entries and re-hydrates the
 // provider set. Ownership rule (round-2 review, C1/C4): an entry the
-// writer itself renders — {"type":"api_key"} — is writer-owned
-// regardless of whether the provider appears in models.json:
+// writer itself could have rendered — exactly {"type":"api_key"} with a
+// non-empty key and no other fields (isWriterOwnedAPIKeyEntry) — is
+// writer-owned regardless of whether the provider appears in
+// models.json:
 //
 //   - a seeded provider with an empty APIKey (first-party providers
 //     render models-only entries; their credential lives only here)
@@ -499,8 +504,9 @@ func (w *ConfigWriter) loadExistingModels() {
 //     key rotation can actually remove/replace the entry instead of
 //     preserving it as an undeletable foreign extra forever.
 //
-// Everything else (pi-written OAuth credentials, unknown types) is a
-// foreign extra preserved verbatim. The relay id never hydrates (its
+// Everything else (pi-written OAuth credentials, degenerate or
+// annotated api_key shapes the writer did not produce) is a foreign
+// extra preserved verbatim. The relay id never hydrates (its
 // credential rides models.json apiKey, never auth.json). In the
 // platform context provider keys are platform-managed (headless RPC
 // pi, materialize re-applies the full set each boot) — adopting
@@ -522,23 +528,47 @@ func (w *ConfigWriter) loadExistingAuth() {
 	w.authExtrasOK = true
 	extras := make(map[string]json.RawMessage, len(auth))
 	for k, v := range auth {
-		if !isRelayID(k) {
+		if !isRelayID(k) && isWriterOwnedAPIKeyEntry(v) {
 			var entry authEntryJSON
-			if json.Unmarshal(v, &entry) == nil && entry.Type == authTypeAPIKey {
-				if p := w.seededProvider(k); p != nil {
-					if p.APIKey == "" {
-						p.APIKey = entry.Key
-					}
-				} else {
-					w.providers = append(w.providers, providerEntry{ID: k, APIKey: entry.Key})
+			_ = json.Unmarshal(v, &entry) // shape verified by the predicate
+			if p := w.seededProvider(k); p != nil {
+				if p.APIKey == "" {
+					p.APIKey = entry.Key
 				}
-				continue
+			} else {
+				w.providers = append(w.providers, providerEntry{ID: k, APIKey: entry.Key})
 			}
+			continue
 		}
 		extras[k] = v
 	}
 	sortProviders(w.providers)
 	w.authExtra = extras
+}
+
+// isWriterOwnedAPIKeyEntry reports whether raw is EXACTLY an entry this
+// writer could have rendered: {"type":"api_key","key":"<non-empty>"} and
+// nothing else. Anything else — an empty key (degenerate), extra fields
+// (pi/user-authored annotations on an api_key shape) — is foreign and
+// preserved verbatim as an extra, so the restart round-trip never
+// silently rewrites or drops bytes the writer does not own (round-2
+// review O2/O3).
+func isWriterOwnedAPIKeyEntry(raw json.RawMessage) bool {
+	var fields map[string]json.RawMessage
+	if json.Unmarshal(raw, &fields) != nil || len(fields) != 2 {
+		return false
+	}
+	if _, ok := fields["type"]; !ok {
+		return false
+	}
+	if _, ok := fields["key"]; !ok {
+		return false
+	}
+	var entry authEntryJSON
+	if json.Unmarshal(raw, &entry) != nil || entry.Type != authTypeAPIKey {
+		return false
+	}
+	return entry.Key != ""
 }
 
 // seededProvider returns the seeded provider entry with id, or nil.
