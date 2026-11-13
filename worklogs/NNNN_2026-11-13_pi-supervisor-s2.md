@@ -126,4 +126,6 @@ relied upon with provenance in the operator doc)
 
 ## Review trail
 
-- (r1 pending — moved to in_review with the PR.)
+- PR #2020 (https://github.com/lenaxia/LLMSafeSpaces/pull/2020) —
+  review requested; this worklog and
+  docs/operator/pi-supervisor.md carry the evidence inventory.
