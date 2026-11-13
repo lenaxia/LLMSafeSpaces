@@ -141,7 +141,7 @@ describe("ChatPage per-session composer drafts", () => {
     );
   });
 
-  const composer = () => screen.getByPlaceholderText("Type a message...");
+  const composer = () => screen.getByPlaceholderText("Type a message...") as HTMLTextAreaElement;
   // The stable post-history composer for a session: its marker has
   // rendered AND the box is enabled.
   const awaitSessionReady = async (sid: string) =>
@@ -203,5 +203,44 @@ describe("ChatPage per-session composer drafts", () => {
     // Store truth, not just the box.
     expect(loadSessionDraft("ws-1", "sess-1")).toBe("one");
     expect(loadSessionDraft("ws-1", "sess-2")).toBe("two");
+  });
+
+  it("review r1: Up-recall then switch does NOT replace the draft with the recalled entry", async () => {
+    const user = userEvent.setup();
+    // sess-1's history carries a recallable user message.
+    (messagesApi.getHistoryPage as ReturnType<typeof vi.fn>).mockImplementation(
+      async (_ws: string, sid: string) => ({
+        messages:
+          sid === "sess-1"
+            ? [
+                { id: `m-${sid}`, role: "user", parts: [{ type: "text", text: "marker sess-1" }] },
+                { id: "m-old", role: "user", parts: [{ type: "text", text: "an old sent question" }] },
+              ]
+            : [{ id: `m-${sid}`, role: "user", parts: [{ type: "text", text: `marker ${sid}` }] }],
+        nextCursor: undefined,
+      }),
+    );
+
+    renderChatPage("/chat/ws-1/sess-1");
+    await awaitSessionReady("sess-1");
+
+    // Type a real draft, then Up-recall: the box now SHOWS the recalled
+    // history entry (browse view) while the pre-browse snapshot is the
+    // draft the store must keep. (Caret parked at 0 — #1846's guard:
+    // recall only fires from a collapsed caret at the buffer start.)
+    await user.type(composer(), "my real draft");
+    composer().setSelectionRange(0, 0);
+    await user.keyboard("{ArrowUp}");
+    await waitFor(() => expect(composer()).toHaveValue("an old sent question"));
+
+    // Switch away and back: the DRAFT restores, never the recalled view.
+    await goto(user, "goto-sess-2");
+    await awaitSessionReady("sess-2");
+    expect(composer()).toHaveValue("");
+    expect(loadSessionDraft("ws-1", "sess-1")).toBe("my real draft");
+
+    await goto(user, "goto-sess-1");
+    await awaitSessionReady("sess-1");
+    expect(composer()).toHaveValue("my real draft");
   });
 });

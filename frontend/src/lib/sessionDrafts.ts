@@ -24,10 +24,16 @@
  *     unboundedly even when lifecycle events are never observed
  *     (archived from a tab with a dead stream, etc.). The sweep runs
  *     on the first store access per page load and at most once per
- *     hour after that — no timers.
+ *     hour after that — no timers. Semantics: TTL is measured from
+ *     the draft's LAST WRITE — and mounting a session re-saves its
+ *     draft (the hook's write-through), so in practice a draft lives
+ *     ~10 days since the session was last opened or edited. The
+ *     backstop's job is bounded accumulation, not edit-time
+ *     archaeology; a returning user keeps their draft.
  *
- * Storage errors (quota, privacy mode, corrupted JSON) are swallowed:
- * losing a draft persistence is cosmetic; breaking typing is not.
+ * Storage errors (quota, privacy mode, corrupted or WRONG-SHAPE JSON)
+ * are swallowed: losing draft persistence is cosmetic; breaking
+ * typing is not.
  */
 
 const STORAGE_KEY = "llmsafespaces_session_drafts";
@@ -60,14 +66,43 @@ type DraftStore = Record<string, Record<string, DraftEntry>>;
 
 /**
  * Read the store on every access (no in-memory cache): a second tab's
- * writes stay visible to this one, and the store is small — the
- * per-keystroke read is negligible.
+ * reads stay coherent with this one (concurrent WRITES are
+ * last-writer-wins — full-store read-modify-write), and the store is
+ * small — the per-keystroke read is negligible.
+ *
+ * The parsed value is SANITIZED shape-first: anything that is not a
+ * workspace→(session→entry) object tree (valid JSON of the wrong
+ * shape — `{"ws-1": 5}`, an entry missing its fields, an array at the
+ * top level) is dropped at the boundary, so every downstream `in`/
+ * `Object.entries` operates on well-shaped data. Malformed JSON is
+ * caught here too: the corruption contract ("storage errors are
+ * swallowed") covers both.
  */
+function isDraftEntry(v: unknown): v is DraftEntry {
+  return (
+    !!v && typeof v === "object" && typeof (v as DraftEntry).text === "string" &&
+    typeof (v as DraftEntry).updatedAt === "number"
+  );
+}
+
+function sanitizeStore(parsed: unknown): DraftStore {
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+  const out: DraftStore = {};
+  for (const [wsId, sessions] of Object.entries(parsed as Record<string, unknown>)) {
+    if (!sessions || typeof sessions !== "object" || Array.isArray(sessions)) continue;
+    const bucket: Record<string, DraftEntry> = {};
+    for (const [sessionId, entry] of Object.entries(sessions as Record<string, unknown>)) {
+      if (isDraftEntry(entry)) bucket[sessionId] = entry;
+    }
+    if (Object.keys(bucket).length > 0) out[wsId] = bucket;
+  }
+  return out;
+}
+
 function readStore(): DraftStore {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
-    const parsed = raw ? (JSON.parse(raw) as DraftStore) : {};
-    return parsed && typeof parsed === "object" ? parsed : {};
+    return raw ? sanitizeStore(JSON.parse(raw)) : {};
   } catch {
     return {};
   }

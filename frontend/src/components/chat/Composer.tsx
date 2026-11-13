@@ -154,11 +154,30 @@ export function Composer({
   sessionId,
   onNewSession,
 }: Props) {
+  // History-browsing state (declared before the draft hook — the hook's
+  // persistOverride reads it). historyCursor === -1 means "not
+  // browsing"; 0..N-1 indexes into userMessageHistory (newest-first).
+  // savedDraft snapshots the textarea content at the moment the user
+  // first pressed Up from a non-empty draft, so Down-past-newest can
+  // restore it. historyCursor/savedDraft are reset together whenever
+  // the userMessageHistory reference changes (e.g. on history refetch)
+  // to avoid stranding the cursor at a stale index (F4 fix).
+  const [historyCursor, setHistoryCursor] = useState(-1);
+  const [savedDraft, setSavedDraft] = useState<string | null>(null);
+
   // Per-session draft (owner ask 2026-11-13): the text state persists
   // under (workspaceId, sessionId) so switching sessions and returning
   // restores what was typed; sending ("") consumes the stored draft.
-  // Unkeyed (no session yet) it degrades to a plain useState.
-  const [text, setText] = useSessionDraft(workspaceId, sessionId);
+  // Unkeyed (no session yet) it degrades to a plain useState. While
+  // HISTORY-BROWSING the textarea shows a recalled entry, not the
+  // draft — the override persists the pre-browse snapshot instead, so
+  // a switch away and back restores the draft, never the recalled
+  // view (review r1: the recalled entry is not the user's draft).
+  const [text, setText] = useSessionDraft(
+    workspaceId,
+    sessionId,
+    historyCursor === -1 ? undefined : (savedDraft ?? ""),
+  );
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const sendOnEnter = useUserSetting("sendOnEnter", false);
@@ -290,15 +309,8 @@ export function Composer({
     setNavTick((t) => t + 1);
   };
 
-  // History-browsing state. historyCursor === -1 means "not browsing".
-  // 0..N-1 indexes into userMessageHistory (already newest-first).
-  // savedDraft snapshots the textarea content at the moment the user
-  // first pressed Up from a non-empty draft, so Down-past-newest can
-  // restore it. historyCursor/savedDraft are reset together whenever
-  // the userMessageHistory reference changes (e.g. on history refetch)
-  // to avoid stranding the cursor at a stale index (F4 fix).
-  const [historyCursor, setHistoryCursor] = useState(-1);
-  const [savedDraft, setSavedDraft] = useState<string | null>(null);
+  // (History-browsing state — historyCursor/savedDraft — is declared at
+  // the top of the component, before the draft hook that reads it.)
 
   // After loading a history entry, the cursor must move to start (Up)
   // or end (Down) of the new text so the next Up/Down correctly detects

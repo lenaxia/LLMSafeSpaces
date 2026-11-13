@@ -130,6 +130,31 @@ describe("sessionDrafts store", () => {
     expect(loadSessionDraft("ws-1", "sess-1")).toBe("recovers");
   });
 
+  it("valid-JSON WRONG-SHAPE stores never crash (review r1: the non-object bucket throw)", () => {
+    // A non-object workspace bucket: `in` on a number used to throw.
+    localStorage.setItem(KEY, JSON.stringify({ "ws-1": 5 }));
+    expect(() => clearSessionDraft("ws-1", "sess-1")).not.toThrow();
+    expect(() => saveSessionDraft("ws-1", "sess-1", "x")).not.toThrow();
+    expect(loadSessionDraft("ws-1", "sess-1")).toBe("x"); // the save repaired the bucket
+
+    // A non-object session entry, an array top level, and a bad entry
+    // shape are all dropped by the read-time sanitizer.
+    localStorage.setItem(
+      KEY,
+      JSON.stringify({ "ws-2": { bad: "not-an-entry", ok: { text: "kept", updatedAt: Date.now() } }, "ws-3": [1, 2] }),
+    );
+    expect(loadSessionDraft("ws-2", "bad")).toBe("");
+    expect(loadSessionDraft("ws-2", "ok")).toBe("kept");
+    expect(loadSessionDraft("ws-3", "anything")).toBe("");
+    expect(() => sweepExpiredSessionDrafts(Date.now())).not.toThrow();
+    // And a save on top of the wrong shape rewrites a clean store.
+    saveSessionDraft("ws-3", "sess-1", "repaired");
+    expect(JSON.parse(localStorage.getItem(KEY)!)).toEqual({
+      "ws-2": { ok: { text: "kept", updatedAt: expect.any(Number) } },
+      "ws-3": { "sess-1": { text: "repaired", updatedAt: expect.any(Number) } },
+    });
+  });
+
   it("a quota failure on write never throws (typing must not break)", () => {
     saveSessionDraft("ws-1", "sess-1", "first");
     const spy = vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {

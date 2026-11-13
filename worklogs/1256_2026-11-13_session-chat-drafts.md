@@ -2,7 +2,7 @@
 
 **Date:** 2026-11-13
 **Session:** tsk-sober-oxbow-indicates (owner ask 2026-11-13; epic "Frontend reliability mopup")
-**Status:** Complete — pushed for AI review
+**Status:** Complete — review round 1 remediated (crash-shape fix, recall-override, comment correction), pushed for re-review
 
 ---
 
@@ -55,10 +55,21 @@ Three existing suites mount the real Composer for one fixed session across tests
 
 Debugging note for the record: the drafts integration test initially failed NOT because of the feature but because of a pre-existing harness trap — ChatPage renders a TRANSIENT enabled composer before the workspace-status query flips `isReady` (the messages query is disabled, `historyLoading` false), then replaces it when history loads; `waitFor(not.toBeDisabled)` resolves against the transient instance and `userEvent.type` lands on a detached node. The house pattern (composer-history's own comment) is to wait for history CONTENT first — the drafts test now gives each session a distinct history marker and waits for it.
 
+### 4c. Review round 1 (CHANGES_REQUESTED → remediated)
+
+The reviewer mutation-verified the architecture (reverting the Composer wiring fails 6/8 drafts tests) and confirmed the lifecycle wiring correct, with three findings — all remediated:
+
+1. **BUG (reviewer-executed, not inferred)**: `saveSessionDraft(…, "")` / `clearSessionDraft` threw `TypeError` on a valid-JSON WRONG-SHAPE store (`{"ws-1": 5}` → `"sess-1" in 5`) — contradicting the module's own corruption contract, and the throw would escape through the SSE `onEvent` handler. Fix: `sanitizeStore` at the read boundary — every non-object bucket/entry (and array top-levels, and bad entry shapes) is dropped before any downstream `in`/`Object.entries`; the first save rewrites a clean store. Pinned: `sessionDrafts.test.ts` "valid-JSON WRONG-SHAPE stores never crash" (clear + save + sweep on wrong shapes; the save repairs the bucket).
+2. **History-recall destroyed the draft**: Up-recall's `setText(entry)` write-through-persisted the RECALLED entry as the session draft while the pre-browse snapshot (`savedDraft`) was memory-only — browse history → switch → return would restore history text as "the draft". Fix: the hook gained `persistOverride` — while browsing (`historyCursor !== -1`) the Composer persists the pre-browse snapshot (`savedDraft ?? ""`) instead of the textarea's view; mid-browse edits to a recalled entry stay transient (the Composer's own F5 semantics: Up always reloads the original). Pinned: `ChatPage.drafts.test.tsx` "Up-recall then switch does NOT replace the draft" — mutation-verified born-RED against the pre-fix wiring (the recalled entry replaces the draft).
+3. **Misattributed comment (reviewer mutation-verified)**: the hook doc claimed effect DECLARATION ORDER was the cross-save seam; the reviewer's mutations showed the OWNER GUARD is load-bearing (removing it fails 4 tests incl. PIN (a); swapping order passes all). Comment rewritten: the guard is the seam (without it, the transient cross-key write is loaded back by the hydrate as the incoming session's "draft" — box AND store bleed); order is secondary hygiene that keeps the transient write from happening at all, and may be simplified away — the guard may not.
+4. Minor wording (addressed): "second tab's writes stay visible" qualified to reads (concurrent writes are last-writer-wins read-modify-write); TTL semantics documented honestly — `updatedAt` is last-WRITE and mounting re-saves, so the backstop reads as "~10 days since last opened or edited" (its job is bounded accumulation; a returning user keeps their draft).
+
+Reviewer non-blocking notes recorded: PIN (b) also passes on pre-PR code trivially (it pins consume-semantics, not wiring); govulncheck red is pre-existing stdlib advisories in untouched Go files (zero Go files in this diff).
+
 ## Verification
 
-- `vitest run` full frontend suite: **2638/2638 green (233 files)** — was 2595 files-ago; +43 new.
-- `tsc --noEmit` clean; `eslint src/` 0 errors (7 warnings, all pre-existing in generated `src/abi/*_pb.ts` — none in touched files); `make fmt-check` green.
+- `vitest run` full frontend suite: **2640/2640 green (233 files)** post-r1 (+45 new; was 2638 at the first push, 2595 pre-change).
+- `tsc --noEmit` clean; `eslint src/` 0 errors (warnings all pre-existing in generated `src/abi/*_pb.ts` — none in touched files); `make fmt-check` green; `make repolint` green.
 - Isolated worktree `/tmp/opencode/drafts-wt` (branch `feat/session-drafts` off `origin/main` @ d5a638fae); `node_modules` symlinked from the shared checkout.
 
 ## Key decisions
