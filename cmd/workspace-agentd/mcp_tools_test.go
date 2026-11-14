@@ -2033,6 +2033,16 @@ func bytesAllIndexes(haystack, needle []byte) []int {
 // half, boundaries, the v1-continuity claim, precedence) ---
 
 func TestRecoverInjectedDestination_RejectionTable(t *testing.T) {
+	// CONTRACT (post-v3, 2026-11-14): rows whose LEADING ref is a valid
+	// target (junk/empty/malformed embedded origins, trailing }junk,
+	// multi-mark) NO LONGER refuse recovery at handler level - they fall
+	// through to recoverInjectedDestination and DELIVER to the leading
+	// id with the generic warning (the #2030 intent-preserving
+	// inversion, pinned at handler level by
+	// TestMCPSendMessage_V1ValidOriginKeepsRichRecovery and the
+	// InjectedDestination live-shape pins). THIS unit table pins the
+	// EXTRACTOR's own rejections: these rows must return ok=false so
+	// the caller's fall-through has something to fall through TO.
 	for _, tc := range []struct {
 		name, v string
 	}{
@@ -2044,7 +2054,7 @@ func TestRecoverInjectedDestination_RejectionTable(t *testing.T) {
 		{"tail-guard rejection: quote but neither key-colon nor brace", `ses_abc"justtext`},
 		{"target fails recoverableRefForm (not ses_, not phrase)", `zzz","message":"x}`},
 		{"over-length target (125+ chars after ses_)", "ses_" + strings.Repeat("a", 125) + `","message":"x`},
-		{"non-string junk entirely", "random text with quotes and braces but no valid leading ref"},
+		{"junk with quote+brace, invalid leading ref (form gate)", "random text with quotes and braces but no valid leading ref"},
 	} {
 		target, ok := recoverInjectedDestination(tc.v)
 		assert.False(t, ok, tc.name+": must NOT recover")
@@ -2145,6 +2155,55 @@ func TestMCPSendMessage_RecoveredNonexistentTargetFailsLoudly(t *testing.T) {
 	require.NotEmpty(t, resp.Result.Content)
 	assert.Contains(t, resp.Result.Content[0].Text, "ses_ghost_recoverable",
 		"the error names the STRIPPED id — diagnosable, not the injected blob")
+	// r2 B7 - the DISCRIMINATING half: pre-recovery code failed with the
+	// whole injected blob (which CONTAINS the stripped id as a substring,
+	// so a Contains pin passes either way). The stripped form must NOT
+	// carry the injected tail.
+	assert.NotContains(t, resp.Result.Content[0].Text, `","message":"`,
+		"the error names the clean stripped id, not the injected blob")
+}
+
+func TestMCPSendMessage_V1MarkJunkOriginFallsThroughToGenericRecovery(t *testing.T) {
+	// r2 B8: a v1 MARK with a REJECTED (junk) embedded origin — the old
+	// extractor refuses, the generalized path recovers the target, and
+	// the GENERIC injection warning fires (not the rich v1 warning).
+	// A regression confined to this composition would pass the whole
+	// suite without this pin.
+	f := newFakeAgent()
+	target := f.newSession("target")
+	caller := f.newSession("caller")
+	withAgentServer(t, f.handler(t))
+
+	dest := target + `","lsp_injected_session":"JUNK_NOT_AN_ID"}`
+	req := mcpRequest{JSONRPC: "2.0", ID: 1, Method: "tools/call",
+		Params: marshalParams(t, map[string]any{
+			"name": "send_message",
+			"arguments": map[string]any{
+				"destination":          dest,
+				"message":              "junk-origin fall-through probe",
+				"lsp_injected_session": caller,
+			},
+		})}
+	body, _ := json.Marshal(req)
+	w := httptest.NewRecorder()
+	r := mcpAuthedRequest(body)
+	mcpHandler(mcpTestPassword)(w, r)
+
+	var resp struct {
+		Result struct {
+			Content []struct {
+				Text string `json:"text"`
+			} `json:"content"`
+		} `json:"result"`
+	}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+	require.NotEmpty(t, resp.Result.Content)
+	assert.NotContains(t, resp.Result.Content[0].Text, "Error:", "falls through and delivers to the leading id")
+	assert.Contains(t, resp.Result.Content[0].Text, "injected JSON fragments",
+		"the GENERIC injection warning fires")
+	assert.NotContains(t, resp.Result.Content[0].Text, "duplicated-argument fragment",
+		"the rich v1 warning must not co-fire")
+	require.Eventually(t, func() bool { return len(f.sentFor(target)) == 1 }, 5*time.Second, 50*time.Millisecond)
 }
 
 func TestMCPSendMessage_InjectedDestinationRecovers_HandlerLevel(t *testing.T) {
