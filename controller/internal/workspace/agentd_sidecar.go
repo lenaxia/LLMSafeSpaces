@@ -439,9 +439,8 @@ func (r *WorkspaceReconciler) applyAgentdSidecar(pod *corev1.Pod, workspace *v1.
 		// password, no XDG auth.json discovery. The workspace password
 		// still gates the harness-port HTTP bridge (the S4 transport's
 		// basic auth); the main container receives it via env exactly
-		// like the opencode branch (the /sandbox-cfg password FILE is
-		// not mounted on the main container — the file-based
-		// readAgentPassword would be boot-fatal there). The supervisor
+		// like the opencode branch — the delivery BOTH supervisors
+		// share (readBridgePasswordEnv on the pi side). The supervisor
 		// seeds it into its bridge and STRIPS it from the children's
 		// inherited environment (pi_rpc.go — no passthrough leak).
 		// The session-dir knob carries its in-process PVC-safe default

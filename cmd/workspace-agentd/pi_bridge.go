@@ -118,8 +118,8 @@ type piBridge struct {
 
 // newPiBridge constructs the bridge and installs the aggregator tap
 // (the SSE fan-out's feed). The password is the workspace password
-// (readAgentPassword — the same OPENCODE_SERVER_PASSWORD delivery the
-// controller wires for both harnesses).
+// (readBridgePasswordEnv — the same OPENCODE_SERVER_PASSWORD delivery
+// the controller wires for both harnesses).
 func newPiBridge(sup *piSupervisor, password string) *piBridge {
 	b := &piBridge{
 		log:        sup.log.With(zap.String("component", "pi_bridge")),
