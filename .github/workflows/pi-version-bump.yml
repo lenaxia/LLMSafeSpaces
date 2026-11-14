@@ -170,7 +170,22 @@ jobs:
           git checkout -b "$BRANCH"
           git add runtimes/pi/Dockerfile
           git commit -m "chore(runtime): pi ${PINNED} → ${TARGET} (automated bump)"
-          git push origin "$BRANCH"
+          # FORCE-push the bot-owned branch. The opencode twin's plain
+          # push wedged this exact workflow class for 5 consecutive
+          # weekly runs (first fire left the branch on origin after a
+          # failed `gh pr create`; every later fire rebuilt the commit
+          # on a moved main parent and the non-fast-forward push was
+          # rejected — `gh pr edit` unreachable forever). The branch is
+          # bot-owned deterministic content (pin + sha from the release
+          # checksums), so overwrite is the correct idempotency
+          # semantic; a lease adds nothing (checkout@v6 depth-1 holds
+          # no remote-tracking ref for it).
+          git push --force origin "$BRANCH"
+          # The label must exist or `gh pr create --label` exits
+          # non-zero and strands the pushed branch (the twin's first
+          # wedge step). Idempotent: a failed create (already exists)
+          # is the success case here.
+          gh label create pi-bump --description "Automated pi overlay bump (pi-version-bump.yml)" --color 0e8a16 >/dev/null 2>&1 || true
           if gh pr view "$BRANCH" >/dev/null 2>&1; then
             gh pr edit "$BRANCH" --body "$BODY" --title "chore(runtime): pi ${PINNED} → ${TARGET} (automated bump)"
           else

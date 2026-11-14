@@ -164,3 +164,37 @@ func TestPiBumpGate_PinFirstLandingPasses(t *testing.T) {
 		t.Fatalf("gate must pass when the pin first lands; output:\n%s", out)
 	}
 }
+
+// TestBumpWorkflows_NoWedgeClass pins the review-r0 wedge fix
+// structurally: both bump workflows must (a) FORCE-push their
+// bot-owned branch (the plain push wedged the opencode twin for 5
+// consecutive weekly runs — stranded branch + non-fast-forward
+// rejections made the gh pr edit re-run path unreachable), and
+// (b) bootstrap their PR label (gh pr create --label exits non-zero
+// on a nonexistent label — the wedge's first step). Hermetic by
+// design: it reads the workflow files, so the class cannot silently
+// return in either twin.
+func TestBumpWorkflows_NoWedgeClass(t *testing.T) {
+	for _, wf := range []struct{ file, branch, label string }{
+		{"../.github/workflows/pi-version-bump.yml", "chore/pi-bump-", "pi-bump"},
+		{"../.github/workflows/opencode-version-bump.yml", "chore/opencode-bump-", "opencode-bump"},
+	} {
+		raw, err := os.ReadFile(wf.file)
+		if err != nil {
+			t.Fatalf("read %s: %v", wf.file, err)
+		}
+		src := string(raw)
+		if !strings.Contains(src, "git push --force origin \"$BRANCH\"") {
+			t.Errorf("%s: bot branch must be force-pushed (the bot owns the branch; a plain push wedges re-runs on a moved main — review r0)", wf.file)
+		}
+		if strings.Contains(src, "git push origin \"$BRANCH\"\n") {
+			t.Errorf("%s: bare non-force push of the bot branch present (the 5-week wedge class)", wf.file)
+		}
+		if !strings.Contains(src, "gh label create "+wf.label) {
+			t.Errorf("%s: must bootstrap label %q before gh pr create --label (nonexistent label exits non-zero and strands the branch)", wf.file, wf.label)
+		}
+		if !strings.Contains(src, "--label "+wf.label) {
+			t.Errorf("%s: expected to attach label %q to its bump PRs", wf.file, wf.label)
+		}
+	}
+}

@@ -8,8 +8,8 @@
 {"op":"SendAsync.queue.followUp","command":{"message":"golden queue","type":"follow_up"}}
 {"op":"SendAsync.queue.entries","command":{"type":"get_entries"}}
 {"op":"SetSessionModel.set_model","command":{"modelId":"fixture-model","provider":"fixture","type":"set_model"}}
-{"op":"Abort.abort","command":{"type":"clear_queue"}}
-{"op":"Abort.clear_queue","command":{"type":"abort"}}
+{"op":"Abort.clear_queue","command":{"type":"clear_queue"}}
+{"op":"Abort.abort","command":{"type":"abort"}}
 {"op":"Abort.requeue","command":{"message":"golden requeue","type":"follow_up"}}
 {"op":"RenameSession.set_session_name","command":{"name":"golden rename","type":"set_session_name"}}
 {"op":"ListAvailableModels.get_available_models","command":{"type":"get_available_models"}}

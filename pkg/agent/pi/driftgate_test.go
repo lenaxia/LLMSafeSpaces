@@ -415,7 +415,10 @@ func goldenScenarioOps(ft *fixtureTransport, calls []fixtureCall) []goldenComman
 		"SendAsync.steer.steer", "SendAsync.steer.entries",
 		"SendAsync.queue.followUp", "SendAsync.queue.entries",
 		"SetSessionModel.set_model",
-		"Abort.abort", "Abort.clear_queue", "Abort.requeue",
+		// Abort drains the queue FIRST (clear_queue), then aborts the
+		// in-flight run, then re-queues the drained texts (adapter.go
+		// Abort) — labels follow the wire order.
+		"Abort.clear_queue", "Abort.abort", "Abort.requeue",
 		"RenameSession.set_session_name", "ListAvailableModels.get_available_models",
 		"CreateSession.set_session_name", "CreateSession.state",
 	}
