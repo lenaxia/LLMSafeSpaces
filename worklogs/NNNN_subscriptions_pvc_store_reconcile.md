@@ -271,3 +271,31 @@ bb2538ff). Full `go test ./cmd/workspace-agentd/` green at this head
 
 Full `go test ./cmd/workspace-agentd/` green at this head (375.2s);
 `make fmt-check` clean.
+
+### §8.1 Review round 4 — the inert pin, made discriminating (board reviewer r4, head f18197dbf)
+
+The r4 reviewer verified the r3 CODE fix correct and finding 2's pin
+real (mutations red), but proved finding 1's pin EMPIRICALLY INERT:
+`git checkout 73e512648 -- session_notifier.go` + the new tests passed
+on the pre-fix code. Root cause: the pre-fix `publishSettle` read the
+latch at ENTRY — strictly before `Publish()` runs — and the re-stamp
+hook fired inside `Publish()`, so the pre-fix shape never observed the
+later stamp in that interleaving. A full revert of the r3 fix sailed
+through green: the race was regression-invisible.
+
+**Fix (the reviewer's option b, manual arm/fire)**: the pin now stops
+the natural timer, re-arms under mu carrying the arming stamp, lands
+the racing fold's durable write (the latch re-stamp to `later`)
+BETWEEN the arm and a direct synchronous `debounceFired` — the exact
+interleaving the pre-fix shape lost. The orphaned natural timer no-ops
+(entry deleted). Verified discriminating BOTH ways this round, with
+the surgical one-line reborrow mutation (signatures intact):
+
+- MUTATED (entry-time latch read restored): RED at four assertions —
+  "must never broadcast the mid-flight re-stamp", the arming-stamp
+  payload, the arming-stamp advance, and the reconciled wake-up never
+  arriving.
+- FIXED: green, `-count=3` deterministic.
+
+CHANGELOG's "Pinned by" bullet now enumerates the two publish-leg
+pins (the r4 minor, folded into this commit).

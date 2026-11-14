@@ -583,13 +583,18 @@ func TestPublishSettleCarriesStampAndAdvancesWatermarks(t *testing.T) {
 }
 
 // TestPublishSettleUsesArmingStampNotLaterLatch (review r3 finding 1
-// — the publish-stamp reborrow race): a fold completing its durable
-// write DURING the publish I/O re-stamps the latch; the in-flight
-// publish must still broadcast and advance ITS OWN episode's
-// arming-time stamp — never the later value. The pin ends with the
-// boot reconcile firing for the re-stamped settle: jumping the
-// watermark there (the pre-fix behavior) would have permanently
-// silenced that wake-up.
+// — the publish-stamp reborrow race; r4: the pin rebuilt
+// deterministically): the settle's identity is captured at ARMING time
+// (armedDebounce.stamp, under the arming critical section) and the
+// publish leg must never re-read the latch — a racing fold's durable
+// write (the latch re-stamped to a LATER settle) landing between the
+// arm and the publish must not leak into the payload or the
+// watermark-advance. The interleaving is driven MANUALLY — stop the
+// natural timer, re-arm with the arming stamp, land the re-stamp,
+// then fire the debounce synchronously — so the pre-fix shape (an
+// entry-time latch read inside publishSettle) observes `later` and
+// the assertions go RED; the fixed shape is green. Both directions
+// deterministic (r4's inert-pin finding closed).
 func TestPublishSettleUsesArmingStampNotLaterLatch(t *testing.T) {
 	n, store, bus := newBusLegFixture(t)
 	deliver := n.cfg.Deliver.(*chanDeliverer)
@@ -604,31 +609,43 @@ func TestPublishSettleUsesArmingStampNotLaterLatch(t *testing.T) {
 	require.Eventually(t, func() bool { return len(bus.published()) == 1 },
 		2*time.Second, 5*time.Millisecond, "episode one published")
 
-	// The racing fold's durable write lands while episode two's publish
-	// is in flight: the latch is re-stamped to a LATER identity.
-	bus.onPublish = func() {
-		cur := store.latchFor("ses_w").LastSettleAt
-		store.setLatch("ses_w", sessionLatch{LastDerivedBusy: false, SawBusy: true,
-			LastSettleAt: cur.Add(time.Minute), LastSettleKind: subscriptionEventIdle})
-	}
-
+	// Episode two settles: the settle edge stamps arming2 and arms the
+	// natural timer.
 	n.handleFrame(statusFrame("ses_w", abiv1.SessionStatus_SESSION_STATUS_BUSY))
 	n.handleFrame(statusFrame("ses_w", abiv1.SessionStatus_SESSION_STATUS_IDLE))
 	arming2 := store.latchFor("ses_w").LastSettleAt
 	require.False(t, arming2.IsZero(), "episode two stamped")
+	later := arming2.Add(time.Minute)
 
-	require.Eventually(t, func() bool { return len(bus.published()) == 2 },
-		2*time.Second, 5*time.Millisecond, "episode two published")
-	later := store.latchFor("ses_w").LastSettleAt // the hook's re-stamp
-	require.True(t, later.After(arming2), "the mid-publish re-stamp is the later identity")
+	// The race, made deterministic (r4 fix guidance option b): stop the
+	// natural timer, re-arm carrying the ARMING stamp, land the racing
+	// fold's durable write (the latch re-stamp to `later`) BETWEEN the
+	// arm and the fire, then fire synchronously. The orphaned natural
+	// timer no-ops on its later fire (the armed entry is deleted).
+	n.mu.Lock()
+	n.cancelDebounceLocked("ses_w")
+	n.armDebounceLocked("ses_w", subscriptionEventIdle, arming2)
+	store.setLatch("ses_w", sessionLatch{LastDerivedBusy: false, SawBusy: true,
+		LastSettleAt: later, LastSettleKind: subscriptionEventIdle})
+	n.mu.Unlock()
+	n.debounceFired("ses_w", subscriptionEventIdle)
 
-	stamp, err := time.Parse(time.RFC3339Nano, bus.published()[1].Payload["settled_at"])
+	events := bus.published()
+	require.GreaterOrEqual(t, len(events), 2, "the manual fire published")
+	for i, ev := range events {
+		stamp, err := time.Parse(time.RFC3339Nano, ev.Payload["settled_at"])
+		require.NoError(t, err)
+		assert.False(t, stamp.Equal(later),
+			"publish %d must never broadcast the mid-flight re-stamp", i)
+	}
+	last := events[len(events)-1]
+	stamp, err := time.Parse(time.RFC3339Nano, last.Payload["settled_at"])
 	require.NoError(t, err)
 	assert.True(t, stamp.Equal(arming2),
-		"the publish broadcasts the ARMING-time stamp, not the mid-publish latch value")
+		"the publish broadcasts the ARMING-time stamp, not the mid-flight latch value")
 	wm := store.rowsForSubscriber("ses_m")[0].LastDeliveredSettle
 	assert.True(t, wm.Equal(arming2),
-		"the advance carries the arming-time stamp, not the mid-publish latch value")
+		"the advance carries the arming-time stamp, not the mid-flight latch value")
 	assert.True(t, wm.Before(later), "the later settle is NOT absorbed")
 
 	// The lost-wake-up regression: a hard kill now (latch=later,
