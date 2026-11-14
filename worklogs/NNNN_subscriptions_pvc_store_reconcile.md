@@ -299,3 +299,11 @@ the surgical one-line reborrow mutation (signatures intact):
 
 CHANGELOG's "Pinned by" bullet now enumerates the two publish-leg
 pins (the r4 minor, folded into this commit).
+
+### §8.2 The r5 advisory — dead hook removed
+
+The PR-workflow reviewer's APPROVED verdict on d63a47455 carried one
+advisory: `captureBus.onPublish` was dead after the r4 rebuild (no
+assigner remained). Removed (field + nil-check invocation); the
+racing-fold write is driven by the manual arm/fire sequence, which the
+type comment now says.

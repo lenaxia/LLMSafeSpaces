@@ -506,19 +506,14 @@ func TestReconcileMissedSettlesFailedDeliveryRidesRetryOutbox(t *testing.T) {
 // ---- review round 3: the publish-leg identity pins ----------------------
 
 // captureBus is a settlePublisher fake for the publish-leg pins: it
-// records every published event and runs onPublish INSIDE Publish —
-// the hook where a racing fold's durable writes land while the real
-// publish does its I/O (the r3 reborrow window).
+// records every published event (the mid-flight latch write the r4
+// pin races in is driven by the test's manual arm/fire, not a hook).
 type captureBus struct {
-	mu        sync.Mutex
-	events    []eventbus.Event
-	onPublish func()
+	mu     sync.Mutex
+	events []eventbus.Event
 }
 
 func (b *captureBus) Publish(_ context.Context, ev eventbus.Event) (string, error) {
-	if b.onPublish != nil {
-		b.onPublish()
-	}
 	b.mu.Lock()
 	b.events = append(b.events, ev)
 	b.mu.Unlock()
