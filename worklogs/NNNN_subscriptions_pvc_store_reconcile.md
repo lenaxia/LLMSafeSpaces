@@ -1,0 +1,140 @@
+# Session subscriptions on the PVC + boot-time missed-settle reconciliation
+
+2026-11-14 · branch `fix/subscriptions-pvc-store` · task tsk-quixotic-column-speeds
+
+## §1 The bug
+
+Every session-subscription edge was silently lost on pod recreation.
+The registry persisted to `/sandbox-runtime/session-subscriptions.json`
+(session_notifier_store.go:45) — but `/sandbox-runtime` is an emptyDir
+**tmpfs** (pod_builder.go:265): memory-backed, wiped on every pod
+recreation (drain, suspend/resume, eviction). A manager mid
+subscribe-then-wait simply never woke. The persistence mechanics
+(atomic-rename + fsync writes, the outbox, the quiesce-joined debounce
+legs — PR #1986's work) were correct; only the LOCATION was wrong.
+
+## §2 The fix (owner ruling 2026-11-14)
+
+REJECTED alternatives (not implemented): Redis, Postgres/direct-DB,
+controller-API registry — a local PVC file matches the lifetime
+semantics of the sessions the edges reference.
+
+### 2.1 The relocation
+
+Default path → `/platform/session-subscriptions.json`
+(`sessionstate.DefaultPlatformDir` — the platform/ PVC subPath, the
+durable seq cursor's exact storage class and durability envelope; the
+sidecar mounts it RW via the `workspace` volume's `platform` subPath,
+agentd_sidecar.go:247; single-container mode mounts it at
+pod_builder.go:525). The constructor best-effort `MkdirAll(0o750)`s the
+parent (the `openSeqCursor` precedent).
+
+Migration: on boot, when the PVC file is absent and the legacy
+`/sandbox-runtime` document exists, the legacy document is ADOPTED —
+loaded, persisted to the new home once; the legacy copy stays on disk,
+readable, never re-read (the exchange-dir "readable for one release"
+posture). A torn/unparseable legacy boots empty and adopts nothing
+(the advisory posture — the next boot can retry once the file is
+whole). Hermetic via `newSessionSubscriptionStoreWithLegacy(path,
+legacyPath)`; the production wrapper passes the legacy path ONLY for
+the production default — explicit test paths never migrate. The
+`StorePath` wiring seam (main.go / tests) is unchanged.
+
+### 2.2 The residual window: in-flight-at-kill
+
+The outbox covers a hard death between enqueue (write-before-POST) and
+delivery. The UNCOVERED window: the settle fired, the notification sat
+in the armed debounce (5s default) when the pod died hard. Durable
+state at death: latch busy-edge CLEARED at settle time — so the §7.3
+latch-vs-snapshot boot machinery cannot see the episode (a fresh
+snapshot reads "was never busy"); outbox empty (debounce never
+enqueued). The wake-up was simply gone.
+
+Fix: a per-edge **delivered-watermark** (`SubscriptionRow.
+LastDeliveredSettle`) plus the broadcaster latch's **settle stamp**
+(`sessionLatch.LastSettleAt/LastSettleKind`), both persisted in the
+same file:
+
+- The settle edge stamps the latch BEFORE the debounce arms
+  (`observeBusyEdgeLocked`; same for the snapshot-reconciled settle in
+  `reconcileAndSwapLocked`).
+- Every processed settle advances the watermarks of the broadcaster's
+  kind-matching edges — delivered, suppressed, or skipped (final
+  outcomes) — on both delivery layers (`collectSettlesLocked` direct
+  leg, `ConsumeSettleEvent` bus leg).
+- A FRESH edge initializes its watermark to the broadcaster's current
+  settle stamp: pre-subscription idleness never wakes a late
+  subscriber.
+- Boot: `ReconcileMissedSettles` (sequenced in the boot leg AFTER the
+  harness wait — facts are fresh, deliveries are possible — and BEFORE
+  `RetryOutbox`, so a failed reconciled delivery rides the outbox's
+  retry-once within the same boot). Watermark trailing the stamp and
+  the event kind matches ⇒ exactly ONE reconciled notification,
+  enqueued write-before-send, watermark advanced to the stamp.
+
+### 2.3 The live-vs-boot race (found by the suite, fixed by the guard)
+
+First full-suite run reddenend `TestWiringE2E_DropResubscribeLatch
+Reconciliation`: the §7.3 snapshot path stamps the latch and arms the
+live debounce in ONE critical section, but its collect (watermark
+advance) only runs when the debounce FIRES — 40ms later. The boot
+reconcile, running in that gap, saw stamp > watermark and duplicated
+the delivery. Guard: an ARMED debounce visible under `mu` means the
+live machinery owns the settle — skip WITHOUT advancing (if the
+process dies before the leg fires, the next boot's reconciliation sees
+the same trailing watermark and delivers then — at-least-once, never
+lost). Both orderings (reconcile-first on the pre-resync stampless
+latch; resync-first with the arm visible) now deliver exactly once.
+
+## §3 Timing invariants, argued
+
+- **Exactly once per settle, delivered**: watermark advances to the
+  same value the latch carries (same read), so post-advance
+  `stamp.After(watermark)` is false on every later boot.
+- **At-least-once, never lost**: reconcile enqueues the intent BEFORE
+  advancing; a death between the two leaves the intent durable for
+  `RetryOutbox` (duplicate-tolerant contract) and the trailing
+  watermark re-fires on the next boot — a duplicate wake-up, never a
+  lost one (§4.5's failure ordering).
+- **Clock-independence**: stamp and watermark are the SAME persisted
+  value; comparison is equality/after on one writer's lineage, not
+  cross-process wall-clock racing.
+- **Busy onset erases the stamps** (the `{true,true}` latch write) —
+  a settle canceled by re-busy (§4.3 debounce cancel) cannot
+  re-fire at boot: the next settle stamps fresh.
+
+## §4 Tests
+
+- `TestSessionSubscriptionStorePathsPinned` — the default/legacy path
+  string pins (the dev-preview-headers pattern).
+- `TestSessionSubscriptionStoreLegacyMigrationAdoptsOnce` — adoption
+  without double-registration; legacy copy stays; torn legacy never
+  adopts.
+- `TestSessionSubscriptionStoreReloadCarriesWatermarks` — the whole
+  comparison state (rows, watermarks, latch stamps) round-trips;
+  forward-only advance; kind-mismatched edges untouched.
+- `TestReconcileMissedSettlesFiresOnceWhenTrailing` / `...SilentWhen
+  Current` / `...FreshSubscribeDoesNotWakeOnOldSettle` — the unit
+  truth table.
+- `TestReconcileMissedSettlesHardKillDuringDebounce` — THE window end
+  to end across three simulated generations (the hour-long debounce
+  never fires; the quiesce cancel is the kill).
+- `TestWiringE2E_ReconcileMissedSettleOnRestart` — the real restart
+  path, real vehicle, real boot-leg placement; a third boot silent.
+- Existing tracker/debounce/suppression/outbox/wiring suites as
+  regression pins (one latch-equality pin updated for the stamp
+  contract).
+
+`make fmt-check` clean; full `go test ./cmd/workspace-agentd/` green
+(375s).
+
+## §5 Notes for review
+
+- Metrics: one new §8 label `reconciled_missed_settle` on
+  `llmsafespaces_session_notifications_total` (closed taxonomy
+  extended in place).
+- No controller/helm change: the platform/ subPath is already mounted
+  RW for agentd in BOTH modes (the seq cursor's own dependency).
+- design/0071 §4 corrected in place with a dated note (the original
+  text claimed suspend/resume survival for the emptyDir home — the
+  exact claim the bug falsified).

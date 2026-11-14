@@ -32,6 +32,10 @@ package main
 //	bus_published               — design 0072: a settle published to the
 //	                              workspace event bus (the notifier
 //	                              consumer group delivers from there)
+//	reconciled_missed_settle    — owner ruling 2026-11-14: the boot-time
+//	                              reconciliation fired for a settle whose
+//	                              notification was in flight at a hard
+//	                              kill (watermark trailed)
 
 import (
 	"github.com/prometheus/client_golang/prometheus"
@@ -53,6 +57,7 @@ const (
 	notifyOutcomeOutboxRetriedSent    = "outbox_retried_delivered"
 	notifyOutcomeOutboxRetriedDropped = "outbox_retried_dropped"
 	notifyOutcomeBusPublished         = "bus_published"
+	notifyOutcomeReconciledMissed     = "reconciled_missed_settle"
 )
 
 var sessionNotifyMetrics = struct {
@@ -60,7 +65,7 @@ var sessionNotifyMetrics = struct {
 }{
 	outcomes: promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "llmsafespaces_session_notifications_total",
-		Help: "Session idle-subscription notification outcomes (design §8): sent, suppressed_already_notified (the §4.4 send-postdates-mutation rule), debounced (§4.3 re-busy cancel), skipped_subtask / skipped_pending_input (gates), refused_{self,cycle,cap} (registration guards), refused_rate (per-subscriber storm backstop), outbox_retried_{delivered,dropped} (ruling 4 boot retry).",
+		Help: "Session idle-subscription notification outcomes (design §8): sent, suppressed_already_notified (the §4.4 send-postdates-mutation rule), debounced (§4.3 re-busy cancel), skipped_subtask / skipped_pending_input (gates), refused_{self,cycle,cap} (registration guards), refused_rate (per-subscriber storm backstop), outbox_retried_{delivered,dropped} (ruling 4 boot retry), reconciled_missed_settle (the boot-time missed-settle reconciliation).",
 	}, []string{"outcome"}),
 }
 
