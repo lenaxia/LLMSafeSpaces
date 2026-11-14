@@ -5,6 +5,16 @@ All notable changes to LLMSafeSpaces are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.44.14] - 2026-11-14
+
+### Fixed — the post-v3 parseable-loss class: generalized destination-injection recovery (issue #2030, PR #2032)
+
+- **The residual class**: the restructure (v0.44.13) eliminated the megastorm tiling (0 invalids since rollout) — but a parseable-loss class remained: the emission injects escaped-JSON structural fragments INTO the destination string value (`TARGET","message":"<prose>"}`) with a clean leading id and an intact message field. The call parses, executes, fails session-not-found, and the send is lost (fire-and-forget, no retry). Two live losses on 2026-11-14; the merry-finch-loses gauntlet agent opened #2030 with its own probe data (9-call matrix, integrity markers, the "context bleed" observation).
+- **The fix**: `recoverInjectedDestination` — split at the first quote (a clean ref can never contain one), recover the leading ref (phrase/ses_ form, re-validated by SessionExists), deliver with a loud warning; malformed-after-quote and non-ref prefixes fall to the normal error path unmangled. Precedence pinned: valid-origin #1530 shapes keep the old extractor's richer embedded-origin warnings; the generic injection warning never co-fires.
+- **Root-cause adjudication** (posted on #2030): the gauntlet's "arg-serialization/compaction seam" hypothesis is falsified — the failures reproduce byte-identically with the relay entirely out of the path (direct-to-provider replays). The "context bleed" is attention drawing fragments from adjacent context during long escaped-JSON string emission (in-context pattern continuation, the #1849 mechanism); the unparseable storm subclass stays tracked on #2030.
+- Pinned by: 15-row direct unit table for `recoverInjectedDestination` (rejection rows incl. the tail-guard arm and boundaries; acceptance incl. both live shapes, brace-only, key-colon, v1-junk-origin continuity, 124-boundary), precedence pin (v1-valid-origin keeps the rich warnings), handler pins for both live shapes (+ warning field), recovered-nonexistent fails loudly naming the STRIPPED id (discriminating negative assertion), duplicate-call-id and unknown-assistant-field passthroughs, and an importlib mirror-probe parity test (the python harness must match Go's changed-flags on all anomaly shapes, crashing loudly rather than skipping).
+- **Operator notes**: none — agentd-side fix, no metric/schema changes; rides the fleet release train (#1746 update policy governs workspace pod rolls).
+
 ## [0.44.13] - 2026-11-14
 
 ### Fixed — the glm-5.3 tool-call tiling runaway: aged-arg compaction v3 renders prior tool usage as lossless markdown (issue #1949, PR follow-up to #1954)
