@@ -17,8 +17,9 @@ export function extractMessageText(parts: MessagePart[]): string {
       if (part.type === "text" && part.text) return part.text;
       if ((part.type === "thinking" || part.type === "reasoning") && part.text) return `[Thinking]\n${part.text}`;
       if ((part.type === "tool_use" || part.type === "tool_call") && part.text) {
+        const error = part.toolError ? `\nError: ${part.toolError}` : "";
         const output = part.toolOutput ? `\nOutput: ${part.toolOutput}` : "";
-        return `[Tool: ${part.text}]${output}`;
+        return `[Tool: ${part.text}]${error}${output}`;
       }
       if (part.type === "error" && part.text) return part.text;
       return "";

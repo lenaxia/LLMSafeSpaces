@@ -64,6 +64,7 @@ export function transformHistory(raw: ContractMessage[]): Message[] {
             toolState: p.tool.state?.status ?? "",
             input: p.tool.input,
             toolOutput: typeof p.tool.output === "string" ? p.tool.output : undefined,
+            toolError: p.tool.state?.error || undefined,
             toolStartedAt: p.tool.state?.startedAt,
           };
         }

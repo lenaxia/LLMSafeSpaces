@@ -244,6 +244,45 @@ describe("transformHistory tool start time (#892 D5)", () => {
   });
 });
 
+// Owner report 2026-11-12 (tsk-copper-archer-rushes): the runtime sends
+// ToolState.error on the history wire; the transcript must surface it.
+// Deleting the threading line in messages.ts fails these tests.
+describe("transformHistory tool error threading (tsk-copper-archer-rushes)", () => {
+  it("threads state.error to toolError on error-state tool parts", () => {
+    const raw = [
+      {
+        id: "msg_e1",
+        type: "assistant",
+        parts: [{
+          type: "tool",
+          tool: {
+            name: "llmsafespaces_board_import_plan",
+            input: { projectId: "prj-1" },
+            state: { status: "error", error: "HTTP 409 epic_state: epic is not active" },
+          },
+        }],
+      },
+    ];
+    const result = transformHistory(raw);
+    const part = result[0]!.parts[0]!;
+    expect(part.type).toBe("tool_use");
+    expect(part.toolState).toBe("error");
+    expect(part.toolError).toBe("HTTP 409 epic_state: epic is not active");
+  });
+
+  it("omits toolError when the state carries none", () => {
+    const raw = [
+      {
+        id: "msg_e2",
+        type: "assistant",
+        parts: [{ type: "tool", tool: { name: "bash", state: { status: "completed" } } }],
+      },
+    ];
+    const result = transformHistory(raw);
+    expect(result[0]!.parts[0]!.toolError).toBeUndefined();
+  });
+});
+
 describe("queueMessage files (Epic 68 U1.6.8)", () => {
   it("omits files from the request body when none are attached", async () => {
     global.fetch = vi.fn().mockResolvedValue(
