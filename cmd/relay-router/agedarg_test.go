@@ -236,18 +236,64 @@ func TestAgedArgRenderMatchesReplayHarness(t *testing.T) {
 
 // TestAgedArgMirrorProbe_AnomalyParity — the checked-in python mirror
 // (the harness's "compacted" arm) must behave EXACTLY like the Go
-// transform on anomaly shapes: role-anomalous, non-string assistant
-// content, and crash-shaped entries all PASSTHROUGH (r5 review: the
-// mirror merged role-anomalous and non-string-content spans while Go
-// passthroughs — a divergence the fixed-sample parity pin could not
-// see). Importlib-driven: executes the mirror's restructure_messages
-// directly, no env vars needed.
+// transform on anomaly shapes. r6 findings 1-3: the mirror must merge
+// absent and null content (Go does), passthrough array/number content
+// and role anomalies, and this test must FAIL LOUDLY when the mirror
+// crashes (a crash silently skipped the leg with a false message).
+// Both legs execute: the Go transform on the same bodies is the
+// expected oracle, so the probe enforces PARITY, not hardcoded
+// python behavior.
 func TestAgedArgMirrorProbe_AnomalyParity(t *testing.T) {
 	script := filepath.Join("..", "..", "scripts", "1949-aged-arg-replay.py")
 	abs, err := filepath.Abs(script)
 	require.NoError(t, err)
-	var lastPath string
+
+	// The anomaly bodies (one span each) and the GO ORACLE: what the
+	// shipped transform does with each.
+	shapes := []struct {
+		name string
+		msgs []string
+	}{
+		{"role_user", []string{
+			`{"role":"user","content":"","tool_calls":[{"id":"c1","type":"function","function":{"name":"llmsafespaces_session_list","arguments":"{\"a\":1}"}}]}`,
+			`{"role":"tool","tool_call_id":"c1","content":"{\"ok\":true}"}`}},
+		{"role_absent", []string{
+			`{"content":"","tool_calls":[{"id":"c1","type":"function","function":{"name":"llmsafespaces_session_list","arguments":"{\"a\":1}"}}]}`,
+			`{"role":"tool","tool_call_id":"c1","content":"{\"ok\":true}"}`}},
+		{"array_content", []string{
+			`{"role":"assistant","content":[{"type":"text","text":"x"}],"tool_calls":[{"id":"c1","type":"function","function":{"name":"llmsafespaces_session_list","arguments":"{\"a\":1}"}}]}`,
+			`{"role":"tool","tool_call_id":"c1","content":"{\"ok\":true}"}`}},
+		{"num_content", []string{
+			`{"role":"assistant","content":42,"tool_calls":[{"id":"c1","type":"function","function":{"name":"llmsafespaces_session_list","arguments":"{\"a\":1}"}}]}`,
+			`{"role":"tool","tool_call_id":"c1","content":"{\"ok\":true}"}`}},
+		{"null_content", []string{
+			`{"role":"assistant","content":null,"tool_calls":[{"id":"c1","type":"function","function":{"name":"llmsafespaces_session_list","arguments":"{\"a\":1}"}}]}`,
+			`{"role":"tool","tool_call_id":"c1","content":"{\"ok\":true}"}`}},
+		{"non_dict_fn", []string{
+			`{"role":"assistant","content":"","tool_calls":[{"id":"c1","type":"function","function":"garbage"}]}`}},
+	}
+	bodies := map[string]string{}
+	goOracle := map[string]bool{}
+	for _, sh := range shapes {
+		body := `{"model":"m","messages":[` + strings.Join(sh.msgs, ",") + `]}`
+		bodies[sh.name] = body
+		_, stats := newAgedArgCompactorWindow(0).Compact([]byte(body))
+		goOracle[sh.name] = stats.Changed
+	}
+
+	// Go leg is the oracle; the python mirror must MATCH it exactly.
+	expected := map[string]bool{}
+	for k, v := range goOracle {
+		expected[k] = v
+	}
+
+	bodiesJSON, err := json.Marshal(bodies)
+	require.NoError(t, err)
+
 	handled := false
+	var lastPath string
+	var lastErr error
+	var lastOut []byte
 	for _, interp := range []string{"python3", "python"} {
 		path, lerr := exec.LookPath(interp)
 		if lerr != nil {
@@ -259,40 +305,38 @@ import importlib.util, json, sys
 spec = importlib.util.spec_from_file_location('mirror', sys.argv[1])
 mod = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(mod)
-
-anomalies = {
-  'role_user': [{'role':'user','content':'','tool_calls':[{'id':'c1','type':'function','function':{'name':'llmsafespaces_session_list','arguments':'{"a":1}'}}]},{'role':'tool','tool_call_id':'c1','content':'{}'}],
-  'role_absent': [{'content':'','tool_calls':[{'id':'c1','type':'function','function':{'name':'llmsafespaces_session_list','arguments':'{"a":1}'}}]},{'role':'tool','tool_call_id':'c1','content':'{}'}],
-  'array_content': [{'role':'assistant','content':[{'type':'text','text':'x'}],'tool_calls':[{'id':'c1','type':'function','function':{'name':'llmsafespaces_session_list','arguments':'{"a":1}'}}]},{'role':'tool','tool_call_id':'c1','content':'{}'}],
-  'num_content': [{'role':'assistant','content':42,'tool_calls':[{'id':'c1','type':'function','function':{'name':'llmsafespaces_session_list','arguments':'{"a":1}'}}]},{'role':'tool','tool_call_id':'c1','content':'{}'}],
-  'non_dict_fn': [{'role':'assistant','content':'','tool_calls':[{'id':'c1','type':'function','function':'garbage'}]}],
-}
+bodies = json.loads(sys.argv[2])
 out = {}
-for name, msgs in anomalies.items():
-    merged, n = mod.restructure_messages([dict(x) for x in msgs])
-    out[name] = (n > 0 or len(merged) != len(msgs))
+for name, body_text in bodies.items():
+    _, n = mod.restructure(json.loads(body_text))
+    out[name] = (n > 0)
 print(json.dumps(out))
 `
-		captured, xerr := exec.Command(path, "-c", probeCode, abs).CombinedOutput()
-		if xerr == nil {
-			var got map[string]bool
-			require.NoError(t, json.Unmarshal(captured, &got))
-			for name, changed := range got {
-				assert.False(t, changed, "mirror: %s anomaly must passthrough (n=0, count unchanged) — matching the Go transform", name)
-			}
-			handled = true
-			break
+		captured, xerr := exec.Command(path, "-c", probeCode, abs, string(bodiesJSON)).CombinedOutput()
+		if xerr != nil {
+			// r6 finding 2: a mirror CRASH is a DEFECT, not a skip —
+			// the v6 draft skipped with a false "no python" message.
+			t.Fatalf("mirror probe crashed under %s: %v; output: %q (a crash on any anomaly shape is a mirror defect)", path, xerr, captured)
 		}
-		t.Logf("mirror probe failed under %s: %v: %s", path, xerr, captured)
+		var pyChanged map[string]bool
+		require.NoError(t, json.Unmarshal(captured, &pyChanged), "probe output")
+		for name, goChanged := range expected {
+			pyChanged := pyChanged[name]
+			assert.Equal(t, goChanged, pyChanged,
+				"%s: mirror/relay parity — go changed=%v, mirror changed=%v", name, goChanged, pyChanged)
+		}
+		handled = true
 		break
 	}
-	_ = lastPath
 	if !handled {
 		t.Skip("no python interpreter on PATH — source pins above still enforced")
 	}
+	_ = lastErr
+	_ = lastOut
+	_ = lastPath
 }
 
-// TestAgedArgCompaction_MalformedEntriesLeftUntouched — a message whose
+// TestAgedArgCompaction_MalformedEntriesLeftUntouched// TestAgedArgCompaction_MalformedEntriesLeftUntouched — a message whose
 // tool_calls entries are malformed is forwarded as-is; the transform
 // never breaks a request over garbage it cannot parse.
 func TestAgedArgCompaction_MalformedEntriesLeftUntouched(t *testing.T) {

@@ -398,6 +398,13 @@ func tryRestructureSpan(msg json.RawMessage, span []json.RawMessage, calls []jso
 	}
 	// r2 finding 7: duplicate CALL ids — one result would render on both
 	// bullets. Any duplicate call id → passthrough.
+	//
+	// DOCUMENTED ASYMMETRY (r6 review note): assistant content:null is
+	// ACCEPTED (merges as empty prefix) while tool-message null
+	// tool_call_id/content are REJECTED — the asymmetry is deliberate:
+	// a null on the TOOL side deletes data the model re-sees, a null on
+	// the assistant side carries nothing. Alignment offered, chosen
+	// documented over aligned.
 	seenCalls := make(map[string]bool, len(parsed))
 	for _, pc := range parsed {
 		if seenCalls[pc.id] {

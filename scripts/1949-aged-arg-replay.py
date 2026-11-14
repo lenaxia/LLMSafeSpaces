@@ -343,17 +343,22 @@ def restructure_messages(msgs):
             out.extend(msgs[i:j])
             i = j
             continue
-        # r2-finding-4 mirror: non-string assistant content (array/parts
-        # or number) → passthrough span, matching Go exactly (the v3
-        # draft SKIPPED the content and merged — fabricating a
-        # bullet-only assistant turn with the original content gone).
-        if not isinstance(m.get("content"), str):
+        # r2-finding-4 mirror, r6-corrected: non-string NON-NULL
+        # assistant content (array/parts or number) → passthrough span,
+        # matching Go exactly. ABSENT content merges (Go: the gate
+        # applies only when content is present) and NULL content merges
+        # as empty (Go: null-into-string is a silent no-op — accepted
+        # by documented decision; tool-message null ids/content are
+        # rejected via *string because they DELETE data, a different
+        # class).
+        content = m.get("content")
+        if content is not None and not isinstance(content, str):
             out.extend(msgs[i:j])
             i = j
             continue
         lines = []
-        if m["content"].strip():
-            lines.append(m["content"].strip())
+        if isinstance(content, str) and content.strip():
+            lines.append(content.strip())
         for cid, name, args in parsed:
             lines.append("- Called `" + name + "`(" + render_arguments(args) + ")")
             lines.append("  - Result: " + result_by_id[cid])
