@@ -2040,9 +2040,11 @@ func TestRecoverInjectedDestination_RejectionTable(t *testing.T) {
 	// id with the generic warning (the #2030 intent-preserving
 	// inversion, pinned at handler level by
 	// TestMCPSendMessage_V1ValidOriginKeepsRichRecovery and the
-	// InjectedDestination live-shape pins). THIS unit table pins the
-	// EXTRACTOR's own rejections: these rows must return ok=false so
-	// the caller's fall-through has something to fall through TO.
+	// InjectedDestination live-shape pins; the junk-origin fall-through
+	// itself is pinned by TestMCPSendMessage_V1MarkJunkOriginFalls-
+	// ThroughToGenericRecovery). THIS unit table pins the EXTRACTOR's
+	// own rejections: these rows must return ok=false so the caller's
+	// fall-through has something to fall through TO.
 	for _, tc := range []struct {
 		name, v string
 	}{
@@ -2054,7 +2056,7 @@ func TestRecoverInjectedDestination_RejectionTable(t *testing.T) {
 		{"tail-guard rejection: quote but neither key-colon nor brace", `ses_abc"justtext`},
 		{"target fails recoverableRefForm (not ses_, not phrase)", `zzz","message":"x}`},
 		{"over-length target (125+ chars after ses_)", "ses_" + strings.Repeat("a", 125) + `","message":"x`},
-		{"junk with quote+brace, invalid leading ref (form gate)", "random text with quotes and braces but no valid leading ref"},
+		{"junk with quote+brace, invalid leading ref (alphabet gate — no ses_ prefix)", "random text with quotes and braces but no valid leading ref"},
 	} {
 		target, ok := recoverInjectedDestination(tc.v)
 		assert.False(t, ok, tc.name+": must NOT recover")
@@ -3384,9 +3386,14 @@ func TestMCPSendMessage_EmissionDuplicationGuard_MismatchedEmbeddedOriginStillDe
 	}, 5*time.Second, 50*time.Millisecond)
 }
 
-// The predicate's documented rejection contract ("Both extracted ids
-// must be well-formed session ids; anything else is NOT the shape")
-// — the never-guess boundary. Every row must refuse recovery.
+// The predicate's EXTRACTOR-level contract ("Both extracted ids must
+// be well-formed session ids") — the never-guess boundary: every row
+// must refuse extraction. HANDLER-level behavior diverges deliberately
+// since the post-v3 recovery (2026-11-14): rows with a VALID leading
+// ses_TARGET fall through to recoverInjectedDestination and DELIVER
+// (pinned: TestMCPSendMessage_V1MarkJunkOriginFallsThroughToGeneric-
+// Recovery; see the CONTRACT note on the rejection-table comment
+// above and the CONTRACT UPDATE in the extractor doc).
 func TestSplitDuplicatedArgFragment_RejectionHalf(t *testing.T) {
 	for _, tc := range []struct {
 		name  string
