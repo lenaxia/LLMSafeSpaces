@@ -171,6 +171,17 @@ type WorkspaceReconciler struct {
 	OpencodeBinarySHA256AMD64 string
 	OpencodeBinarySHA256ARM64 string
 
+	// Second-harness pi overlay delivery (design 0053 §5.4, scoping
+	// report §2.3): when PiImage is set, buildPod pins a digest-addressed
+	// image volume into every workspace pod (RO mount at /pi on the
+	// workspace container only) and the supervisor verifies the pi
+	// binary's sha256 against the per-arch pins before any harness spawn.
+	// There is no baked fallback — validatePiDeliveryConfig refuses an
+	// empty image at startup (pi never shipped in runtimes/base).
+	PiImage             string
+	PiBinarySHA256AMD64 string
+	PiBinarySHA256ARM64 string
+
 	// AgentdSidecarEnabled (design 0051 US-2, chart-gated, default
 	// false): when true, buildPod appends the native agentd sidecar and
 	// switches the main container to supervise-opencode mode. Requires

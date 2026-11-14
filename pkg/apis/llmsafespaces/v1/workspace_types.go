@@ -91,6 +91,23 @@ type WorkspaceAutoSuspend struct {
 	IdleTimeoutSeconds int64 `json:"idleTimeoutSeconds,omitempty"`
 }
 
+// HarnessType selects the coding-agent harness a Workspace runs. The
+// harness is a structural dimension of the workspace — sessions,
+// agent config, and artifacts are harness-specific — so it is
+// IMMUTABLE after create (the image-class immutability precedent:
+// switching means a new Workspace, never an in-place flip that would
+// strand the PVC state of the old harness). Values align with
+// agent.AgentType; this package keeps its own constants so the API
+// types stay self-contained (the kubebuilder posture).
+type HarnessType string
+
+const (
+	// HarnessOpencode is the default harness (opencode serve, HTTP+SSE).
+	HarnessOpencode HarnessType = "opencode"
+	// HarnessPi is the second harness (earendil-works/pi, RPC mode).
+	HarnessPi HarnessType = "pi"
+)
+
 // WorkspaceCredentialRef refers to a Kubernetes Secret holding agent credentials.
 type WorkspaceCredentialRef struct {
 	SecretName string `json:"secretName"`
@@ -179,6 +196,16 @@ type WorkspaceSpec struct {
 
 	// Runtime is the runtime environment (e.g. "python:3.11").
 	Runtime string `json:"runtime"`
+
+	// Harness selects the coding-agent harness this workspace runs
+	// (pi-scoping report §6, S5 plumbing). Immutable after create:
+	// sessions, agent config, and PVC artifacts are harness-specific,
+	// so switching requires recreating the Workspace (enforced by the
+	// validating webhook). Empty = opencode (the default and the
+	// only harness pre-S5 clusters know).
+	// +kubebuilder:validation:Enum=opencode;pi
+	// +kubebuilder:default=opencode
+	Harness HarnessType `json:"harness,omitempty"`
 
 	// Architecture is the CPU architecture for the workspace pod.
 	// The controller sets a nodeSelector to schedule on matching nodes.
@@ -355,6 +382,11 @@ const (
 	// Only set when opencode overlay delivery is enabled; absent when
 	// the binary stays baked into runtimes/base.
 	WorkspaceConditionOpencodeVerified WorkspaceConditionType = "OpencodeVerified"
+	// WorkspaceConditionPiVerified reports the integrity state of the
+	// image-volume-delivered pi binary (the second-harness overlay,
+	// design 0053 §5.4). Only set when the pod carries the pi overlay
+	// wiring (PI_IMAGE_VOLUME=1).
+	WorkspaceConditionPiVerified WorkspaceConditionType = "PiVerified"
 	// WorkspaceConditionBootReady reports the platform boot phase
 	// (design 0051 sidecar migration, step 1): init-fs, bootstrap, and
 	// materialize as executed by the platform containers. False with
@@ -501,6 +533,13 @@ const (
 	ReasonOpencodeVerificationFailed = "OpencodeVerificationFailed"
 	ReasonOpencodeOverlayMissing     = "OpencodeOverlayMissing"
 	ReasonOpencodeVerified           = "OpencodeVerified"
+	// Second-harness pi overlay delivery: supervisor sha256
+	// verification outcomes (exit codes 85/86, distinct from agentd's
+	// 81/82 and opencode's 83/84 so a tri-overlay pod's failure
+	// attribution never crosses artifacts).
+	ReasonPiVerificationFailed = "PiVerificationFailed"
+	ReasonPiOverlayMissing     = "PiOverlayMissing"
+	ReasonPiVerified           = "PiVerified"
 	// Design 0051 sidecar migration step 1: platform boot-phase outcomes
 	// (init-fs / bootstrap / materialize in the platform containers).
 	ReasonPlatformBootFailed = "PlatformBootFailed"

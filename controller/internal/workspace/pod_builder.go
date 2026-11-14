@@ -33,6 +33,15 @@ func (r *WorkspaceReconciler) buildPod(ctx context.Context, workspace *v1.Worksp
 		return nil, err
 	}
 
+	// S5 (pi-scoping §6): the workspace's harness selects its overlay,
+	// supervisor subcommand, and sidecar env. An unselectable harness
+	// (delivery unpinned, or pi without the sidecar topology) fails the
+	// build loud — the caller surfaces it as a terminal configuration
+	// error, never a crash-looping pod.
+	if err := r.validateWorkspaceHarness(workspace); err != nil {
+		return nil, err
+	}
+
 	// F1.4.2 (Epic 17): Read the per-workspace admin token from the
 	// password Secret. Used as the `Authorization: Bearer <token>`
 	// header for the readiness probe so kubelet can hit the
@@ -425,9 +434,12 @@ func (r *WorkspaceReconciler) buildPod(ctx context.Context, workspace *v1.Worksp
 	// No-op in legacy mode (AgentdImage empty).
 	r.wireAgentdOverlay(&mainContainer, &volumes)
 
-	// Design 0053 §4.2: pin the opencode image volume + RO mount + verify
-	// env pins (workspace container only). No-op when unset (S1 default).
-	r.wireOpencodeOverlay(&mainContainer, &volumes)
+	// S5 (pi-scoping §6): the workspace's harness selects exactly ONE
+	// overlay — opencode (design 0053 §4.2, byte-identical to the
+	// pre-S5 unconditional wiring) or pi (design 0053 §5.4, the second
+	// image at the same mount-point pattern). Harness-neutral overlay
+	// state (agentd, above) stays unconditional.
+	r.wireHarnessOverlay(workspace, &mainContainer, &volumes)
 
 	// Epic 51 S51.1: Runtime class resolution. Per-workspace opt-out
 	// (spec.runtimeClass) takes precedence; otherwise use the controller's

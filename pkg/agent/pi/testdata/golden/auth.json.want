@@ -1,0 +1,6 @@
+{
+  "anthropic": {
+    "type": "api_key",
+    "key": "sk-ant-test"
+  }
+}

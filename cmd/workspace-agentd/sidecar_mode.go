@@ -193,6 +193,13 @@ func runSidecarCommand(_ []string) int {
 	// /sandbox-runtime consts for env-less local runs.
 	bootCfgPath, bootPromptPath, bootDirsPath, bootRolesPath := bootAgentConfigPathsWithEnv()
 	agentConfigWriter := ensureBootAgentConfig(bootCfgPath, bootPromptPath, bootDirsPath, bootRolesPath, password)
+	// S5 harness branch: a pi workspace stamps S3's pi config surface
+	// (models.json/auth.json/mcp.json/SYSTEM.md) into the shared
+	// pi-agent-dir instead of opencode's agent-config.json — the SAME
+	// AgentConfigWriter seam, so every later write path (relay
+	// injector, credential reload) flows through the pi writer
+	// unchanged.
+	piWorkspace := harnessIsPi(os.Getenv)
 
 	deps := buildSidecarDeps(sidecarConfig{
 		password:    password,
@@ -203,22 +210,36 @@ func runSidecarCommand(_ []string) int {
 	deps.agentConfigWriter = agentConfigWriter
 	deps.interrupter = newSessionInterrupter(password)
 
-	// Epic 69 US-69.2: the sidecar runs the session-state authority too —
-	// same machinery, boot reseed only (the sidecar is not opencode's
-	// parent; the generation signal crosses the control socket and lands
-	// with the US-69.3/69.4 surface work).
-	sidecarAuthority := newStateAuthority(client, password, deps.controlPlanePassword)
-	if sidecarAuthority != nil {
-		deps.stateAuthority = sidecarAuthority
-		deps.sseTracker.onRawEvent = sidecarAuthority.Ingest
-		deps.ledgerInFlight = sidecarAuthority.InFlightDeliveries
-	}
+	// S5 harness branch: pi sidecars derive statusz/readyz from the
+	// supervise-pi harness-status poller (sidecar_pi.go) and run no
+	// opencode-shaped authority/tracker wiring — the Epic-69 authority
+	// is the opencode store's projection and has no pi source (nil on
+	// the pi leg; every downstream consumer is nil-safe by design).
+	var sidecarAuthority *sessionstate.Authority
+	if piWorkspace {
+		poller := piStatusPollerForSidecar()
+		deps.harnessStatus = poller.store
+		deps.harnessName = agentdAgentTypeForEnv(os.Getenv)
+		deps.piPoller = poller
+		deps.agentConfigWriter = ensureBootPiConfig(sidecarPiAgentDir(), bootPromptPath)
+	} else {
+		// Epic 69 US-69.2: the sidecar runs the session-state authority too —
+		// same machinery, boot reseed only (the sidecar is not opencode's
+		// parent; the generation signal crosses the control socket and lands
+		// with the US-69.3/69.4 surface work).
+		sidecarAuthority = newStateAuthority(client, password, deps.controlPlanePassword)
+		if sidecarAuthority != nil {
+			deps.stateAuthority = sidecarAuthority
+			deps.sseTracker.onRawEvent = sidecarAuthority.Ingest
+			deps.ledgerInFlight = sidecarAuthority.InFlightDeliveries
+		}
 
-	// #1732 leg A2 (the sidecar twin of main.go's wiring): the
-	// turn-resume supervisor on the sidecar's own tracker. Same
-	// kill-switch, same bounds.
-	if os.Getenv("AGENTD_TURN_AUTO_RESUME") != "0" {
-		deps.sseTracker.onTurnEvent = newTurnResumeSupervisor(client).Observe
+		// #1732 leg A2 (the sidecar twin of main.go's wiring): the
+		// turn-resume supervisor on the sidecar's own tracker. Same
+		// kill-switch, same bounds.
+		if os.Getenv("AGENTD_TURN_AUTO_RESUME") != "0" {
+			deps.sseTracker.onTurnEvent = newTurnResumeSupervisor(client).Observe
+		}
 	}
 
 	// Same loop set as single-container mode: SSE tracking, pressure

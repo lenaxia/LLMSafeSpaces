@@ -643,6 +643,34 @@ func (v *WorkspaceValidator) Handle(ctx context.Context, req admission.Request) 
 		return admission.Denied(err.Error())
 	}
 
+	// 7a. spec.harness immutability (pi-scoping §6 / S5): sessions,
+	//     agent config, and PVC artifacts are harness-specific, so an
+	//     in-place switch would strand the old harness's state on the
+	//     shared PVC. Switching harness = create a new Workspace. The
+	//     comparison runs against the OLD object on UPDATE (the one
+	//     place the prior value exists); CREATE has nothing to compare
+	//     and passes (the CRD enum + default constrain the value).
+	if req.Operation == "UPDATE" && len(req.OldObject.Raw) > 0 {
+		old := &v1.Workspace{}
+		if err := v.Decoder.DecodeRaw(req.OldObject, old); err != nil {
+			return admission.Errored(http.StatusBadRequest,
+				fmt.Errorf("decoding old workspace for harness comparison: %w", err))
+		}
+		oldHarness := old.Spec.Harness
+		if oldHarness == "" {
+			oldHarness = v1.HarnessOpencode
+		}
+		newHarness := ws.Spec.Harness
+		if newHarness == "" {
+			newHarness = v1.HarnessOpencode
+		}
+		if oldHarness != newHarness {
+			return admission.Denied(fmt.Sprintf(
+				"spec.harness is immutable (was %q, attempted %q) — sessions, config, and artifacts are harness-specific; recreate the Workspace to switch harness",
+				oldHarness, newHarness))
+		}
+	}
+
 	// 8. F1.2.2 — Status must not be set by the user. On CREATE only the
 	//    controller (via status subresource) is allowed to populate the
 	//    block.

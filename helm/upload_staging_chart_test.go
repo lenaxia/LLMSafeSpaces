@@ -24,7 +24,8 @@ func TestChart_UploadStaging_DefaultRendersNoFlag(t *testing.T) {
 	out, err := exec.Command("helm", "template", "test-release", sidecarChartDir(t), "-n", "test-ns",
 		"--kube-version", testKubeVersion,
 		"--set-string", "controller.agentdDelivery.image=ghcr.io/lenaxia/llmsafespaces/agentd@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
-		"--set-string", "controller.opencodeDelivery.image=ghcr.io/lenaxia/llmsafespaces/opencode@sha256:fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210").CombinedOutput()
+		"--set-string", "controller.opencodeDelivery.image=ghcr.io/lenaxia/llmsafespaces/opencode@sha256:fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210",
+		"--set-string", "controller.piDelivery.image=ghcr.io/lenaxia/llmsafespaces/pi@sha256:9999999999999999999999999999999999999999999999999999999999999999").CombinedOutput()
 	require.NoError(t, err, "helm output: %s", out)
 	require.NotContains(t, string(out), "--upload-staging",
 		"the all-zero default must render NO flag — agentd's compiled defaults stand")
@@ -38,6 +39,7 @@ func TestChart_UploadStaging_SetRendersExactFlag(t *testing.T) {
 		"--kube-version", testKubeVersion,
 		"--set-string", "controller.agentdDelivery.image=ghcr.io/lenaxia/llmsafespaces/agentd@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
 		"--set-string", "controller.opencodeDelivery.image=ghcr.io/lenaxia/llmsafespaces/opencode@sha256:fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210",
+		"--set-string", "controller.piDelivery.image=ghcr.io/lenaxia/llmsafespaces/pi@sha256:9999999999999999999999999999999999999999999999999999999999999999",
 		"--set", "controller.agentdSidecar.uploadStaging.budgetBytes=52428800",
 		"--set", "controller.agentdSidecar.uploadStaging.ttlMilliseconds=900000").CombinedOutput()
 	require.NoError(t, err, "helm output: %s", out)
@@ -60,6 +62,7 @@ func TestChart_UploadStaging_TypoedValuesKeySilent(t *testing.T) {
 		"--kube-version", testKubeVersion,
 		"--set-string", "controller.agentdDelivery.image=ghcr.io/lenaxia/llmsafespaces/agentd@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
 		"--set-string", "controller.opencodeDelivery.image=ghcr.io/lenaxia/llmsafespaces/opencode@sha256:fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210",
+		"--set-string", "controller.piDelivery.image=ghcr.io/lenaxia/llmsafespaces/pi@sha256:9999999999999999999999999999999999999999999999999999999999999999",
 		"--set", "controller.agentdSidecar.uploadStaging.budgetByte=52428800").CombinedOutput()
 	require.NoError(t, err, "helm output: %s", out)
 	// The documented silent-failure shape: rc=0, flag absent.
@@ -79,6 +82,7 @@ func TestChart_UploadStaging_ViolatingPairFailsRender(t *testing.T) {
 		"--kube-version", testKubeVersion,
 		"--set-string", "controller.agentdDelivery.image=ghcr.io/lenaxia/llmsafespaces/agentd@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
 		"--set-string", "controller.opencodeDelivery.image=ghcr.io/lenaxia/llmsafespaces/opencode@sha256:fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210",
+		"--set-string", "controller.piDelivery.image=ghcr.io/lenaxia/llmsafespaces/pi@sha256:9999999999999999999999999999999999999999999999999999999999999999",
 		"--set", "controller.agentdSidecar.uploadStaging.ttlMilliseconds=60000",
 		"--set", "controller.agentdSidecar.uploadStaging.applyTimeoutMilliseconds=600000").CombinedOutput()
 	require.Error(t, err, "the violating pair must fail render: %s", out)
@@ -98,6 +102,7 @@ func TestChart_UploadStaging_FloorSentinelRendersExplicitZero(t *testing.T) {
 		"--kube-version", testKubeVersion,
 		"--set-string", "controller.agentdDelivery.image=ghcr.io/lenaxia/llmsafespaces/agentd@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
 		"--set-string", "controller.opencodeDelivery.image=ghcr.io/lenaxia/llmsafespaces/opencode@sha256:fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210",
+		"--set-string", "controller.piDelivery.image=ghcr.io/lenaxia/llmsafespaces/pi@sha256:9999999999999999999999999999999999999999999999999999999999999999",
 		"--set", "controller.agentdSidecar.uploadStaging.credentialFloorBytes=-1",
 		"--set", "controller.agentdSidecar.uploadStaging.ttlMilliseconds=900000").CombinedOutput()
 	require.NoError(t, err, "helm output: %s", out)

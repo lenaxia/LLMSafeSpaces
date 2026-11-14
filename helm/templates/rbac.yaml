@@ -156,7 +156,7 @@ rules:
     resources: ["configmaps"]
     verbs: ["create"]
 {{- end }}
-{{- if or .Values.controller.agentdDelivery.image .Values.controller.opencodeDelivery.image }}
+{{- if or .Values.controller.agentdDelivery.image .Values.controller.opencodeDelivery.image .Values.controller.piDelivery.image }}
   # #1546 Defect 2 (design 0061 §5): the first CACHED ConfigMap Get
   # starts a reflector that LISTs configmaps in the release namespace —
   # the resourceNames-scoped get/update above never granted list/watch,
@@ -177,6 +177,19 @@ rules:
   - apiGroups: [""]
     resources: ["configmaps"]
     resourceNames: ["llmsafespaces-opencode-pins"]
+    verbs: ["get", "update"]
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["create"]
+{{- end }}
+{{- if .Values.controller.piDelivery.image }}
+  # Design 0053 §5.4: the pi-pins cache ConfigMap — same least-privilege
+  # shape as the agentd/opencode pins grants above (scoped get/update +
+  # unscoped create), separate ConfigMap per artifact. Guarded by
+  # helm/pi_delivery_chart_test.go.
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    resourceNames: ["llmsafespaces-pi-pins"]
     verbs: ["get", "update"]
   - apiGroups: [""]
     resources: ["configmaps"]

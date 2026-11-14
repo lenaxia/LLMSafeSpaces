@@ -57,6 +57,21 @@ const (
 	agentdConfigMountPath  = "/agentd-config"
 	agentdSecretsMountPath = "/agentd-secrets"
 
+	// S5 pi harness: the shared agent-dir volume — BOTH containers mount
+	// it RW (the sidecar's ConfigWriter renders models.json/mcp.json/
+	// SYSTEM.md here; the supervise-pi children read AND write it — pi
+	// keeps its own state under PI_CODING_AGENT_DIR). Memory medium,
+	// config-sized: the platform-rendered files are reproducible every
+	// boot, and pi's own agent-dir writes (mcp-auth.json class) are
+	// documented as pod-lifetime state — sessions persist on the PVC
+	// (/workspace/pi-sessions), the agent dir does not need to.
+	piAgentDirVolumeName = "pi-agent-dir"
+	piAgentDirMountPath  = "/pi-agent"
+	// PiAgentDirEnvName is the shared coordinate BOTH agentd processes
+	// read (the sidecar's writer target; the supervisor passes it to
+	// every child as PI_CODING_AGENT_DIR via its spawn config).
+	PiAgentDirEnvName = "LLMSAFESPACES_PI_AGENT_DIR"
+
 	// agent-config.json + allowed-dirs.json: RW sidecar (the ConfigWriter
 	// owns every write), RO workspace container — integrity is a mount
 	// fact (V3: rename-over impossible from uid-1000 space).
@@ -189,6 +204,25 @@ func (r *WorkspaceReconciler) buildAgentdSidecarContainer(workspace *v1.Workspac
 		// in cmd/workspace-agentd/sidecar_boot.go.
 		{Name: "LLMSAFESPACE_BOOTSTRAP_SECRETS_OUT", Value: "/sandbox-runtime/rt/secrets.json"},
 	}
+	// S5 (pi-scoping §6): tell the sidecar which harness this pod
+	// runs — its statusz sessions/busy derivation and capability
+	// report branch on it (opencode = HTTP+SSE against the harness
+	// port; pi = the supervise-pi control-socket snapshot). Omitted
+	// for opencode (the default): absent = opencode, the
+	// mixed-fleet-compatible encoding that keeps default pod specs
+	// byte-identical (the golden diff pins it).
+	var harnessMounts []corev1.VolumeMount
+	if h := workspaceHarness(workspace); h != v1.HarnessOpencode {
+		env = append(env, corev1.EnvVar{Name: "AGENTD_HARNESS", Value: string(h)})
+		// pi: the shared agent-dir mount (RW — the ConfigWriter renders
+		// the pi config surface here) + the coordinate the writer reads.
+		if h == v1.HarnessPi {
+			env = append(env, corev1.EnvVar{Name: PiAgentDirEnvName, Value: piAgentDirMountPath})
+			harnessMounts = append(harnessMounts, corev1.VolumeMount{
+				Name: piAgentDirVolumeName, MountPath: piAgentDirMountPath,
+			})
+		}
+	}
 	// Design 0072 (the workspace bus rollout): see eventbusEnv — shared
 	// with the main container (#1332 convention: both modes wired
 	// explicitly).
@@ -234,7 +268,7 @@ func (r *WorkspaceReconciler) buildAgentdSidecarContainer(workspace *v1.Workspac
 			AllowPrivilegeEscalation: &falseVal,
 			Capabilities:             &corev1.Capabilities{Drop: []corev1.Capability{"ALL"}},
 		},
-		VolumeMounts: []corev1.VolumeMount{
+		VolumeMounts: append([]corev1.VolumeMount{
 			{Name: "agentd", MountPath: agentdMountPath, ReadOnly: true},
 			{Name: "sandbox-cfg", MountPath: "/sandbox-cfg", ReadOnly: true},
 			{Name: "sandbox-runtime", MountPath: "/sandbox-runtime"},
@@ -264,7 +298,7 @@ func (r *WorkspaceReconciler) buildAgentdSidecarContainer(workspace *v1.Workspac
 			// phase performs bootstrap; the projected SA token mounts here
 			// (sidecar mode has no platform-bootstrap init container).
 			{Name: "bootstrap-token", MountPath: "/var/run/bootstrap", ReadOnly: true},
-		},
+		}, harnessMounts...),
 	}
 }
 
@@ -385,34 +419,77 @@ func (r *WorkspaceReconciler) applyAgentdSidecar(pod *corev1.Pod, workspace *v1.
 	// 2026-08-25 stale-base supply chain) is bypassed. Its env work
 	// moves here; the #863 verify moves into the supervisor itself
 	// (supervise_selfverify.go, exit-81 contract preserved).
+	//
+	// S5 (pi-scoping §6): the subcommand follows spec.harness —
+	// supervise-opencode (HTTP+SSE, one multi-session server) vs
+	// supervise-pi (JSONL RPC, process-per-session). The harness-neutral
+	// env (sidecar mode, restart marker) rides both branches; the
+	// opencode branch stays byte-identical to the pre-S5 wiring (the
+	// golden pod-spec diff pins it).
 	main.Command = []string{agentdMountPath + agentdBinaryRelPath}
-	main.Args = []string{"supervise-opencode"}
+	main.Args = []string{harnessSupervisorSubcommand(workspace)}
 	main.Env = append(main.Env,
 		corev1.EnvVar{Name: "AGENTD_SIDECAR_MODE", Value: "1"},
 		// The supervisor's crash-path and socket-restart markers land on
 		// the same cross-uid-readable file the sidecar reads at boot.
 		corev1.EnvVar{Name: "LLMSAFESPACES_RESTART_MARKER_PATH", Value: SidecarRestartMarkerEnv},
-		// US-4b: opencode reads agent-config.json from the RO
-		// agentd-config mount.
-		corev1.EnvVar{Name: "OPENCODE_CONFIG", Value: sidecarAgentConfigPath},
-		// Entrypoint env work, relocated (entrypoint-opencode.sh): the
-		// event system was an export; XDG home matches the sidecar's
-		// auth.json discovery.
-		corev1.EnvVar{Name: "XDG_DATA_HOME", Value: "/workspace/.local"},
-		corev1.EnvVar{Name: "OPENCODE_EXPERIMENTAL_EVENT_SYSTEM", Value: "true"},
-		// Was: `cat /sandbox-cfg/password` in bash — secretKeyRef is
-		// fail-closed (missing Secret = container-create error, not a
-		// silent gap).
-		corev1.EnvVar{Name: "OPENCODE_SERVER_PASSWORD", ValueFrom: &corev1.EnvVarSource{
-			SecretKeyRef: &corev1.SecretKeySelector{
-				LocalObjectReference: corev1.LocalObjectReference{Name: passwordSecretName(workspace.Name)},
-				Key:                  "password",
-			},
-		}},
-		// mise: PATH shims + MISE_DATA_DIR already come from the image
-		// ENV — no `mise activate` needed for a non-shell PID 1. The
-		// supervisor's buildEnvFrom sources secrets-env for the child.
 	)
+	if workspaceHarness(workspace) == v1.HarnessPi {
+		// pi: no opencode server exists — no OPENCODE_* env, no XDG
+		// auth.json discovery. The supervisor's session-dir knob
+		// carries its in-process PVC-safe default (/workspace/
+		// pi-sessions — S2); the AGENT dir is the shared volume below
+		// (the sidecar renders it; both containers need it RW).
+		main.Env = append(main.Env,
+			// The workspace password still gates the harness-port HTTP
+			// surface (the S4 transport's basic auth rides the same
+			// per-workspace password secret the sidecar resolves); the
+			// supervisor seeds it into its bridge, never the children.
+			corev1.EnvVar{Name: "OPENCODE_SERVER_PASSWORD", ValueFrom: &corev1.EnvVarSource{
+				SecretKeyRef: &corev1.SecretKeySelector{
+					LocalObjectReference: corev1.LocalObjectReference{Name: passwordSecretName(workspace.Name)},
+					Key:                  "password",
+				},
+			}},
+			corev1.EnvVar{Name: PiAgentDirEnvName, Value: piAgentDirMountPath},
+		)
+		// The shared pi agent dir: RW in the main container (the
+		// supervise-pi children write their state beside the rendered
+		// config), RW in the sidecar below (the ConfigWriter renders).
+		pod.Spec.Volumes = append(pod.Spec.Volumes, corev1.Volume{
+			Name: piAgentDirVolumeName,
+			VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{
+				Medium:    corev1.StorageMediumMemory,
+				SizeLimit: ptrQuantity("32Mi"),
+			}},
+		})
+		main.VolumeMounts = append(main.VolumeMounts, corev1.VolumeMount{
+			Name: piAgentDirVolumeName, MountPath: piAgentDirMountPath,
+		})
+	} else {
+		main.Env = append(main.Env,
+			// US-4b: opencode reads agent-config.json from the RO
+			// agentd-config mount.
+			corev1.EnvVar{Name: "OPENCODE_CONFIG", Value: sidecarAgentConfigPath},
+			// Entrypoint env work, relocated (entrypoint-opencode.sh): the
+			// event system was an export; XDG home matches the sidecar's
+			// auth.json discovery.
+			corev1.EnvVar{Name: "XDG_DATA_HOME", Value: "/workspace/.local"},
+			corev1.EnvVar{Name: "OPENCODE_EXPERIMENTAL_EVENT_SYSTEM", Value: "true"},
+			// Was: `cat /sandbox-cfg/password` in bash — secretKeyRef is
+			// fail-closed (missing Secret = container-create error, not a
+			// silent gap).
+			corev1.EnvVar{Name: "OPENCODE_SERVER_PASSWORD", ValueFrom: &corev1.EnvVarSource{
+				SecretKeyRef: &corev1.SecretKeySelector{
+					LocalObjectReference: corev1.LocalObjectReference{Name: passwordSecretName(workspace.Name)},
+					Key:                  "password",
+				},
+			}},
+			// mise: PATH shims + MISE_DATA_DIR already come from the image
+			// ENV — no `mise activate` needed for a non-shell PID 1. The
+			// supervisor's buildEnvFrom sources secrets-env for the child.
+		)
+	}
 	main.VolumeMounts = append(main.VolumeMounts, corev1.VolumeMount{
 		Name: agentdConfigVolumeName, MountPath: agentdConfigMountPath, ReadOnly: true,
 	})

@@ -170,6 +170,12 @@ type controlSocketServer struct {
 	// supervisor (same RW-PVC-view finding as diskRecover). Nil answers
 	// internal — never a silent no-op.
 	fsAudit fsAuditEngine
+	// harnessStatus (S5, capability-typed like vitals): the non-opencode
+	// harness driver's parity snapshot — supervise-pi's state aggregator
+	// over the JSONL-RPC children. Served to the sidecar's poller
+	// (harness_driver.go); absent on supervise-opencode (its statusz
+	// derivation is the inline HTTP+SSE path).
+	harnessStatus harnessStatusSource
 }
 
 func newControlSocketServer(addr string, proc supervisedProcIface) (*controlSocketServer, error) {
@@ -294,6 +300,8 @@ func (s *controlSocketServer) handleConn(conn net.Conn) {
 		writeJSON(conn, s.scriptExecControlMethod(connCtx, conn, req, req.Params))
 	case "fs_audit":
 		writeJSON(conn, s.fsAuditControlMethod(connCtx, conn, req))
+	case "harness_status":
+		writeJSON(conn, s.harnessStatusMethod(req.ID))
 	default:
 		writeJSON(conn, s.errResp(req.ID, "method_unknown",
 			fmt.Sprintf("method %q is not part of control protocol v1", req.Method)))
@@ -475,4 +483,27 @@ func idOr(id *int64) int64 {
 
 func writeJSON(conn net.Conn, resp controlResponse) {
 	_ = json.NewEncoder(conn).Encode(resp)
+}
+
+// harnessStatusMethod serves `harness_status`: the harness driver's
+// parity snapshot (sessions, busy ages, last progress, version) as the
+// result map. Capability-typed: a server without the field answers
+// method_unknown, which the sidecar's poller degrades to
+// evidence-unavailable — the mixed-fleet semantics of an older
+// supervisor binary.
+func (s *controlSocketServer) harnessStatusMethod(id *int64) controlResponse {
+	if s.harnessStatus == nil {
+		return s.errResp(id, "method_unknown",
+			"this supervisor serves no harness_status capability (opencode-shaped supervisor)")
+	}
+	snap := s.harnessStatus.HarnessStatus()
+	raw, err := json.Marshal(snap)
+	if err != nil {
+		return s.errResp(id, "internal", err.Error())
+	}
+	var result map[string]any
+	if err := json.Unmarshal(raw, &result); err != nil {
+		return s.errResp(id, "internal", err.Error())
+	}
+	return controlResponse{V: controlProtocolVersion, ID: idOr(id), Result: result}
 }

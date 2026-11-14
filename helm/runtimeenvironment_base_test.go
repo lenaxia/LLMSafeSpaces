@@ -40,6 +40,8 @@ controller:
     image: ghcr.io/lenaxia/llmsafespaces/agentd@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
   opencodeDelivery:
     image: ghcr.io/lenaxia/llmsafespaces/opencode@sha256:fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210
+  piDelivery:
+    image: ghcr.io/lenaxia/llmsafespaces/pi@sha256:9999999999999999999999999999999999999999999999999999999999999999
 `
 
 	t.Run("explicitly empty tag fails the render", func(t *testing.T) {
