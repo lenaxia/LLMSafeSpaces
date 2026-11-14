@@ -248,7 +248,7 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 	// what app.go hard-constructed pre-S5 (NewAdapter → NewAdapterV1,
 	// #1314's V1 delivery split); parity is structural (the factory
 	// builds the same two calls) and the router is a pure delegator.
-	router, err := agent.NewHarnessRouter(agent.HarnessRouterConfig{
+	harnessRouter, err := agent.NewHarnessRouter(agent.HarnessRouterConfig{
 		Default: agent.AgentTypeOpenCode,
 		Lookup:  resolverHost.GetWorkspaceHarness,
 		Deps: agent.AdapterFactoryDeps{
@@ -262,7 +262,7 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 		cancel()
 		return nil, fmt.Errorf("failed to construct harness router: %w", err)
 	}
-	agentAdapter := agent.Adapter(router)
+	agentAdapter := agent.Adapter(harnessRouter)
 
 	// #944: system-notice injection at the Adapter seam — the ONE point
 	// every entrypoint (HTTP chat, MCP, SDK) shares. The disk-pressure

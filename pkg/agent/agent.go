@@ -194,6 +194,14 @@ func RegisterAdapter(agentType AgentType, f AdapterFactory) {
 	adapterFactories[agentType] = f
 }
 
+// UnregisterAdapter removes a harness's Adapter factory (the
+// test-hygiene mirror of Unregister — the map is process-global).
+func UnregisterAdapter(agentType AgentType) {
+	registryMu.Lock()
+	defer registryMu.Unlock()
+	delete(adapterFactories, agentType)
+}
+
 // NewAdapterForType constructs the harness's Adapter via its
 // registered factory — the registry-driven construction the API wiring
 // calls once per harness (adapters are then reused across workspaces).

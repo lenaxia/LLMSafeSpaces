@@ -24,11 +24,11 @@ import (
 	"go.uber.org/zap"
 )
 
-// piSupervisorProc is one launched supervise-pi subprocess. The wait
+// piSubprocessRun is one launched supervise-pi subprocess. The wait
 // goroutine reaps exactly once; reaped closes and code holds the
 // verdict, so waitExit and the cleanup can BOTH wait without
 // double-consuming a one-shot channel.
-type piSupervisorProc struct {
+type piSubprocessRun struct {
 	cmd     *exec.Cmd
 	fixture string
 	reaped  chan struct{}
@@ -38,7 +38,7 @@ type piSupervisorProc struct {
 // startPiSupervisorSubprocess builds the real agentd binary and runs
 // `supervise-pi` with the given fixture env (fake pi binary wired via
 // LLMSAFESPACES_PI_BINARY + the fake's file knobs).
-func startPiSupervisorSubprocess(t *testing.T, extraEnv ...string) *piSupervisorProc {
+func startPiSupervisorSubprocess(t *testing.T, extraEnv ...string) *piSubprocessRun {
 	t.Helper()
 	withTestLogger(t)
 	bin := buildAgentdBinary(t)
@@ -70,7 +70,7 @@ func startPiSupervisorSubprocess(t *testing.T, extraEnv ...string) *piSupervisor
 	cmd.WaitDelay = 5 * time.Second
 	require.NoError(t, cmd.Start())
 
-	p := &piSupervisorProc{cmd: cmd, fixture: fixture, reaped: make(chan struct{})}
+	p := &piSubprocessRun{cmd: cmd, fixture: fixture, reaped: make(chan struct{})}
 	go func() {
 		if err := cmd.Wait(); err != nil {
 			var exitErr *exec.ExitError
@@ -90,7 +90,7 @@ func startPiSupervisorSubprocess(t *testing.T, extraEnv ...string) *piSupervisor
 }
 
 // waitExit waits for the subprocess exit with a deadline.
-func (p *piSupervisorProc) waitExit(t *testing.T, d time.Duration) int {
+func (p *piSubprocessRun) waitExit(t *testing.T, d time.Duration) int {
 	t.Helper()
 	select {
 	case <-p.reaped:

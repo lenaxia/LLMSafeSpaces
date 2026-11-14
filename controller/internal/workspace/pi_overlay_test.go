@@ -47,8 +47,22 @@ func reconcilerWithPi(t *testing.T) *WorkspaceReconciler {
 	r.PiImage = testPiImage
 	r.PiBinarySHA256AMD64 = testPiSHAAMD64
 	r.PiBinarySHA256ARM64 = testPiSHAARM64
+	// S5: a pi workspace requires the sidecar topology (supervise-pi is
+	// a PID-1 supervisor) — a pi-test reconciler models a pi-capable
+	// controller.
+	r.AgentdSidecarEnabled = true
 	r.Recorder = record.NewFakeRecorder(16)
 	return r
+}
+
+// piHarnessWorkspace stamps spec.harness=pi — under S5 the pi overlay
+// wires ONLY for a pi-harness workspace (exactly one harness overlay per
+// pod, harness_delivery.go).
+func piHarnessWorkspace(t *testing.T) *v1.Workspace {
+	t.Helper()
+	ws := newWorkspaceForSecurity(t)
+	ws.Spec.Harness = v1.HarnessPi
+	return ws
 }
 
 // reconcilerWithAllOverlays enables agentd + opencode + pi delivery —
@@ -74,7 +88,7 @@ func withPiOverlayMarker(pod *corev1.Pod) *corev1.Pod {
 // --- buildPod wiring ------------------------------------------------------
 
 func TestPiOverlay_Enabled_WiresImageVolume(t *testing.T) {
-	ws := newWorkspaceForSecurity(t)
+	ws := piHarnessWorkspace(t)
 	r := reconcilerWithPi(t)
 
 	pod, err := r.buildPod(context.Background(), ws)
@@ -96,7 +110,7 @@ func TestPiOverlay_Enabled_WiresImageVolume(t *testing.T) {
 }
 
 func TestPiOverlay_MountIsReadOnly(t *testing.T) {
-	ws := newWorkspaceForSecurity(t)
+	ws := piHarnessWorkspace(t)
 	r := reconcilerWithPi(t)
 
 	pod, err := r.buildPod(context.Background(), ws)
@@ -119,7 +133,7 @@ func TestPiOverlay_MountIsReadOnly(t *testing.T) {
 // owns pi, so the volume mounts there and ONLY there — not on the agentd
 // sidecar, not on any init container.
 func TestPiOverlay_WorkspaceContainerOnly(t *testing.T) {
-	ws := newWorkspaceForSecurity(t)
+	ws := piHarnessWorkspace(t)
 	r := reconcilerWithAllOverlays(t, true)
 
 	pod, err := r.buildPod(context.Background(), ws)
@@ -152,7 +166,7 @@ func TestPiOverlay_WorkspaceContainerOnly(t *testing.T) {
 // /pi/pi — the upstream TREE-ROOT layout (bun package.json autoload
 // adjacency), not a /pi/bin/pi subpath (ruling in runtimes/pi/Dockerfile).
 func TestPiOverlay_EnvPinsBinaryPathAndBothArchHashes(t *testing.T) {
-	ws := newWorkspaceForSecurity(t)
+	ws := piHarnessWorkspace(t)
 	r := reconcilerWithPi(t)
 
 	pod, err := r.buildPod(context.Background(), ws)
@@ -171,34 +185,52 @@ func TestPiOverlay_EnvPinsBinaryPathAndBothArchHashes(t *testing.T) {
 		"per-arch hashes: the manifest list carries different binaries per arch")
 }
 
-// TestPiOverlay_AllThreeOverlaysWired: the tri-overlay pod renders all
-// three image volumes + mounts + marker envs at their fixed paths.
-func TestPiOverlay_AllThreeOverlaysWired(t *testing.T) {
-	ws := newWorkspaceForSecurity(t)
-	r := reconcilerWithAllOverlays(t, false)
+// TestPiOverlay_PerHarnessSelection_Coexistence (S5): exactly ONE
+// harness overlay wires per workspace, selected by spec.harness
+// (harness_delivery.go). On one fully-pinned controller an opencode
+// workspace wires agentd+opencode and never the pi volume; a pi
+// workspace wires agentd+pi and never the opencode volume. The S1-era
+// "all three overlays in one pod" shape died with the harness
+// dimension; exit-code attribution disjointness (81/82 vs 83/84 vs
+// 85/86) stays covered by the tests below.
+func TestPiOverlay_PerHarnessSelection_Coexistence(t *testing.T) {
+	r := reconcilerWithAllOverlays(t, true)
 
-	pod, err := r.buildPod(context.Background(), ws)
-	require.NoError(t, err)
-
-	volNames := map[string]bool{}
-	for _, v := range pod.Spec.Volumes {
-		if v.Image != nil {
-			volNames[v.Name] = true
+	overlayShape := func(t *testing.T, ws *v1.Workspace) (volNames, mounts map[string]string) {
+		t.Helper()
+		pod, err := r.buildPod(context.Background(), ws)
+		require.NoError(t, err)
+		volNames, mounts = map[string]string{}, map[string]string{}
+		for _, v := range pod.Spec.Volumes {
+			if v.Image != nil {
+				volNames[v.Name] = v.Image.Reference
+			}
 		}
-	}
-	require.True(t, volNames["agentd"], "agentd overlay volume")
-	require.True(t, volNames["opencode"], "opencode overlay volume")
-	require.True(t, volNames["pi"], "pi overlay volume")
-
-	mounts := map[string]string{}
-	for _, m := range pod.Spec.Containers[0].VolumeMounts {
-		if m.Name == "agentd" || m.Name == "opencode" || m.Name == "pi" {
-			mounts[m.Name] = m.MountPath
+		for _, m := range pod.Spec.Containers[0].VolumeMounts {
+			if m.Name == "agentd" || m.Name == "opencode" || m.Name == "pi" {
+				mounts[m.Name] = m.MountPath
+			}
 		}
+		return volNames, mounts
 	}
-	require.Equal(t, "/agentd", mounts["agentd"])
-	require.Equal(t, "/opencode", mounts["opencode"])
-	require.Equal(t, "/pi", mounts["pi"])
+
+	// Default (harness="") workspace: agentd + opencode, never pi.
+	ocVols, ocMounts := overlayShape(t, newWorkspaceForSecurity(t))
+	require.Equal(t, testAgentdImage, ocVols["agentd"], "agentd overlay volume")
+	require.Equal(t, testOpencodeImage, ocVols["opencode"], "opencode overlay volume")
+	require.NotContains(t, ocVols, "pi", "an opencode workspace must never wire the pi overlay")
+	require.Equal(t, "/agentd", ocMounts["agentd"])
+	require.Equal(t, "/opencode", ocMounts["opencode"])
+	require.NotContains(t, ocMounts, "pi")
+
+	// pi workspace on the SAME controller: agentd + pi, never opencode.
+	piVols, piMounts := overlayShape(t, piHarnessWorkspace(t))
+	require.Equal(t, testAgentdImage, piVols["agentd"], "agentd overlay volume")
+	require.Equal(t, testPiImage, piVols["pi"], "pi overlay volume")
+	require.NotContains(t, piVols, "opencode", "a pi workspace must never wire the opencode overlay")
+	require.Equal(t, "/agentd", piMounts["agentd"])
+	require.Equal(t, "/pi", piMounts["pi"])
+	require.NotContains(t, piMounts, "opencode")
 }
 
 // --- verify-failure detection (handleActive) ------------------------------
