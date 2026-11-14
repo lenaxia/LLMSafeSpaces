@@ -496,6 +496,9 @@ jobs:
     runs-on: ubuntu-24.04
     needs: [changes]
     if: github.event_name != 'pull_request' || needs.changes.outputs.docs_only != 'true'
+    # Belt for any wedging step in this job: the Playwright browser download has stalled for
+    # 25-57 minutes and blocked every PR behind it. 30 minutes is well above a normal run.
+    timeout-minutes: 30
     # No `needs: [lint]` — see the comment on the `test` job.
     steps:
       - uses: actions/checkout@v6
@@ -518,9 +521,20 @@ jobs:
         working-directory: frontend
         run: npx vitest run
 
+      # The browser binary download is the step that wedges; cache it by the locked Playwright version
+      # (frontend/package-lock.json) so a normal run restores it instead of downloading from the CDN.
+      - name: Cache Playwright browsers
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-browsers-${{ runner.os }}-${{ hashFiles('frontend/package-lock.json') }}
+          restore-keys: playwright-browsers-${{ runner.os }}-
+
       - name: Install Playwright browsers
         working-directory: frontend
-        run: npx playwright install --with-deps chromium
+        # A stalled download must fail visibly in minutes, not hang until the job timeout.
+        timeout-minutes: 5
+        run: timeout 300 npx playwright install --with-deps chromium
 
       - name: Playwright e2e (mocked backend)
         working-directory: frontend
