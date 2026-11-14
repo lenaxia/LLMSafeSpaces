@@ -131,6 +131,17 @@ jobs:
           fi
           echo "fixture-freshness gate: ok"
 
+      # S6 (scoping report §7): the same bump->refresh pairing for the
+      # pi overlay pin. pi releases ~2/week with NO protocol-version
+      # handshake on the RPC wire — the fixtures in
+      # pkg/agent/pi/testdata/ ARE the version negotiation. The gate
+      # logic lives in scripts/pi-bump-gate.sh (tested by
+      # scripts/pi_bump_gate_test.go — the fail/pass matrix is pinned
+      # there, not here).
+      - name: Pi bump requires fixture refresh
+        if: github.event_name == 'pull_request'
+        run: bash scripts/pi-bump-gate.sh origin/main HEAD
+
       # gofmt: blocks PRs containing un-formatted Go. The Makefile target
       # writes the offending files to stdout and exits non-zero.
       - name: gofmt

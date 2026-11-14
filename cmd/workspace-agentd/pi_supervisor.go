@@ -279,9 +279,17 @@ func probePiVersion(bin string, log *zap.Logger) string {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	// #nosec G702 -- bin is the sha256-verified overlay binary path
-	// (verifyPiBinary, exit 85) with a fixed argv — no shell, no
+	// (verifyPiBinary, exit 85) with a fixed argv – no shell, no
 	// caller-controlled strings reach this exec.
-	out, err := exec.CommandContext(ctx, bin, "--version").Output()
+	cmd := exec.CommandContext(ctx, bin, "--version")
+	// The ctx kill alone does NOT bound Output(): a killed process's
+	// orphaned children (a runtime that forked before hanging) keep
+	// the stdout pipe open and Output blocks on the copy until they
+	// exit — caught by TestProbePiVersion_BoundedOnHang. WaitDelay
+	// caps the post-kill pipe wait so the probe stays bounded (~10s
+	// worst case) even then; empty = unreported, never a boot block.
+	cmd.WaitDelay = 5 * time.Second
+	out, err := cmd.Output()
 	if err != nil {
 		if log != nil {
 			log.Warn("supervise-pi: pi --version probe failed (AgentVersion stays unreported)", zap.Error(err))

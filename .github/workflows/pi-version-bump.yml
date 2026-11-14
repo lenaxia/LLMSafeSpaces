@@ -1,0 +1,180 @@
+name: pi-version-bump
+
+# The pi twin of opencode-version-bump.yml (S6, scoping report §7).
+# pi (earendil-works/pi) releases ~2/week with NO protocol-version
+# handshake on its RPC wire — the pinned binary + the golden fixtures
+# in pkg/agent/pi/testdata/ ARE the version negotiation (REFRESH.md
+# regime there). This workflow turns each new release into a
+# ready-to-validate PR instead of drift archaeology.
+#
+# What it does (weekly + on demand):
+#   1. Reads the pinned version (ARG PI_VERSION) and source sha256
+#      (ARG PI_SOURCE_SHA256) from runtimes/pi/Dockerfile.
+#   2. Queries the latest earendil-works/pi release.
+#   3. Resolves the new release's SHA256SUMS entry for the source
+#      archive (pi publishes checksums — a stronger posture than the
+#      opencode overlay's TLS-only fetch).
+#   4. Opens/updates PR chore/pi-bump-<version> updating BOTH ARGs,
+#      with the fixture-refresh runbook front and center.
+#
+# What it deliberately does NOT do:
+#   - automerge. The CI fixture gate (scripts/pi-bump-gate.sh, wired
+#     into ci.yml) makes the opened PR RED until the golden fixtures
+#     are refreshed per pkg/agent/pi/testdata/REFRESH.md — that is a
+#     human+spike decision (re-capture, update rpc_surface.json,
+#     extend the taxonomy), never something to green-light blindly.
+#   - skip known-bad windows: none recorded yet (pi has not shipped a
+#     break-a-pod release since the overlay landed; the runbook's
+#     changelog is where one gets recorded first).
+#
+# Idempotent: re-runs on an open bump branch update it in place
+# (gh pr edit) rather than stacking PRs.
+
+on:
+  schedule:
+    # Mondays 09:24 UTC — offset from opencode's 09:12 and the
+    # top-of-hour cron storm.
+    - cron: '24 9 * * 1'
+  workflow_dispatch:
+    inputs:
+      target_version:
+        description: 'Explicit version (e.g. 1.6.0) — defaults to latest release'
+        required: false
+        type: string
+
+permissions:
+  contents: write
+  pull-requests: write
+
+env:
+  REPO: earendil-works/pi
+
+jobs:
+  bump:
+    name: Open pi bump PR
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Compute pinned and target versions
+        id: versions
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          EXPLICIT: ${{ inputs.target_version }}
+        run: |
+          set -euo pipefail
+          if [ ! -f runtimes/pi/Dockerfile ]; then
+            echo "::notice title=overlay not landed::runtimes/pi/Dockerfile is absent from the default branch — the pi overlay has not landed yet; nothing to bump."
+            echo "absent=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "absent=false" >> "$GITHUB_OUTPUT"
+
+          PINNED="$(grep -oP '^ARG PI_VERSION=\K[0-9.]+' runtimes/pi/Dockerfile)"
+          echo "pinned=$PINNED" >> "$GITHUB_OUTPUT"
+
+          if [ -n "$EXPLICIT" ]; then
+            TARGET="$EXPLICIT"
+          else
+            TARGET="$(gh api "repos/${REPO}/releases/latest" --jq '.tag_name | ltrimstr("v")')"
+          fi
+          echo "target=$TARGET" >> "$GITHUB_OUTPUT"
+
+          # Resolve the source-archive sha256 from the release's
+          # SHA256SUMS (the same artifact the Dockerfile verifies
+          # against at build time). Missing checksums = do not open a
+          # knowingly-broken PR; a human bumps manually.
+          SHA="$(curl -sSL --fail --retry 5 --retry-delay 3 --retry-all-errors \
+            "https://github.com/${REPO}/releases/download/v${TARGET}/SHA256SUMS" \
+            | awk -v want="pi-${TARGET}-source.tar.gz" '$2 == want {print $1; exit}')"
+          if [ -z "$SHA" ]; then
+            echo "::error title=checksums unavailable::v${TARGET} publishes no SHA256SUMS entry for pi-${TARGET}-source.tar.gz — resolve the sha manually (workflow_dispatch) or wait for the next release."
+            exit 1
+          fi
+          echo "sha=$SHA" >> "$GITHUB_OUTPUT"
+
+          if [ "$(printf '%s\n%s\n' "$PINNED" "$TARGET" | sort -V | tail -1)" = "$PINNED" ]; then
+            echo "::notice title=no upgrade::pinned $PINNED >= target $TARGET — nothing to do."
+            echo "uptodate=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "uptodate=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Update pin
+        if: steps.versions.outputs.absent == 'false' && steps.versions.outputs.uptodate == 'false'
+        env:
+          PINNED: ${{ steps.versions.outputs.pinned }}
+          TARGET: ${{ steps.versions.outputs.target }}
+          SHA: ${{ steps.versions.outputs.sha }}
+        run: |
+          set -euo pipefail
+          sed -i "s/^ARG PI_VERSION=.*/ARG PI_VERSION=${TARGET}/" runtimes/pi/Dockerfile
+          sed -i "s/^ARG PI_SOURCE_SHA256=.*/ARG PI_SOURCE_SHA256=${SHA}/" runtimes/pi/Dockerfile
+          # The provenance comment names the pinned version + pin date —
+          # update both tokens, tolerate a reworded comment (|| true).
+          sed -i -E -e "s/^# Pinned to ${PINNED} \([0-9-]+\)/# Pinned to ${TARGET} ($(date -u +%F))/" runtimes/pi/Dockerfile || true
+          git diff --stat
+
+      - name: Open or update PR
+        if: steps.versions.outputs.absent == 'false' && steps.versions.outputs.uptodate == 'false'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PINNED: ${{ steps.versions.outputs.pinned }}
+          TARGET: ${{ steps.versions.outputs.target }}
+          BRANCH: chore/pi-bump-${{ steps.versions.outputs.target }}
+        run: |
+          set -euo pipefail
+          NOTES_URL="https://github.com/${REPO}/releases/tag/v${TARGET}"
+          BODY="$(cat <<EOF
+          Automated pi bump: **${PINNED} → ${TARGET}**
+
+          Release notes: ${NOTES_URL}
+
+          ## This PR is RED on purpose
+
+          The CI fixture gate (\`scripts/pi-bump-gate.sh\`) fails a
+          \`PI_VERSION\` bump without a fixture refresh — complete the
+          runbook below before merging. pi has no protocol-version
+          handshake; the fixtures ARE the negotiation.
+
+          ## Merge checklist (bump gate will enforce)
+
+          1. **Fixture refresh** — re-capture the RPC fixtures per
+             \`pkg/agent/pi/testdata/REFRESH.md\` (event stream, the
+             three response envelopes, session file) against the NEW
+             pinned binary.
+          2. **Surface manifest** — update
+             \`pkg/agent/pi/testdata/rpc_surface.json\` (\`piVersion\` +
+             any type/field the new capture added/removed/renamed);
+             \`TestDriftGate_*\` diffs the refresh against it in BOTH
+             directions (tolerance is runtime, detection is review).
+          3. **rpc.md churn review** — diff
+             \`packages/coding-agent/docs/rpc.md\` +
+             \`rpc-commands.md\` between the tags: lifecycle-semantics
+             fixes (the #11752/#11812 shutdown class) do not show in
+             fixtures; check the supervisor's shutdown/settle paths
+             against the new wording.
+          4. **Command golden** — \`commands_golden.jsonl\` pins OUR
+             outgoing wire and must NOT change on a pure bump (regen
+             only reviews a platform-side decision):
+             \`REGEN_GOLDEN=1 go test -run TestDriftGate_GoldenCommands ./pkg/agent/pi/\`.
+          5. **statusz spot-check** — a staged pod on the new pin
+             reports the new version in statusz \`AgentVersion\`.
+          EOF
+          )"
+          # The heredoc is indented for readability — strip the leading
+          # whitespace so markdown renders headings/lists, not code blocks.
+          BODY="$(printf '%s\n' "$BODY" | sed -E 's/^[[:space:]]+//')"
+          git config user.name "pi-bump-bot"
+          git config user.email "actions@github.com"
+          git checkout -b "$BRANCH"
+          git add runtimes/pi/Dockerfile
+          git commit -m "chore(runtime): pi ${PINNED} → ${TARGET} (automated bump)"
+          git push origin "$BRANCH"
+          if gh pr view "$BRANCH" >/dev/null 2>&1; then
+            gh pr edit "$BRANCH" --body "$BODY" --title "chore(runtime): pi ${PINNED} → ${TARGET} (automated bump)"
+          else
+            gh pr create --base main --head "$BRANCH" \
+              --title "chore(runtime): pi ${PINNED} → ${TARGET} (automated bump)" \
+              --body "$BODY" --label pi-bump
+          fi
