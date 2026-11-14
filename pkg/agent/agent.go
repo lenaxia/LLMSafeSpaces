@@ -16,6 +16,9 @@ type AgentType string
 
 const (
 	AgentTypeOpenCode AgentType = "opencode"
+	// AgentTypePi is the second harness (earendil-works/pi, RPC mode).
+	// Registered by pkg/agent/pi; the adapter seam lives there.
+	AgentTypePi AgentType = "pi"
 )
 
 // ErrNoRunningPod is the canonical sentinel for "workspace pod is not

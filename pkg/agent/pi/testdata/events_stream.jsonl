@@ -1,0 +1,36 @@
+{"type":"agent_start"}
+{"type":"turn_start"}
+{"type":"message_start","message":{"role":"user","content":"remember the number 42","timestamp":1794554129533}}
+{"type":"message_end","message":{"role":"user","content":"remember the number 42","timestamp":1794554129533}}
+{"type":"message_start","message":{"role":"assistant","content":[],"api":"openai-completions","provider":"fixture","model":"fixture-model","usage":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"totalTokens":0,"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"total":0}},"stopReason":"pending","timestamp":1794554129556}}
+{"type":"message_update","usage":{"input":100,"output":1,"cacheRead":0,"cacheWrite":0,"totalTokens":101,"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"total":0}},"assistantMessageEvent":{"type":"text_start","contentIndex":0}}
+{"type":"message_update","usage":{"input":100,"output":1,"cacheRead":0,"cacheWrite":0,"totalTokens":101,"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"total":0}},"assistantMessageEvent":{"type":"text_delta","contentIndex":0,"delta":"persisted "}}
+{"type":"message_update","usage":{"input":100,"output":1,"cacheRead":0,"cacheWrite":0,"totalTokens":101,"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"total":0}},"assistantMessageEvent":{"type":"text_delta","contentIndex":0,"delta":"reply"}}
+{"type":"message_update","usage":{"input":111,"output":7,"cacheRead":0,"cacheWrite":0,"totalTokens":118,"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"total":0}},"assistantMessageEvent":{"type":"text_end","contentIndex":0,"content":"persisted reply"}}
+{"type":"message_update","usage":{"input":111,"output":7,"cacheRead":0,"cacheWrite":0,"totalTokens":118,"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"total":0}},"assistantMessageEvent":{"type":"thinking_start","contentIndex":1}}
+{"type":"message_update","usage":{"input":111,"output":7,"cacheRead":0,"cacheWrite":0,"totalTokens":118,"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"total":0}},"assistantMessageEvent":{"type":"thinking_delta","contentIndex":1,"delta":"considering"}}
+{"type":"message_update","usage":{"input":111,"output":7,"cacheRead":0,"cacheWrite":0,"totalTokens":118,"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"total":0}},"assistantMessageEvent":{"type":"thinking_end","contentIndex":1,"content":"considering the number"}}
+{"type":"message_update","usage":{"input":111,"output":7,"cacheRead":0,"cacheWrite":0,"totalTokens":118,"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"total":0}},"assistantMessageEvent":{"type":"toolcall_start","contentIndex":2,"id":"call_bash1","toolName":"bash"}}
+{"type":"message_update","usage":{"input":111,"output":7,"cacheRead":0,"cacheWrite":0,"totalTokens":118,"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"total":0}},"assistantMessageEvent":{"type":"toolcall_delta","contentIndex":2,"delta":"{\"command\":\"ls\"}"}}
+{"type":"message_update","usage":{"input":111,"output":7,"cacheRead":0,"cacheWrite":0,"totalTokens":118,"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"total":0}},"assistantMessageEvent":{"type":"toolcall_end","contentIndex":2,"toolCall":{"type":"toolCall","id":"call_bash1","name":"bash","arguments":{"command":"ls"}}}}
+{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"persisted reply"},{"type":"toolCall","id":"call_bash1","name":"bash","arguments":{"command":"ls"}}],"api":"openai-completions","provider":"fixture","model":"fixture-model","usage":{"input":111,"output":7,"cacheRead":0,"cacheWrite":0,"reasoning":0,"totalTokens":118,"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"total":0,"totalFromProvider":false}},"stopReason":"toolUse","timestamp":1794554129556}}
+{"type":"turn_end","message":{"role":"assistant"},"toolResults":[]}
+{"type":"tool_execution_start","toolCallId":"call_bash1","toolName":"bash","args":{"command":"ls"}}
+{"type":"tool_execution_update","toolCallId":"call_bash1","toolName":"bash","args":{"command":"ls"},"partialResult":{"content":[{"type":"text","text":"partial output"}],"details":{}}}
+{"type":"tool_execution_end","toolCallId":"call_bash1","toolName":"bash","result":{"content":[{"type":"text","text":"fixture-file"}],"details":{}},"isError":false,"durationMs":12}
+{"type":"agent_end","messages":[{"role":"assistant"}],"willRetry":false}
+{"type":"queue_update","steering":[],"followUp":[]}
+{"type":"session_info_changed","name":"fixture session name"}
+{"type":"thinking_level_changed","level":"off"}
+{"type":"entry_appended","entry":{"type":"custom","id":"ext01","parentId":"6cd91035","timestamp":"2026-11-13T07:16:00.000Z","customType":"my-extension","data":{"count":1}}}
+{"type":"bash_execution_update","id":"req-9","delta":"total 48\n"}
+{"type":"summarization_retry_scheduled","attempt":1,"maxAttempts":3,"delayMs":2000,"errorMessage":"terminated"}
+{"type":"summarization_retry_attempt_start","source":"compaction","reason":"threshold"}
+{"type":"summarization_retry_finished"}
+{"type":"compaction_start","reason":"threshold"}
+{"type":"compaction_end","reason":"threshold","result":{"summary":"User asked to remember 42; assistant replied.","firstKeptEntryId":"4acb1be5","tokensBefore":150000,"estimatedTokensAfter":32000,"usage":{"input":32000,"output":1200,"cacheRead":0,"cacheWrite":0,"totalTokens":33200,"cost":{"input":0.01,"output":0.02,"cacheRead":0,"cacheWrite":0,"total":0.03}},"details":{}},"aborted":false,"willRetry":false}
+{"type":"auto_retry_start","attempt":1,"maxAttempts":3,"delayMs":2000,"errorMessage":"529 overloaded"}
+{"type":"agent_end","messages":[],"willRetry":true}
+{"type":"auto_retry_end","success":true,"attempt":2}
+{"type":"extension_error","extensionPath":"/tmp/ext.ts","event":"tool_call","error":"boom"}
+{"type":"agent_settled","aborted":false}

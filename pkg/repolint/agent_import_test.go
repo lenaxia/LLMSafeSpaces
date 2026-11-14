@@ -54,6 +54,46 @@ func TestAgentImportCheck_FlaggedNewViolation(t *testing.T) {
 	}
 }
 
+// The pi seam (pkg/agent/pi, the second harness) rides the same gate —
+// the TestNoHandWrittenWire posture: pi RPC/JSONL wire knowledge must
+// not leak outside its seam package (the S4 acceptance criterion).
+func TestAgentImportCheck_PiSeamFlaggedOutsideAllowSet(t *testing.T) {
+	root := t.TempDir()
+	newFile := filepath.Join(root, "api", "internal", "handlers", "piwire.go")
+	if err := os.MkdirAll(filepath.Dir(newFile), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	body := "package handlers\n\n" +
+		"import (\n" +
+		"\t\"github.com/lenaxia/llmsafespaces/pkg/agent/pi\"\n" +
+		")\n\n" +
+		"var _ = pi.Register\n"
+	if err := os.WriteFile(newFile, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// The seam itself (and its tests) is inside the boundary.
+	insideFile := filepath.Join(root, "pkg", "agent", "pi", "adapter.go")
+	if err := os.MkdirAll(filepath.Dir(insideFile), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(insideFile, []byte("package pi\n\nimport \"github.com/lenaxia/llmsafespaces/pkg/agent/pi\"\nvar _ = pi.Register\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	rep, err := AgentImportCheck(root)
+	if err != nil {
+		t.Fatalf("AgentImportCheck: %v", err)
+	}
+	if rep.OK() {
+		t.Fatalf("expected the pi import violation to be flagged; got OK")
+	}
+	for _, v := range rep.Violations {
+		if v.File == "api/internal/handlers/piwire.go" {
+			return // pass
+		}
+	}
+	t.Fatalf("piwire.go not in violations: %v", rep.Violations)
+}
+
 func TestAgentImportCheck_AllowedDirectoriesPass(t *testing.T) {
 	root := t.TempDir()
 	for _, allowed := range []string{
