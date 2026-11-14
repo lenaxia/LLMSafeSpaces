@@ -13,16 +13,51 @@ import (
 	"strings"
 )
 
-// AgentImportForbiddenPath is the agent implementation package that must
-// stay behind the adapter seam. Platform code imports pkg/agent (interface)
-// and pkg/session (contract types); only the construction/wiring layer and
-// the in-pod agentd binary may touch the implementation. See Epic 65
-// (design/0049 §4.6) and Rule 12 (Containment Before Abstraction).
+// AgentImportForbiddenPath is the opencode agent implementation package
+// that must stay behind the adapter seam. Platform code imports
+// pkg/agent (interface) and pkg/session (contract types); only the
+// construction/wiring layer and the in-pod agentd binary may touch an
+// implementation. See Epic 65 (design/0049 §4.6) and Rule 12
+// (Containment Before Abstraction). Kept as a named export for the
+// existing callers (cmd/repolint messaging, tests); agentForbiddenPaths
+// is the authoritative list.
 const AgentImportForbiddenPath = "github.com/lenaxia/llmsafespaces/pkg/agent/opencode"
 
-// agentSelfPrefix is the on-disk prefix of the seam itself; files inside
-// it may import their own subpackages.
+// agentForbiddenPaths lists EVERY agent implementation package that
+// must stay behind the adapter seam — opencode and the second harness,
+// pi (pkg/agent/pi owns the pi RPC wire structs; the TestNoHandWritten-
+// Wire posture: no hand-written pi wire structs outside the seam). Each
+// entry pairs with an on-disk self prefix (the seam may import its own
+// subpackages).
+var agentForbiddenPaths = []agentForbiddenPath{
+	{
+		importPath: "github.com/lenaxia/llmsafespaces/pkg/agent/opencode",
+		selfPrefix: "pkg/agent/opencode/",
+	},
+	{
+		importPath: "github.com/lenaxia/llmsafespaces/pkg/agent/pi",
+		selfPrefix: "pkg/agent/pi/",
+	},
+}
+
+type agentForbiddenPath struct {
+	importPath string
+	selfPrefix string
+}
+
+// agentSelfPrefix is the on-disk prefix of the opencode seam itself;
+// files inside it may import their own subpackages. agentSelfPrefixFor
+// resolves the seam prefix for any forbidden path (empty = not a seam).
 const agentSelfPrefix = "pkg/agent/opencode/"
+
+func agentSelfPrefixFor(normPath string) string {
+	for _, fp := range agentForbiddenPaths {
+		if strings.HasPrefix(normPath, fp.selfPrefix) {
+			return fp.selfPrefix
+		}
+	}
+	return ""
+}
 
 // agentImportAllowedPrefixes lists the only directory prefixes permitted to
 // import AgentImportForbiddenPath. These are the construction/wiring layer
@@ -134,15 +169,15 @@ func AgentImportCheck(root string) (AgentImportReport, error) {
 			rel = path
 		}
 		norm := filepath.ToSlash(rel)
-		// The seam itself may import its own subpackages.
-		if strings.HasPrefix(norm, agentSelfPrefix) {
+		// Each seam may import its own subpackages.
+		if agentSelfPrefixFor(norm) != "" {
 			return nil
 		}
 		imports, err := importsOf(path)
 		if err != nil {
 			return nil
 		}
-		// Prefix-match, not exact: subpackages of the implementation
+		// Prefix-match, not exact: subpackages of an implementation
 		// (e.g. pkg/agent/opencode/wire) are the same boundary — an
 		// exact match here let platform code import the wire subpackage
 		// untouched (found in #947 review).
@@ -171,12 +206,14 @@ func AgentImportCheck(root string) (AgentImportReport, error) {
 	return AgentImportReport{Violations: violations}, nil
 }
 
-// importsForbiddenAgentPath reports whether any import is the forbidden
+// importsForbiddenAgentPath reports whether any import is a forbidden
 // agent implementation package or a subpackage of it.
 func importsForbiddenAgentPath(imports []string) bool {
 	for _, imp := range imports {
-		if imp == AgentImportForbiddenPath || strings.HasPrefix(imp, AgentImportForbiddenPath+"/") {
-			return true
+		for _, fp := range agentForbiddenPaths {
+			if imp == fp.importPath || strings.HasPrefix(imp, fp.importPath+"/") {
+				return true
+			}
 		}
 	}
 	return false
