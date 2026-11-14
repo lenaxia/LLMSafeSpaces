@@ -187,12 +187,20 @@ func newPiChild(cfg piSpawnConfig, log *zap.Logger, onEvent piEventObserver) *pi
 // construction point (the opencodeServeCmd precedent) so the persisted
 // and ephemeral shapes cannot drift:
 //
-//	pi --mode rpc [--no-session] [--offline] --session-dir <PVC>
-//	   [--session-id <id>]
+//	pi --mode rpc --no-approve [--no-session] [--offline]
+//	   --session-dir <PVC> [--session-id <id>]
 //
 // with PI_CODING_AGENT_DIR=<AgentDir> in the environment.
+//
+// --no-approve pins project trust headlessly (S7 U-6 ruling): the
+// workspace cwd is a user-controlled PVC, and pi's trust ladder
+// (security.md) resolves RPC mode's un-answerable "ask" to DENY by
+// default — protected `.pi/` resources never load. The flag makes that
+// outcome explicit and drift-proof: a future pi change to the no-UI
+// fallback cannot silently start loading user PVC extensions into the
+// harness process.
 func piChildCmd(cfg piSpawnConfig) *exec.Cmd {
-	argv := []string{cfg.Binary, "--mode", "rpc"}
+	argv := []string{cfg.Binary, "--mode", "rpc", "--no-approve"}
 	if cfg.Ephemeral {
 		argv = append(argv, "--no-session")
 	}

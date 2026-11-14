@@ -652,3 +652,116 @@ EOF
     fail S5.6 "runsc installation failed on the kind node (environment — re-run on a gvisor-capable runner)"
   fi
 fi
+
+# --- S7.1: second-harness launch→ready (spec.harness=pi, sidecar) -------------
+#
+# The S5.2 capstone proved the TRI-OVERLAY pod (pi tree mounted +
+# verified in an opencode-harness workspace). S7 proves the second
+# harness itself end-to-end: a spec.harness=pi workspace boots to
+# Active with supervise-pi as the main container's PID 1 (sidecar
+# topology — validateWorkspaceHarness refuses pi without it), the
+# supervisor verifies the pi binary (PiVerified), and the harness-port
+# bridge answers. Requires agentdSidecar.enabled (design 0051 chart
+# flag; the controller-level gate the validator checks).
+log "S7.1: enabling sidecar topology + creating the pi-harness workspace"
+helm upgrade --install "$RELEASE" helm -n "$NS" \
+  "${HELM_LEAN_ARGS[@]}" "${HELM_PIN_ARGS[@]}" \
+  --set controller.agentdSidecar.enabled=true \
+  >/dev/null 2>&1 || log "S7.1: sidecar-enable upgrade reported an error (continuing)"
+if kubectl -n "$NS" rollout status deployment/"${RELEASE}-llmsafespaces-controller" --timeout=300s >/dev/null 2>&1 \
+  && wait_webhook_ready; then
+  WS_PI="ws-s7-pi"
+  if apply_workspace "$WS_PI" "  harness: pi" && wait_phase "$WS_PI" Active 600; then
+    PI_POD=$(pod_of "$WS_PI")
+    # PID1 must be the overlay agentd running the pi supervisor subcommand.
+    S7_CMDLINE=$(kubectl -n "$NS" exec "$PI_POD" -c workspace -- cat /proc/1/cmdline 2>/dev/null | tr '\0' ' ' || true)
+    if echo "$S7_CMDLINE" | grep -q "workspace-agentd --supervise-pi"; then
+      pass S7.1a "pi workspace Active; PID1 is the overlay agentd supervise-pi: $S7_CMDLINE"
+    else
+      fail S7.1a "pi workspace Active but PID1 is not supervise-pi: ${S7_CMDLINE:-<unreadable>}"
+    fi
+    S7_PIVFY=$(kubectl -n "$NS" get workspace "$WS_PI" -o jsonpath='{range .status.conditions[*]}{.type}={.status} {end}' 2>/dev/null || true)
+    if echo "$S7_PIVFY" | grep -q "PiVerified=True"; then
+      pass S7.1b "PiVerified=True on the pi-harness workspace"
+    else
+      fail S7.1b "PiVerified=True never set on the pi workspace: ${S7_PIVFY:-none}"
+    fi
+    # The sidecar init container carries AGENTD_HARNESS=pi (S5 wiring).
+    S7_HARNESS_ENV=$(kubectl -n "$NS" get pod "$PI_POD" -o jsonpath='{range .spec.initContainers[*]}{.name}={.env[?(@.name=="AGENTD_HARNESS")].value} {end}' 2>/dev/null || true)
+    if echo "$S7_HARNESS_ENV" | grep -q "=pi"; then
+      pass S7.1c "native sidecar init container carries AGENTD_HARNESS=pi (${S7_HARNESS_ENV})"
+    else
+      fail S7.1c "AGENTD_HARNESS=pi not found on the sidecar init: ${S7_HARNESS_ENV:-none}"
+    fi
+
+    # --- S7.2: bridge RPC round-trip (real pinned-binary child) --------------
+    # Drive the same surface the API server's PodTransport drives:
+    # Basic-auth session create on the harness port (spawns a REAL pi
+    # child from the verified /pi tree), one get_state round-trip, the
+    # persisted session file on the PVC, list, then delete (unlink).
+    S7_PASS=$(kubectl -n "$NS" exec "$PI_POD" -c workspace -- \
+      sh -c 'tr "\0" "\n" < /proc/1/environ | sed -n "s/^OPENCODE_SERVER_PASSWORD=//p" | head -1' 2>/dev/null || true)
+    if [ -n "$S7_PASS" ]; then
+      S7_SID="s7e2esess"
+      S7_CREATE=$(kubectl -n "$NS" exec "$PI_POD" -c workspace -- \
+        curl -s -o /tmp/s7c.json -w '%{http_code}' -u "agentd:$S7_PASS" -X POST \
+        "http://127.0.0.1:4096/v1/pi/sessions/$S7_SID" 2>/dev/null || echo 000)
+      if [ "$S7_CREATE" = "201" ]; then
+        pass S7.2a "bridge session create → 201 (pinned pi child spawned from /pi)"
+      else
+        fail S7.2a "bridge session create failed (http $S7_CREATE)"
+      fi
+      S7_STATE=$(kubectl -n "$NS" exec "$PI_POD" -c workspace -- \
+        curl -s -u "agentd:$S7_PASS" -X POST -H 'Content-Type: application/json' \
+        -d '{"id":"g1","type":"get_state"}' \
+        "http://127.0.0.1:4096/v1/pi/sessions/$S7_SID/rpc" 2>/dev/null || true)
+      if echo "$S7_STATE" | grep -q '"success":true' && echo "$S7_STATE" | grep -q '"sessionId":"'"$S7_SID"'"'; then
+        pass S7.2b "bridge RPC round-trip: get_state → success, sessionId=$S7_SID (real JSONL child answered)"
+      else
+        fail S7.2b "get_state round-trip failed: ${S7_STATE:-<empty>}"
+      fi
+      # Persisted session file on the PVC (survives restart — the §5 contract).
+      S7_FILE=$(kubectl -n "$NS" exec "$PI_POD" -c workspace -- \
+        sh -c "ls /workspace/pi-sessions/ 2>/dev/null | grep $S7_SID || true" 2>/dev/null || true)
+      if [ -n "$S7_FILE" ]; then
+        pass S7.2c "session persisted to PVC: /workspace/pi-sessions/$S7_FILE"
+      else
+        fail S7.2c "no session file for $S7_SID under /workspace/pi-sessions"
+      fi
+      # §1.4 cost evidence: the spawned child's RSS (the recorded budget
+      # is ~79 MiB per active session; this reads the real pod's child).
+      S7_RSS=$(kubectl -n "$NS" exec "$PI_POD" -c workspace -- \
+        sh -c 'for p in /proc/[0-9]*; do c=$(tr "\0" " " < $p/cmdline 2>/dev/null); case "$c" in *"/pi/pi --mode rpc"*) grep VmRSS $p/status | awk "{print \$2}";; esac; done' 2>/dev/null | tr '\n' ' ' || true)
+      {
+        echo "### S7.2 pi child RSS (per-session policy)"
+        echo "- get_state-answering child VmRSS: ${S7_RSS:-unreadable} kB (recorded budget ~79 MiB)"
+      } >> "$STEP_SUMMARY"
+      # List + delete (unlink + release).
+      S7_LIST=$(kubectl -n "$NS" exec "$PI_POD" -c workspace -- \
+        curl -s -u "agentd:$S7_PASS" "http://127.0.0.1:4096/v1/pi/sessions" 2>/dev/null || true)
+      S7_DEL=$(kubectl -n "$NS" exec "$PI_POD" -c workspace -- \
+        curl -s -o /dev/null -w '%{http_code}' -u "agentd:$S7_PASS" -X DELETE \
+        "http://127.0.0.1:4096/v1/pi/sessions/$S7_SID" 2>/dev/null || echo 000)
+      S7_FILE2=$(kubectl -n "$NS" exec "$PI_POD" -c workspace -- \
+        sh -c "ls /workspace/pi-sessions/ 2>/dev/null | grep $S7_SID || true" 2>/dev/null || true)
+      if echo "$S7_LIST" | grep -q "$S7_SID" && [ "$S7_DEL" = "200" ] && [ -z "$S7_FILE2" ]; then
+        pass S7.2d "bridge list shows the session; DELETE unlinks the file (idempotent gone-class semantics)"
+      else
+        fail S7.2d "list/delete round-trip: list=${S7_LIST:-none} del=$S7_DEL after=$S7_FILE2"
+      fi
+    else
+      fail S7.2 "OPENCODE_SERVER_PASSWORD unreadable from PID1 — bridge legs cannot run"
+    fi
+    kubectl -n "$NS" delete workspace "$WS_PI" --wait=false >/dev/null 2>&1 || true
+    # Restore the pre-S7 chart (sidecar off — the S5 topology) so the
+    # weekly cadence and any rerun start from the documented state.
+    helm upgrade --install "$RELEASE" helm -n "$NS" \
+      "${HELM_LEAN_ARGS[@]}" "${HELM_PIN_ARGS[@]}" >/dev/null 2>&1 \
+      || log "S7 restore upgrade reported an error (continuing)"
+  else
+    fail S7.1 "pi-harness workspace apply kept failing or never reached Active"
+    kubectl -n "$NS" describe pod -l llmsafespaces.dev/workspace="$WS_PI" 2>&1 | tail -30 || true
+  fi
+else
+  fail S7.1 "controller did not roll onto agentdSidecar.enabled — S7 legs cannot run"
+fi

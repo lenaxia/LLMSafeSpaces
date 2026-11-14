@@ -1,7 +1,9 @@
 # The pi supervisor (`supervise-pi`)
 
-Status: S2 delivered (pi second-harness story split — scoping report
-§1.2-§1.4, §2.3 item 4). This page records the **§1.4 process-model
+Status: S2 delivered; §1.4 ruling RATIFIED by the S7 validation epic
+(design 0073 §2.1 — per-session is THE policy; U-2 evidence: pi-level
+switch_session mid-turn is abort-and-swap, unreachable through this
+supervisor). This page records the **§1.4 process-model
 ruling**, the spawn/verify/shutdown contracts the supervisor owns, and
 the health-derivation semantics that replace opencode's HTTP+SSE
 surface. The delivery trust ruling (hash-the-binary + digest-the-tree,
@@ -16,7 +18,7 @@ reap loop, #1808 writeback flush at shutdown). It spawns and owns the
 JSONL pipes of one or more pi RPC-mode children:
 
 ```
-pi --mode rpc [--offline] --session-dir <PVC> [--session-id <id>]
+pi --mode rpc --no-approve [--offline] --session-dir <PVC> [--session-id <id>]
 ```
 
 - `PI_CODING_AGENT_DIR` points at the writable agent-state tree
@@ -32,6 +34,10 @@ pi --mode rpc [--offline] --session-dir <PVC> [--session-id <id>]
   single-process policy's initial state — never for platform sessions.
 - `--offline` is wired from `PI_OFFLINE=1` explicitly (scoping §8 R4:
   egress-restricted pods must not do startup catalog refreshes).
+- `--no-approve` pins project trust headlessly on every spawn (S7 U-6
+  ruling, design 0073 §3): the PVC cwd is user-controlled, and while
+  pi's RPC no-UI fallback already denies project-trust "ask", the flag
+  makes the outcome explicit and drift-proof.
 - Boot order: agentd self-verify (exit 81 contract) → pi overlay
   verify (exit 85/86, `pi_overlay.go`) → binary presence (a missing
   binary with no marker is a loud config error, exit 1 — pi has no

@@ -1,0 +1,59 @@
+# U-8 raw evidence — commits API subject list (fetched 2026-11-14)
+
+=== packages/coding-agent/docs/rpc.md (full history) ===
+b2cb62923 2026-11-04 fix(coding-agent): wait for a started OAuth refresh to be saved before exit (#11812)
+ace560c30 2026-11-03 fix(coding-agent): let a started RPC or print shutdown finish; only a repeated signal forces exit (#11752)
+1708b4788 2026-11-03 fix(coding-agent): process idle ctx.shutdown() requests in RPC mode (#11746)
+e473b5cd8 2026-09-25 feat(coding-agent): report prompt disposition in RPC responses
+25cc5c7bf 2026-09-22 docs(coding-agent): refresh documentation (#9898)
+bea67d90d 2026-09-03 fix(coding-agent): cancel compaction on session abort
+a79b37334 2026-08-25 feat(coding-agent): expose RPC queue clearing
+830a0a59e 2026-08-19 fix(coding-agent): expose tool metadata at stream start (#7953)
+c93ea6ccf 2026-08-12 fix(coding-agent): preserve usage in streaming events (#7982)
+a4475344f 2026-08-03 fix(coding-agent): make JSON streaming output linear (#7394)
+fc85bdd88 2026-07-23 feat(coding-agent): emit bash_execution_update events (#6971)
+7540da401 2026-07-21 add docs for new event types
+f8b74a450 2026-07-20 fix: complete extension usage accounting
+c17939521 2026-07-20 feat: get_available_thinking_levels rpc (#6865)
+fbdd46389 2026-07-09 feat(ai): add max thinking level
+e9fa5a68a 2026-07-09 fix(coding-agent): add settled agent lifecycle event
+7ba1b6bfe 2026-06-11 feat(coding-agent): add get_entries and get_tree RPC commands
+c60f6a8ab 2026-06-18 feat(coding-agent): expose post-compaction token estimates
+e56521e32 2026-06-01 Add extension mode context
+ce554ad3d 2026-05-29 Add startup session name flag
+3e5ad67e0 2026-05-07 chore: migrate pi packages to earendil works scope
+74139c3f6 2026-04-20 feat(coding-agent): add configurable working indicator closes #3413
+d554409b1 2026-04-20 fix(coding-agent): split /clone from /fork UX
+441c12956 2026-04-15 fix(coding-agent): emit rpc prompt response after preflight closes #3049
+c623ada3e 2026-04-15 doc: fix another bad code block
+7e1dd8880 2026-03-29 fix(coding-agent): restore extension input source semantics
+835296b1d 2026-03-24 fix(coding-agent): expose rpc context usage closes #2550
+8a8e2a804 2026-03-18 docs(agent): update steering docs for deferred tool execution closes #2330
+e3adaf1bd 2026-03-07 fix(coding-agent): use strict JSONL framing fixes #1911
+4793f7c92 2026-02-12 fix(coding-agent): make resolveCliModel sync, update docs and changelog
+0c9304a49 2026-02-08 docs(coding-agent): fix RPC mode ctx.hasUI and unsupported methods documentation (#1411)
+b315abf99 2026-02-05 fix(coding-agent): forward images through steer/followUp during streaming
+e54dff7ef 2026-02-03 fix(coding-agent): rename SlashCommandSource "template" to "prompt" for consistency
+90b18218b 2026-02-03 docs(coding-agent): document tool expansion UI methods
+7feae0d5c 2026-02-01 docs(coding-agent): document extension UI protocol in RPC docs, add examples (#1144)
+e20583aac 2026-01-30 feat(coding-agent): add set_session_name RPC command (#1075)
+0ad189f12 2026-01-28 Add `get_commands` RPC for headless clients (#995)
+20f5fcc79 2026-01-16 fix(coding-agent): handle auto-compaction failures gracefully
+b4a05cbca 2026-01-16 Move skill command handling to AgentSession, update docs
+df3f5f41c 2026-01-11 Rename /branch command to /fork
+c6fc08453 2026-01-05 Merge hooks and custom-tools into unified extensions system (#454)
+e9cf3c183 2026-01-03 Fix slash commands and hook commands during streaming
+484d7e06b 2026-01-01 Consolidate session events: remove session_before_new/session_new, add reason field to switch events
+17ed3fa60 2025-12-31 Update rpc.md to match actual implementation
+ee64d2948 2025-12-31 Fix sdk.md and rpc.md to match actual API
+d36e0ea2a 2025-12-30 Update SDK and RPC docs, remove outdated files
+42d7d9d9b 2025-12-22 Add before/after session events with cancellation support
+3424550d2 2025-12-17 Improve documentation: README settings table, philosophy section, custom-tools intro, rpc hook_error event, hooks import aliases
+7ac832586 2025-12-16 Add tool result streaming
+bb445d24f 2025-12-10 Auto-retry on transient provider errors (overloaded, rate limit, 5xx)
+5a9d844f9 2025-12-09 Simplify compaction: remove proactive abort, use Agent.continue() for retry
+
+=== packages/coding-agent/docs/rpc-commands.md ===
+ede360e4d 2026-11-13 fix(coding-agent): /copy skips turns that ended without an answer (#12121)
+e473b5cd8 2026-09-25 feat(coding-agent): report prompt disposition in RPC responses
+25cc5c7bf 2026-09-22 docs(coding-agent): refresh documentation (#9898)
