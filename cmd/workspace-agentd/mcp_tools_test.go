@@ -2019,6 +2019,102 @@ func bytesAllIndexes(haystack, needle []byte) []int {
 // one-release alias) must deliver at the HANDLER level — the alias is
 // what prior-call precedent in a live model's context emits during
 // transition.
+// --- post-v3 destination-injection recovery (2026-11-14 live shapes) ---
+//
+// The emission now injects escaped-JSON fragments INTO the destination
+// string value (TARGET","message":"<prose>" } — the fragment vocabulary
+// moved; two live losses tonight, both with a clean leading id). The
+// generalized recovery splits at the first quote and delivers to the
+// leading ref with a loud warning. The two probes below are the EXACT
+// live shapes.
+
+func TestMCPSendMessage_InjectedDestinationRecovers_HandlerLevel(t *testing.T) {
+	f := newFakeAgent()
+	target := f.newSession("target")
+	caller := f.newSession("caller")
+	withAgentServer(t, f.handler(t))
+
+	dest := target + `","message":"this is the last probe — the result is: short clean, long send payloads still storm — full report follows"}`
+	req := mcpRequest{JSONRPC: "2.0", ID: 1, Method: "tools/call",
+		Params: marshalParams(t, map[string]any{
+			"name": "send_message",
+			"arguments": map[string]any{
+				"destination":          dest,
+				"message":              "probe sequence complete: short payloads emit clean",
+				"lsp_injected_session": caller,
+			},
+		})}
+	body, _ := json.Marshal(req)
+	w := httptest.NewRecorder()
+	r := mcpAuthedRequest(body)
+	mcpHandler(mcpTestPassword)(w, r)
+
+	var resp struct {
+		Result struct {
+			StructuredContent map[string]any `json:"structuredContent"`
+			Content           []struct {
+				Text string `json:"text"`
+			} `json:"content"`
+		} `json:"result"`
+	}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+	require.NotEmpty(t, resp.Result.Content)
+	assert.NotContains(t, resp.Result.Content[0].Text, "Error:",
+		"the injected destination recovers and delivers")
+	assert.Contains(t, resp.Result.Content[0].Text, `"warning"`,
+		"the recovery warns loudly")
+	require.Eventually(t, func() bool { return len(f.sentFor(target)) == 1 }, 5*time.Second, 50*time.Millisecond,
+		"delivered to the leading id")
+}
+
+func TestMCPSendMessage_InjectedDestinationNoCloseBraceStillRecovers(t *testing.T) {
+	f := newFakeAgent()
+	target := f.newSession("rainy-welder")
+	caller := f.newSession("caller")
+	withAgentServer(t, f.handler(t))
+
+	dest := target + `","message":"ruling (b) posted on PR 2009 — reopen, apply alias entry, catch up vs main, re-push, CI, /review`
+	req := mcpRequest{JSONRPC: "2.0", ID: 1, Method: "tools/call",
+		Params: marshalParams(t, map[string]any{
+			"name": "send_message",
+			"arguments": map[string]any{
+				"destination":          dest,
+				"message":              "end of turn",
+				"lsp_injected_session": caller,
+			},
+		})}
+	body, _ := json.Marshal(req)
+	w := httptest.NewRecorder()
+	r := mcpAuthedRequest(body)
+	mcpHandler(mcpTestPassword)(w, r)
+
+	var resp struct {
+		Result struct {
+			Content []struct {
+				Text string `json:"text"`
+			} `json:"content"`
+		} `json:"result"`
+	}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+	require.NotEmpty(t, resp.Result.Content)
+	assert.NotContains(t, resp.Result.Content[0].Text, "Error:", "the brace-less injection still recovers")
+	require.Eventually(t, func() bool { return len(f.sentFor(target)) == 1 }, 5*time.Second, 50*time.Millisecond)
+}
+
+func TestMCPSendMessage_CleanDestinationNeverMangled(t *testing.T) {
+	f := newFakeAgent()
+	target := f.newSession("target")
+	caller := f.newSession("caller")
+	withAgentServer(t, f.handler(t))
+
+	// A destination that merely CONTAINS a quote-shaped prefix is not
+	// the shape: non-recoverable prefixes fall to the normal error path
+	// unmangled.
+	_, err := mcpSendMessage(context.Background(), mcpTestPassword, `weird"quote`+target, "hi", caller)
+	require.Error(t, err, "a quote-containing destination is not silently recovered unless the leading ref is valid")
+	assert.Empty(t, f.msgArrived)
+}
+
 func TestMCPSendMessage_LegacySessionIdAliasDelivers_HandlerLevel(t *testing.T) {
 	f := newFakeAgent()
 	target := f.newSession("target")
