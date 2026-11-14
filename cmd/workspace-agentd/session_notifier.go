@@ -367,9 +367,16 @@ type sessionNotifier struct {
 
 // armedDebounce is one broadcaster's pending settle notification. One
 // per busy episode: armed on the eligible flip, canceled on
-// return-to-derived-busy, fired once (§4.3).
+// return-to-derived-busy, fired once (§4.3). stamp is the settle's
+// IDENTITY captured at arming time, under the same mu critical section
+// that writes it to the latch — the publish leg runs UNLOCKED (Publish
+// is I/O), and re-reading the latch there would reborrow whatever
+// settle a racing fold has since stamped (review r3 finding 1: the
+// in-flight publish must broadcast and advance ITS OWN episode's
+// stamp, never a later one's).
 type armedDebounce struct {
 	kind  string // subscriptionEventIdle | subscriptionEventError
+	stamp time.Time
 	timer *time.Timer
 }
 
@@ -770,17 +777,30 @@ func (n *sessionNotifier) observeBusyEdgeLocked(sid string, prevBusy bool, st *n
 		}
 		n.cancelDebounceLocked(sid)
 	case prevBusy && !st.derivedBusy():
-		// The settle edge: persist the clear (the restart latch must not
-		// re-fire this episode), then through the gates, the debounce.
-		n.store.setLatch(sid, sessionLatch{LastDerivedBusy: false, SawBusy: true})
+		// The settle edge. The busy clear always persists (the restart
+		// latch must not re-fire this episode); the settle STAMP persists
+		// only when the settle is notifiable — kind known AND the §4.2
+		// gates pass. A settle gated off (pending user input — blocked on
+		// the user is not "complete"; subtask; unwatched) must never
+		// leave a durable stamp the boot reconciliation would later
+		// deliver: that would fire a wake-up the live path explicitly
+		// refused, the wrong-direction failure this subsystem never
+		// makes. The gated episode re-settles when the turn truly ends
+		// (the answer resolves, the next flip fires) and stamps then.
+		prev := n.store.latchFor(sid)
+		nl := sessionLatch{LastDerivedBusy: false, SawBusy: true,
+			LastSettleAt: prev.LastSettleAt, LastSettleKind: prev.LastSettleKind}
 		kind, ok := settleKindOf(st)
-		if !ok {
+		if ok && n.settleGatesPassLocked(sid, st) {
+			nl.LastSettleAt, nl.LastSettleKind = time.Now(), kind
+			n.store.setLatch(sid, nl)
+			// Stamp BEFORE the debounce arms: a hard kill inside the
+			// debounce window leaves stamp > watermark, the state the
+			// boot reconciliation resolves.
+			n.armDebounceLocked(sid, kind, nl.LastSettleAt)
 			return
 		}
-		if !n.settleGatesPassLocked(sid, st) {
-			return
-		}
-		n.armDebounceLocked(sid, kind)
+		n.store.setLatch(sid, nl)
 	}
 }
 
@@ -816,11 +836,12 @@ func (n *sessionNotifier) settleGatesPassLocked(sid string, st *notifierSession)
 	return true
 }
 
-// armDebounceLocked arms (or re-arms) the broadcaster's settle timer.
-// Caller holds mu. The leg is registered on debounceLegs BEFORE the
+// armDebounceLocked arms (or re-arms) the broadcaster's settle timer
+// with the settle's arming-time stamp (see armedDebounce.stamp). Caller
+// holds mu. The leg is registered on debounceLegs BEFORE the
 // timer exists (the body can never run without its unit counted), and
 // resolves it in its defer — or the pre-fire cancel absorbs it.
-func (n *sessionNotifier) armDebounceLocked(sid, kind string) {
+func (n *sessionNotifier) armDebounceLocked(sid, kind string, stamp time.Time) {
 	if n.quiescing {
 		return // teardown gated arming — no leg can be born past quiesce
 	}
@@ -829,7 +850,7 @@ func (n *sessionNotifier) armDebounceLocked(sid, kind string) {
 	// quiesce gate takes: every live reservation is therefore visible
 	// to quiesce's critical section, whose Wait joins exactly that set.
 	n.debounceLegs.Add(1)
-	a := &armedDebounce{kind: kind}
+	a := &armedDebounce{kind: kind, stamp: stamp}
 	a.timer = time.AfterFunc(n.debounce, func() {
 		defer n.debounceLegs.Done()
 		n.debounceFired(sid, kind)
@@ -918,7 +939,8 @@ func (n *sessionNotifier) quiesce() {
 // entry is deleted here and only re-armed on a fresh settle edge.
 func (n *sessionNotifier) debounceFired(sid, kind string) {
 	n.mu.Lock()
-	if a, ok := n.debounces[sid]; !ok || a.kind != kind {
+	a, armed := n.debounces[sid]
+	if !armed || a.kind != kind {
 		n.mu.Unlock()
 		return
 	}
@@ -934,41 +956,62 @@ func (n *sessionNotifier) debounceFired(sid, kind string) {
 	// entry is the durable intent; the notifier consumer group fans
 	// out per subscriber under consumer-group ack/pending. The direct
 	// v1 leg stays the default (Bus nil) and the failure fallback.
+	// a.stamp is the episode's identity, captured under the arming
+	// critical section — the publish leg runs unlocked and must not
+	// re-read the latch (a racing fold may have re-stamped it).
 	if n.cfg.Bus != nil {
 		title := ""
 		if st := n.tracker[sid]; st != nil {
 			title = st.title
 		}
+		stamp := a.stamp
 		n.mu.Unlock()
-		n.publishSettle(sid, kind, title)
+		n.publishSettle(sid, kind, title, stamp)
 		return
 	}
-	notices := n.collectSettlesLocked(sid, kind)
+	notices := n.collectSettlesLocked(sid, kind, a.stamp)
 	n.mu.Unlock()
 	_ = n.deliverNotices(n.deliveryContext(), notices)
 }
 
 // publishSettle is the bus leg's publish: session.{sid}.{kind} to the
-// workspace stream, payload {session, settle, title}. A publish
+// workspace stream, payload {session, settle, title, settled_at}. The
+// stamp is the ARMING-TIME settle identity threaded from
+// armedDebounce (review r3 finding 1) — this leg runs UNLOCKED (Publish
+// is I/O), and re-reading the latch here would reborrow whatever
+// settle a racing fold has since stamped: the in-flight publish would
+// then broadcast a later settle's identity and advance watermarks past
+// it, permanently silencing that episode at the next boot. A publish
 // failure falls back to the DIRECT v1 leg — a lost wake-up is the
 // failure that matters (§4.5); a duplicate (bus leg retried by the
 // pending machinery after this process already fell back) is
-// tolerated by contract.
-func (n *sessionNotifier) publishSettle(sid, kind, title string) {
+// tolerated by contract. On SUCCESS the delivered-watermarks advance to
+// the settle's OWN stamp (never beyond): the stream entry is the durable
+// intent on this layer, so the settle is dispositioned for
+// reconciliation purposes the moment it is on the bus — the boot
+// reconciliation must stay silent through the publish→consume window
+// (r2 finding 3) and must never jump past a LATER unconsumed settle's
+// stamp (r2 finding 2).
+func (n *sessionNotifier) publishSettle(sid, kind, title string, stamp time.Time) {
+	payload := map[string]string{
+		"session": sid,
+		"settle":  kind,
+		"title":   title,
+	}
+	if !stamp.IsZero() {
+		payload["settled_at"] = stamp.Format(time.RFC3339Nano)
+	}
 	_, err := n.cfg.Bus.Publish(n.deliveryContext(), eventbus.Event{
-		Topic: eventbus.SessionSettleTopic(sid, kind),
-		At:    time.Now(),
-		Payload: map[string]string{
-			"session": sid,
-			"settle":  kind,
-			"title":   title,
-		},
+		Topic:   eventbus.SessionSettleTopic(sid, kind),
+		At:      time.Now(),
+		Payload: payload,
 	})
 	if err == nil {
 		notifyCount(notifyOutcomeBusPublished)
 		n.logger.Debug("session notifier: settle published to the workspace event bus",
 			zap.String("broadcaster", sid),
 			zap.String("settle", kind))
+		n.store.advanceSettleWatermarksForKind(sid, kind, stamp)
 		return
 	}
 	n.logger.Warn("session notifier: bus publish failed — falling back to the direct delivery leg",
@@ -976,7 +1019,7 @@ func (n *sessionNotifier) publishSettle(sid, kind, title string) {
 		zap.String("settle", kind),
 		zap.Error(err))
 	n.mu.Lock()
-	notices := n.collectSettlesLocked(sid, kind)
+	notices := n.collectSettlesLocked(sid, kind, stamp)
 	n.mu.Unlock()
 	_ = n.deliverNotices(n.deliveryContext(), notices)
 }
@@ -1002,6 +1045,20 @@ func (n *sessionNotifier) ConsumeSettleEvent(ctx context.Context, msg eventbus.M
 	n.mu.Lock()
 	notices := n.selectSettleNoticesLocked(sid, kind)
 	n.mu.Unlock()
+	// Watermark discipline on the bus layer (findings 2/3): the advance
+	// keys on the CONSUMED settle's own identity — the settled_at stamp
+	// the publish carried — never the latch's CURRENT value (a later
+	// settle's stamp must not be absorbed by an older message's
+	// consumption; that could permanently silence an unconsumed settle
+	// at the next boot). A payload without a parsable stamp (older
+	// publisher, malformed) skips the advance: the watermark stays
+	// trailing, so the worst case is a tolerated duplicate
+	// reconciliation, never a loss.
+	if raw := msg.Event.Payload["settled_at"]; raw != "" {
+		if stamp, err := time.Parse(time.RFC3339Nano, raw); err == nil {
+			n.store.advanceSettleWatermarksForKind(sid, kind, stamp)
+		}
+	}
 	for i := range notices {
 		if title != "" && notices[i].Title == "" {
 			notices[i].Title = title // the bus payload's title survives a cold tracker
@@ -1052,9 +1109,12 @@ func (n *sessionNotifier) selectSettleNoticesLocked(sid, kind string) []settleNo
 // collectSettlesLocked enqueues (persists) the outbox intents for the
 // selected settles and returns the delivery notices. Ordering
 // contract: the intent is durable BEFORE any delivery is attempted
-// (ruling 4). The bus path does NOT pass through here — the stream
-// entry is its durable intent. Caller holds mu.
-func (n *sessionNotifier) collectSettlesLocked(sid, kind string) []settleNotice {
+// (ruling 4). stamp is the episode's arming-time identity (threaded
+// from armedDebounce); the advance never reads the latch, so a racing
+// fold's later stamp cannot be absorbed here. The bus path does NOT
+// pass through here — the stream entry is its durable intent. Caller
+// holds mu.
+func (n *sessionNotifier) collectSettlesLocked(sid, kind string, stamp time.Time) []settleNotice {
 	notices := n.selectSettleNoticesLocked(sid, kind)
 	for _, notice := range notices {
 		n.store.enqueue(pendingNotification{
@@ -1062,6 +1122,11 @@ func (n *sessionNotifier) collectSettlesLocked(sid, kind string) []settleNotice 
 			Event: notice.Event, EnqueuedAt: notice.EnqueuedAt,
 		})
 	}
+	// The settle is PROCESSED for every kind-matching edge — delivered,
+	// suppressed, or skipped (final outcomes): advance the delivered-
+	// watermarks so a later boot's ReconcileMissedSettles never re-fires
+	// what the live path already dispositioned.
+	n.store.advanceSettleWatermarksForKind(sid, kind, stamp)
 	return notices
 }
 
@@ -1175,6 +1240,73 @@ func (n *sessionNotifier) RetryOutbox(ctx context.Context) {
 			zap.String("broadcaster", n.phrase(p.Broadcaster)),
 			zap.String("subscriber", n.phrase(p.Subscriber)),
 			zap.String("event", p.Event))
+	}
+}
+
+// ReconcileMissedSettles is the boot-time missed-settle reconciliation
+// (owner ruling 2026-11-14): the settle fired, the notification was
+// pending in the debounce/outbox when the pod died hard, and the §7.3
+// latch-vs-snapshot machinery cannot see it — the latch's busy edge was
+// already cleared at settle time, so a fresh snapshot reads as "was
+// never busy". The per-edge delivered-watermark closes the window:
+// every edge whose watermark trails its broadcaster's persisted settle
+// stamp (by a settle of an event kind the edge subscribes to) gets
+// exactly ONE reconciled notification, the watermark advancing to the
+// stamp before delivery (ruling 4's write-before-send — a delivery
+// failure leaves the intent in the outbox for RetryOutbox's retry-once,
+// which runs right after this in the boot leg). Facts-gated skips
+// (subtask/gone) advance too: they are final outcomes, and re-deriving
+// them at every boot would be the wrong direction.
+func (n *sessionNotifier) ReconcileMissedSettles(ctx context.Context) {
+	if n == nil || n.store == nil {
+		return
+	}
+	n.mu.Lock()
+	var notices []settleNotice
+	for _, row := range n.store.allRows() {
+		latch := n.store.latchFor(row.Broadcaster)
+		if latch.LastSettleAt.IsZero() || !latch.LastSettleAt.After(row.LastDeliveredSettle) {
+			continue // current (or pre-watermark legacy latch): nothing missed
+		}
+		if !subscriptionEventMatches(row.Events, latch.LastSettleKind) {
+			continue // the missed settle is of a kind this edge does not wake on
+		}
+		if _, armed := n.debounces[row.Broadcaster]; armed {
+			// The LIVE machinery owns this settle: the stamp and the arm
+			// land in one critical section (reconcileAndSwapLocked /
+			// observeBusyEdgeLocked), so an armed debounce visible here
+			// means its collect (enqueue + watermark advance) is still
+			// pending — reconciling it now would duplicate the delivery.
+			// Skip WITHOUT advancing: if the process dies before the leg
+			// fires, the next boot's reconciliation sees the same
+			// trailing watermark and delivers then (at-least-once).
+			continue
+		}
+		if n.facts != nil && (n.facts.IsSubtask(row.Subscriber) || n.facts.IsGone(row.Subscriber) || n.facts.IsSubtask(row.Broadcaster)) {
+			n.store.advanceSettleWatermarksForKind(row.Broadcaster, latch.LastSettleKind, latch.LastSettleAt)
+			continue
+		}
+		notices = append(notices, settleNotice{
+			Broadcaster: row.Broadcaster, Subscriber: row.Subscriber,
+			Event: latch.LastSettleKind, EnqueuedAt: latch.LastSettleAt,
+		})
+		notifyCount(notifyOutcomeReconciledMissed)
+		n.store.enqueue(pendingNotification{
+			Broadcaster: row.Broadcaster, Subscriber: row.Subscriber,
+			Event: latch.LastSettleKind, EnqueuedAt: latch.LastSettleAt,
+		})
+		n.store.advanceSettleWatermarksForKind(row.Broadcaster, latch.LastSettleKind, latch.LastSettleAt)
+	}
+	n.mu.Unlock()
+	for _, notice := range notices {
+		n.logger.Warn("session notifier: reconciling a settle notification missed in flight at hard-kill",
+			zap.String("broadcaster", n.phrase(notice.Broadcaster)),
+			zap.String("subscriber", n.phrase(notice.Subscriber)),
+			zap.String("event", notice.Event),
+			zap.Time("settledAt", notice.EnqueuedAt))
+	}
+	if len(notices) > 0 {
+		_ = n.deliverNotices(ctx, notices)
 	}
 }
 
@@ -1317,12 +1449,21 @@ func (n *sessionNotifier) reconcileAndSwapLocked(fresh map[string]*notifierSessi
 		case nowBusy:
 			n.store.setLatch(id, sessionLatch{LastDerivedBusy: true, SawBusy: true})
 		case prevObserved:
-			n.store.setLatch(id, sessionLatch{LastDerivedBusy: false, SawBusy: latch.SawBusy})
-			if !latch.SawBusy {
-				break // busy edge latched but busy never observed — unattributable
-			}
-			if kind, ok := settleKindOf(st); ok && n.settleGatesPassLocked(id, st) {
-				n.armDebounceLocked(id, kind)
+			// Same stamp-on-notifiable-only discipline as the live settle
+			// edge (observeBusyEdgeLocked): the busy clear always
+			// persists; the settle stamp only when the settle is
+			// notifiable — SawBusy (attributable), kind known, and the
+			// §4.2 gates pass. A gated settle leaves no durable stamp for
+			// the boot reconciliation to wrongly deliver.
+			nl := sessionLatch{LastDerivedBusy: false, SawBusy: latch.SawBusy,
+				LastSettleAt: latch.LastSettleAt, LastSettleKind: latch.LastSettleKind}
+			kind, kindOK := settleKindOf(st)
+			if kindOK && latch.SawBusy && n.settleGatesPassLocked(id, st) {
+				nl.LastSettleAt, nl.LastSettleKind = time.Now(), kind
+				n.store.setLatch(id, nl)
+				n.armDebounceLocked(id, kind, nl.LastSettleAt)
+			} else {
+				n.store.setLatch(id, nl)
 			}
 		}
 	}

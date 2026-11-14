@@ -37,7 +37,7 @@ Placement: `cmd/workspace-agentd/session_notifier.go` (+ store/delivery/metrics 
 
 ## 4. Subscription registry (durable)
 
-`SubscriptionRow{Broadcaster, Subscriber, Events, CreatedAt}` — canonical harness ids; phrases for humans. Store: ONE JSON file at `/sandbox-runtime/session-subscriptions.json` (the shortids replica's storage class — atomic write + fsync; survives restart and pod suspend/resume). Persisted alongside: per-broadcaster latch state and a pending-notification outbox.
+`SubscriptionRow{Broadcaster, Subscriber, Events, CreatedAt, LastDeliveredSettle}` — canonical harness ids; phrases for humans. Store: ONE JSON file at `/platform/session-subscriptions.json` (the platform/ PVC subPath, the seq cursor's storage class — atomic write + fsync; survives restart AND pod recreation/suspend-resume). *(Corrected 2026-11-14, owner ruling: the original `/sandbox-runtime` home was the emptyDir tmpfs — memory-backed, wiped on every pod recreation, which silently lost every edge; the PVC move plus the per-edge delivered-watermark boot reconciliation close both loss windows. The legacy file migrates once on boot.)* Persisted alongside: per-broadcaster latch state (with the settle stamp) and a pending-notification outbox.
 
 Registration guards: broadcaster exists (`SessionExists` + did-you-mean), neither side is a subtask (`ParentID == ""` from the opencode session list — ParentID is absent from the authority projection), no self-subscription, no cycle (DFS over the tiny graph — mutual A↔B would ping-pong forever), subscriber cap 32 per broadcaster. Auto-removal: broadcaster archived/deleted → rows dropped lazily.
 
