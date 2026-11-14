@@ -52,7 +52,9 @@ import (
 	"github.com/lenaxia/llmsafespaces/api/internal/services/workspace"
 	"github.com/lenaxia/llmsafespaces/api/internal/services/wsstate"
 	apiwf "github.com/lenaxia/llmsafespaces/api/internal/workflows"
+	"github.com/lenaxia/llmsafespaces/pkg/agent"
 	agentoc "github.com/lenaxia/llmsafespaces/pkg/agent/opencode"
+	agentpi "github.com/lenaxia/llmsafespaces/pkg/agent/pi"
 	"github.com/lenaxia/llmsafespaces/pkg/agent/systemnotices"
 	"github.com/lenaxia/llmsafespaces/pkg/agentd"
 	apisv1 "github.com/lenaxia/llmsafespaces/pkg/apis/llmsafespaces/v1"
@@ -201,6 +203,13 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 	// US-65.6-followup: register the agent runtime explicitly instead of
 	// relying on init() side-effects.
 	agentoc.Register()
+	// S5 harness-selection plumbing: register the ADAPTER factories
+	// (the registry seam the per-workspace router constructs through).
+	// pi's runtime+factory import is the second harness the seam was
+	// built for; the factories are cheap no-op registrations.
+	agentoc.RegisterAdapter()
+	agentpi.Register()
+	agentpi.RegisterAdapter()
 
 	svc, err := services.New(cfg, log, k8sClient)
 	if err != nil {
@@ -232,17 +241,28 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 		log.Error("FATAL: delivery flag matrix violation", err)
 		os.Exit(1)
 	}
-	// #1314: the adapter split — V1 and V2 are separate types, not a
-	// flag on a shared adapter. Delivery is V1 (the admitter POSTs
-	// /session/:sid/message); the AdapterV1 reads history from the V1
-	// store. The v2Delivery flag remains for the outbox/terminus wiring
-	// but does NOT change the adapter's store path.
-	baseAdapter := agentoc.NewAdapter(
-		agentoc.PasswordResolver(resolverHost.GetPassword),
-		resolverHost,
-		log.ZapLogger(),
-	)
-	agentAdapter := agentoc.NewAdapterV1(baseAdapter)
+	// S5 harness-selection plumbing: the Adapter is constructed
+	// PER-WORKSPACE from the CRD via the registry — the HarnessRouter
+	// resolves spec.harness on each call and dispatches to the
+	// harness's factory-built adapter. The default (opencode) leg is
+	// what app.go hard-constructed pre-S5 (NewAdapter → NewAdapterV1,
+	// #1314's V1 delivery split); parity is structural (the factory
+	// builds the same two calls) and the router is a pure delegator.
+	router, err := agent.NewHarnessRouter(agent.HarnessRouterConfig{
+		Default: agent.AgentTypeOpenCode,
+		Lookup:  resolverHost.GetWorkspaceHarness,
+		Deps: agent.AdapterFactoryDeps{
+			PasswordResolver: resolverHost.GetPassword,
+			PodResolver:      resolverHost,
+			Logger:           log.ZapLogger(),
+		},
+		Logger: log.ZapLogger(),
+	})
+	if err != nil {
+		cancel()
+		return nil, fmt.Errorf("failed to construct harness router: %w", err)
+	}
+	agentAdapter := agent.Adapter(router)
 
 	// #944: system-notice injection at the Adapter seam — the ONE point
 	// every entrypoint (HTTP chat, MCP, SDK) shares. The disk-pressure

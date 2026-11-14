@@ -100,12 +100,18 @@ const (
 
 // Ports and network constants shared between agentd and the controller.
 const (
-	AgentPort       = 4096 // opencode serve listens here
-	AgentdPort      = 4097 // agentd user-facing HTTP API (resync-secrets, future proxy)
-	AgentdAddr      = "0.0.0.0:4097"
-	AgentdAdminPort = 4098 // agentd admin HTTP API (healthz, readyz, statusz) — US-22.8
-	AgentdAdminAddr = "0.0.0.0:4098"
-	AuthUsername    = "opencode" // Basic Auth username for opencode
+	// AgentPort is the HARNESS port: opencode serve listens here on
+	// opencode workspaces; on pi workspaces the supervise-pi bridge
+	// (pi_bridge.go) holds it — the API-side transports address the
+	// pod's harness identically either way (S5 harness-selection
+	// plumbing).
+	AgentPort        = 4096
+	AgentHarnessAddr = "0.0.0.0:4096"
+	AgentdPort       = 4097 // agentd user-facing HTTP API (resync-secrets, future proxy)
+	AgentdAddr       = "0.0.0.0:4097"
+	AgentdAdminPort  = 4098 // agentd admin HTTP API (healthz, readyz, statusz) — US-22.8
+	AgentdAdminAddr  = "0.0.0.0:4098"
+	AuthUsername     = "opencode" // Basic Auth username for opencode
 	// ErrorCodeAgentNotFound is the A8 pre-validation rejection
 	// (NODE-EXECUTE-CONTRACT §A8): an agent-node dispatch named an
 	// agent absent from opencode's live registry — the failure that

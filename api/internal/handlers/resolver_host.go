@@ -11,6 +11,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	"github.com/lenaxia/llmsafespaces/api/internal/services/wsstate"
+	"github.com/lenaxia/llmsafespaces/pkg/agent"
 	pkginterfaces "github.com/lenaxia/llmsafespaces/pkg/interfaces"
 )
 
@@ -96,6 +97,26 @@ func (r *ResolverHost) GetPassword(ctx context.Context, workspaceID string) (str
 
 	r.State().SetCachedPassword(ctx, workspaceID, pw)
 	return pw, nil
+}
+
+// GetWorkspaceHarness resolves the workspace's harness selection
+// (spec.harness, S5 harness-selection plumbing) for the agent
+// HarnessRouter's per-workspace dispatch. Empty spec.harness (a
+// pre-S5 object) reads as opencode — the CRD default applied at the
+// read seam so mixed-fleet objects route correctly.
+func (r *ResolverHost) GetWorkspaceHarness(ctx context.Context, workspaceID string) (agent.AgentType, error) {
+	v1Client, err := r.k8sClient.LlmsafespacesV1()
+	if err != nil {
+		return "", fmt.Errorf("get K8s client: %w", err)
+	}
+	ws, err := v1Client.Workspaces(r.namespace).Get(ctx, workspaceID, metav1.GetOptions{})
+	if err != nil {
+		return "", fmt.Errorf("get workspace %s: %w", workspaceID, err)
+	}
+	if ws.Spec.Harness == "" {
+		return agent.AgentTypeOpenCode, nil
+	}
+	return agent.AgentType(ws.Spec.Harness), nil
 }
 
 // GetWorkspacePodIP resolves the workspace's pod IP from the K8s CRD

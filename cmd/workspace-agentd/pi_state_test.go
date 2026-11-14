@@ -257,7 +257,7 @@ func TestPiSnapshotSessionInfoShapes(t *testing.T) {
 		Tokens: &agentd.SessionTokens{Input: 1, Output: 2, Reasoning: 0, CacheRead: 3, CacheWrite: 4},
 	}
 	require.Equal(t, "busy", info.Status)
-	snap := piStatusSnapshot{
+	snap := harnessStatusSnapshot{
 		Sessions: []agentd.SessionInfo{info}, OldestBusySeconds: 1,
 		BusyAges: map[string]int{"s": 1}, LastProgressSeconds: 2,
 	}

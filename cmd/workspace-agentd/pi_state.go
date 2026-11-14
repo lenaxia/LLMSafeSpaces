@@ -228,6 +228,19 @@ func (s *piSessionState) applyStatsPoll(data json.RawMessage) {
 type piStateAggregator struct {
 	mu       sync.Mutex
 	sessions map[string]*piSessionState
+	// tap (S5 bridge): optional raw-event fan-out installed once at
+	// boot. Read under mu (installed before the loops start), invoked
+	// OUTSIDE the lock on a copied slice — subscribers never race the
+	// fold and never alias the pump's buffer.
+	tap func(sessionID string, raw []byte)
+}
+
+// setEventTap installs the raw-event tap (the bridge's SSE fan-out).
+// Pre-loops only (construction time); a nil tap unsubscribes nothing.
+func (a *piStateAggregator) setEventTap(tap func(sessionID string, raw []byte)) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.tap = tap
 }
 
 func newPiStateAggregator() *piStateAggregator {
@@ -256,8 +269,14 @@ func (a *piStateAggregator) cellLocked(id string) *piSessionState {
 // Snapshot's locked reads (pinned by -race).
 func (a *piStateAggregator) ApplyEvent(sessionID string, rec *piRecord, raw []byte, now time.Time) {
 	a.mu.Lock()
-	defer a.mu.Unlock()
+	tap := a.tap
 	a.cellLocked(sessionID).applyEvent(rec, raw, now)
+	a.mu.Unlock()
+	if tap != nil {
+		cp := make([]byte, len(raw))
+		copy(cp, raw)
+		tap(sessionID, cp)
+	}
 }
 
 // ApplyStatePoll folds one get_state data payload for one session.
@@ -308,19 +327,27 @@ func (a *piStateAggregator) Forget(sessionID string) {
 	delete(a.sessions, sessionID)
 }
 
-// piStatusSnapshot is the parity surface rendered by the pump — the
+// harnessStatusSnapshot is the parity surface rendered by the pump — the
 // fields statusz needs, in agentd's own types.
-type piStatusSnapshot struct {
-	Sessions            []agentd.SessionInfo
-	SessionsActive      int
-	OldestBusySeconds   int
-	BusyAges            map[string]int
-	LastProgressSeconds int
+// The type is harness-neutral (the statusz parity shape, S5's
+// harness-driver seam) and crosses the control socket as the
+// harness_status result — hence the JSON tags (agentd.SessionInfo and
+// agentd.ContextUsage already carry their own).
+type harnessStatusSnapshot struct {
+	Sessions            []agentd.SessionInfo `json:"sessions,omitempty"`
+	SessionsActive      int                  `json:"sessionsActive,omitempty"`
+	OldestBusySeconds   int                  `json:"oldestBusySeconds,omitempty"`
+	BusyAges            map[string]int       `json:"busyAges,omitempty"`
+	LastProgressSeconds int                  `json:"lastProgressSeconds,omitempty"`
+	// AgentVersion surfaces the pinned binary's --version (probed at
+	// supervisor boot; empty = unreported). statusz renders it as the
+	// AgentVersion field the RC-A fleet-currency machinery reads.
+	AgentVersion string `json:"agentVersion,omitempty"`
 	// Context is the aggregate window shape statusz renders
 	// (TotalTokens = the common model limit; UsedTokens stays 0 for
 	// the same reason the opencode path sets it 0 — a sum over
 	// heterogeneous sessions is not meaningful).
-	Context *agentd.ContextUsage
+	Context *agentd.ContextUsage `json:"context,omitempty"`
 }
 
 // Snapshot renders the parity fields at one instant. Deterministic
@@ -329,11 +356,11 @@ type piStatusSnapshot struct {
 // busy ages from busySince over BUSY sessions only; last progress =
 // max lastMessageAt AGE over busy sessions; zero values mean "no
 // evidence", never "alert".
-func (a *piStateAggregator) Snapshot(now time.Time) piStatusSnapshot {
+func (a *piStateAggregator) Snapshot(now time.Time) harnessStatusSnapshot {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
-	snap := piStatusSnapshot{BusyAges: make(map[string]int)}
+	snap := harnessStatusSnapshot{BusyAges: make(map[string]int)}
 	ids := make([]string, 0, len(a.sessions))
 	for id := range a.sessions {
 		ids = append(ids, id)

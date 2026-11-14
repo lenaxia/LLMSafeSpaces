@@ -4,10 +4,13 @@
 package agent
 
 import (
+	"context"
 	stderrors "errors"
 	"fmt"
 	"net/http"
 	"sync"
+
+	"go.uber.org/zap"
 
 	pkgerrors "github.com/lenaxia/llmsafespaces/pkg/errors"
 )
@@ -123,6 +126,12 @@ type LLMModelConfig struct {
 var (
 	registryMu sync.RWMutex
 	registry   = map[AgentType]AgentRuntime{}
+	// adapterFactories (S5 harness-selection plumbing): the per-harness
+	// Adapter construction seam. Pre-S5 the Adapter was hard-constructed
+	// as opencode in the API app wiring; the registry entry lets the
+	// wiring ask the REGISTRY for the adapter a workspace's spec.harness
+	// selects (per-workspace construction, scoping §6 item 4).
+	adapterFactories = map[AgentType]AdapterFactory{}
 )
 
 func Get(agentType AgentType) (AgentRuntime, error) {
@@ -145,4 +154,70 @@ func Unregister(agentType AgentType) {
 	registryMu.Lock()
 	defer registryMu.Unlock()
 	delete(registry, agentType)
+}
+
+// WorkspacePodResolver resolves the workspace's pod IP — the neutral
+// mirror of the opencode package's PodIPResolver (satisfied by the
+// handlers' ResolverHost). Declared here so the adapter-factory seam
+// carries no implementation import.
+type WorkspacePodResolver interface {
+	GetWorkspacePodIP(ctx context.Context, userID, workspaceID string) (string, error)
+}
+
+// AdapterFactoryDeps are the platform wiring inputs every adapter
+// factory receives. Harness-specific transport construction is the
+// factory's business: opencode builds pod URLs from the resolvers; pi's
+// factory hands the same resolvers to its pod transport (the agentd
+// bridge rides the same password + pod-IP resolution).
+type AdapterFactoryDeps struct {
+	PasswordResolver func(ctx context.Context, workspaceID string) (string, error)
+	PodResolver      WorkspacePodResolver
+	Logger           *zap.Logger
+}
+
+// AdapterFactory constructs one harness's Adapter from the shared
+// wiring inputs. Factories are registered at boot (RegisterAdapter)
+// and invoked per-workspace by the routing layer; returned adapters
+// MUST be safe for concurrent use across workspaces (the opencode and
+// pi adapters are: all per-workspace state resolves through the
+// resolvers on every call).
+type AdapterFactory func(deps AdapterFactoryDeps) (Adapter, error)
+
+// RegisterAdapter installs a harness's Adapter factory. Register (the
+// AgentRuntime seam) and this are deliberately separate maps: the
+// credentials seam and the adapter seam run in different processes
+// with different lifetimes (agentd vs API server) — one registration
+// call each, no god-entry.
+func RegisterAdapter(agentType AgentType, f AdapterFactory) {
+	registryMu.Lock()
+	defer registryMu.Unlock()
+	adapterFactories[agentType] = f
+}
+
+// NewAdapterForType constructs the harness's Adapter via its
+// registered factory — the registry-driven construction the API wiring
+// calls once per harness (adapters are then reused across workspaces).
+func NewAdapterForType(agentType AgentType, deps AdapterFactoryDeps) (Adapter, error) {
+	registryMu.RLock()
+	f, ok := adapterFactories[agentType]
+	registryMu.RUnlock()
+	if !ok {
+		return nil, fmt.Errorf("no adapter factory registered for agent type: %s", agentType)
+	}
+	if deps.Logger == nil {
+		deps.Logger = zap.NewNop()
+	}
+	return f(deps)
+}
+
+// RegisteredAdapterTypes lists the harnesses with adapter factories
+// (diagnostics + the router's fallback classification).
+func RegisteredAdapterTypes() []AgentType {
+	registryMu.RLock()
+	defer registryMu.RUnlock()
+	out := make([]AgentType, 0, len(adapterFactories))
+	for t := range adapterFactories {
+		out = append(out, t)
+	}
+	return out
 }

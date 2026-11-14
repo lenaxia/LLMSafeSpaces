@@ -40,7 +40,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
+	"net/http"
 	"os"
+	"os/exec"
 	"os/signal"
 	"strconv"
 	"strings"
@@ -48,6 +51,8 @@ import (
 	"time"
 
 	"go.uber.org/zap"
+
+	"github.com/lenaxia/llmsafespaces/pkg/agentd"
 )
 
 const (
@@ -128,6 +133,35 @@ func runSupervisePiCommand(_ []string) int {
 	sigCh := make(chan os.Signal, 2)
 	signal.Notify(sigCh, syscall.SIGTERM, syscall.SIGINT)
 
+	// S5: the design-0051 control socket (the sidecar's poller contract)
+	// and the harness-port HTTP bridge (the S4 Transport's in-pod end).
+	// Both bind before run() so a fast sidecar poll never races a
+	// missing listener; both close on every exit path.
+	ctrl, err := newControlSocketServer(ControlSocketAddr(), &piSupervisorProc{sup: sup})
+	if err != nil {
+		log.Error("supervise-pi: control socket bind failed", zap.Error(err))
+		return 1
+	}
+	ctrl.harnessStatus = sup
+	go ctrl.serve()
+
+	bridge := newPiBridge(sup, readAgentPassword())
+	harnessLn, err := net.Listen("tcp", agentd.AgentHarnessAddr)
+	if err != nil {
+		_ = ctrl.close()
+		log.Error("supervise-pi: harness-port bind failed", zap.Error(err))
+		return 1
+	}
+	go func() {
+		if err := bridge.serve(harnessLn); err != nil && err != http.ErrServerClosed {
+			log.Error("supervise-pi: bridge serve failed", zap.Error(err))
+		}
+	}()
+	defer func() {
+		bridge.close()
+		_ = ctrl.close()
+	}()
+
 	runErr := sup.run(rootCtx, sigCh)
 	// #1808 belt: flush dirty PVC pages (pi's session JSONL appends
 	// included) while the RW mount is still ours.
@@ -146,6 +180,10 @@ type piSupervisor struct {
 	log       *zap.Logger
 	policy    piProcessPolicy
 	agg       *piStateAggregator
+	// cfg is the spawn contract (binary/dir/env) — S5's bridge reads
+	// it for the ephemeral control child; the policies keep their own
+	// copies for the session children.
+	cfg       piSpawnConfig
 	pollEvery time.Duration
 	// pollTimeout bounds ONE health-poll command against ONE child. pi
 	// queues RPC responses behind in-flight agent work, so a busy
@@ -154,6 +192,11 @@ type piSupervisor struct {
 	// wedge verdict.
 	pollTimeout   time.Duration
 	shutdownGrace time.Duration
+	// agentVersion is the pinned binary's --version (probed once at
+	// construction, non-fatal on failure) — surfaced through
+	// HarnessStatus into statusz's AgentVersion (the RC-A fleet-
+	// currency field; empty = unreported).
+	agentVersion string
 }
 
 // newPiSupervisorFromEnv resolves the spawn contract + policy from the
@@ -205,10 +248,88 @@ func newPiSupervisorFromEnv(log *zap.Logger) (*piSupervisor, error) {
 		log:           log.With(zap.String("component", "pi_supervisor")),
 		policy:        policy,
 		agg:           agg,
+		cfg:           cfg,
 		pollEvery:     pollEvery,
 		pollTimeout:   pollEvery,
 		shutdownGrace: grace,
+		agentVersion:  probePiVersion(bin, log),
 	}, nil
+}
+
+// probePiVersion runs `<bin> --version` once, bounded, non-fatal: a
+// version probe failure must never block the supervisor (statusz then
+// reports an empty AgentVersion — unreported, not wrong).
+func probePiVersion(bin string, log *zap.Logger) string {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, bin, "--version").Output()
+	if err != nil {
+		if log != nil {
+			log.Warn("supervise-pi: pi --version probe failed (AgentVersion stays unreported)", zap.Error(err))
+		}
+		return ""
+	}
+	return strings.TrimSpace(string(out))
+}
+
+// HarnessStatus is the in-process harness-driver implementation (S5,
+// harness_driver.go): the aggregator's parity snapshot with the boot
+// version. Served on the control socket (method harness_status) for
+// the sidecar's poller and read directly by the bridge's statusz.
+func (sup *piSupervisor) HarnessStatus() harnessStatusSnapshot {
+	snap := sup.agg.Snapshot(time.Now())
+	snap.AgentVersion = sup.agentVersion
+	return snap
+}
+
+// piSupervisorProc adapts the pi supervisor onto the control socket's
+// supervised-process surface (design 0051 Appendix A) so the SIDECAR's
+// existing status poller keeps its contract on a pi pod. Every method
+// maps honestly: pi is process-per-session (no single child pid), and
+// the pi credential flow is FILE-delivered (models.json via the S3
+// ConfigWriter — the opencode spawn-env push/pull contract does not
+// apply). Nothing here claims a delivery that did not happen.
+type piSupervisorProc struct{ sup *piSupervisor }
+
+func (p *piSupervisorProc) State() (pid int, state string, restarts int, lastRestartAt time.Time) {
+	// Multi-child supervisor: no single child pid to report. State is
+	// the supervisor loop itself (serving until shutdown); per-child
+	// restart attribution rides S7's validation-epic scope, recorded
+	// here so status consumers read 0 as "not attributed", matching
+	// the mixed-fleet semantics of a pre-#1776 supervisor.
+	return 0, "running", 0, time.Time{}
+}
+
+func (p *piSupervisorProc) Restart(reason string, graceSeconds int) (restarted, inProgress bool) {
+	// The opencode single-process restart path has no pi analogue: a
+	// credential change applies through the ConfigWriter seam
+	// (restartRequired per source — pi hot-reloads !command/env-keyed
+	// models.json at request time); a blanket child restart would cut
+	// in-flight turns for nothing. (false,false) reports honestly:
+	// nothing restarted.
+	_ = reason
+	_ = graceSeconds
+	return false, false
+}
+
+func (p *piSupervisorProc) SetSpawnEnv(env map[string]string) {
+	// Accepted for protocol compatibility, deliberately NOT injected:
+	// pi children take their credential surface from the agent-dir
+	// files (S3), never from a spawn env delta. See SpawnEnvState.
+	_ = env
+}
+
+func (p *piSupervisorProc) SpawnEnvState() spawnEnvStateReport {
+	// Zero report = no spawn-env contract claimed. The sidecar's
+	// healthz mirror reads this as "unreported" (the pre-US-70.1
+	// mixed-fleet posture), never as a delivered revision.
+	return spawnEnvStateReport{}
+}
+
+func (p *piSupervisorProc) RefreshFiles() (filesRev string, filesReason string) {
+	// The file-class manifest consumer on a pi pod is the CONFIG
+	// WRITER's apply path (agentd sidecar), not the supervisor.
+	return "", ""
 }
 
 // piEnvDefault reads env with a default; empty means the default.

@@ -140,6 +140,19 @@ type serverDeps struct {
 	// sidecar mode. Nil in tests → the user-mux route answers 503
 	// (never a silent no-op).
 	fsAudit fsAuditEngine
+
+	// harnessStatus (S5 harness-selection plumbing): the cached
+	// harness-driver snapshot a NON-opencode sidecar derives its
+	// statusz/readyz truth from (pi: the supervise-pi control-socket
+	// poller). Nil = opencode — the existing inline HTTP+SSE path runs
+	// unchanged (byte-identical responses).
+	harnessStatus *harnessStatusStore
+	// harnessName is the harness statusz/readyz report as AgentType
+	// ("" = opencode). Wired together with harnessStatus.
+	harnessName string
+	// piPoller is the harness-status poller instance wired alongside
+	// harnessStatus (the loop and the handler share one store).
+	piPoller *harnessStatusPoller
 }
 
 // sysMetricsSource is the statusz system-metrics seam: typed functions
@@ -319,7 +332,7 @@ func buildStatuszHandler(
 			// as "no signal" by API readers, never as false.
 			SessionsOK:          &sessionsOK,
 			LastError:           "",
-			AgentType:           "opencode",
+			AgentType:           "opencode", // opencode path only; the pi branch renders buildPiStatuszHandler
 			AgentVersion:        version,
 			UptimeSeconds:       int(time.Since(startedAt).Seconds()),
 			Disk:                sys.disk(),
@@ -477,7 +490,7 @@ func buildReadyzHandler(deps serverDeps, readyChecker func() bool) http.Handler 
 			ProvidersConnected:  connected,
 			ProvidersConfigured: configured,
 			AgentVersion:        snap.Version,
-			AgentType:           "opencode",
+			AgentType:           deps.agentTypeName(),
 			// RelayInjected: true while the writer holds relay state —
 			// evaluated live per request (boot injection, injector run, or a
 			// mid-pod-life #910 re-arm cycle); the restart that LOADS the
@@ -738,8 +751,16 @@ func wireHTTPServers(bgCtx context.Context, bgWg *sync.WaitGroup, deps serverDep
 	// enrichment (infrequent). Performance contract: NO upper bound —
 	// callers must use a generous timeout (controller uses 30s). Do NOT
 	// use this endpoint for liveness or readiness probes.
-	adminMux.Handle("/v1/statusz", requireBearerToken(adminToken,
-		buildStatuszHandler(deps.client, deps.cache, deps.sseTracker, busyTruthFrom(deps.stateAuthority), deps.pressureMonitor, deps.startedAt, modelWarnPathFromEnv(), deps.sys, deps.spawnStatus, deps.ledgerInFlight, relayLivenessSnapshotFor(deps.relayLiveness), supervisorSnapshotFor(deps))))
+	// S5: a non-opencode harness renders statusz from the harness
+	// driver's cached snapshot (sidecar_pi.go); opencode keeps the
+	// inline deep-introspection path untouched.
+	var statuszHandler http.HandlerFunc
+	if deps.harnessStatus != nil {
+		statuszHandler = buildPiStatuszHandler(deps)
+	} else {
+		statuszHandler = buildStatuszHandler(deps.client, deps.cache, deps.sseTracker, busyTruthFrom(deps.stateAuthority), deps.pressureMonitor, deps.startedAt, modelWarnPathFromEnv(), deps.sys, deps.spawnStatus, deps.ledgerInFlight, relayLivenessSnapshotFor(deps.relayLiveness), supervisorSnapshotFor(deps))
+	}
+	adminMux.Handle("/v1/statusz", requireBearerToken(adminToken, statuszHandler))
 
 	// S18.10: Expose Prometheus metrics on admin port so the cluster-level
 	// Prometheus scraper can collect per-pod agentd gate timings.
@@ -788,6 +809,15 @@ func startBackgroundLoops(bgCtx context.Context, bgWg *sync.WaitGroup, deps serv
 	// (SSE subscriber, boot pull) can run. runShutdown's bgCancel then
 	// cancels it and bgWg.Wait joins it — no orphan worker past shutdown.
 	ensureShortIDWarmWorker(bgCtx, bgWg)
+
+	// S5: a non-opencode harness runs its own readiness loop (the
+	// harness-status poller feeds the readiness cache; sidecar_pi.go)
+	// and skips the opencode-shaped SSE/refresh loops below — there is
+	// no opencode on the other end of deps.client to subscribe to.
+	if deps.harnessStatus != nil && deps.piPoller != nil {
+		piSidecarLoops(bgCtx, bgWg, deps, deps.piPoller)
+		return
+	}
 
 	bgWg.Add(1)
 	go func() {

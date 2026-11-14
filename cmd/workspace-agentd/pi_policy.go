@@ -73,7 +73,7 @@ type piProcessPolicy interface {
 	Release(sessionID string)
 	// Snapshot renders the statusz parity surface across all sessions
 	// the policy knows (live + remembered + session-dir scan).
-	Snapshot() piStatusSnapshot
+	Snapshot() harnessStatusSnapshot
 	// ReconcileDir folds the session-dir truth (persisted session
 	// files) into the state surface — the no-list-sessions-RPC
 	// workaround, run by the supervisor's health pass.
@@ -456,7 +456,7 @@ func (p *processPerSessionPolicy) Release(sessionID string) {
 // Snapshot renders parity over live + remembered sessions (the dir
 // scan is ReconcileDir's job — a snapshot must not do I/O; the health
 // pass reconciles before anyone snapshots).
-func (p *processPerSessionPolicy) Snapshot() piStatusSnapshot {
+func (p *processPerSessionPolicy) Snapshot() harnessStatusSnapshot {
 	return p.agg.Snapshot(time.Now())
 }
 
@@ -559,7 +559,7 @@ func (p *singleProcessPolicy) Release(string) {}
 
 // Snapshot renders the ACTIVE session's truth (other sessions have
 // none here — the recorded limitation, stated honestly).
-func (p *singleProcessPolicy) Snapshot() piStatusSnapshot {
+func (p *singleProcessPolicy) Snapshot() harnessStatusSnapshot {
 	return p.agg.Snapshot(time.Now())
 }
 

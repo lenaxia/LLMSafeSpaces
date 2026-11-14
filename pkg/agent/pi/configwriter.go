@@ -162,9 +162,9 @@ func WithModelResolutionWarningPath(p string) ConfigWriterOption {
 	return func(w *ConfigWriter) { w.warnPathOverride = p }
 }
 
-// providerModel is one model of a provider source, at the writer's
+// providerSourceModel is one model of a provider source, at the writer's
 // agent-neutral granularity (pi field names).
-type providerModel struct {
+type providerSourceModel struct {
 	ID      string
 	Name    string
 	Context int // pi contextWindow; 0 = undeclared
@@ -190,7 +190,7 @@ type providerEntry struct {
 	// Models is the declared model list. nil = no allowlist declared
 	// (first-party catalog-sourced); non-nil = the provider claims
 	// exactly these ids (model resolution requires a claim).
-	Models []providerModel
+	Models []providerSourceModel
 }
 
 // ConfigWriter is the single writer of pi's agent-dir config files within
@@ -474,7 +474,7 @@ func (w *ConfigWriter) loadExistingModels() {
 		}
 		entry := providerEntry{ID: id, BaseURL: p.BaseURL, API: p.API, APIKey: p.APIKey}
 		for _, m := range p.Models {
-			pm := providerModel{ID: m.ID, Name: m.Name, Context: m.ContextWindow, Output: m.MaxTokens}
+			pm := providerSourceModel{ID: m.ID, Name: m.Name, Context: m.ContextWindow, Output: m.MaxTokens}
 			for _, in := range m.Input {
 				if in == "image" {
 					pm.ImageInput = true
@@ -770,9 +770,9 @@ func (w *ConfigWriter) renderedProvidersLocked() []providerEntry {
 	out := make([]providerEntry, 0, len(w.providers)+1)
 	out = append(out, w.providers...)
 	if w.relay != nil && w.relay.URL != "" {
-		models := make([]providerModel, 0, len(w.relay.Models))
+		models := make([]providerSourceModel, 0, len(w.relay.Models))
 		for _, m := range w.relay.Models {
-			models = append(models, providerModel{
+			models = append(models, providerSourceModel{
 				ID: m.ID, Name: m.Name, Context: m.ContextLimit, Output: m.OutputLimit,
 			})
 		}
@@ -1200,11 +1200,11 @@ func parseOpenCodeProviders(raw json.RawMessage) ([]providerEntry, error) {
 		}
 		sort.Strings(ids)
 		if len(ids) > 0 {
-			entry.Models = make([]providerModel, 0, len(ids))
+			entry.Models = make([]providerSourceModel, 0, len(ids))
 		}
 		for _, mID := range ids {
 			m := p.Models[mID]
-			pm := providerModel{ID: mID, Name: m.Name}
+			pm := providerSourceModel{ID: mID, Name: m.Name}
 			if m.Limit != nil {
 				pm.Context = m.Limit.Context
 				pm.Output = m.Limit.Output
@@ -1245,7 +1245,7 @@ func parsePiProviders(raw json.RawMessage) ([]providerEntry, error) {
 		}
 		entry := providerEntry{ID: id, BaseURL: p.BaseURL, API: p.API, APIKey: p.APIKey}
 		for _, m := range p.Models {
-			pm := providerModel{ID: m.ID, Name: m.Name, Context: m.ContextWindow, Output: m.MaxTokens}
+			pm := providerSourceModel{ID: m.ID, Name: m.Name, Context: m.ContextWindow, Output: m.MaxTokens}
 			for _, in := range m.Input {
 				if in == "image" {
 					pm.ImageInput = true
@@ -1267,6 +1267,6 @@ func sortProviders(entries []providerEntry) {
 	}
 }
 
-func sortModels(models []providerModel) {
+func sortModels(models []providerSourceModel) {
 	sort.Slice(models, func(i, j int) bool { return models[i].ID < models[j].ID })
 }

@@ -91,6 +91,23 @@ type WorkspaceAutoSuspend struct {
 	IdleTimeoutSeconds int64 `json:"idleTimeoutSeconds,omitempty"`
 }
 
+// HarnessType selects the coding-agent harness a Workspace runs. The
+// harness is a structural dimension of the workspace — sessions,
+// agent config, and artifacts are harness-specific — so it is
+// IMMUTABLE after create (the image-class immutability precedent:
+// switching means a new Workspace, never an in-place flip that would
+// strand the PVC state of the old harness). Values align with
+// agent.AgentType; this package keeps its own constants so the API
+// types stay self-contained (the kubebuilder posture).
+type HarnessType string
+
+const (
+	// HarnessOpencode is the default harness (opencode serve, HTTP+SSE).
+	HarnessOpencode HarnessType = "opencode"
+	// HarnessPi is the second harness (earendil-works/pi, RPC mode).
+	HarnessPi HarnessType = "pi"
+)
+
 // WorkspaceCredentialRef refers to a Kubernetes Secret holding agent credentials.
 type WorkspaceCredentialRef struct {
 	SecretName string `json:"secretName"`
@@ -180,12 +197,22 @@ type WorkspaceSpec struct {
 	// Runtime is the runtime environment (e.g. "python:3.11").
 	Runtime string `json:"runtime"`
 
+	// Harness selects the coding-agent harness this workspace runs
+	// (pi-scoping report §6, S5 plumbing). Immutable after create:
+	// sessions, agent config, and PVC artifacts are harness-specific,
+	// so switching requires recreating the Workspace (enforced by the
+	// validating webhook). Empty = opencode (the default and the
+	// only harness pre-S5 clusters know).
+	// +kubebuilder:validation:Enum=opencode;pi
+	// +kubebuilder:default=opencode
+	Harness HarnessType `json:"harness,omitempty"`
+
 	// Architecture is the CPU architecture for the workspace pod.
-	// The controller sets a nodeSelector to schedule on matching nodes.
-	// Changing this field triggers a pod recreation.
-	// +kubebuilder:validation:Enum=amd64;arm64
-	// +kubebuilder:default=amd64
-	Architecture string `json:"architecture,omitempty"`
+	 // The controller sets a nodeSelector to schedule on matching nodes.
+	 // Changing this field triggers a pod recreation.
+	 // +kubebuilder:validation:Enum=amd64;arm64
+	 // +kubebuilder:default=amd64
+	 Architecture string `json:"architecture,omitempty"`
 
 	// +kubebuilder:validation:Enum=standard;high
 	// +kubebuilder:default=standard
