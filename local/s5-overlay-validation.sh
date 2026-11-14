@@ -10,8 +10,10 @@
 #   S5.1 Missing-pin render failure — a chart install without both
 #       delivery pins fails the Helm render loudly (§4.5's operator
 #       surface, exercised for real rather than via chart tests).
-#   S5.2 Full launch→ready on the STRIPPED base + BOTH overlays — the
-#       capstone: workspace Active, platform inits ran, opencode serves,
+#   S5.2 Full launch→ready on the STRIPPED base + ALL THREE overlays
+#       (agentd, opencode, pi) — the capstone: workspace Active, the pi
+#       tree mounted RO at /pi with the binary verified (PiVerified),
+#       platform inits ran, opencode serves,
 #       the S2 redact wrapper exists on the pod (closes S2's deferred
 #       cluster-e2e debt), and the main container execs the pinned agentd.
 #   S5.3 Agentd verify failure — wrong break-glass binary pin → the
@@ -19,6 +21,10 @@
 #       on the Workspace (surfaced, not crash-looped silently).
 #   S5.4 Opencode verify failure — wrong opencode pin → exit 83 →
 #       OpencodeVerificationFailed condition + event.
+#   S5.4b Pi verify failure — wrong pi pin → exit 85 →
+#       PiVerificationFailed condition (codes disjoint from 81/82/83/84).
+#   S5.4c Pi pins ConfigMap — llmsafespaces-pi-pins caches the resolved
+#       pins per digest and survives a controller pod restart.
 #   S5.5 Resume-path pull cost — suspend, evict BOTH overlay images from
 #       the node, activate; the cold re-pull (opencode ~10× agentd) must
 #       land inside the resume budget. Measured number → job summary.
@@ -109,6 +115,15 @@ if echo "$BAD_RENDER_OC" | grep -q "opencodeDelivery.image is mandatory"; then
 else
   fail S5.1b "agentd-only render did not fail with the opencode mandatory message"
 fi
+BAD_RENDER_PI=$(helm template s5-missing-pi helm \
+  --set api.enabled=false --set mcp.enabled=false --set migrations.enabled=false \
+  --set "controller.agentdDelivery.image=ghcr.io/lenaxia/llmsafespaces/agentd@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef" \
+  --set "controller.opencodeDelivery.image=ghcr.io/lenaxia/llmsafespaces/opencode@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef" 2>&1) || true
+if echo "$BAD_RENDER_PI" | grep -q "piDelivery.image is mandatory"; then
+  pass S5.1c "agentd+opencode pins fail the render with the piDelivery mandatory message"
+else
+  fail S5.1c "render without a pi pin did not fail with the pi mandatory message"
+fi
 
 # --- Registry + cluster (canonical kind local-registry pattern) -------------
 
@@ -148,16 +163,21 @@ fi
 
 # --- Images: stripped base + BOTH delivery artifacts ------------------------
 
-log "building and pushing images to $REG (agentd, opencode, controller, stripped base)"
+log "building and pushing images to $REG (agentd, opencode, pi, controller, stripped base)"
 docker build --network host --build-arg VERSION=ci --build-arg COMMIT_SHA=s5ovl \
   -f cmd/workspace-agentd/Dockerfile -t "$REG/llmsafespaces/agentd:ci" .
 docker build --network host \
   -f runtimes/opencode/Dockerfile -t "$REG/llmsafespaces/opencode:ci" .
+# Second harness (design 0053 §5.4): built from the pi release SOURCE
+# archive (npm ci + build:offline + bun compile, ~10 min) — the same
+# Dockerfile CI stamps on every merge.
+docker build --network host \
+  -f runtimes/pi/Dockerfile -t "$REG/llmsafespaces/pi:ci" runtimes/pi
 docker build --network host --build-arg VERSION=ci --build-arg COMMIT_SHA=s5ovl \
   -f controller/Dockerfile -t "$REG/llmsafespaces/controller:ci" .
 docker build --network host \
   -f runtimes/base/Dockerfile -t "$REG/llmsafespaces/runtime-base:ci" .
-for img in agentd opencode controller runtime-base; do
+for img in agentd opencode pi controller runtime-base; do
   docker push "$REG/llmsafespaces/$img:ci" >/dev/null
 done
 
@@ -181,10 +201,12 @@ binary_sha() {
 
 AGENTD_REF=$(digest_ref agentd)
 OPENCODE_REF=$(digest_ref opencode)
+PI_REF=$(digest_ref pi)
 AGENTD_SHA=$(binary_sha agentd /usr/local/bin/workspace-agentd)
 OPENCODE_SHA=$(binary_sha opencode /usr/local/bin/opencode)
-[ -n "$AGENTD_SHA" ] && [ -n "$OPENCODE_SHA" ] || { log "binary hashing failed"; exit 1; }
-log "pins: agentd=${AGENTD_REF} sha=${AGENTD_SHA:0:12}… opencode=${OPENCODE_REF} sha=${OPENCODE_SHA:0:12}…"
+PI_SHA=$(binary_sha pi /pi)
+[ -n "$AGENTD_SHA" ] && [ -n "$OPENCODE_SHA" ] && [ -n "$PI_SHA" ] || { log "binary hashing failed"; exit 1; }
+log "pins: agentd=${AGENTD_REF} sha=${AGENTD_SHA:0:12}… opencode=${OPENCODE_REF} sha=${OPENCODE_SHA:0:12}… pi=${PI_REF} sha=${PI_SHA:0:12}…"
 
 # --- Chart (controller-lean, BOTH pins — the mandatory S3 shape) ------------
 
@@ -200,6 +222,9 @@ HELM_PIN_ARGS=(
   --set "controller.opencodeDelivery.image=${OPENCODE_REF}"
   --set "controller.opencodeDelivery.binarySHA256Amd64=${OPENCODE_SHA}"
   --set "controller.opencodeDelivery.binarySHA256Arm64=${OPENCODE_SHA}"
+  --set "controller.piDelivery.image=${PI_REF}"
+  --set "controller.piDelivery.binarySHA256Amd64=${PI_SHA}"
+  --set "controller.piDelivery.binarySHA256Arm64=${PI_SHA}"
 )
 HELM_LEAN_ARGS=(
   --set api.enabled=false --set mcp.enabled=false --set migrations.enabled=false
@@ -216,7 +241,7 @@ HELM_LEAN_ARGS=(
   --set runtimeEnvironments.base.image.tag=ci
 )
 
-log "installing controller-lean chart with BOTH pins (single-container mode)"
+log "installing controller-lean chart with ALL THREE pins (single-container mode)"
 helm upgrade --install "$RELEASE" helm -n "$NS" --create-namespace \
   "${HELM_LEAN_ARGS[@]}" "${HELM_PIN_ARGS[@]}" \
   --wait --timeout 420s || { setup_diagnostics; exit 1; }
@@ -292,6 +317,21 @@ if wait_phase "$WS_MAIN" Active 420; then
   else
     fail S5.2b "opencode not reachable on :4096"
   fi
+  # The pi overlay tree mounts read-only at /pi with the binary at the
+  # tree root (upstream layout) — tri-overlay render made real.
+  PI_TREE=$(kubectl -n "$NS" exec "$POD" -c workspace -- \
+    sh -c 'test -x /pi/pi && test -f /pi/package.json && echo tree-ok' 2>/dev/null || true)
+  if [ "$PI_TREE" = "tree-ok" ]; then
+    pass S5.2d "pi tree mounted at /pi (binary + adjacent package.json present)"
+  else
+    fail S5.2d "pi tree not mounted/malformed at /pi: ${PI_TREE:-absent}"
+  fi
+  PI_COND=$(kubectl -n "$NS" get workspace "$WS_MAIN" -o jsonpath='{range .status.conditions[*]}{.type}={.status} {end}' 2>/dev/null || true)
+  if echo "$PI_COND" | grep -q "PiVerified=True"; then
+    pass S5.2e "PiVerified=True condition set (supervisor verified the pi binary)"
+  else
+    fail S5.2e "PiVerified=True never set: ${PI_COND:-none}"
+  fi
   # S2's deferred cluster e2e: the supervisor-written redact wrapper.
   REDACT_OUT=$(kubectl -n "$NS" exec "$POD" -c workspace -- \
     sh -c 'echo token=sk-ant-api03-abcdef123456 | /sandbox-runtime/bin/redact 2>/dev/null' 2>/dev/null || true)
@@ -318,6 +358,9 @@ helm upgrade --install "$RELEASE" helm -n "$NS" \
   --set "controller.opencodeDelivery.image=${OPENCODE_REF}" \
   --set "controller.opencodeDelivery.binarySHA256Amd64=${OPENCODE_SHA}" \
   --set "controller.opencodeDelivery.binarySHA256Arm64=${OPENCODE_SHA}" \
+  --set "controller.piDelivery.image=${PI_REF}" \
+  --set "controller.piDelivery.binarySHA256Amd64=${PI_SHA}" \
+  --set "controller.piDelivery.binarySHA256Arm64=${PI_SHA}" \
   >/dev/null 2>&1 || log "S5.3: tamper upgrade reported an error (continuing — the check polls conditions)"
 kubectl -n "$NS" rollout status deployment/"${RELEASE}-llmsafespaces-controller" --timeout=300s >/dev/null 2>&1 \
   || log "S5.3: controller rollout wait timed out (the condition poll decides)"
@@ -354,6 +397,9 @@ helm upgrade --install "$RELEASE" helm -n "$NS" \
   --set "controller.opencodeDelivery.image=${OPENCODE_REF}" \
   --set "controller.opencodeDelivery.binarySHA256Amd64=${BAD_OC_SHA}" \
   --set "controller.opencodeDelivery.binarySHA256Arm64=${BAD_OC_SHA}" \
+  --set "controller.piDelivery.image=${PI_REF}" \
+  --set "controller.piDelivery.binarySHA256Amd64=${PI_SHA}" \
+  --set "controller.piDelivery.binarySHA256Arm64=${PI_SHA}" \
   >/dev/null 2>&1 || log "S5.4: tamper upgrade reported an error (continuing — the check polls conditions)"
 kubectl -n "$NS" rollout status deployment/"${RELEASE}-llmsafespaces-controller" --timeout=300s >/dev/null 2>&1 \
   || log "S5.4: controller rollout wait timed out (the condition poll decides)"
@@ -371,6 +417,106 @@ else
   fail S5.4 "wrong opencode pin never surfaced the condition: ${OC_COND:-none}"
 fi
 kubectl -n "$NS" delete workspace "$WS_BAD_OC" --wait=false >/dev/null 2>&1 || true
+
+# --- S5.4b: pi verify failure → condition + event -----------------------------
+
+WS_BAD_PI="ws-s5-bad-pi"
+BAD_PI_SHA=$(printf '0%.0s' {1..64})
+log "S5.4b: upgrading chart with a WRONG pi break-glass pin"
+helm upgrade --install "$RELEASE" helm -n "$NS" \
+  "${HELM_LEAN_ARGS[@]}" \
+  --set "controller.agentdDelivery.image=${AGENTD_REF}" \
+  --set "controller.agentdDelivery.binarySHA256Amd64=${AGENTD_SHA}" \
+  --set "controller.agentdDelivery.binarySHA256Arm64=${AGENTD_SHA}" \
+  --set "controller.opencodeDelivery.image=${OPENCODE_REF}" \
+  --set "controller.opencodeDelivery.binarySHA256Amd64=${OPENCODE_SHA}" \
+  --set "controller.opencodeDelivery.binarySHA256Arm64=${OPENCODE_SHA}" \
+  --set "controller.piDelivery.image=${PI_REF}" \
+  --set "controller.piDelivery.binarySHA256Amd64=${BAD_PI_SHA}" \
+  --set "controller.piDelivery.binarySHA256Arm64=${BAD_PI_SHA}" \
+  >/dev/null 2>&1 || log "S5.4b: tamper upgrade reported an error (continuing — the check polls conditions)"
+kubectl -n "$NS" rollout status deployment/"${RELEASE}-llmsafespaces-controller" --timeout=300s >/dev/null 2>&1 \
+  || log "S5.4b: controller rollout wait timed out (the check polls conditions)"
+
+apply_workspace "$WS_BAD_PI"
+PI_COND=""
+for i in $(seq 1 120); do
+  PI_COND=$(kubectl -n "$NS" get workspace "$WS_BAD_PI" -o jsonpath='{range .status.conditions[*]}{.type}={.status} {end}' 2>/dev/null || true)
+  echo "$PI_COND" | grep -q "PiVerified=False" && break
+  sleep 2
+done
+if echo "$PI_COND" | grep -q "PiVerified=False"; then
+  # STRICT: the exit code must be 85 — a condition without the right
+  # code (or an unreadable one) is a regression, not a pass. The pod may
+  # be in CrashLoopBackOff (lastState) or between restarts (state).
+  PI_EXIT=$(kubectl -n "$NS" get pods -l llmsafespaces.dev/workspace="$WS_BAD_PI" \
+    -o jsonpath='{.items[0].status.containerStatuses[0].lastState.terminated.exitCode}' 2>/dev/null || true)
+  if [ -z "$PI_EXIT" ]; then
+    PI_EXIT=$(kubectl -n "$NS" get pods -l llmsafespaces.dev/workspace="$WS_BAD_PI" \
+      -o jsonpath='{.items[0].status.containerStatuses[0].state.terminated.exitCode}' 2>/dev/null || true)
+  fi
+  if [ "$PI_EXIT" = "85" ]; then
+    pass S5.4b "wrong pi pin → exit 85 → PiVerified=False condition (disjoint from 81/82/83/84)"
+  else
+    fail S5.4b "PiVerified=False but the exit code is ${PI_EXIT:-unreadable} — must be exactly 85"
+  fi
+else
+  fail S5.4b "wrong pi pin never surfaced the condition: ${PI_COND:-none}"
+fi
+kubectl -n "$NS" delete workspace "$WS_BAD_PI" --wait=false >/dev/null 2>&1 || true
+
+# --- S5.4c: registry-outage cache fallback + persistence ---------------------
+#
+# The REAL resolver path: image-ONLY pi pins (the Renovate form) so the
+# startup resolver RUNS; its registry fetch fails deterministically (the
+# controller pod cannot dial localhost:5011 — node-containerd-only, the
+# us2 constraint, the standing proxy for a registry outage); the
+# pre-seeded llmsafespaces-pi-pins cache — exactly what a prior
+# successful resolution would have written, same digest — satisfies the
+# fallback and the controller BOOTS on it (overlay_pins.go's outage
+# branch, end-to-end on a real cluster). Then a controller restart must
+# find the cache intact and boot again. The live-fetch happy path is
+# CI's (merge-pi stamps; controller resolves on real deployments); the
+# annotation/stale-digest semantics are pinned in pi_pins_test.go.
+log "S5.4c: image-only pi pins + pre-seeded cache (registry-outage fallback)"
+kubectl -n "$NS" apply -f - >/dev/null <<EOF2
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: llmsafespaces-pi-pins
+  namespace: $NS
+data:
+  image: "${PI_REF}"
+  sha256-amd64: "${PI_SHA}"
+  sha256-arm64: "${PI_SHA}"
+EOF2
+helm upgrade --install "$RELEASE" helm -n "$NS" \
+  "${HELM_LEAN_ARGS[@]}" \
+  --set "controller.agentdDelivery.image=${AGENTD_REF}" \
+  --set "controller.agentdDelivery.binarySHA256Amd64=${AGENTD_SHA}" \
+  --set "controller.agentdDelivery.binarySHA256Arm64=${AGENTD_SHA}" \
+  --set "controller.opencodeDelivery.image=${OPENCODE_REF}" \
+  --set "controller.opencodeDelivery.binarySHA256Amd64=${OPENCODE_SHA}" \
+  --set "controller.opencodeDelivery.binarySHA256Arm64=${OPENCODE_SHA}" \
+  --set "controller.piDelivery.image=${PI_REF}" \
+  >/dev/null 2>&1 || log "S5.4c: image-only upgrade reported an error (continuing)"
+if kubectl -n "$NS" rollout status deployment/"${RELEASE}-llmsafespaces-controller" --timeout=300s >/dev/null 2>&1; then
+  PI_CM_DIGEST=$(kubectl -n "$NS" get configmap llmsafespaces-pi-pins -o jsonpath='{.data.image}' 2>/dev/null || true)
+  kubectl -n "$NS" rollout restart deployment/"${RELEASE}-llmsafespaces-controller" >/dev/null 2>&1 || true
+  if kubectl -n "$NS" rollout status deployment/"${RELEASE}-llmsafespaces-controller" --timeout=300s >/dev/null 2>&1; then
+    PI_CM_AFTER=$(kubectl -n "$NS" get configmap llmsafespaces-pi-pins -o jsonpath='{.data.image}' 2>/dev/null || true)
+    PI_CM_SHA_AFTER=$(kubectl -n "$NS" get configmap llmsafespaces-pi-pins -o jsonpath='{.data.sha256-amd64}' 2>/dev/null || true)
+    if [ "$PI_CM_AFTER" = "$PI_CM_DIGEST" ] && [ "$PI_CM_SHA_AFTER" = "$PI_SHA" ]; then
+      pass S5.4c "image-only pins boot via the cached pins (registry unreachable in-pod); llmsafespaces-pi-pins survives a controller restart intact (digest ${PI_CM_DIGEST:0:20}…)"
+    else
+      fail S5.4c "pi-pins ConfigMap changed across restart: ${PI_CM_DIGEST:0:20}… → ${PI_CM_AFTER:0:20}…"
+    fi
+  else
+    fail S5.4c "controller did not come back after restart"
+  fi
+else
+  fail S5.4c "controller did not boot on image-only pins + pre-seeded cache — the registry-outage fallback path (overlay_pins.go) did not serve"
+fi
 
 log "restoring correct pins (controller rolls in background; S5.5 waits for readiness)"
 wait_webhook_ready() {
@@ -413,7 +559,7 @@ elif ! wait_phase "$WS_MAIN" Suspended 300; then
 fi
 if [ "$S5_5_OK" = "1" ]; then
   NODE=$(kind get nodes --name "$CLUSTER_NAME" | head -1)
-  for img in "$AGENTD_REF" "$OPENCODE_REF"; do
+  for img in "$AGENTD_REF" "$OPENCODE_REF" "$PI_REF"; do
     docker exec "$NODE" crictl rmi "$img" >/dev/null 2>&1 || true
   done
   T0=$(date +%s)
@@ -425,7 +571,7 @@ if [ "$S5_5_OK" = "1" ]; then
     {
       echo "### S5.5 resume-path pull cost (cold node)"
       echo "- suspend → Suspended: ok"
-      echo "- node overlay images evicted (agentd + opencode)"
+      echo "- node overlay images evicted (agentd + opencode + pi)"
       echo "- activate → Active: **${RESUME}s** (budget ${RESUME_BUDGET}s)"
     } >> "$STEP_SUMMARY"
     if [ "$RESUME" -le "$RESUME_BUDGET" ]; then
