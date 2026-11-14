@@ -83,6 +83,14 @@ describe("boardApi wire shapes", () => {
     expect(mockPost.mock.calls[0]![0]).toBe("/me/epics/epc-bbbb2222/activate");
   });
 
+  it("activate's 200 is the {epic, initial_ready_set} wrapper, returned verbatim (hurl contract)", async () => {
+    mockPost.mockResolvedValue({ epic: { id: "e1", status: "active" }, initial_ready_set: ["tsk-aaaa0001"] });
+    const res = await boardApi.activateEpic("epc-bbbb2222");
+    expect(res.epic.id).toBe("e1");
+    expect(res.epic.status).toBe("active");
+    expect(res.initial_ready_set).toEqual(["tsk-aaaa0001"]);
+  });
+
   it("creates tasks under the epic route with OR4-carrying tags", async () => {
     mockPost.mockResolvedValue({ id: "t1" });
     await boardApi.createTask("epc-bbbb2222", { title: "T", tags: ["pr:1702"], acceptanceCriteria: [{ text: "c", met: false }] });
