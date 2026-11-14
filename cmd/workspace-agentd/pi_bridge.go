@@ -331,10 +331,10 @@ func (b *piBridge) handleControlRPC(w http.ResponseWriter, r *http.Request) {
 		writeJSONBridge(w, http.StatusBadGateway, map[string]any{"error": fmt.Sprintf("control child spawn: %v", err)})
 		return
 	}
-	defer func() {
-		// WithoutCancel keeps the request's values but detaches its
-		// lifetime: the shutdown ladder must run to completion even
-		// when the caller has already vanished (contextcheck).
+	// The shutdown ladder's detached lifetime is the POINT: it must run
+	// to completion even when the caller has vanished (the linter does
+	// not credit context.WithoutCancel as request-derived).
+	defer func() { //nolint:contextcheck // detached-by-design; see comment above
 		ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), 3*time.Second)
 		defer cancel()
 		_ = child.Shutdown(ctx, 2*time.Second, time.Second)
@@ -403,7 +403,7 @@ func (b *piBridge) handleSessionEvents(w http.ResponseWriter, r *http.Request, i
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.WriteHeader(http.StatusOK)
-	_, _ = fmt.Fprintf(w, ": subscribed %s\n\n", id)
+	_, _ = fmt.Fprintf(w, ": subscribed %s\n\n", id) // #nosec G705 -- SSE comment under text/event-stream; not HTML
 	flusher.Flush()
 	heartbeat := time.NewTicker(20 * time.Second)
 	defer heartbeat.Stop()
