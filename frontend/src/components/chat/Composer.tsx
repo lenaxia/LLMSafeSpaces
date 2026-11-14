@@ -291,13 +291,14 @@ export function Composer({
       setCommandNotice({ kind: "error", text: `${cmd.label} ${unmet}.` });
       return;
     }
-    // Drafts note (review r2, documented decision): a slash command
-    // does NOT consume the persisted draft. The cursor is deliberately
-    // NOT reset here — while browsing, the persistOverride keeps the
-    // pre-browse snapshot as the stored draft, so executing /model or
-    // /compact mid-browse clears the box but the draft survives (a
-    // switch away and back restores it). Sending (handleSubmit) is the
-    // only draft consumer.
+    // Drafts note (reviews r2+r3, documented decision): what a slash
+    // command does to the persisted draft depends on browse state.
+    // Mid-browse, the cursor is deliberately NOT reset here — the
+    // persistOverride keeps the pre-browse snapshot as the stored
+    // draft, so /model or /compact clears the box but the draft
+    // survives. Outside browse mode the setText("") below IS a
+    // consume (the command line replaces the draft, like a send).
+    // Sending (handleSubmit) always consumes.
     setText("");
     setHelpOpen(false);
     await cmd.run(args, commandCtx);
@@ -318,6 +319,13 @@ export function Composer({
 
   // (History-browsing state — historyCursor/savedDraft — is declared at
   // the top of the component, before the draft hook that reads it.)
+
+  // The session the current browse state belongs to (r3): scopes the
+  // F4 reset's draft-restore to the SAME session — a session switch is
+  // also a userMessageHistory identity change, and restoring the
+  // OUTGOING session's savedDraft there would clobber the incoming
+  // session's freshly-hydrated draft (box and store).
+  const browseOwnerRef = useRef<string | null>(null);
 
   // After loading a history entry, the cursor must move to start (Up)
   // or end (Down) of the new text so the next Up/Down correctly detects
@@ -343,18 +351,30 @@ export function Composer({
   }, [navTick, text]);
 
   useEffect(() => {
-    // Drafts coherence (review r2): exiting browse mode MUST restore
-    // the pre-browse draft into the box. Resetting the cursor alone
-    // left the recalled entry visible with browsing off — and with the
-    // drafts persistOverride keyed on the cursor, the write-through
-    // would then persist the RECALLED entry over the real draft
-    // (silent loss on an ordinary mid-browse history refetch: stream
-    // finalization, load-earlier — the F4 reset effect fires on any
-    // userMessageHistory identity change).
-    if (historyCursor !== -1) setText(savedDraft ?? "");
+    // Drafts coherence (reviews r2+r3): exiting browse mode MUST
+    // restore the pre-browse draft into the box — resetting the cursor
+    // alone left the recalled entry visible with browsing off, and the
+    // write-through would then persist the RECALLED entry over the
+    // real draft (silent loss on an ordinary mid-browse history
+    // refetch: stream finalization, load-earlier — this effect fires
+    // on any userMessageHistory identity change). BUT a session switch
+    // is also such an identity change, and there the restore must NOT
+    // fire: the hydrate has just loaded the INCOMING session's draft
+    // into the box, and restoring the OUTGOING session's savedDraft
+    // would clobber it in box and store (r3: cross-session bleed on
+    // the warm-cache no-remount switch). The restore is therefore
+    // scoped by browseOwnerRef — the session the browse state belongs
+    // to; a mismatched owner just resets the browse state.
+    const owner = browseOwnerRef.current;
+    const current = workspaceId && sessionId ? `${workspaceId}/${sessionId}` : null;
+    if (historyCursor !== -1 && owner !== null && owner === current) {
+      setText(savedDraft ?? "");
+    }
+    if (historyCursor !== -1) browseOwnerRef.current = null;
     setHistoryCursor(-1);
     setSavedDraft(null);
-  }, [userMessageHistory]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- historyCursor/savedDraft are read at fire time by design (F4): the effect runs only on identity change; workspaceId/sessionId scope the restore (r3).
+  }, [userMessageHistory, workspaceId, sessionId]);
 
   const handleSubmit = (e?: { preventDefault: () => void }) => {
     e?.preventDefault();
@@ -364,6 +384,7 @@ export function Composer({
     setText("");
     setHistoryCursor(-1);
     setSavedDraft(null);
+    browseOwnerRef.current = null;
     if (textareaRef.current) textareaRef.current.style.height = "auto";
   };
 
@@ -388,9 +409,12 @@ export function Composer({
       // the caret, never replace text. Position 0 implies the first
       // line, so the onFirstLine check is subsumed.
       if (el.selectionStart !== 0 || el.selectionEnd !== 0) return false;
-      // Entering browse mode: snapshot the draft if non-empty.
-      if (historyCursor === -1 && text !== "") {
-        setSavedDraft(text);
+      // Entering browse mode: snapshot the draft if non-empty, and
+      // stamp the session this browse belongs to (r3 — scopes the F4
+      // reset's restore to the same session).
+      if (historyCursor === -1) {
+        if (text !== "") setSavedDraft(text);
+        browseOwnerRef.current = workspaceId && sessionId ? `${workspaceId}/${sessionId}` : null;
       }
       const next = Math.min(historyCursor + 1, userMessageHistory.length - 1);
       const entry = userMessageHistory[next];
@@ -422,6 +446,7 @@ export function Composer({
       setHistoryCursor(-1);
       setText(restored);
       setSavedDraft(null);
+      browseOwnerRef.current = null;
       pendingCursor.current = restored.length;
       setNavTick((t) => t + 1);
       return true;

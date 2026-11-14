@@ -148,4 +148,37 @@ describe("Composer per-session drafts", () => {
     expect(loadSessionDraft("ws-1", "sess-1")).toBe("my real draft");
     r.unmount();
   });
+
+  it("review r3: a warm-cache session switch MID-BROWSE never bleeds the outgoing draft (box or store)", async () => {
+    // sess-2 already has its own persisted draft.
+    localStorage.setItem(
+      "llmsafespaces_session_drafts",
+      JSON.stringify({ "ws-1": { "sess-2": { text: "sess 2 own draft", updatedAt: Date.now() } } }),
+    );
+    const user = userEvent.setup();
+    const r = render(
+      <Composer onSend={vi.fn()} workspaceId="ws-1" sessionId="sess-1" userMessageHistory={["an old sent question"]} />,
+    );
+    const box = screen.getByPlaceholderText("Type a message...") as HTMLTextAreaElement;
+    await user.type(box, "A real draft");
+
+    // Up-recall in sess-1 (browsing).
+    box.setSelectionRange(0, 0);
+    await user.keyboard("{ArrowUp}");
+    await waitFor(() => expect(box).toHaveValue("an old sent question"));
+
+    // Warm-cache switch: same mounted Composer, new session — sessionId
+    // AND userMessageHistory identity change in one commit. The F4
+    // reset must NOT restore sess-1's savedDraft over sess-2's
+    // freshly-hydrated draft (the r3 regression: box AND store ended
+    // up holding the outgoing session's draft).
+    r.rerender(
+      <Composer onSend={vi.fn()} workspaceId="ws-1" sessionId="sess-2" userMessageHistory={["other session history"]} />,
+    );
+    await waitFor(() => expect(box).toHaveValue("sess 2 own draft"));
+    expect(loadSessionDraft("ws-1", "sess-2")).toBe("sess 2 own draft");
+    // sess-1's draft was never cross-saved either.
+    expect(loadSessionDraft("ws-1", "sess-1")).toBe("A real draft");
+    r.unmount();
+  });
 });

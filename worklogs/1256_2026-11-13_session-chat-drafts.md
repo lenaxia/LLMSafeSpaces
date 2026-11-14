@@ -2,7 +2,7 @@
 
 **Date:** 2026-11-13
 **Session:** tsk-sober-oxbow-indicates (owner ask 2026-11-13; epic "Frontend reliability mopup")
-**Status:** Complete — review rounds 1+2 remediated (r2: mid-browse refetch draft restore, `__proto__` key drop, slash-command decision documented), pushed for re-review
+**Status:** Complete — review rounds 1-3 remediated (r3: the F4 restore scoped to its owning session — cross-session bleed closed and pinned; prototype pin re-seeded with raw JSON after the r2 pin proved vacuous; records corrected), pushed for re-review
 
 ---
 
@@ -74,9 +74,17 @@ r1's findings 1 and 3 ruled RESOLVED by the reviewer (sanitizer covers every con
 2. **Minor — `__proto__` keys in sanitizeStore**: `out[k] = v` with a `__proto__` key assigns the prototype, not an own property. Unreachable with server-generated ids, but closed anyway: `UNSAFE_KEYS` (__proto__/constructor/prototype) dropped for both bucket and entry keys. Pinned by the prototype-pollution test.
 3. **Minor — executeCommand mid-browse (documented decision)**: a slash command does NOT consume the persisted draft (the cursor is deliberately not reset, so the override keeps the snapshot as the stored draft); sending remains the only consumer. Comment added at executeCommand.
 
+### 4e. Review round 3 (CHANGES_REQUESTED → remediated)
+
+r2's blocking finding ruled RESOLVED (born-RED pin verified), but the reviewer proved my r2 fix itself introduced a NEW blocking regression, plus two accuracy defects:
+
+1. **BLOCKING — the r2 restore fired unconditionally, bleeding the outgoing draft across a warm-cache session switch (reviewer-executed on the exact head, with a passing control on the pre-r2 behavior)**: a session switch is ALSO a `userMessageHistory` identity change. On the no-remount path, Composer effect order is write-through (guard skips) → hydrate (loads the INCOMING draft into `text`) → F4 reset LAST — still seeing `historyCursor !== -1` from the outgoing render, it restored the OUTGOING `savedDraft` over the incoming draft; the next write-through then persisted the outgoing draft under the INCOMING key (box and store both bled). Fix: the restore is scoped by `browseOwnerRef` — stamped when Up-recall enters browse mode, compared against the current session at reset; a mismatched owner resets the browse state WITHOUT restoring. The F4 effect also gained workspaceId/sessionId deps so a switch resets browse state even when the history identity coincidentally survives. Pinned by `Composer.drafts.test.tsx` "a warm-cache session switch MID-BROWSE never bleeds the outgoing draft" — the reviewer's exact probe (sess-2 seeded with its own draft; both box and store asserted), mutation-verified born-RED without the owner scoping.
+2. **Vacuous prototype pin (my r2 test bug)**: `JSON.stringify({__proto__: …})` serializes to `{}` — the object-literal `__proto__` key is the Annex-B prototype SETTER, not an own property — so the seeded store never contained the key and the pin exercised nothing (emptying UNSAFE_KEYS left it green; the reviewer proved it). Re-seeded with a RAW JSON string (JSON.parse creates `__proto__` as an OWN data property — the shape a hostile store actually presents); now mutation-verified born-RED without the filter. The production filter was already correct; only the pin was hollow.
+3. **Records corrected**: CHANGELOG/worklog had claimed the vacuous pin as coverage — both now describe the re-seeded pin; the executeCommand comment's "sending is the only consumer" overclaim fixed (mid-browse a slash command keeps the draft via the override; outside browse mode its `setText("")` consumes, like a send).
+
 ## Verification
 
-- `vitest run` full frontend suite: **2642/2642 green (233 files)** post-r2 (+47 new; 2638 at the first push, 2595 pre-change).
+- `vitest run` full frontend suite: **2643/2643 green (233 files)** post-r3 (+48 new; 2638 at the first push, 2595 pre-change).
 - `tsc --noEmit` clean; `eslint src/` 0 errors (warnings all pre-existing in generated `src/abi/*_pb.ts` — none in touched files); `make fmt-check` green; `make repolint` green.
 - Isolated worktree `/tmp/opencode/drafts-wt` (branch `feat/session-drafts` off `origin/main` @ d5a638fae); `node_modules` symlinked from the shared checkout.
 

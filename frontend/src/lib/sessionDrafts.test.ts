@@ -156,11 +156,15 @@ describe("sessionDrafts store", () => {
   });
 
   it("prototype-polluting key names are dropped, never assigned (review r2)", () => {
-    // A __proto__ bucket must vanish (assigning it would set the
-    // object's prototype instead of an own key); sibling data survives.
+    // Seeded as a RAW string (review r3): `JSON.stringify({__proto__: …})`
+    // serializes to "{}" (the object-literal __proto__ key is the
+    // Annex-B prototype setter, not an own property), so a literal-built
+    // fixture never exercises the filter. JSON.parse, by contrast,
+    // creates __proto__ as an OWN data property — the shape a hostile
+    // or corrupted store actually presents.
     localStorage.setItem(
       KEY,
-      JSON.stringify({ __proto__: { x: { text: "poison", updatedAt: Date.now() } }, "ws-1": { "sess-1": { text: "fine", updatedAt: Date.now() } } }),
+      '{"__proto__":{"x":{"text":"poison","updatedAt":1}},"ws-1":{"sess-1":{"text":"fine","updatedAt":' + Date.now() + "}}}",
     );
     expect(loadSessionDraft("__proto__", "x")).toBe("");
     expect(loadSessionDraft("ws-1", "sess-1")).toBe("fine");
