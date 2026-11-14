@@ -16,7 +16,7 @@ import (
 
 // TestAgedArgCompactionFiresOnTheWirePath (#1949): a poisoned
 // chat-completion body posted through the BYO resolve path reaches the
-// upstream COMPACTED — aged llmsafespaces_* args stubbed, recent window
+// upstream RESTRUCTURED — prior tool usage rendered as bullets, recent window
 // and tool results intact — and the fire is loudly observable: the
 // metrics counters move. The workspace's own store is never touched by
 // the router (it never persists bodies), so observability lives in
@@ -102,7 +102,7 @@ func TestAgedArgTinyAgedArgsNoPanic(t *testing.T) {
 	rig.svc.agedArgs = newAgedArgCompactorWindow(0)
 	token := rig.mint(t, nil)
 
-	// 17-byte args — far below the ~110-byte stub.
+	// 17-byte args — the restructure applies regardless of arg size.
 	body := `{"model":"glm-4.7","messages":[{"role":"assistant","content":"","tool_calls":[{"id":"c_tiny","type":"function","function":{"name":"llmsafespaces_board_read","arguments":` + jsonString(t, `{"taskId":"t1"}`) + `}}]},{"role":"tool","tool_call_id":"c_tiny","content":"{\"ok\":true}"},{"role":"user","content":"go"}]}`
 	resp, err := rig.do(http.MethodPost, "/w/ws-1/zai/v1/chat/completions", token, body, nil)
 	require.NoError(t, err, "the request must complete — observability never kills the request")
@@ -291,7 +291,7 @@ func jsonString(t *testing.T, s string) string {
 }
 
 // TestAgedArgRunConfigEnvKnob — the env knob threads through the run
-// config (threshold-teachable per #1949; default 30, 0 = stub all,
+// config (threshold-teachable per #1949; default 0 = restructure all,
 // negative = kill switch).
 func TestAgedArgRunConfigEnvKnob(t *testing.T) {
 	t.Setenv("BYO_AGED_ARG_RECENT_TOOL_CALLS", "7")

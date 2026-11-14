@@ -59,7 +59,7 @@ func newByoMetrics() *byoMetrics {
 		}, []string{"workspace", "provider"}),
 		agedArgBytesSaved: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "llm_relay_byo_aged_arg_bytes_saved_total",
-			Help: "Request-body bytes removed by relay aged-arg compaction (#1949).",
+			Help: "Request-body bytes delta, clamped at zero — restructured bullets can exceed tiny aged args (#1949).",
 		}, []string{"workspace", "provider"}),
 	}
 	m.registry = prometheus.NewRegistry()

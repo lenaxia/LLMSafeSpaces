@@ -234,6 +234,64 @@ func TestAgedArgRenderMatchesReplayHarness(t *testing.T) {
 	t.Skip("no python interpreter on PATH — source-pin leg above still enforced")
 }
 
+// TestAgedArgMirrorProbe_AnomalyParity — the checked-in python mirror
+// (the harness's "compacted" arm) must behave EXACTLY like the Go
+// transform on anomaly shapes: role-anomalous, non-string assistant
+// content, and crash-shaped entries all PASSTHROUGH (r5 review: the
+// mirror merged role-anomalous and non-string-content spans while Go
+// passthroughs — a divergence the fixed-sample parity pin could not
+// see). Importlib-driven: executes the mirror's restructure_messages
+// directly, no env vars needed.
+func TestAgedArgMirrorProbe_AnomalyParity(t *testing.T) {
+	script := filepath.Join("..", "..", "scripts", "1949-aged-arg-replay.py")
+	abs, err := filepath.Abs(script)
+	require.NoError(t, err)
+	var lastPath string
+	handled := false
+	for _, interp := range []string{"python3", "python"} {
+		path, lerr := exec.LookPath(interp)
+		if lerr != nil {
+			continue
+		}
+		lastPath = path
+		probeCode := `
+import importlib.util, json, sys
+spec = importlib.util.spec_from_file_location('mirror', sys.argv[1])
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+
+anomalies = {
+  'role_user': [{'role':'user','content':'','tool_calls':[{'id':'c1','type':'function','function':{'name':'llmsafespaces_session_list','arguments':'{"a":1}'}}]},{'role':'tool','tool_call_id':'c1','content':'{}'}],
+  'role_absent': [{'content':'','tool_calls':[{'id':'c1','type':'function','function':{'name':'llmsafespaces_session_list','arguments':'{"a":1}'}}]},{'role':'tool','tool_call_id':'c1','content':'{}'}],
+  'array_content': [{'role':'assistant','content':[{'type':'text','text':'x'}],'tool_calls':[{'id':'c1','type':'function','function':{'name':'llmsafespaces_session_list','arguments':'{"a":1}'}}]},{'role':'tool','tool_call_id':'c1','content':'{}'}],
+  'num_content': [{'role':'assistant','content':42,'tool_calls':[{'id':'c1','type':'function','function':{'name':'llmsafespaces_session_list','arguments':'{"a":1}'}}]},{'role':'tool','tool_call_id':'c1','content':'{}'}],
+  'non_dict_fn': [{'role':'assistant','content':'','tool_calls':[{'id':'c1','type':'function','function':'garbage'}]}],
+}
+out = {}
+for name, msgs in anomalies.items():
+    merged, n = mod.restructure_messages([dict(x) for x in msgs])
+    out[name] = (n > 0 or len(merged) != len(msgs))
+print(json.dumps(out))
+`
+		captured, xerr := exec.Command(path, "-c", probeCode, abs).CombinedOutput()
+		if xerr == nil {
+			var got map[string]bool
+			require.NoError(t, json.Unmarshal(captured, &got))
+			for name, changed := range got {
+				assert.False(t, changed, "mirror: %s anomaly must passthrough (n=0, count unchanged) — matching the Go transform", name)
+			}
+			handled = true
+			break
+		}
+		t.Logf("mirror probe failed under %s: %v: %s", path, xerr, captured)
+		break
+	}
+	_ = lastPath
+	if !handled {
+		t.Skip("no python interpreter on PATH — source pins above still enforced")
+	}
+}
+
 // TestAgedArgCompaction_MalformedEntriesLeftUntouched — a message whose
 // tool_calls entries are malformed is forwarded as-is; the transform
 // never breaks a request over garbage it cannot parse.

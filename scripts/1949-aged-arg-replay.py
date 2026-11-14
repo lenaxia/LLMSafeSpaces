@@ -240,8 +240,11 @@ FINAL_REQUEST = ("Create one more task in epic epc-drill3 titled 'Final replay "
 # ---- the compaction (python mirror of cmd/relay-router/agedarg.go) ----
 
 def _compact_json(v):
-    # Mirror Go: compact separators, no HTML escaping, numbers via
-    # json.Number-style byte preservation (json.dumps keeps the literal).
+    # Mirror Go: compact separators, no HTML escaping. NUMBER CAVEAT
+    # (documented in the Go test header too): python re-serializes
+    # number FORMATS ({"a":1.50} -> **a**: 1.5; Go json.Number keeps
+    # 1.50) — parity is semantic for values, byte-exact for keys and
+    # strings.
     return json.dumps(v, separators=(",", ":"), ensure_ascii=False)
 
 
@@ -340,8 +343,16 @@ def restructure_messages(msgs):
             out.extend(msgs[i:j])
             i = j
             continue
+        # r2-finding-4 mirror: non-string assistant content (array/parts
+        # or number) → passthrough span, matching Go exactly (the v3
+        # draft SKIPPED the content and merged — fabricating a
+        # bullet-only assistant turn with the original content gone).
+        if not isinstance(m.get("content"), str):
+            out.extend(msgs[i:j])
+            i = j
+            continue
         lines = []
-        if isinstance(m.get("content"), str) and m["content"].strip():
+        if m["content"].strip():
             lines.append(m["content"].strip())
         for cid, name, args in parsed:
             lines.append("- Called `" + name + "`(" + render_arguments(args) + ")")
@@ -637,16 +648,16 @@ def main():
         msgs = base_msgs
         body = {"model": model, "messages": msgs, "tools": tools,
                 "max_tokens": args.max_tokens}
-        stubbed = 0
+        restructured = 0
         if arm == "compacted":
-            body_bytes, stubbed = restructure(body)
+            body_bytes, restructured = restructure(body)
         else:
             body_bytes = json.dumps(body)
         n_old = sum(1 for m in msgs if isinstance(m, dict)
                     and isinstance(m.get("tool_calls"), list)
                     for c in m["tool_calls"]
                     if (c.get("function") or {}).get("name", "").startswith(TOOL_PREFIX))
-        print(f"  arm={arm} llmsafespaces_* prior calls={n_old} restructured={stubbed} "
+        print(f"  arm={arm} llmsafespaces_* prior calls={n_old} restructured={restructured} "
               f"body={len(body_bytes)}B")  # label NOTE: 'stubbed' == restructured (v3)
         results[arm] = run_arm(arm, body_bytes.encode(), args.runs, base, key, model, args.pace)
 
