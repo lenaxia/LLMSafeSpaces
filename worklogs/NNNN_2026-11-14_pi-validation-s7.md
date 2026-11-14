@@ -75,7 +75,7 @@ rulings indexed in design 0073 §3:
 - **S7.1a-c**: helm sidecar-enable upgrade → `spec.harness=pi` workspace →
   Active; PID1 = overlay agentd `supervise-pi`; `PiVerified=True`; sidecar
   init carries `AGENTD_HARNESS=pi`. Chart restored to the S5 topology after.
-- **S7.2a-d**: bridge Basic-auth (`agentd`/OPENCODE_SERVER_PASSWORD read
+- **S7.2a-d**: bridge Basic-auth (`agentd.AuthUsername`="opencode" / OPENCODE_SERVER_PASSWORD read
   from PID1 environ): session create → 201 (REAL pinned-binary child from
   /pi); `get_state` round-trip (success + sessionId); PVC session file at
   `/workspace/pi-sessions/`; list + DELETE = unlink. Plus a per-child RSS

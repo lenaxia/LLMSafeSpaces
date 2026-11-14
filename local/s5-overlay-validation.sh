@@ -704,7 +704,7 @@ if kubectl -n "$NS" rollout status deployment/"${RELEASE}-llmsafespaces-controll
     if [ -n "$S7_PASS" ]; then
       S7_SID="s7e2esess"
       S7_CREATE=$(kubectl -n "$NS" exec "$PI_POD" -c workspace -- \
-        curl -s -o /tmp/s7c.json -w '%{http_code}' -u "agentd:$S7_PASS" -X POST \
+        curl -s -o /tmp/s7c.json -w '%{http_code}' -u "opencode:$S7_PASS" -X POST \
         "http://127.0.0.1:4096/v1/pi/sessions/$S7_SID" 2>/dev/null || echo 000)
       if [ "$S7_CREATE" = "201" ]; then
         pass S7.2a "bridge session create → 201 (pinned pi child spawned from /pi)"
@@ -712,7 +712,7 @@ if kubectl -n "$NS" rollout status deployment/"${RELEASE}-llmsafespaces-controll
         fail S7.2a "bridge session create failed (http $S7_CREATE)"
       fi
       S7_STATE=$(kubectl -n "$NS" exec "$PI_POD" -c workspace -- \
-        curl -s -u "agentd:$S7_PASS" -X POST -H 'Content-Type: application/json' \
+        curl -s -u "opencode:$S7_PASS" -X POST -H 'Content-Type: application/json' \
         -d '{"id":"g1","type":"get_state"}' \
         "http://127.0.0.1:4096/v1/pi/sessions/$S7_SID/rpc" 2>/dev/null || true)
       if echo "$S7_STATE" | grep -q '"success":true' && echo "$S7_STATE" | grep -q '"sessionId":"'"$S7_SID"'"'; then
@@ -738,9 +738,9 @@ if kubectl -n "$NS" rollout status deployment/"${RELEASE}-llmsafespaces-controll
       } >> "$STEP_SUMMARY"
       # List + delete (unlink + release).
       S7_LIST=$(kubectl -n "$NS" exec "$PI_POD" -c workspace -- \
-        curl -s -u "agentd:$S7_PASS" "http://127.0.0.1:4096/v1/pi/sessions" 2>/dev/null || true)
+        curl -s -u "opencode:$S7_PASS" "http://127.0.0.1:4096/v1/pi/sessions" 2>/dev/null || true)
       S7_DEL=$(kubectl -n "$NS" exec "$PI_POD" -c workspace -- \
-        curl -s -o /dev/null -w '%{http_code}' -u "agentd:$S7_PASS" -X DELETE \
+        curl -s -o /dev/null -w '%{http_code}' -u "opencode:$S7_PASS" -X DELETE \
         "http://127.0.0.1:4096/v1/pi/sessions/$S7_SID" 2>/dev/null || echo 000)
       S7_FILE2=$(kubectl -n "$NS" exec "$PI_POD" -c workspace -- \
         sh -c "ls /workspace/pi-sessions/ 2>/dev/null | grep $S7_SID || true" 2>/dev/null || true)

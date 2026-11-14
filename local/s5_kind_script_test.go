@@ -157,9 +157,10 @@ func TestS7SecondHarnessLegs_Pinned(t *testing.T) {
 		t.Fatal("S7.1 must be followed by the chart-restore upgrade (sidecar off)")
 	}
 	// The bridge legs must drive the documented bridge surface with the
-	// workspace Basic auth (username agentd) — not some side channel.
+	// workspace Basic auth (username agentd.AuthUsername = "opencode",
+	// shared by both harnesses) — not some side channel.
 	for _, pin := range []string{
-		`-u "agentd:$S7_PASS" -X POST`,
+		`-u "opencode:$S7_PASS" -X POST`,
 		`/v1/pi/sessions/$S7_SID"`,
 		`/v1/pi/sessions/$S7_SID/rpc`,
 		`-X DELETE`,
