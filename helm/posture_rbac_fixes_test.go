@@ -119,7 +119,7 @@ func TestRelayRouterKeypairRuleSplit(t *testing.T) {
 // the pins Role's resourceNames-scoped get/update never granted
 // list/watch. The pins blocks must carry the informer's actual verbs.
 func TestPinsRoleGrantsInformerListWatch(t *testing.T) {
-	for _, pin := range []string{"agentdDelivery", "opencodeDelivery"} {
+	for _, pin := range []string{"agentdDelivery", "opencodeDelivery", "piDelivery"} {
 		t.Run(pin, func(t *testing.T) {
 			// freeModelsRefresher defaults ON and its grant would
 			// vacuously satisfy the predicate — render it OFF (and the

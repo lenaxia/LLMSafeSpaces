@@ -87,6 +87,14 @@ var (
 		prometheus.CounterOpts{Name: "llmsafespaces_workspace_opencode_verify_failures_total", Help: "Supervisor opencode binary verification failures by outcome/node/opencode digest (verify_failed = sha256 mismatch, overlay_missing = pinned binary absent). Once per failure episode, not per restart"},
 		[]string{"outcome", "node", "opencode"},
 	)
+	// Second-harness pi overlay delivery (design 0053 §5.4): supervisor
+	// pi sha256 verification failures. Same should-never-fire semantics
+	// as the agentd/opencode counters — one increment is rollout drift,
+	// corruption, or tampering with the delivered pi tree.
+	WorkspacePiVerifyFailuresTotal = prometheus.NewCounterVec(
+		prometheus.CounterOpts{Name: "llmsafespaces_workspace_pi_verify_failures_total", Help: "Supervisor pi binary verification failures by outcome/node/pi digest (verify_failed = sha256 mismatch, overlay_missing = pinned binary absent). Once per failure episode, not per restart"},
+		[]string{"outcome", "node", "pi"},
+	)
 	// Design 0051 sidecar migration step 1: platform boot-phase failures
 	// (init-fs operational failure, bootstrap/materialize non-zero exit in
 	// the sidecar's boot phase or the legacy platform init containers).
@@ -269,6 +277,7 @@ func AllCollectors() []prometheus.Collector {
 		WorkspaceDrainDeferredTotal, WorkspaceDrainForcedTotal, WorkspaceDrainFailedOpenTotal,
 		WorkspaceAgentdVerifyFailuresTotal,
 		WorkspaceOpencodeVerifyFailuresTotal,
+		WorkspacePiVerifyFailuresTotal,
 		WorkspacePlatformBootFailuresTotal,
 		WorkspaceRecoveryDurationSeconds,
 		WorkspaceStatusUpdateConflictsTotal,

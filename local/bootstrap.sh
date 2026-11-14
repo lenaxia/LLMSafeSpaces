@@ -168,7 +168,7 @@ else
 
     # Design 0053 S3: both delivery artifacts, digest-pinned via the
     # local registry (the base carries no platform binaries).
-    log "  building + pushing delivery artifacts (agentd, opencode)"
+    log "  building + pushing delivery artifacts (agentd, opencode, pi)"
     docker build "${BUILD_ARGS[@]}" \
         -f cmd/workspace-agentd/Dockerfile -t localhost:5001/llmsafespaces/agentd:${IMAGE_TAG} .
     docker push localhost:5001/llmsafespaces/agentd:${IMAGE_TAG} >/dev/null
@@ -197,6 +197,24 @@ else
     docker rm -f "${O_CID}" >/dev/null 2>&1
     OPENCODE_BINARY_SHA=$(sha256sum /tmp/lss-opencode | cut -d' ' -f1)
     [ -n "${OPENCODE_BINARY_SHA}" ] || die "opencode binary hash failed"
+
+    # Design 0053 §5.4: the third delivery artifact (pi overlay) — built
+    # from the pi release source archive (~10 min cold). Pinned the same
+    # way; the binary hash covers the tree-root binary (pod path
+    # /pi/pi — hash-the-binary +
+    # digest-the-tree — runtimes/pi/Dockerfile).
+    docker build --network=host         -f runtimes/pi/Dockerfile -t localhost:5001/llmsafespaces/pi:${IMAGE_TAG} runtimes/pi
+    docker push localhost:5001/llmsafespaces/pi:${IMAGE_TAG} >/dev/null
+    PI_REF=$(docker inspect --format '{{index .RepoDigests 0}}' localhost:5001/llmsafespaces/pi:${IMAGE_TAG})
+    case "${PI_REF}" in
+        *@sha256:*) PI_REF="localhost:5001/llmsafespaces/pi:${IMAGE_TAG}@${PI_REF##*@}" ;;
+        *) die "could not determine pi digest" ;;
+    esac
+    P_CID=$(docker create localhost:5001/llmsafespaces/pi:${IMAGE_TAG} no-start)
+    docker cp "${P_CID}:/pi" /tmp/lss-pi >/dev/null 2>&1 || { docker rm -f "${P_CID}"; die "pi binary extract failed"; }
+    docker rm -f "${P_CID}" >/dev/null 2>&1
+    PI_BINARY_SHA=$(sha256sum /tmp/lss-pi | cut -d' ' -f1)
+    [ -n "${PI_BINARY_SHA}" ] || die "pi binary hash failed"
     ok "delivery artifacts pinned"
 
     log "  loading images into kind (one at a time to keep /tmp use small)"
@@ -290,6 +308,9 @@ helm --kube-context "kind-${CLUSTER_NAME}" upgrade --install "${RELEASE_NAME}" \
     --set "controller.opencodeDelivery.image=${OPENCODE_REF}" \
     --set "controller.opencodeDelivery.binarySHA256Amd64=${OPENCODE_BINARY_SHA}" \
     --set "controller.opencodeDelivery.binarySHA256Arm64=${OPENCODE_BINARY_SHA}" \
+    --set "controller.piDelivery.image=${PI_REF}" \
+    --set "controller.piDelivery.binarySHA256Amd64=${PI_BINARY_SHA}" \
+    --set "controller.piDelivery.binarySHA256Arm64=${PI_BINARY_SHA}" \
     --wait --timeout 5m
 
 log "  waiting for API rollout"
