@@ -38,6 +38,12 @@ func (r *WorkspaceReconciler) validateOverlayDeliveryPins() error {
 		}
 		return fmt.Errorf("opencodeDelivery invalid: %w", err)
 	}
+	if err := validatePiDeliveryConfig(r.PiImage, r.PiBinarySHA256AMD64, r.PiBinarySHA256ARM64); err != nil {
+		if r.PiImage == "" {
+			return fmt.Errorf("piDelivery.image is mandatory (pi was never baked into the base image — no fallback mode): %w", err)
+		}
+		return fmt.Errorf("piDelivery invalid: %w", err)
+	}
 	return nil
 }
 

@@ -38,6 +38,7 @@ REPO_ROOT="${LSS_REPO_ROOT:-$(cd "${SCRIPT_DIR}/.." && pwd)}"
 GHCR_API="${GHCR_API:-https://ghcr.io}"
 SEED_FILE="${REPO_ROOT}/api/internal/imagefactory/catalog.seed.yaml"
 OPENCODE_DOCKERFILE="${REPO_ROOT}/runtimes/opencode/Dockerfile"
+PI_DOCKERFILE="${REPO_ROOT}/runtimes/pi/Dockerfile"
 CONTRACT_SCRIPT="${SCRIPT_DIR}/opencode-binary-contract.sh"
 
 OFFLINE=0
@@ -127,6 +128,7 @@ fi
 # ---- P2 (offline half): no delivery pin equals a platform digest ----------
 AGENTD_REF="$(val controller.agentdDelivery.image)"
 OPENCODE_REF="$(val controller.opencodeDelivery.image)"
+PI_REF="$(val controller.piDelivery.image)"
 CTRL_DIGEST="$(val controller.image.digest)"
 API_DIGEST="$(val api.image.digest)"
 FE_DIGEST="$(val frontend.image.digest)"
@@ -137,6 +139,7 @@ ROUTER_DIGEST="$(val controller.inferenceRelay.router.image.digest)"
 # and skipping the ref here would be a silent PASS on an undeployable
 # candidate. opencode's empty-ref die lives in P4 below; agentd's is here.
 [ -z "${AGENTD_REF}" ] && die "P2 controller.agentdDelivery.image is empty — the delivery pin is mandatory (design 0053 §4.5)"
+[ -z "${PI_REF}" ] && die "P2 controller.piDelivery.image is empty — the delivery pin is mandatory (design 0053 §5.4; pi has no baked fallback)"
 
 ref_digest() { case "$1" in *@sha256:*) printf '%s' "${1##*@sha256:}" ;; *) printf '' ;; esac; }
 
@@ -153,6 +156,9 @@ DELIVERY_PINS=(
   "controller.agentdDelivery.binarySHA256Arm64:$(val controller.agentdDelivery.binarySHA256Arm64)"
   "controller.opencodeDelivery.binarySHA256Amd64:$(val controller.opencodeDelivery.binarySHA256Amd64)"
   "controller.opencodeDelivery.binarySHA256Arm64:$(val controller.opencodeDelivery.binarySHA256Arm64)"
+  "controller.piDelivery.image:${PI_REF}"
+  "controller.piDelivery.binarySHA256Amd64:$(val controller.piDelivery.binarySHA256Amd64)"
+  "controller.piDelivery.binarySHA256Arm64:$(val controller.piDelivery.binarySHA256Arm64)"
 )
 P2_COLLISION=0
 for pin in "${DELIVERY_PINS[@]}"; do
@@ -175,6 +181,14 @@ if [ -n "${AGENTD_HEX}" ] && [ "${AGENTD_HEX}" = "${OPENCODE_HEX}" ]; then
   die "P2 agentdDelivery and opencodeDelivery carry the same digest (${AGENTD_HEX}) — separate artifacts by design (design 0053 §5)"
   P2_COLLISION=1
 fi
+PI_HEX="$(ref_digest "${PI_REF}")"
+for pair in "agentdDelivery:${AGENTD_HEX} piDelivery:${PI_HEX}" "opencodeDelivery:${OPENCODE_HEX} piDelivery:${PI_HEX}"; do
+  a="${pair%% *}"; a_hex="${a##*:}"; b="${pair##* }"; b_hex="${b##*:}"
+  if [ -n "${a_hex}" ] && [ "${a_hex}" = "${b_hex}" ]; then
+    die "P2 ${a%%:*} and ${b%%:*} carry the same digest (${a_hex}) — separate artifacts by design (design 0053 §5/§5.4)"
+    P2_COLLISION=1
+  fi
+done
 [ "${P2_COLLISION}" -eq 0 ] && ok "P2 offline: no delivery pin collides with a platform component digest"
 
 # ---- P4 (offline): opencode coordinate matches the repo pin ---------------
@@ -212,7 +226,21 @@ if [ -n "${OPENCODE_BIN}" ]; then
   fi
 fi
 
-# ---- P1 + P2 (online): registry resolution & index membership -------------
+# ---- P4-pi (offline): pi coordinate matches the repo pin -----------------
+PINNED_PI="$(grep -oE '^ARG PI_VERSION=[0-9.]+' "${PI_DOCKERFILE}" | head -1 | cut -d= -f2 || true)"
+PI_TAG="$(delivery_tag "${PI_REF}")"
+if [ -z "${PINNED_PI}" ]; then
+  die "P4 cannot read the repo pi pin (${PI_DOCKERFILE}) — parser drift?"
+elif [ -z "${PI_REF}" ]; then
+  die "P4 controller.piDelivery.image is empty — the delivery pin is mandatory (design 0053 §5.4)"
+elif [ -n "${PI_TAG}" ] && [ "${PI_TAG}" != "${PINNED_PI}" ]; then
+  die "P4 candidate pi '${PI_TAG}' != repo-validated pin '${PINNED_PI}' — the platform-validated coordinate is runtimes/pi/Dockerfile; shipping an unvalidated pi is the 2026-08-29 incident class"
+elif [ -z "${PI_TAG}" ]; then
+  ok "P4 pi ref is digest-only — no ref-carried version to compare against the repo pin (${PINNED_PI}); the version binding is procedural: copy the digest from the merge-pi values block of the release that built pin ${PINNED_PI}"
+else
+  ok "P4 pi coordinate aligned with the repo pin (${PINNED_PI})"
+fi
+
 if [ "${OFFLINE}" -eq 1 ]; then
   printf '[preflight] WARNING: --offline — registry checks (P1 resolution, P2 index membership) SKIPPED; never use as a merge gate\n' >&2
   if [ "${FAIL}" -ne 0 ]; then
@@ -274,6 +302,7 @@ CHECK_REFS=(
   "base:$(val runtimeEnvironments.base.image.repository):${BASE_TAG}:${BASE_DIGEST}"
   "agentdDelivery:$(delivery_repo "${AGENTD_REF}"):$(delivery_tag "${AGENTD_REF}"):$(ref_digest "${AGENTD_REF}")"
   "opencodeDelivery:$(delivery_repo "${OPENCODE_REF}"):$(delivery_tag "${OPENCODE_REF}"):$(ref_digest "${OPENCODE_REF}")"
+  "piDelivery:$(delivery_repo "${PI_REF}"):$(delivery_tag "${PI_REF}"):$(ref_digest "${PI_REF}")"
 )
 [ -n "$(val controller.inferenceRelay.router.image.repository)" ] && \
   CHECK_REFS+=("router.image:$(val controller.inferenceRelay.router.image.repository):$(val controller.inferenceRelay.router.image.tag):$(val controller.inferenceRelay.router.image.digest)")
@@ -347,6 +376,7 @@ verify_pin_coherence() {
 }
 verify_pin_coherence "agentdDelivery" "${AGENTD_REF}" "$(delivery_repo "${AGENTD_REF}")" "$(delivery_tag "${AGENTD_REF}")" "${AGENTD_HEX}"
 verify_pin_coherence "opencodeDelivery" "${OPENCODE_REF}" "$(delivery_repo "${OPENCODE_REF}")" "$(delivery_tag "${OPENCODE_REF}")" "${OPENCODE_HEX}"
+verify_pin_coherence "piDelivery" "${PI_REF}" "$(delivery_repo "${PI_REF}")" "$(delivery_tag "${PI_REF}")" "${PI_HEX}"
 
 # verify_binary_pins <label> <repo> <ref> <artifact-name> <amd64-pin> <arm64-pin>
 # Break-glass binarySHA256* pins are overrides the controller uses as-is
@@ -411,6 +441,8 @@ verify_binary_pins "agentdDelivery" "$(strip_registry "$(delivery_repo "${AGENTD
   "$(val controller.agentdDelivery.binarySHA256Amd64)" "$(val controller.agentdDelivery.binarySHA256Arm64)"
 verify_binary_pins "opencodeDelivery" "$(strip_registry "$(delivery_repo "${OPENCODE_REF}")")" "$(delivery_ref "${OPENCODE_REF}")" "opencode" \
   "$(val controller.opencodeDelivery.binarySHA256Amd64)" "$(val controller.opencodeDelivery.binarySHA256Arm64)"
+verify_binary_pins "piDelivery" "$(strip_registry "$(delivery_repo "${PI_REF}")")" "$(delivery_ref "${PI_REF}")" "pi" \
+  "$(val controller.piDelivery.binarySHA256Amd64)" "$(val controller.piDelivery.binarySHA256Arm64)"
 
 if [ "${FAIL}" -ne 0 ]; then
   printf '[preflight] RESULT: FAIL — do NOT merge; see failures above\n' >&2

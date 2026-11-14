@@ -130,6 +130,9 @@ func pinnedReconcilerFor(t *testing.T, cached client.Client, apiReader client.Re
 	r.OpencodeImage = testOpencodeImage
 	r.OpencodeBinarySHA256AMD64 = testOpencodeSHAAMD64
 	r.OpencodeBinarySHA256ARM64 = testOpencodeSHAARM64
+	r.PiImage = testPiImage
+	r.PiBinarySHA256AMD64 = testPiSHAAMD64
+	r.PiBinarySHA256ARM64 = testPiSHAARM64
 	return r
 }
 
