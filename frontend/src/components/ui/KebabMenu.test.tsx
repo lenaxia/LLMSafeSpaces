@@ -181,6 +181,26 @@ describe("KebabMenu", () => {
     expect(advancedHeaders).toHaveLength(1);
   });
 
+  it("gives a trailing unsectioned item a bare divider (the board menus' destructive tail)", async () => {
+    const user = userEvent.setup();
+    render(
+      <KebabMenu
+        items={[
+          { label: "Pause", onClick: vi.fn(), section: "Lifecycle" },
+          { label: "Delete", onClick: vi.fn(), destructive: true },
+        ]}
+      />,
+    );
+    await user.click(screen.getByLabelText("Actions"));
+    expect(screen.getByRole("menuitem", { name: "Delete" })).toBeInTheDocument();
+    // The section's divider carries the header label; the trailing
+    // unsectioned item gets a BARE divider (no header of its own).
+    const menu = screen.getByRole("menu");
+    const dividers = Array.from(menu.querySelectorAll("div.border-t"));
+    expect(dividers).toHaveLength(2);
+    expect(dividers.filter((d) => d.childElementCount === 0)).toHaveLength(1);
+  });
+
   it("calls onClick and closes the menu for an item in sectioned mode", async () => {
     const user = userEvent.setup();
     const onClick = vi.fn();
