@@ -100,13 +100,34 @@ mapping + nil-safety. Full `pkg/board` integration suite green
 
 - RC2's PR-merge drift (external truth) can still mint an in_progress
   re-entry claim into a suspended workspace (edge: a PR merges while the
-  workspace is suspended); the claim sits frozen and, if the worker
-  never materializes after resume, lapses ONCE through the ordinary
-  ladder — one genuine attempt, never the suspension-drain class.
-  Accepted; recorded here for the reviewer.
+  workspace is suspended) — CLOSED by the round-2 spawn belt (below):
+  the mint lands but nothing delivers into the workspace, and the
+  workerless claim converges post-resume (lapse once → reclaim → drive
+  re-feeds).
 - The `res.Reclaims` sweep counter counts everything that landed
   (renewals included, the r1-C5 `applied` contract) — the freeze's
   renewals ride it; the pins assert on events + row state.
 - Local PG for the suite: extracted postgresql-15 server debs under
   /tmp/opencode/pgserver (client-only image), cluster on 127.0.0.1:5433,
   migrations from api/migrations applied in order (the CI recipe).
+
+## Round-2 review remediation (AI reviewer, request-changes → fixed)
+
+1. `rc2-reentry-spawn-resume-correctness`: the spawn seam now has a
+   BELT at the single delivery choke point — `spawnSync` consults the
+   freeze seam before every spawn (claim spawns, persona re-arm, RC2's
+   closed-unmerged re-entry, the bounce fallback) and refuses to
+   deliver into a suspended workspace (the production spawner's
+   `EnsureActive` patches `spec.suspend=false` — delivering would
+   auto-RESUME it). The skipped claim is not lost: the freeze holds it
+   while suspended; post-resume a workerless mint lapses once through
+   the ordinary ladder and the drive re-feeds it. Pinned by
+   TestSuspend_RC2ReentryDoesNotSpawnIntoSuspendedWorkspace (drift mint
+   lands, spawn count unchanged, freeze holds, post-resume convergence
+   with the spawn firing into the RUNNING workspace).
+2. `persona-freeze-phantom-event-robustness`: both freeze arms now
+   check `RowsAffected` (the sibling arms' converged-by-them
+   discipline) — a row that raced a concurrent stage move yields 0
+   rows, no renewal, no phantom `renewed/workspace_suspended` event
+   (rc1's arm included, for parity, though its victims are FOR UPDATE
+   locked).

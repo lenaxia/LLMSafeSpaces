@@ -563,6 +563,23 @@ func (s *Service) projectFor(ctx context.Context, projectID string) *Project {
 }
 
 func (s *Service) spawnSync(ctx context.Context, claim *Claim) {
+	// The freeze's spawn belt (suspend.go): NEVER deliver a spawn into a
+	// suspended workspace — the production spawner's activator patches
+	// spec.suspend=false (EnsureActive), so delivering would auto-RESUME
+	// the workspace the platform suspended. This is the single delivery
+	// choke point every spawn rides (claim spawns, persona re-arm,
+	// RC2's closed-unmerged re-entry, the bounce fallback): the claim
+	// gates upstream refuse most suspended-workspace mints already, and
+	// this belt catches the rest plus the suspend-lands-mid-mint race.
+	// The skipped claim is NOT lost: while suspended the freeze renews
+	// it; after resume it converges through the ordinary machinery (a
+	// served claim proceeds; a workerless one lapses once through the
+	// ladder and the drive re-feeds it).
+	if s.workspaceSuspended(ctx, claim.WorkspaceID) {
+		slog.WarnContext(ctx, "board: spawn skipped — target workspace is suspended (the freeze holds the claim; converges after resume)",
+			"task_id", claim.TaskID, "workspace_id", claim.WorkspaceID)
+		return
+	}
 	sessionID, err := s.spawner(ctx, claim)
 	if err != nil {
 		slog.WarnContext(ctx, "board: worker spawn failed — lease lapse heals",

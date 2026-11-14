@@ -325,3 +325,55 @@ func (s *BoardSuite) TestSuspend_NilSeamInert() {
 	s.Equal(1, res.Reclaims, "nil seam: a lapsed claim reclaims regardless of workspace phase")
 	s.Equal(board.StageBacklog, s.rawTask(task.ID).Stage)
 }
+
+// Pin F — the spawn belt (round-2 review, rc2-reentry-spawn-resume):
+// RC2's closed-unmerged re-entry mint is external truth and lands even
+// into a suspended workspace, but its SPAWN must not fire — the
+// production spawner's activator patches spec.suspend=false, so
+// delivering would auto-RESUME the workspace the platform suspended.
+// After resume the workerless claim converges through the ordinary
+// machinery (lapse → reclaim → drive re-feeds).
+func (s *BoardSuite) TestSuspend_RC2ReentryDoesNotSpawnIntoSuspendedWorkspace() {
+	ctx := context.Background()
+	ws := s.seedWorkspace()
+	p := s.seedProject(ws, 2)
+	e := s.seedEpic(p, board.EpicActive)
+	task := s.seedTask(e, "reentry-while-suspended", []string{"pr:7"}, false)
+
+	src := &fakeSuspendSource{}
+	svc := s.suspendSvc(src)
+	c, err := svc.ClaimNext(ctx, "w-"+ws, ws)
+	s.Require().NoError(err)
+	s.Require().Equal(task.ID, c.TaskID)
+	_, err = svc.MoveStage(ctx, s.agent(c.Assignee, c.ClaimToken), "", c.ShortID, board.StageInReview, "", "")
+	s.Require().NoError(err)
+
+	// Suspend, then land the external truth: the PR closed unmerged.
+	src.setSuspended(ws)
+	s.drift.set(7, board.PRState{Closed: true, URL: "https://git.example/pr/7"})
+	spawnsBefore := s.spawner.count()
+	res := s.sweep()
+	s.Equal(1, res.DriftReentry, "the drift mint is external truth — it lands")
+	row := s.rawTask(task.ID)
+	s.Equal(board.StageInProgress, row.Stage)
+	s.Require().NotNil(row.ClaimToken, "the re-entry minted a fresh claim")
+	s.Equal(spawnsBefore, s.spawner.count(), "NO spawn fired into the suspended workspace (no auto-resume)")
+
+	// The freeze holds the workerless mint while suspended.
+	s.expireLease(task.ID)
+	s.sweep()
+	s.Equal(board.StageInProgress, s.rawTask(task.ID).Stage, "the freeze holds the re-entry claim")
+
+	// Resume: the workerless claim lapses ONCE through the ordinary
+	// ladder (a genuine post-resume failure — one attempt), requeues,
+	// and the drive re-feeds it: the spawn fires into the RUNNING
+	// workspace. Convergence without the board ever lifting the
+	// suspension.
+	src.clear()
+	s.expireLease(task.ID)
+	s.sweep()
+	s.Equal(board.StageBacklog, s.rawTask(task.ID).Stage, "post-resume: the workerless mint reclaims through the ladder")
+	s.clearTaskBackoff(task.ID)
+	s.sweep()
+	s.Greater(s.spawner.count(), spawnsBefore, "after resume the drive re-feeds the work — the spawn fires")
+}

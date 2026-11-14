@@ -338,8 +338,17 @@ func (s *Service) rc1Reclaims(ctx context.Context) (int, error) {
 				continue
 			}
 			v := victims[i]
-			if _, err := tx.Exec(ctx, freezeLeaseSQL, v.id, s.cfg.LeaseDuration.Seconds(), StageInProgress); err != nil {
+			tag, err := tx.Exec(ctx, freezeLeaseSQL, v.id, s.cfg.LeaseDuration.Seconds(), StageInProgress)
+			if err != nil {
 				return 0, err
+			}
+			if tag.RowsAffected() == 0 {
+				// The stage guard lost the race (the row moved between
+				// the locked scan and this write — possible only via a
+				// superseding writer on a replica's stale lock): no
+				// phantom renewal, no event (the sibling arms'
+				// converged-by-them discipline).
+				continue
 			}
 			freezeOut = append(freezeOut, LeaseEvent{
 				Kind: LeaseEventRenewed, TaskID: v.id, TaskShortID: v.shortID, ProjectID: v.project,
@@ -779,9 +788,18 @@ func (s *Service) rc1PersonaClaims(ctx context.Context) (personaReclaim, error) 
 			if err != nil {
 				return out, err
 			}
-			if _, err := tx.Exec(ctx, freezeLeaseSQL, v.id, s.cfg.LeaseDuration.Seconds(), StageInReview); err != nil {
+			// The stage guard is the phantom-event belt (the sibling
+			// arms' discipline): the lapse SELECT ran UNLOCKED, so a
+			// concurrent stage move between scan and write yields 0
+			// rows — converged by them, no renewal, no event.
+			tag, err := tx.Exec(ctx, freezeLeaseSQL, v.id, s.cfg.LeaseDuration.Seconds(), StageInReview)
+			if err != nil {
 				_ = tx.Rollback(ctx)
 				return out, err
+			}
+			if tag.RowsAffected() == 0 {
+				_ = tx.Rollback(ctx)
+				continue // raced a concurrent writer: converged by them
 			}
 			if err := tx.Commit(ctx); err != nil {
 				return out, err
