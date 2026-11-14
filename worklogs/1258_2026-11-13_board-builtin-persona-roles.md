@@ -77,4 +77,4 @@ None.
 - `cmd/workspace-agentd/mcp_server.go` (board_get_config description)
 - `docs/api/mcp.md` (Board configuration and stage personas)
 - `CHANGELOG.md` ([Unreleased])
-- `worklogs/NNNN_2026-11-13_board-builtin-persona-roles.md` (NEW)
+- `worklogs/1258_2026-11-13_board-builtin-persona-roles.md` (NEW)
