@@ -1689,6 +1689,15 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 				} else {
 					log.Info("board: built-in reviewer agent role ensured (slug reviewer, verdict-channel charter as system prompt)")
 				}
+				// The shipped stage-persona vocabulary (2026-11-13):
+				// implementer/reviewer pairs for coding, data analysis,
+				// and writing — selectable from stagePersonas without
+				// authoring custom roles. Same best-effort posture and
+				// idempotency as the reviewer seed (per-role no-op when
+				// the platform vocabulary already carries the slug).
+				if err := seedBuiltinBoardRoles(seedCtx, pgOrgStore); err != nil {
+					log.Warn("board: built-in stage-persona role seeding skipped", "error", err.Error())
+				}
 				seedCancel()
 			}
 			spawnOpts := []board.Option{

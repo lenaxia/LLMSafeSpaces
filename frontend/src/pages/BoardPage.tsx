@@ -16,6 +16,7 @@ import { BoardErrorNotice } from "../components/board/BoardErrorNotice";
 import { StoryCard } from "../components/board/StoryCard";
 import { StoryDialog } from "../components/board/StoryDialog";
 import { StoryDrawer } from "../components/board/StoryDrawer";
+import { DoneDrawer } from "../components/board/DoneDrawer";
 import { BoardDefaultsDialog, ProjectConfigTrigger } from "../components/board/BoardConfigPanels";
 import { EpicDrawer } from "../components/board/EpicDrawer";
 import { BoardHelpDrawer } from "../components/board/BoardHelpDrawer";
@@ -29,10 +30,12 @@ import { ApiClientError } from "../api/client";
 import {
   MAIN_STAGES,
   SIDE_STAGES,
+  STAGE_DONE,
   STAGE_LABELS,
   isManagerDragAllowed,
   stageDragKey,
   doneReadiness,
+  sortDoneNewestFirst,
   describeBoardError,
   suggestBoardItems,
   validateBoardTags,
@@ -54,6 +57,15 @@ function toBoardError(err: unknown): DescribedBoardError {
 /** 2026-10-28 ruling 3: the visible-row cap for a project's epic list —
  * overflow scrolls inside the list's own region (never page growth). */
 export const EPIC_LIST_MAX_VISIBLE = 4;
+
+/** Owner ask 2026-11-13: the Done column's inline-render cap — beyond
+ * this many done stories the column renders exactly this many (the
+ * newest) plus the "Show all N done" affordance; the full set lives in
+ * the DoneDrawer's own scroll region. 10 keeps the terminal column's
+ * height in line with the other through-flow columns; the cap is
+ * visual — nothing is dropped, and ≤N renders as before (no
+ * affordance). */
+export const DONE_COLUMN_MAX_VISIBLE = 10;
 
 /** 2026-10-28 ruling 3: an epic's ACTIVITY clock — the newest of the
  * epic's own updated_at and its task rows' updated_at (both already in
@@ -536,6 +548,12 @@ export function BoardPage() {
 
   const [taskDrawer, setTaskDrawer] = useState<BoardTask | null>(null);
 
+  // Owner ask 2026-11-13: the Done column's show-all drawer — which
+  // lane's done set it carries (null = closed). Per-mount state, no
+  // persistence (the board re-opens collapsed; there is no UI-prefs
+  // pattern to ride).
+  const [doneDrawerProjectId, setDoneDrawerProjectId] = useState<string | null>(null);
+
   const createProjectMutation = useMutation({
     mutationFn: () =>
       boardApi.createProject({ name: projName.trim(), targetWorkspaceId: projWorkspace, workerSlots: projSlots, tags: projTags }),
@@ -749,6 +767,12 @@ export function BoardPage() {
   const taskDialogTask = taskDialog?.mode === "edit" ? taskDialog.task : null;
   const taskDialogEpic = taskDialog?.mode === "create" ? taskDialog.epic : null;
 
+  // Owner ask 2026-11-13: the Done drawer's lane — derived, so a lane
+  // that vanishes (archived/deleted mid-view, here or cross-context)
+  // reads as closed rather than stranding a drawer over nothing (the
+  // #1964 r1 stale-focus posture).
+  const doneDrawerProject = doneDrawerProjectId === null ? null : projects.find((p) => p.id === doneDrawerProjectId) ?? null;
+
   if (projectsQuery.isLoading) {
     return (
       <div className="flex h-full items-center justify-center" data-testid="board-loading">
@@ -951,6 +975,8 @@ export function BoardPage() {
                 setTaskDeleteTarget(t);
               }}
               startingShortId={startingShortId}
+              laneShortId={project.short_id}
+              onShowAllDone={() => setDoneDrawerProjectId(project.id)}
             />
           ))}
         </div>
@@ -1317,6 +1343,32 @@ export function BoardPage() {
           )}
         </div>
       </div>
+
+      {/* --- Done drawer (owner ask 2026-11-13) — the Done column's
+       * overflow surface: the full done set of ONE lane, newest-first,
+       * scrolling in its own region. Rendered BEFORE the dialogs so a
+       * drawer/dialog opened later stacks above it (Radix portals
+       * append in open order — the details drawer / edit dialog /
+       * delete modal all return to this list on close). -------- */}
+      <DoneDrawer
+        open={doneDrawerProject !== null}
+        onOpenChange={(open) => { if (!open) setDoneDrawerProjectId(null); }}
+        project={doneDrawerProject}
+        tasks={
+          doneDrawerProject
+            ? filteredTasks.filter((t) => t.project_id === doneDrawerProject.id && stageOf(t) === STAGE_DONE)
+            : []
+        }
+        allProjectTasks={doneDrawerProject ? tasks.filter((t) => t.project_id === doneDrawerProject.id) : []}
+        workspaceId={doneDrawerProject?.target_workspace_id}
+        highlightEpicId={doneDrawerProject ? selectedEpicOf(doneDrawerProject.id)?.id ?? null : null}
+        onOpenCard={(t) => setTaskDialog({ mode: "edit", task: t })}
+        onCardDetails={(t) => setTaskDrawer(t)}
+        onCardDelete={(t) => {
+          setDeleteError(null);
+          setTaskDeleteTarget(t);
+        }}
+      />
 
       {/* --- New project dialog ------------------------------------------------- */}
       <Dialog.Root open={showCreateProject} onOpenChange={setShowCreateProject}>
@@ -1742,6 +1794,12 @@ interface StageCellProps {
   /** #1832 item 3: opens the task delete modal (card kebab). */
   onCardDelete: (t: BoardTask) => void;
   startingShortId: string | null;
+  /** Owner ask 2026-11-13: the lane's short id — scopes the Done
+   * column's show-all affordance (one per swimlane). */
+  laneShortId?: string;
+  /** Owner ask 2026-11-13: opens the Done drawer for this lane (the
+   * Done column's overflow surface). Invoked only by the done branch. */
+  onShowAllDone?: () => void;
 }
 
 function StageCell({
@@ -1762,9 +1820,25 @@ function StageCell({
   onCardStart,
   onCardDelete,
   startingShortId,
+  laneShortId,
+  onShowAllDone,
 }: StageCellProps) {
   const [dragOver, setDragOver] = useState(false);
   const cards = projectTasks.filter((t) => stageOf(t) === stage);
+  // Owner ask 2026-11-13 — the Done column's render set: NEWEST-DONE
+  // first (the server list arrives created_at-asc, reads.go; the
+  // recency order is applied view-side), capped at
+  // DONE_COLUMN_MAX_VISIBLE inline cards; the rest live one click
+  // deeper in the show-all drawer. Every other column keeps the
+  // server's list order verbatim; at ≤N the done column renders every
+  // card (no cap, no affordance — the regression pin).
+  let visibleCards = cards;
+  let doneOverflow = 0;
+  if (stage === STAGE_DONE) {
+    const ordered = sortDoneNewestFirst(cards);
+    doneOverflow = Math.max(0, ordered.length - DONE_COLUMN_MAX_VISIBLE);
+    visibleCards = doneOverflow > 0 ? ordered.slice(0, DONE_COLUMN_MAX_VISIBLE) : ordered;
+  }
   // §4.8 affordance mirror (r1): cells the manager-surface map does not
   // enumerate for the dragged source render as non-landing — no primary
   // highlight, struck-through header — while the drop STILL attempts so
@@ -1798,7 +1872,7 @@ function StageCell({
         </span>
         <span className="text-[10px] text-muted-foreground">{cards.length}</span>
       </div>
-      {cards.map((t) => (
+      {visibleCards.map((t) => (
         <StoryCard
           key={t.short_id}
           task={t}
@@ -1823,6 +1897,23 @@ function StageCell({
           onDragEnd={onCardDragEnd}
         />
       ))}
+      {/* Owner ask 2026-11-13: the Done column's collapsed affordance —
+       * exactly N inline + this control; a native button (keyboard
+       * reachable, aria-haspopup names the dialog it opens). The count
+       * is the lane's FULL done set (the header badge stays the same
+       * truth — the cap is visual, nothing is dropped). */}
+      {doneOverflow > 0 && (
+        <button
+          type="button"
+          onClick={() => onShowAllDone?.()}
+          aria-haspopup="dialog"
+          title={`Open the done drawer — every completed story in this lane, newest first`}
+          data-testid={`done-show-all-${laneShortId}`}
+          className="rounded-md border border-border bg-muted/40 px-2 py-1 text-[10px] font-medium text-muted-foreground transition-colors hover:border-primary/40 hover:text-foreground"
+        >
+          Show all {cards.length} done
+        </button>
+      )}
       {cards.length === 0 && <span className="px-1 text-[10px] text-muted-foreground/60">—</span>}
     </div>
   );
