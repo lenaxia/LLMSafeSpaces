@@ -2,7 +2,7 @@
 
 **Date:** 2026-11-13
 **Session:** tsk-sober-oxbow-indicates (owner ask 2026-11-13; epic "Frontend reliability mopup")
-**Status:** Complete — review rounds 1-3 remediated (r3: the F4 restore scoped to its owning session — cross-session bleed closed and pinned; prototype pin re-seeded with raw JSON after the r2 pin proved vacuous; records corrected), pushed for re-review
+**Status:** MERGE-READY — AI reviewer APPROVED 2026-11-14 00:46Z on head e0a800563 (round 4; rounds 1-3 remediated); CI green on the exact head (Frontend/Test/Lint/builds SUCCESS; the sole red is the pre-existing govulncheck Go-stdlib advisory set in untouched Go files, adjudicated diff-independent by every review round). Never self-merge — the orchestrator merges.
 
 ---
 
