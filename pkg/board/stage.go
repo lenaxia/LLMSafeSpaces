@@ -395,6 +395,7 @@ type nudge struct {
 	redispatch    string // #1959: existing-session re-dispatch target (the ORIGINAL implementer)
 	events        []Event
 	pokeProjects  []string
+	deposed       []deposedWorker // S8: claimants deposed by in-transaction writes (the done-settle's anchored reviews) — aborted post-commit
 }
 
 func (n nudge) fire(ctx context.Context, s *Service) {
@@ -404,6 +405,9 @@ func (n nudge) fire(ctx context.Context, s *Service) {
 	for _, pid := range n.pokeProjects {
 		s.pokeDrive(pid)
 	}
+	// S8: the settle's deposed reviewers first (post-commit — the
+	// claims are durably ended), then the spawn arms.
+	s.abortDeposedWorkers(ctx, n.deposed)
 	if n.redispatch != "" {
 		s.redispatchBounce(ctx, n.taskID, n.token, n.redispatch)
 		return
@@ -516,12 +520,13 @@ func (s *Service) doneCascade(ctx context.Context, tx pgx.Tx, t *Task, evidenceU
 	if _, err := epicCompletionCheck(ctx, tx, t.EpicID); err != nil {
 		return err
 	}
-	evts, pokes, err := s.completeReviewTasks(ctx, tx, t, evidenceURL, nil)
-	if err != nil {
+	settle := &settleOut{}
+	if err := s.completeReviewTasks(ctx, tx, t, evidenceURL, nil, settle); err != nil {
 		return err
 	}
-	n.events = append(n.events, evts...)
-	n.pokeProjects = append(n.pokeProjects, pokes...)
+	n.events = append(n.events, settle.events...)
+	n.pokeProjects = append(n.pokeProjects, settle.pokes...)
+	n.deposed = append(n.deposed, settle.deposed...)
 	return nil
 }
 
