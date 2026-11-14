@@ -296,16 +296,46 @@ type HealthProjectSlots struct {
 	InUse       int    `json:"in_use"`
 }
 
+// HealthObservation is one recent observation-plane action on the
+// health snapshot (S7 — the audit trail's recent window): what the
+// platform DID to this story (stamped/nudged/renewed/lapse_verdict/
+// reclaimed/deposed), when, to whom. The detail map rides verbatim
+// (flat strings/numbers — observation.go's vocabulary).
+type HealthObservation struct {
+	TaskID  string `json:"task_id"`
+	ShortID string `json:"short_id"`
+	Kind    string `json:"kind"`
+	// Session is the action's subject session — phrase-translated at
+	// the read edge (#1922): the 3-word phrase when the index knows
+	// it, else the raw harness id + the deprecation flag.
+	Session           string         `json:"session,omitempty"`
+	SessionDeprecated bool           `json:"session_deprecated,omitempty"`
+	Detail            map[string]any `json:"detail,omitempty"`
+	At                time.Time      `json:"at"`
+}
+
+// HealthObservationRetention self-documents the window's boundary on
+// every read (S7's documented retention contract, surfaced where the
+// window is consumed).
+type HealthObservationRetention struct {
+	PerTaskEvents int    `json:"per_task_events"`
+	TTL           string `json:"ttl"`
+}
+
 // Health is the board health snapshot (design §4.2 board_read(health) /
 // §4.8's health panel): active leases + expiry, recent reclaims, task and
-// project-slot cooldowns, pending_input by origin, per-project slots.
+// project-slot cooldowns, pending_input by origin, per-project slots, and
+// the observation plane's recent audit window (S7 — the truth about what
+// the platform did, one read away).
 type Health struct {
-	ActiveLeases         []HealthLease           `json:"active_leases"`
-	TaskCooldowns        []HealthTaskCooldown    `json:"task_cooldowns"`
-	ProjectCooldowns     []HealthProjectCooldown `json:"project_cooldowns"`
-	PendingInputByOrigin map[string]int          `json:"pending_input_by_origin"`
-	RecentReclaims       []HealthReclaim         `json:"recent_reclaims"`
-	ProjectSlots         []HealthProjectSlots    `json:"project_slots"`
+	ActiveLeases         []HealthLease              `json:"active_leases"`
+	TaskCooldowns        []HealthTaskCooldown       `json:"task_cooldowns"`
+	ProjectCooldowns     []HealthProjectCooldown    `json:"project_cooldowns"`
+	PendingInputByOrigin map[string]int             `json:"pending_input_by_origin"`
+	RecentReclaims       []HealthReclaim            `json:"recent_reclaims"`
+	ProjectSlots         []HealthProjectSlots       `json:"project_slots"`
+	ObservationEvents    []HealthObservation        `json:"observation_events"`
+	ObservationRetention HealthObservationRetention `json:"observation_retention"`
 }
 
 // HeartbeatResult reports the nudge-response channel's decision (item 6

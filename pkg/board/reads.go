@@ -11,6 +11,8 @@ import (
 	"strings"
 
 	"github.com/jackc/pgx/v5"
+
+	"github.com/lenaxia/llmsafespaces/pkg/shortid"
 )
 
 // reads.go — the board_read projection (§4.2): a read model over the
@@ -405,6 +407,11 @@ func (s *Service) BoardHealth(ctx context.Context, userID string) (*Health, erro
 		PendingInputByOrigin: map[string]int{},
 		RecentReclaims:       []HealthReclaim{},
 		ProjectSlots:         []HealthProjectSlots{},
+		ObservationEvents:    []HealthObservation{},
+		ObservationRetention: HealthObservationRetention{
+			PerTaskEvents: ObservationKeepPerTask,
+			TTL:           ObservationTTL.String(),
+		},
 	}
 	if err := s.healthActiveLeases(ctx, userID, h); err != nil {
 		return nil, err
@@ -418,6 +425,11 @@ func (s *Service) BoardHealth(ctx context.Context, userID string) (*Health, erro
 	if err := s.healthRecentReclaims(ctx, userID, h); err != nil {
 		return nil, err
 	}
+	obs, err := s.healthObservationEvents(ctx, `p.user_id = $1`, userID)
+	if err != nil {
+		return nil, err
+	}
+	h.ObservationEvents = obs
 	return h, s.healthProjectSlots(ctx, userID, h)
 }
 
@@ -535,6 +547,90 @@ func (s *Service) healthRecentReclaims(ctx context.Context, userID string, h *He
 	return rows.Err()
 }
 
+// healthObservationEvents fills the S7 audit window: the most recent
+// observation-plane actions across the caller's boards, newest first
+// (observation.go's retention boundary caps what exists; the read
+// bounds what renders). scope is the perimeter predicate — `p.user_id
+// = $1` (owner) or `p.target_workspace_id = $1::uuid` (agent surface).
+// Sessions phrase-translate at the read edge (#1922): the raw harness
+// id + deprecation flag when the index never saw the session — a trail
+// row's subject may long postdate the session's registration.
+func (s *Service) healthObservationEvents(ctx context.Context, scope, arg string) ([]HealthObservation, error) {
+	rows, err := s.q().Query(ctx, `
+		SELECT oe.task_id, t.short_id, oe.kind, coalesce(oe.session, ''), oe.detail, oe.created_at,
+		       coalesce(p.target_workspace_id::text, '')
+		FROM task_observation_events oe
+		JOIN tasks t ON t.id = oe.task_id
+		JOIN projects p ON p.id = t.project_id
+		WHERE `+scope+`
+		ORDER BY oe.id DESC LIMIT `+strconv.Itoa(ObservationWindow), arg)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []HealthObservation{}
+	wsByTask := map[string]string{}
+	for rows.Next() {
+		var o HealthObservation
+		var detail []byte
+		var ws string
+		if err := rows.Scan(&o.TaskID, &o.ShortID, &o.Kind, &o.Session, &detail, &o.At, &ws); err != nil {
+			return nil, err
+		}
+		o.Detail = decodeObservationDetail(detail)
+		wsByTask[o.TaskID] = ws
+		out = append(out, o)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	s.translateHealthObservations(ctx, out, func(taskID string) string { return wsByTask[taskID] })
+	return out, nil
+}
+
+// translateHealthObservations rewrites HealthObservation copies' session
+// refs the way translateHealthLeases does (#1922: stored rows stay
+// canonical; only the response copies translate — phrase when known,
+// raw + deprecation flag when not, never worse).
+func (s *Service) translateHealthObservations(ctx context.Context, obs []HealthObservation, wsFor func(taskID string) string) {
+	sessionsByWS := map[string]map[string]bool{}
+	for i := range obs {
+		if obs[i].Session == "" || shortid.IsShortIDForm(obs[i].Session) {
+			continue
+		}
+		ws := wsFor(obs[i].TaskID)
+		if ws == "" {
+			obs[i].SessionDeprecated = true
+			continue
+		}
+		if sessionsByWS[ws] == nil {
+			sessionsByWS[ws] = map[string]bool{}
+		}
+		sessionsByWS[ws][obs[i].Session] = true
+	}
+	phrases := map[string]string{}
+	for ws, ids := range sessionsByWS {
+		keys := make([]string, 0, len(ids))
+		for sid := range ids {
+			keys = append(keys, sid)
+		}
+		for sid, phrase := range LookupSessionPhrases(ctx, s.q(), ws, keys) {
+			phrases[sid] = phrase
+		}
+	}
+	for i := range obs {
+		if obs[i].Session == "" || shortid.IsShortIDForm(obs[i].Session) {
+			continue
+		}
+		if phrase, ok := phrases[obs[i].Session]; ok && phrase != "" {
+			obs[i].Session = phrase
+			obs[i].SessionDeprecated = false
+		} else {
+			obs[i].SessionDeprecated = true
+		}
+	}
+}
+
 func (s *Service) healthProjectSlots(ctx context.Context, userID string, h *Health) error {
 	rows, err := s.q().Query(ctx, `
 		SELECT p.id, p.short_id, p.worker_slots,
@@ -616,6 +712,11 @@ func (s *Service) BoardHealthInWorkspace(ctx context.Context, workspaceID string
 		PendingInputByOrigin: map[string]int{},
 		RecentReclaims:       []HealthReclaim{},
 		ProjectSlots:         []HealthProjectSlots{},
+		ObservationEvents:    []HealthObservation{},
+		ObservationRetention: HealthObservationRetention{
+			PerTaskEvents: ObservationKeepPerTask,
+			TTL:           ObservationTTL.String(),
+		},
 	}
 	rows, err := s.q().Query(ctx, `
 		SELECT t.id, t.short_id, t.title, t.project_id, coalesce(t.assignee_session, ''), t.lease_expires_at
@@ -730,6 +831,15 @@ func (s *Service) BoardHealthInWorkspace(ctx context.Context, workspaceID string
 		return nil, err
 	}
 	rrows.Close()
+
+	// S7: the observation window rides the agent surface's health too
+	// (board_health — the orchestrator's ONE READ): the workspace
+	// perimeter scopes the trail exactly as it scopes the rows above.
+	obs, err := s.healthObservationEvents(ctx, `p.target_workspace_id = $1::uuid`, workspaceID)
+	if err != nil {
+		return nil, err
+	}
+	h.ObservationEvents = obs
 
 	srows, err := s.q().Query(ctx, `
 		SELECT p.id, p.short_id, p.worker_slots,

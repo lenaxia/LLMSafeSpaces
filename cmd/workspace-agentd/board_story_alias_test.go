@@ -321,3 +321,26 @@ func TestBoardStoryAlias_LegacyKeyNoticeRidesErrors(t *testing.T) {
 	assert.Contains(t, texts[1], "DEPRECATED")
 	assert.Contains(t, texts[1], "storyId")
 }
+
+// TestBoardStoryAlias_DeposeCanonicalKey: review r4's missing pin —
+// the deposed-depose tool's CANONICAL storyId key. board_depose_story
+// is story-first FROM BIRTH (the catch-up merge's naming ruling): its
+// advertised schema's only key spelling is storyId, so the canonical
+// dispatch must resolve the row and carry NO deprecation notice (the
+// wire keeps the task-term body — the byte-compatible seam). Every
+// other depose arm in the suite drives the legacy taskId key, so this
+// path was unpinned for this tool.
+func TestBoardStoryAlias_DeposeCanonicalKey(t *testing.T) {
+	api, rec := newAutomationAPI(t, 200, `{"stage":"backlog"}`)
+	setupRenameWorkspaceEnv(t, api)
+
+	texts, isError := aliasWindowCall(t, "board_depose_story", map[string]any{
+		"storyId": "tsk-cccc3333",
+		"branch":  "feat/salvage", "state": "pushed, CI green",
+	})
+	require.False(t, isError)
+	require.Len(t, texts, 1, "canonical name + canonical key carry no notice")
+	assert.Equal(t, "/internal/v1/automation/board/tasks/tsk-cccc3333/depose", rec.path,
+		"storyId translates onto the wire's task term — the depose seam resolves the row")
+	assert.Contains(t, rec.body, "feat/salvage", "the salvage fields ride the verbatim wire body")
+}

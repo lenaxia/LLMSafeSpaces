@@ -1602,10 +1602,11 @@ type boardDeposeBody struct {
 	RequestID string `json:"requestId,omitempty"`
 }
 
-// BoardDeposeStory is board_depose_story (S5; the REST wire term is
-// 'task'): depose a LAPSED claim, recording the salvage pointer
-// (branch/PR/last known state) on the row — the next claim's charter
-// embeds it (inherit, don't restart).
+// BoardDeposeStory is board_depose_story (S5): depose a LAPSED claim,
+// recording the salvage pointer (branch/PR/last known state) on the row
+// — the next claim's charter embeds it (inherit, don't restart).
+// The REST path stays task-named (the rename ruling's byte-identical
+// wire rule).
 func (c *HTTPClient) BoardDeposeStory(ctx context.Context, taskID string, ptr board.SalvagePointer, requestID string) (json.RawMessage, error) {
 	if err := validateID(taskID, "task_id"); err != nil {
 		return nil, err

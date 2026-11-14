@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -64,6 +65,13 @@ const (
 // sweep itself is stateless between passes apart from the watermark).
 type Reconciler struct {
 	svc *Service
+	// obsPruneNanos stamps the S7 observation-trail prune's last run
+	// (unix nanos; 0 = never). Instance-scoped (review r1: no
+	// package-level mutable state) AND synchronized (review r2: the
+	// concurrent-Sweep pattern — reconciler_kill_test's four parallel
+	// sweeps — is a designed standing shape, so the gate check+stamp
+	// is a CompareAndSwap, never an unsynchronized read/write pair).
+	obsPruneNanos atomic.Int64
 }
 
 // NewReconciler constructs the reconciler over a Service.
@@ -83,6 +91,11 @@ func (r *Reconciler) SetEventPublisher(pub EventPublisher) { r.svc.SetEventPubli
 func (r *Reconciler) Sweep(ctx context.Context) (SweepResult, error) {
 	var res SweepResult
 	s := r.svc
+
+	// S7: the observation trail's retention pass rides the sweep ITSELF
+	// (gated hourly inside) — the Start loop simply calls Sweep; a
+	// manual sweep enforces the boundary the same way the docs promise.
+	r.maybePruneObservations(ctx)
 
 	wm, err := r.readWatermark(ctx)
 	if err != nil {
@@ -340,6 +353,10 @@ func (s *Service) rc1Reclaims(ctx context.Context) (int, error) {
 	decisions := make(map[string]ladderDecision, len(victims))
 	wedgeEvidence := make(map[string]string, len(victims))
 	nudgeIDs := make(map[string]string, len(victims))
+	// nudgeRung carries the S7 trail's WHICH SENTINEL (observation.go:
+	// first_sentinel vs re_anchor) — set at send time, where the row's
+	// pre-existing sentinel state answers it.
+	nudgeRung := make(map[string]string, len(victims))
 	// renewSource / reclaimReason carry the S4 observation plane's WHY
 	// (design 0072): which rung answered alive, why a claim was
 	// re-queued — the facts the lease-event sink projects post-commit.
@@ -359,6 +376,15 @@ func (s *Service) rc1Reclaims(ctx context.Context) (int, error) {
 		id := uuidNew()
 		outbound = append(outbound, outboundNudge{v: v, id: id})
 		decisions[v.id] = ladderNudge
+		// The rung: a row already carrying a sentinel is being
+		// RE-ANCHORED (this source could not measure the old mark — a
+		// duplicate sentinel is benign under latest-only); an empty
+		// slot is the episode's first ask.
+		if v.nudgeID != "" {
+			nudgeRung[v.id] = NudgeRungReAnchor
+		} else {
+			nudgeRung[v.id] = NudgeRungFirst
+		}
 		return id
 	}
 	for _, v := range victims {
@@ -495,8 +521,14 @@ func (s *Service) rc1Reclaims(ctx context.Context) (int, error) {
 	applied := 0
 	// leaseOut collects the S4 observation-plane decisions (design
 	// 0072): emitted strictly POST-COMMIT so the sink never projects a
-	// decision the transaction rolled back.
+	// decision the transaction rolled back. obsNudged collects the S7
+	// trail's delivered sentinels (the nudge rung is engine-silent on
+	// the bus — the app nudger publishes there — but the TRAIL wants
+	// it: "were nudges sent?" was the incident's first unanswerable
+	// question). Only delivered sentinels enter nudgeIDs (the outbound
+	// loop), so every collected row is a SENT sentinel.
 	var leaseOut []LeaseEvent
+	var obsNudged []ObservationEvent
 	leaseEvt := func(v victim, kind string) LeaseEvent {
 		return LeaseEvent{
 			Kind: kind, TaskID: v.id, TaskShortID: v.shortID, ProjectID: v.project,
@@ -507,10 +539,14 @@ func (s *Service) rc1Reclaims(ctx context.Context) (int, error) {
 		switch decisions[v.id] {
 		case ladderRenew:
 			// Renewal: extend the lease, clear the nudge slot. NO
-			// transition, NO audit event (design: renewals never flood
-			// the trail), NO overlay. busy_renews carries the
-			// consecutive busy-ONLY count (the cap's input): +1 when
-			// Busy alone renewed, 0 when stronger evidence did.
+			// transition, NO board_events row (design: renewals never
+			// flood the idempotency ledger), NO overlay. The S7
+			// observation trail DOES take the renewal (post-commit,
+			// via emitLease — the retained window's bounded by the
+			// retention boundary, not the ledger's never). busy_renews
+			// carries the consecutive busy-ONLY count (the cap's
+			// input): +1 when Busy alone renewed, 0 when stronger
+			// evidence did.
 			if _, err := tx.Exec(ctx, `
 				UPDATE tasks SET lease_expires_at=now()+make_interval(secs=>$2::float8),
 					last_progress_at=now(), nudge_id=NULL, nudged_at=NULL, updated_at=now(),
@@ -570,7 +606,17 @@ func (s *Service) rc1Reclaims(ctx context.Context) (int, error) {
 			// §9.3; lease_events.go's header): a bus nudged event means
 			// the consumer owns delivery, a v1 send means the bus could
 			// not be trusted. Double-reporting here would make the
-			// stream's nudged count a lie.
+			// stream's nudged count a lie. The S7 TRAIL still takes it
+			// post-commit (obsNudged — the durable "were nudges sent?"
+			// record; the bus stays the single ephemeral publisher).
+			rung := nudgeRung[v.id]
+			if rung == "" {
+				rung = NudgeRungFirst // the unattributed default (every send() sets its own)
+			}
+			obsNudged = append(obsNudged, ObservationEvent{
+				Kind: ObservationNudged, TaskID: v.id, Session: v.assignee,
+				Detail: map[string]any{"nudge_id": nudgeIDs[v.id], "rung": rung},
+			})
 			applied++
 			continue
 		case ladderWedge:
@@ -656,9 +702,14 @@ func (s *Service) rc1Reclaims(ctx context.Context) (int, error) {
 	// POST-COMMIT projection (design 0072 S4): the decisions above are
 	// durable; report them to the observation plane. The sink bounds
 	// its own work (the app adapter's publish carries a timeout) — a
-	// slow bus must never stall the next phase of the sweep.
+	// slow bus must never stall the next phase of the sweep. The S7
+	// trail rides the same post-commit seam (emitLease records before
+	// it publishes; the nudges land here beside them).
 	for _, ev := range leaseOut {
 		s.emitLease(ctx, ev)
+	}
+	for _, ev := range obsNudged {
+		s.recordObservation(ctx, ev)
 	}
 	return applied, nil
 }
@@ -1413,6 +1464,45 @@ func (s *Service) rc4Net(ctx context.Context, cutoff time.Time) (int, error) {
 		}
 	}
 	return n, nil
+}
+
+// observationPruneDue reports whether the S7 trail's retention pass is
+// due at now given its last run — the pure gate maybePruneObservations
+// consults (zero last = never run = due). Split out so the gate
+// semantics are directly pinnable without waiting an hour.
+func observationPruneDue(last, now time.Time) bool {
+	return last.IsZero() || now.Sub(last) >= ObservationPruneInterval
+}
+
+// maybePruneObservations runs the S7 trail's retention pass at most
+// once per ObservationPruneInterval (the boundary itself is
+// observation.go's contract: per-task cap + TTL; board_events keeps
+// the permanent record). Fail-open inside PruneObservationTrail. The
+// check+stamp is one CompareAndSwap over obsPruneNanos: concurrent
+// Sweeps (the kill-test pattern) race on the GATE only through the
+// atomic, and exactly one caller runs the pass (the DELETE is
+// idempotent regardless — the CAS is belt and braces, not a
+// correctness dependency). A failed pass retries only after the
+// interval (bounded, converges).
+func (r *Reconciler) maybePruneObservations(ctx context.Context) {
+	nowNanos := time.Now().UnixNano()
+	last := r.obsPruneNanos.Load()
+	if !observationPruneDue(unixNanoTime(last), time.Unix(0, nowNanos)) {
+		return
+	}
+	if !r.obsPruneNanos.CompareAndSwap(last, nowNanos) {
+		return // a concurrent sweep just stamped the interval — its pass covers us
+	}
+	r.svc.PruneObservationTrail(ctx)
+}
+
+// unixNanoTime renders the atomic's nanos as a Time for the pure gate
+// (zero nanos = the zero Time = due).
+func unixNanoTime(nanos int64) time.Time {
+	if nanos == 0 {
+		return time.Time{}
+	}
+	return time.Unix(0, nanos)
 }
 
 // Start runs the periodic sweep until ctx is canceled (the app's

@@ -492,8 +492,9 @@ func boardManagerWireCall(ctx context.Context, client *opencode.Client, name, sa
 		// the salvage pointer — {branch, pr, head, state, note,
 		// requestId} ride the body verbatim (the platform validates the
 		// guard and the pointer's non-emptiness; agentd re-models
-		// nothing). storyId keys normalize to taskId above (the
-		// rename's wire compatibility).
+		// nothing). Story-first per #2005; the task-prefixed spelling
+		// that shipped via #2006 resolves through board_story_alias.go's
+		// deprecated-alias window (ruling (b), 2026-11-02).
 		return client.BoardDeposeTask(ctx, saToken, workspaceID, sessionID, boardRefArg(args, "taskId"), wire)
 	case "board_pause_story":
 		return client.BoardManagerTaskAction(ctx, saToken, workspaceID, sessionID, boardRefArg(args, "taskId"), "pause")

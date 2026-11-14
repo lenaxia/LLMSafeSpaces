@@ -241,7 +241,7 @@ func (s *BoardSuite) SetupTest() {
 	ctx := context.Background()
 	_, err := s.pool.Exec(ctx, `
 		TRUNCATE TABLE board_events, board_transitions, board_dependencies, board_sweeps, tasks, epics, projects,
-			board_config_defaults, board_project_config_overrides
+			board_config_defaults, board_project_config_overrides, task_observation_events
 		CASCADE
 	`)
 	s.Require().NoError(err)
