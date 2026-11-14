@@ -603,3 +603,57 @@ func TestWiringE2E_KnobAndEngineSwap(t *testing.T) {
 	assert.NotNil(t, currentSessionNotifier().store, "the unwired-authority generation still carries the durable registry")
 	assert.Nil(t, currentSessionNotifier().cfg.Stream, "nil authority wires no stream — Run degrades to idle")
 }
+
+// ---- (g) the boot-time missed-settle reconciliation ------------------------
+
+// TestWiringE2E_ReconcileMissedSettleOnRestart: the in-flight-at-kill
+// window through the REAL restart path — generation one registered the
+// edge and persisted a settle whose notification died inside the
+// debounce window (durable state: settle-stamped latch, trailing edge
+// watermark); the next generation's boot leg (harness-wait →
+// ReconcileMissedSettles → RetryOutbox, startSessionNotifierLoops)
+// delivers the missed settle EXACTLY once through the real vehicle,
+// and a third boot with the watermark current stays silent. Also pins
+// the armed-debounce guard (worklog §2.3): the resubscribing Run's
+// snapshot must not double-deliver what the boot leg reconciles.
+func TestWiringE2E_ReconcileMissedSettleOnRestart(t *testing.T) {
+	env := newWiringEnv(t, 40*time.Millisecond,
+		fakeHarnessSession{id: e2eBroadcaster, title: "T4 worker"},
+		fakeHarnessSession{id: e2eSubscriber, title: "T4 manager"},
+	)
+	e2eSubscribe(t, env, nil) // the edge is durable; no settle observed yet
+
+	// The hard-kill-in-debounce-window durable end state (what the
+	// settle edge persists before the debounce arms): busy cleared,
+	// saw-busy kept, settle stamped — while the edge's delivered-
+	// watermark still trails (the debounce never fired, the outbox
+	// never enqueued).
+	settled := time.Now().UTC().Add(-time.Minute)
+	env.notifier.store.setLatch(e2eBroadcaster, sessionLatch{LastDerivedBusy: false, SawBusy: true,
+		LastSettleAt: settled, LastSettleKind: subscriptionEventIdle})
+
+	reconciledBefore := notifyOutcome(t, notifyOutcomeReconciledMissed)
+
+	// Generation two: a fresh engine over the same on-disk registry —
+	// the agentd restart, through the production wiring.
+	env.rewire(t)
+	env.startConsumer(t) // the boot leg: harness answers, reconcile fires
+
+	waitForHarnessPosts(t, env.harness, 1)
+	assert.Contains(t, env.harness.post(0).body, "is now idle — its turn is complete")
+	time.Sleep(300 * time.Millisecond)
+	assert.Equal(t, 1, env.harness.postCount(), "the reconciled settle delivered exactly once (no RetryOutbox duplicate — no intent was ever enqueued; no live-snapshot duplicate — the armed-debounce guard)")
+	require.Equal(t, 0, env.notifier.store.outboxLen(), "the successful reconciled delivery cleared its intent")
+	require.Equal(t, settled, env.notifier.store.rowsForSubscriber(e2eSubscriber)[0].LastDeliveredSettle,
+		"the watermark advanced to the settle stamp, durably")
+	assert.InDelta(t, 1, notifyOutcome(t, notifyOutcomeReconciledMissed)-reconciledBefore, 0,
+		"the reconciled_missed_settle counter ticked exactly once")
+
+	// Generation three: the watermark is current — the same durable
+	// state must never fire again.
+	env.stopConsumer(t)
+	env.rewire(t)
+	env.startConsumer(t)
+	time.Sleep(300 * time.Millisecond)
+	assert.Equal(t, 1, env.harness.postCount(), "a current watermark never re-fires across boots")
+}

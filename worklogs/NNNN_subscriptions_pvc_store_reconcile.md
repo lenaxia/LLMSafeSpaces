@@ -138,3 +138,37 @@ latch; resync-first with the arm visible) now deliver exactly once.
 - design/0071 §4 corrected in place with a dated note (the original
   text claimed suspend/resume survival for the emptyDir home — the
   exact claim the bug falsified).
+
+## §6 Review round 1 — the phantom citation (bounce 2026-11-14)
+
+Verdict FAIL (sappy-wasabi-dines), two findings:
+
+1. **major — the wiring e2e citation was true on paper, false in the
+   tree.** CHANGELOG:16 and §4 above cited
+   `TestWiringE2E_ReconcileMissedSettleOnRestart`; the test was
+   authored (the edit reported success, a follow-up suite run passed)
+   but the change never reached the file — the commit was assembled
+   from a `git status` taken before the append landed, and the diff
+   (7 files, no wiring e2e) went out without it. Nobody grepped the
+   tree for the cited symbol before pushing. The reviewer did
+   (repo-wide: zero hits) and correctly called it fabricated evidence.
+   Process fix, now binding on this lane: every cited pin is verified
+   against the working tree (grep + git status) before commit. The
+   test now exists for real — appended to
+   `session_notifier_wiring_e2e_test.go`, `go test -count=5` green
+   deterministically (it pins the boot-leg ordering through the real
+   `wireSessionNotifier`/`startSessionNotifierLoops` restart path,
+   exactly-once through the real vehicle, the armed-debounce guard,
+   and third-boot silence). Everything else the reviewer verified
+   sound stands unchanged.
+2. **minor — govulncheck red on the head, INHERITED from main.**
+   GO-2026-6859 (net/http stdlib advisory, fixed in go1.26.11; same
+   red on main @ f158f72bd). The Go version is pinned by literals
+   across ci.yml (5 sites), security-scan.yml, and the e2e workflows —
+   a fleet-wide toolchain roll this lane must not attempt (the
+   reviewer assigned it to orchestrator/owner: waiver or a separate
+   toolchain-bump PR; repo history shows dedicated toolchain commits).
+   Surfaced in the PR description and the adjudication packet. Every
+   other check passed on the prior head (Test full-race ~13m, Test
+   -short ~15m, Lint, Frontend, ABI schema, Origin plugin, Trivy,
+   Gitleaks) and must land green on the new head.
