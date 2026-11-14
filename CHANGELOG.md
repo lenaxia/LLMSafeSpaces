@@ -5,6 +5,18 @@ All notable changes to LLMSafeSpaces are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added — board kebab menus expose the full per-entity action surface on story + epic cards (tsk-fossil-tanker-loses)
+
+- **The gap**: story cards' kebab offered only Delete; epic bands had only Delete (activate/pause live on open PR #2021, not yet main). The backend's per-entity action surface is much larger — the UI now maps it 1:1 onto the EXISTING endpoints (nothing invented server-side).
+- **Story kebab** (conditional per the engine's state machine, `BoardPage.buildStoryKebabItems`): Pause (any non-terminal stage) / Resume (paused rows); Re-arm (stage=failed ∧ pending_origin=escalated — attempts reset → backlog, rides `POST /me/tasks/:id/rearm`); Requeue to backlog + Resume work (re-claim) — the pending_input flag's two manager exits; Move to failed… (stuck in_progress/in_review rows — the self-fail arm; a CLAIMED in_progress row additionally demands its live token, the engine's honest 409 renders); per-criterion check-off toggles walking BOTH ways over the #1837 P2b `{index, met}` wire form. done is TERMINAL: no lifecycle, no stage items — criteria + Delete only. Worker-owned transitions (→in_review, →done, the bounce) are deliberately absent (manager surface).
+- **Epic kebab**: Activate (draft/paused/completed) / Pause (active) + Archive (draft/active/paused/completed) / Unarchive (archived), exactly the engine's allowed-map; `draft`/`completed`/`archived` badges join `paused` so the row's state is legible. NOTE: the inventory's epic "Resume" has NO endpoint — activate is the un-pause path (only projects have a resume route); omitted, not invented.
+- **Ported from #2021** (open, unmerged at branch time — this PR carries the same fixes; whichever merges first wins): `BoardEpicActivateResponse` — activate's 200 is the `{epic, initial_ready_set}` wrapper (hurl-pinned), the client typed it bare; both call sites (drawer mutation + the new kebab handler) unwrap `.epic`.
+- **Optimism per convention**: stage actions reuse the drag lane wholesale (optimistic placement + snap-back + "Move refused" notice — Re-arm swaps only the wire call via runMove's new `via` seam); pause/resume and the criteria toggles flip a per-card override map rolled back on refusal with the page-level `BoardErrorNotice` (the recent tool-error lane); epic lifecycle stays server-confirmed (`rememberEpic` + invalidate — the #2021 pattern).
+- **Client additions** (`api/board.ts`, minimal): `rearmTask` (+ requestId body), the activate wrapper type, `setCriteriaMet` widened to the two-way `{index, met}` form. `KebabMenu`'s sectioned mode now draws a bare divider before a trailing unsectioned item (the destructive tail — the board menus' shape).
+- Pinned by: `BoardPage.kebab.test.tsx` (NEW, born-RED 21/22 on the pre-change page — the full state matrix × exact item sets, every action's real endpoint + params, optimistic badge/glyph flips, rollback + page-level guard errors, done's no-stage-moves invariant, the epic lifecycle matrix incl. archived's Unarchive-only shape), `board.test.ts` (rearm route/body, activate wrapper verbatim, the two-way criteria form), `KebabMenu.test.tsx` (the trailing divider). Full frontend suite 2644/2644.
+
 ## [0.44.14] - 2026-11-14
 
 ### Fixed — the post-v3 parseable-loss class: generalized destination-injection recovery (issue #2030, PR #2032)
