@@ -20,6 +20,7 @@ import (
 	"time"
 
 	abiv1 "github.com/lenaxia/llmsafespaces/pkg/abi/v1"
+	"github.com/lenaxia/llmsafespaces/pkg/eventbus"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/zap"
@@ -299,4 +300,204 @@ func TestReconcileMissedSettlesHardKillDuringDebounce(t *testing.T) {
 	gen3.ReconcileMissedSettles(context.Background())
 	assert.Equal(t, settled, reloaded.rowsForSubscriber("ses_manager")[0].LastDeliveredSettle,
 		"a third boot's reconciliation stays silent (watermark durable)")
+}
+
+// ---- review round 2: the gate/stamp and bus-layer pins -----------------
+
+// TestSettleStampGatedOffByPendingInput (review r2 finding 1): a
+// busy→idle flip blocked by a pending QUESTION is NOT a notifiable
+// settle — the live path must leave NO durable stamp (a hard kill in
+// the blocked state must not arm the boot reconciliation to deliver
+// "its turn is complete" for a session the design says is
+// incomplete). The answer resolves, the next episode settles, and
+// THAT settle stamps and delivers.
+func TestSettleStampGatedOffByPendingInput(t *testing.T) {
+	f := newNotifierFixture(t, nil)
+	subscribeForWake(t, f, "ses_w", "ses_m", nil)
+
+	f.n.handleFrame(statusFrame("ses_w", abiv1.SessionStatus_SESSION_STATUS_BUSY))
+	f.n.handleFrame(evtFrame("ses_w", abiv1.EventType_EVENT_TYPE_INPUT_REQUEST, func(e *abiv1.Event) {
+		e.Input = &abiv1.InputRequest{Id: "ask_1", Kind: abiv1.InputKind_INPUT_KIND_QUESTION, Question: "which?"}
+	}))
+	f.n.handleFrame(statusFrame("ses_w", abiv1.SessionStatus_SESSION_STATUS_IDLE))
+
+	latch := f.store.latchFor("ses_w")
+	assert.False(t, latch.LastDerivedBusy, "the busy edge cleared")
+	assert.True(t, latch.SawBusy)
+	assert.True(t, latch.LastSettleAt.IsZero(), "a settle gated off by a pending user input leaves NO durable stamp")
+	assertNoNotice(t, f.deliver.ch, f.debounce*4, "a session blocked on a question is not complete")
+
+	// The hard-kill-in-blocked-state boot: the gated settle stays lost
+	// BY DESIGN — the boot reconciliation must stay silent.
+	f.n.ReconcileMissedSettles(context.Background())
+	assertNoNotice(t, f.deliver.ch, 100*time.Millisecond, "a gated settle must never be reconciled into a wake-up")
+
+	// The turn that truly ends: answer → busy → idle stamps and
+	// delivers (the watermark comparison rides the real stamp).
+	f.n.handleFrame(statusFrame("ses_w", abiv1.SessionStatus_SESSION_STATUS_BUSY))
+	f.n.handleFrame(evtFrame("ses_w", abiv1.EventType_EVENT_TYPE_INPUT_RESOLVED, func(e *abiv1.Event) {
+		e.Input = &abiv1.InputRequest{Id: "ask_1"}
+	}))
+	f.n.handleFrame(statusFrame("ses_w", abiv1.SessionStatus_SESSION_STATUS_IDLE))
+	notice := waitForNotice(t, f.deliver.ch)
+	assert.Equal(t, subscriptionEventIdle, notice.Event)
+	require.Eventually(t, func() bool {
+		return !f.store.latchFor("ses_w").LastSettleAt.IsZero()
+	}, 2*time.Second, 5*time.Millisecond, "the true settle stamps")
+	assert.False(t, f.store.rowsForSubscriber("ses_m")[0].LastDeliveredSettle.IsZero(),
+		"the delivered settle advanced the watermark")
+}
+
+// TestSnapshotReconcileStampGatedOffByPendingInput: the §7.3
+// latch-vs-snapshot arm obeys the same discipline — a busy-latched
+// session whose fresh snapshot is idle WITH a pending ask clears the
+// busy edge but stamps nothing, notifies nobody, and reconciles
+// silently at boot.
+func TestSnapshotReconcileStampGatedOffByPendingInput(t *testing.T) {
+	f := newNotifierFixture(t, nil)
+	subscribeForWake(t, f, "ses_w", "ses_m", nil)
+	f.store.setLatch("ses_w", sessionLatch{LastDerivedBusy: true, SawBusy: true})
+
+	snap := snapSession("ses_w", false, abiv1.SessionStatus_SESSION_STATUS_IDLE)
+	snap.PendingInputs = append(snap.PendingInputs, &abiv1.InputRequest{
+		Id: "ask_1", Kind: abiv1.InputKind_INPUT_KIND_QUESTION})
+	f.n.handleFrame(podSnapFrame(snap))
+
+	assertNoNotice(t, f.deliver.ch, f.debounce*4, "blocked on the user is not complete")
+	latch := f.store.latchFor("ses_w")
+	assert.False(t, latch.LastDerivedBusy)
+	assert.True(t, latch.LastSettleAt.IsZero(), "the snapshot-reconciled gated settle leaves no stamp")
+	f.n.ReconcileMissedSettles(context.Background())
+	assertNoNotice(t, f.deliver.ch, 100*time.Millisecond, "silent at boot too")
+}
+
+// settleMsgFor builds one bus settle message the way publishSettle
+// does (topic + payload with the settle's OWN stamp).
+func settleMsgFor(sid, kind, stamp string) eventbus.Message {
+	return eventbus.Message{ID: "m_" + sid + "_" + kind + "_" + stamp,
+		Event: eventbus.Event{
+			Topic:   eventbus.SessionSettleTopic(sid, kind),
+			Payload: map[string]string{"session": sid, "settle": kind, "settled_at": stamp},
+		}}
+}
+
+// TestConsumeSettleEventAdvancesOnOwnStamp (review r2 finding 2): a
+// late-landing bus message for settle A must advance the watermark to
+// A's OWN stamp — never to the latch's CURRENT value, which by then
+// may belong to a later settle B. Jumping to B's stamp would
+// permanently silence B at the next boot (the exact loss this
+// subsystem never makes).
+func TestConsumeSettleEventAdvancesOnOwnStamp(t *testing.T) {
+	f := newNotifierFixture(t, nil)
+	subscribeForWake(t, f, "ses_w", "ses_m", []string{subscriptionEventIdle})
+
+	// Settle A at T1 — published, delivered, consumed with its stamp.
+	t1 := time.Now().UTC().Add(-2 * time.Minute)
+	t2 := t1.Add(time.Minute)
+	f.store.setLatch("ses_w", sessionLatch{LastDerivedBusy: false, SawBusy: true,
+		LastSettleAt: t1, LastSettleKind: subscriptionEventIdle})
+	require.NoError(t, f.n.ConsumeSettleEvent(context.Background(),
+		settleMsgFor("ses_w", subscriptionEventIdle, t1.Format(time.RFC3339Nano))))
+	waitForNotice(t, f.deliver.ch)
+	require.Equal(t, t1, f.store.rowsForSubscriber("ses_m")[0].LastDeliveredSettle,
+		"consumption advanced the watermark to the message's own stamp")
+
+	// Settle B at T2 (stamped, its debounce armed — not yet published,
+	// not yet consumed). A STALE redelivery of A lands now.
+	f.store.setLatch("ses_w", sessionLatch{LastDerivedBusy: false, SawBusy: true,
+		LastSettleAt: t2, LastSettleKind: subscriptionEventIdle})
+	require.NoError(t, f.n.ConsumeSettleEvent(context.Background(),
+		settleMsgFor("ses_w", subscriptionEventIdle, t1.Format(time.RFC3339Nano))))
+	assert.Equal(t, t1, f.store.rowsForSubscriber("ses_m")[0].LastDeliveredSettle,
+		"consuming the OLD message must NOT jump the watermark to the later settle's stamp")
+	// The stale redelivery re-selected a (tolerated, by-contract)
+	// duplicate delivery of A — selection does not consult the
+	// watermark. Drain it; the pin below is B's reconciled notice.
+	_ = waitForNotice(t, f.deliver.ch)
+
+	// The hard kill inside B's debounce window: the boot reconciliation
+	// must still see the watermark trailing B's stamp and deliver B.
+	f.n.ReconcileMissedSettles(context.Background())
+	notice := waitForNotice(t, f.deliver.ch)
+	assert.Equal(t, subscriptionEventIdle, notice.Event)
+	assert.Equal(t, t2, notice.EnqueuedAt, "the reconciled settle is B (stamp T2)")
+	assert.Equal(t, t2, f.store.rowsForSubscriber("ses_m")[0].LastDeliveredSettle)
+}
+
+// TestConsumeSettleEventWithoutStampSkipsAdvance: a payload with no
+// parsable settled_at (older publisher) advances nothing — the
+// watermark stays trailing and the worst case is a tolerated
+// duplicate reconciliation, never a loss.
+func TestConsumeSettleEventWithoutStampSkipsAdvance(t *testing.T) {
+	f := newNotifierFixture(t, nil)
+	subscribeForWake(t, f, "ses_w", "ses_m", []string{subscriptionEventIdle})
+	settled := time.Now().UTC().Add(-time.Minute)
+	f.store.setLatch("ses_w", sessionLatch{LastDerivedBusy: false, SawBusy: true,
+		LastSettleAt: settled, LastSettleKind: subscriptionEventIdle})
+
+	msg := settleMsgFor("ses_w", subscriptionEventIdle, "")
+	delete(msg.Event.Payload, "settled_at")
+	require.NoError(t, f.n.ConsumeSettleEvent(context.Background(), msg))
+	waitForNotice(t, f.deliver.ch) // the delivery itself still happens
+	assert.True(t, f.store.rowsForSubscriber("ses_m")[0].LastDeliveredSettle.IsZero(),
+		"a stamp-less payload advances no watermark")
+}
+
+// TestReconcileMissedSettlesMultipleSubscribersIsolated: two
+// kind-matching edges on one broadcaster each get their own
+// reconciled delivery — an earlier row's advance must not absorb its
+// sibling's (allRows returns value copies; the per-row decision is
+// independent).
+func TestReconcileMissedSettlesMultipleSubscribersIsolated(t *testing.T) {
+	f := newNotifierFixture(t, nil)
+	subscribeForWake(t, f, "ses_w", "ses_m1", []string{subscriptionEventIdle})
+	subscribeForWake(t, f, "ses_w", "ses_m2", []string{subscriptionEventIdle})
+	settled := time.Now().UTC().Add(-time.Minute)
+	stampMissedSettle(f.store, "ses_w", settled)
+
+	f.n.ReconcileMissedSettles(context.Background())
+	got := map[string]settleNotice{}
+	for i := 0; i < 2; i++ {
+		n := waitForNotice(t, f.deliver.ch)
+		got[n.Subscriber] = n
+	}
+	assert.Contains(t, got, "ses_m1")
+	assert.Contains(t, got, "ses_m2")
+	for _, sub := range []string{"ses_m1", "ses_m2"} {
+		assert.Equal(t, settled, f.store.rowsForSubscriber(sub)[0].LastDeliveredSettle,
+			"%s's watermark advanced independently", sub)
+	}
+	f.n.ReconcileMissedSettles(context.Background())
+	assertNoNotice(t, f.deliver.ch, 100*time.Millisecond, "both edges current — nothing re-fires")
+}
+
+// TestReconcileMissedSettlesFailedDeliveryRidesRetryOutbox: the
+// documented boot-leg sequencing (harness-wait → ReconcileMissedSettles
+// → RetryOutbox): a reconciled delivery that FAILS leaves its intent
+// durable (write-before-send), and the same-boot RetryOutbox delivers
+// it exactly once.
+func TestReconcileMissedSettlesFailedDeliveryRidesRetryOutbox(t *testing.T) {
+	f := newNotifierFixture(t, nil)
+	subscribeForWake(t, f, "ses_w", "ses_m", []string{subscriptionEventIdle})
+	settled := time.Now().UTC().Add(-time.Minute)
+	stampMissedSettle(f.store, "ses_w", settled)
+	f.deliver.failOf = func(settleNotice) bool { return true }
+
+	f.n.ReconcileMissedSettles(context.Background())
+	require.Equal(t, 1, f.store.outboxLen(), "the failed reconciled delivery left its durable intent")
+	assert.Equal(t, settled, f.store.rowsForSubscriber("ses_m")[0].LastDeliveredSettle,
+		"the watermark advanced regardless — the retry owns the delivery, not the comparison")
+
+	// The harness heals; the SAME boot's RetryOutbox (the next call in
+	// the boot leg's sequence) retries the intent exactly once.
+	f.deliver.failOf = nil
+	retriedBefore := notifyOutcome(t, "outbox_retried_delivered")
+	f.n.RetryOutbox(context.Background())
+	notice := waitForNotice(t, f.deliver.ch)
+	assert.Equal(t, settled, notice.EnqueuedAt, "the retried intent carries the settle stamp")
+	require.Eventually(t, func() bool { return f.store.outboxLen() == 0 },
+		2*time.Second, 5*time.Millisecond, "the successful retry cleared the intent")
+	assert.InDelta(t, 1, notifyOutcome(t, "outbox_retried_delivered")-retriedBefore, 0,
+		"outbox_retried_delivered ticked exactly once")
+	assertNoNotice(t, f.deliver.ch, 100*time.Millisecond, "never an unbounded ladder")
 }

@@ -172,3 +172,61 @@ Verdict FAIL (sappy-wasabi-dines), two findings:
    other check passed on the prior head (Test full-race ~13m, Test
    -short ~15m, Lint, Frontend, ABI schema, Origin plugin, Trivy,
    Gitleaks) and must land green on the new head.
+
+## §7 Review round 2 — the gate/stamp and bus-layer findings (GitHub AI reviewer, head 827e0a003)
+
+The PR workflow's reviewer (mutation-verified, CHANGES_REQUESTED) found
+three real weaknesses in the r1 implementation. All addressed:
+
+1. **MAJOR — the boot reconcile bypassed the §4.2 pending-input
+   gate.** `observeBusyEdgeLocked` stamped the latch BEFORE
+   `settleGatesPassLocked` ran — a busy→idle flip blocked by a pending
+   QUESTION left a durable stamp with the watermark trailing forever
+   (no arm, no collect). A hard kill in the blocked state — exactly
+   the long-lived state where pods get recycled — made the boot
+   reconciliation deliver "is now idle — its turn is complete" for a
+   session the design says is NOT complete: the wrong-direction
+   failure this subsystem never makes. **Fix: stamp only when the
+   settle is notifiable** — kind known AND the gates pass (both
+   stamping sites: the live settle edge and the §7.3
+   snapshot-reconciled arm). The busy clear still always persists; a
+   gated settle re-settles when the turn truly ends and stamps then.
+   Pinned by `TestSettleStampGatedOffByPendingInput` (live edge, incl.
+   the answer→re-settle delivery) and
+   `TestSnapshotReconcileStampGatedOffByPendingInput` (snapshot arm).
+2. **MAJOR — the bus-path watermark advance could permanently skip an
+   unconsumed settle.** `ConsumeSettleEvent` advanced to the latch's
+   CURRENT stamp, not the consumed message's settle: consume(A) landing
+   after a later settle B stamped T2 jumped every watermark to T2 — a
+   hard kill inside B's debounce window then reconciled silent (T2 not
+   after T2): B's wake-up permanently lost. **Fix: the advance keys on
+   the consumed settle's OWN identity** — `publishSettle` now carries
+   `settled_at` (the settle stamp) in the payload, and the consumer
+   advances with that parsed value; a stamp-less payload skips the
+   advance (trailing watermark → a tolerated duplicate at worst, never
+   a loss). Pinned by `TestConsumeSettleEventAdvancesOnOwnStamp`
+   (the A→B trace: the stale A consumption must not silence B) and
+   `TestConsumeSettleEventWithoutStampSkipsAdvance`.
+3. **MINOR — the bus publish→consume duplicate window.** Between
+   publish and consumer delivery, a concurrent boot reconciliation
+   could deliver the same settle (duplicates are tolerated by
+   contract, but the exactly-once claim should hold on both layers).
+   **Fix: publish success advances the watermarks to the settle's own
+   stamp** — the stream entry is the durable intent on the bus layer,
+   so the settle is dispositioned for reconciliation the moment it is
+   on the bus (the publish-failure fallback still rides the direct
+   leg's collect, which advances on its own).
+
+Missing-case coverage added: the bus-path watermark pins above, the
+multi-subscriber per-row isolation pin (`allRows()` copy semantics),
+the reconcile-failure → same-boot RetryOutbox retry-once pin
+(`TestReconcileMissedSettlesFailedDeliveryRidesRetryOutbox` — the
+main.go boot-leg sequencing claim, now tested), and the wiring e2e
+comment corrected (the armed-debounce guard is pinned by
+`TestWiringE2E_DropResubscribeLatchReconciliation`, not by the
+restart test whose latch starts LastDerivedBusy=false).
+
+The govulncheck disposition is unchanged (inherited from main,
+GO-2026-6859, owner/orchestrator territory — same red on main @
+bb2538ff). Full `go test ./cmd/workspace-agentd/` green at this head
+(374.9s); `make fmt-check` clean.

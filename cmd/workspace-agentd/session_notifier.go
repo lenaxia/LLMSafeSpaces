@@ -770,27 +770,30 @@ func (n *sessionNotifier) observeBusyEdgeLocked(sid string, prevBusy bool, st *n
 		}
 		n.cancelDebounceLocked(sid)
 	case prevBusy && !st.derivedBusy():
-		// The settle edge: persist the clear (the restart latch must not
-		// re-fire this episode) and — when the terminal status names a
-		// kind — the settle stamp the delivered-watermark compares
-		// against (BEFORE the debounce is armed: a hard kill inside the
-		// debounce window leaves stamp > watermark, the state the boot
-		// reconciliation resolves), then through the gates, the debounce.
+		// The settle edge. The busy clear always persists (the restart
+		// latch must not re-fire this episode); the settle STAMP persists
+		// only when the settle is notifiable — kind known AND the §4.2
+		// gates pass. A settle gated off (pending user input — blocked on
+		// the user is not "complete"; subtask; unwatched) must never
+		// leave a durable stamp the boot reconciliation would later
+		// deliver: that would fire a wake-up the live path explicitly
+		// refused, the wrong-direction failure this subsystem never
+		// makes. The gated episode re-settles when the turn truly ends
+		// (the answer resolves, the next flip fires) and stamps then.
 		prev := n.store.latchFor(sid)
 		nl := sessionLatch{LastDerivedBusy: false, SawBusy: true,
 			LastSettleAt: prev.LastSettleAt, LastSettleKind: prev.LastSettleKind}
 		kind, ok := settleKindOf(st)
-		if ok {
+		if ok && n.settleGatesPassLocked(sid, st) {
 			nl.LastSettleAt, nl.LastSettleKind = time.Now(), kind
+			n.store.setLatch(sid, nl)
+			// Stamp BEFORE the debounce arms: a hard kill inside the
+			// debounce window leaves stamp > watermark, the state the
+			// boot reconciliation resolves.
+			n.armDebounceLocked(sid, kind)
+			return
 		}
 		n.store.setLatch(sid, nl)
-		if !ok {
-			return
-		}
-		if !n.settleGatesPassLocked(sid, st) {
-			return
-		}
-		n.armDebounceLocked(sid, kind)
 	}
 }
 
@@ -959,26 +962,39 @@ func (n *sessionNotifier) debounceFired(sid, kind string) {
 }
 
 // publishSettle is the bus leg's publish: session.{sid}.{kind} to the
-// workspace stream, payload {session, settle, title}. A publish
-// failure falls back to the DIRECT v1 leg — a lost wake-up is the
+// workspace stream, payload {session, settle, title, settled_at}. A
+// publish failure falls back to the DIRECT v1 leg — a lost wake-up is the
 // failure that matters (§4.5); a duplicate (bus leg retried by the
 // pending machinery after this process already fell back) is
-// tolerated by contract.
+// tolerated by contract. On SUCCESS the delivered-watermarks advance to
+// the settle's OWN stamp (never beyond): the stream entry is the durable
+// intent on this layer, so the settle is dispositioned for
+// reconciliation purposes the moment it is on the bus — the boot
+// reconciliation must stay silent through the publish→consume window
+// (finding 3) and must never jump past a LATER unconsumed settle's
+// stamp (finding 2: the advance keys on this settle's identity, not the
+// latch's current value).
 func (n *sessionNotifier) publishSettle(sid, kind, title string) {
+	stamp := n.store.latchFor(sid).LastSettleAt
+	payload := map[string]string{
+		"session": sid,
+		"settle":  kind,
+		"title":   title,
+	}
+	if !stamp.IsZero() {
+		payload["settled_at"] = stamp.Format(time.RFC3339Nano)
+	}
 	_, err := n.cfg.Bus.Publish(n.deliveryContext(), eventbus.Event{
-		Topic: eventbus.SessionSettleTopic(sid, kind),
-		At:    time.Now(),
-		Payload: map[string]string{
-			"session": sid,
-			"settle":  kind,
-			"title":   title,
-		},
+		Topic:   eventbus.SessionSettleTopic(sid, kind),
+		At:      time.Now(),
+		Payload: payload,
 	})
 	if err == nil {
 		notifyCount(notifyOutcomeBusPublished)
 		n.logger.Debug("session notifier: settle published to the workspace event bus",
 			zap.String("broadcaster", sid),
 			zap.String("settle", kind))
+		n.store.advanceSettleWatermarksForKind(sid, kind, stamp)
 		return
 	}
 	n.logger.Warn("session notifier: bus publish failed — falling back to the direct delivery leg",
@@ -1011,12 +1027,21 @@ func (n *sessionNotifier) ConsumeSettleEvent(ctx context.Context, msg eventbus.M
 	title := msg.Event.Payload["title"]
 	n.mu.Lock()
 	notices := n.selectSettleNoticesLocked(sid, kind)
-	// Same watermark discipline as the direct leg's collect: the bus
-	// message is the durable intent, its consumption the final outcome
-	// for every kind-matching edge (redelivery duplicates are the
-	// consumer group's to make; the boot reconciliation's is not one).
-	n.store.advanceSettleWatermarksForKind(sid, kind, n.store.latchFor(sid).LastSettleAt)
 	n.mu.Unlock()
+	// Watermark discipline on the bus layer (findings 2/3): the advance
+	// keys on the CONSUMED settle's own identity — the settled_at stamp
+	// the publish carried — never the latch's CURRENT value (a later
+	// settle's stamp must not be absorbed by an older message's
+	// consumption; that could permanently silence an unconsumed settle
+	// at the next boot). A payload without a parsable stamp (older
+	// publisher, malformed) skips the advance: the watermark stays
+	// trailing, so the worst case is a tolerated duplicate
+	// reconciliation, never a loss.
+	if raw := msg.Event.Payload["settled_at"]; raw != "" {
+		if stamp, err := time.Parse(time.RFC3339Nano, raw); err == nil {
+			n.store.advanceSettleWatermarksForKind(sid, kind, stamp)
+		}
+	}
 	for i := range notices {
 		if title != "" && notices[i].Title == "" {
 			notices[i].Title = title // the bus payload's title survives a cold tracker
@@ -1405,20 +1430,21 @@ func (n *sessionNotifier) reconcileAndSwapLocked(fresh map[string]*notifierSessi
 		case nowBusy:
 			n.store.setLatch(id, sessionLatch{LastDerivedBusy: true, SawBusy: true})
 		case prevObserved:
+			// Same stamp-on-notifiable-only discipline as the live settle
+			// edge (observeBusyEdgeLocked): the busy clear always
+			// persists; the settle stamp only when the settle is
+			// notifiable — SawBusy (attributable), kind known, and the
+			// §4.2 gates pass. A gated settle leaves no durable stamp for
+			// the boot reconciliation to wrongly deliver.
 			nl := sessionLatch{LastDerivedBusy: false, SawBusy: latch.SawBusy,
 				LastSettleAt: latch.LastSettleAt, LastSettleKind: latch.LastSettleKind}
-			if kind, ok := settleKindOf(st); ok {
-				// The snapshot-reconciled settle (§7.3): stamp it like a
-				// live settle edge — the debounce arming below delivers
-				// through the same watermark-advancing collect path.
+			kind, kindOK := settleKindOf(st)
+			if kindOK && latch.SawBusy && n.settleGatesPassLocked(id, st) {
 				nl.LastSettleAt, nl.LastSettleKind = time.Now(), kind
-			}
-			n.store.setLatch(id, nl)
-			if !latch.SawBusy {
-				break // busy edge latched but busy never observed — unattributable
-			}
-			if kind, ok := settleKindOf(st); ok && n.settleGatesPassLocked(id, st) {
+				n.store.setLatch(id, nl)
 				n.armDebounceLocked(id, kind)
+			} else {
+				n.store.setLatch(id, nl)
 			}
 		}
 	}

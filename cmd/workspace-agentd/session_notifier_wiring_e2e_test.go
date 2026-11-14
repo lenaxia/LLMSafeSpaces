@@ -613,9 +613,11 @@ func TestWiringE2E_KnobAndEngineSwap(t *testing.T) {
 // watermark); the next generation's boot leg (harness-wait →
 // ReconcileMissedSettles → RetryOutbox, startSessionNotifierLoops)
 // delivers the missed settle EXACTLY once through the real vehicle,
-// and a third boot with the watermark current stays silent. Also pins
-// the armed-debounce guard (worklog §2.3): the resubscribing Run's
-// snapshot must not double-deliver what the boot leg reconciles.
+// and a third boot with the watermark current stays silent. (The
+// armed-debounce guard is pinned by a different test —
+// TestWiringE2E_DropResubscribeLatchReconciliation: this fixture's
+// latch starts LastDerivedBusy=false, so no snapshot arm ever occurs
+// here for the guard to intercept.)
 func TestWiringE2E_ReconcileMissedSettleOnRestart(t *testing.T) {
 	env := newWiringEnv(t, 40*time.Millisecond,
 		fakeHarnessSession{id: e2eBroadcaster, title: "T4 worker"},
