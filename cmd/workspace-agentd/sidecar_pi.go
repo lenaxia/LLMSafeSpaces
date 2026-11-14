@@ -36,12 +36,13 @@ import (
 
 	"github.com/lenaxia/llmsafespaces/pkg/agent"
 	"github.com/lenaxia/llmsafespaces/pkg/agent/pi"
+	"github.com/lenaxia/llmsafespaces/pkg/agentd"
 )
 
 // piAgentDirEnv is the shared-volume coordinate the controller wires
 // on BOTH containers (RW emptyDir, Memory medium — config-sized). The
 // supervisor's own LLMSAFESPACES_PI_AGENT_DIR names the same mount.
-const piAgentDirEnv = "LLMSAFESPACES_PI_AGENT_DIR"
+const piAgentDirEnv = agentd.EnvPiAgentDir
 
 func sidecarPiAgentDir() string {
 	if d := os.Getenv(piAgentDirEnv); d != "" {

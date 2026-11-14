@@ -57,7 +57,7 @@ import (
 
 const (
 	envPiSessionDir    = "LLMSAFESPACES_PI_SESSION_DIR"
-	envPiAgentDir      = "LLMSAFESPACES_PI_AGENT_DIR"
+	envPiAgentDir      = agentd.EnvPiAgentDir
 	envPiPolicy        = "LLMSAFESPACES_PI_POLICY"
 	envPiPollInterval  = "LLMSAFESPACES_PI_POLL_INTERVAL_SECONDS"
 	envPiShutdownGrace = "LLMSAFESPACES_PI_SHUTDOWN_GRACE_SECONDS"
@@ -145,8 +145,8 @@ func runSupervisePiCommand(_ []string) int {
 	ctrl.harnessStatus = sup
 	go ctrl.serve()
 
-	bridge := newPiBridge(sup, readAgentPassword())
-	harnessLn, err := net.Listen("tcp", agentd.AgentHarnessAddr)
+	bridge := newPiBridge(sup, readBridgePasswordEnv())
+	harnessLn, err := (&net.ListenConfig{}).Listen(context.Background(), "tcp", agentd.AgentHarnessAddr)
 	if err != nil {
 		_ = ctrl.close()
 		log.Error("supervise-pi: harness-port bind failed", zap.Error(err))
@@ -171,6 +171,22 @@ func runSupervisePiCommand(_ []string) int {
 		return 1
 	}
 	return 0
+}
+
+// readBridgePasswordEnv resolves the harness-port bridge's basic-auth
+// password from the supervisor's environment (OPENCODE_SERVER_PASSWORD
+// — the secretKeyRef env the controller wires into the main container
+// for BOTH harness branches; the /sandbox-cfg password FILE is sidecar-
+// container-only, so the file-based readAgentPassword would be
+// boot-fatal here). Fatal on empty, the G46 parity: a bridge without a
+// password would silently disable the S4 transport's auth gate.
+func readBridgePasswordEnv() string {
+	pw := strings.TrimSpace(os.Getenv("OPENCODE_SERVER_PASSWORD"))
+	if pw == "" {
+		log.Error("FATAL: OPENCODE_SERVER_PASSWORD is empty — the harness-port bridge cannot start safely")
+		os.Exit(1)
+	}
+	return pw
 }
 
 // piSupervisor is the driver core: the policy, its aggregator, and the
@@ -262,6 +278,9 @@ func newPiSupervisorFromEnv(log *zap.Logger) (*piSupervisor, error) {
 func probePiVersion(bin string, log *zap.Logger) string {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
+	// #nosec G702 -- bin is the sha256-verified overlay binary path
+	// (verifyPiBinary, exit 85) with a fixed argv — no shell, no
+	// caller-controlled strings reach this exec.
 	out, err := exec.CommandContext(ctx, bin, "--version").Output()
 	if err != nil {
 		if log != nil {
@@ -301,7 +320,7 @@ func (p *piSupervisorProc) State() (pid int, state string, restarts int, lastRes
 }
 
 func (p *piSupervisorProc) Restart(reason string, graceSeconds int) (restarted, inProgress bool) {
-	// The opencode single-process restart path has no pi analogue: a
+	// The opencode single-process restart path has no pi analog: a
 	// credential change applies through the ConfigWriter seam
 	// (restartRequired per source — pi hot-reloads !command/env-keyed
 	// models.json at request time); a blanket child restart would cut

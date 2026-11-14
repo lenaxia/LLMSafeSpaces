@@ -70,7 +70,7 @@ const (
 	// PiAgentDirEnvName is the shared coordinate BOTH agentd processes
 	// read (the sidecar's writer target; the supervisor passes it to
 	// every child as PI_CODING_AGENT_DIR via its spawn config).
-	PiAgentDirEnvName = "LLMSAFESPACES_PI_AGENT_DIR"
+	PiAgentDirEnvName = agentd.EnvPiAgentDir
 
 	// agent-config.json + allowed-dirs.json: RW sidecar (the ConfigWriter
 	// owns every write), RO workspace container — integrity is a mount
@@ -213,7 +213,7 @@ func (r *WorkspaceReconciler) buildAgentdSidecarContainer(workspace *v1.Workspac
 	// byte-identical (the golden diff pins it).
 	var harnessMounts []corev1.VolumeMount
 	if h := workspaceHarness(workspace); h != v1.HarnessOpencode {
-		env = append(env, corev1.EnvVar{Name: "AGENTD_HARNESS", Value: string(h)})
+		env = append(env, corev1.EnvVar{Name: agentd.EnvAgentdHarness, Value: string(h)})
 		// pi: the shared agent-dir mount (RW — the ConfigWriter renders
 		// the pi config surface here) + the coordinate the writer reads.
 		if h == v1.HarnessPi {
@@ -435,16 +435,20 @@ func (r *WorkspaceReconciler) applyAgentdSidecar(pod *corev1.Pod, workspace *v1.
 		corev1.EnvVar{Name: "LLMSAFESPACES_RESTART_MARKER_PATH", Value: SidecarRestartMarkerEnv},
 	)
 	if workspaceHarness(workspace) == v1.HarnessPi {
-		// pi: no opencode server exists — no OPENCODE_* env, no XDG
-		// auth.json discovery. The supervisor's session-dir knob
-		// carries its in-process PVC-safe default (/workspace/
-		// pi-sessions — S2); the AGENT dir is the shared volume below
-		// (the sidecar renders it; both containers need it RW).
+		// pi: no opencode server exists — no OPENCODE_* env beyond the
+		// password, no XDG auth.json discovery. The workspace password
+		// still gates the harness-port HTTP bridge (the S4 transport's
+		// basic auth); the main container receives it via env exactly
+		// like the opencode branch (the /sandbox-cfg password FILE is
+		// not mounted on the main container — the file-based
+		// readAgentPassword would be boot-fatal there). The supervisor
+		// seeds it into its bridge and STRIPS it from the children's
+		// inherited environment (pi_rpc.go — no passthrough leak).
+		// The session-dir knob carries its in-process PVC-safe default
+		// (/workspace/pi-sessions — S2); the AGENT dir is the shared
+		// volume below (the sidecar renders it; both containers need
+		// it RW).
 		main.Env = append(main.Env,
-			// The workspace password still gates the harness-port HTTP
-			// surface (the S4 transport's basic auth rides the same
-			// per-workspace password secret the sidecar resolves); the
-			// supervisor seeds it into its bridge, never the children.
 			corev1.EnvVar{Name: "OPENCODE_SERVER_PASSWORD", ValueFrom: &corev1.EnvVarSource{
 				SecretKeyRef: &corev1.SecretKeySelector{
 					LocalObjectReference: corev1.LocalObjectReference{Name: passwordSecretName(workspace.Name)},

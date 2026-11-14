@@ -208,8 +208,19 @@ func piChildCmd(cfg piSpawnConfig) *exec.Cmd {
 	// shell, no caller strings. The child is a long-lived daemon, not a
 	// per-call command (the opencodeServeCmd precedent).
 	cmd := exec.Command(argv[0], argv[1:]...)
-	cmd.Env = append(os.Environ(), "PI_CODING_AGENT_DIR="+cfg.AgentDir)
-	cmd.Env = append(cmd.Env, cfg.Env...)
+	// The children inherit the supervisor's environment MINUS the
+	// bridge password: the supervisor seeds it into the harness-port
+	// bridge only (readBridgePasswordEnv); a pi child has no HTTP
+	// surface and must never see the workspace credential.
+	env := make([]string, 0, len(os.Environ())+len(cfg.Env)+1)
+	for _, kv := range os.Environ() {
+		if strings.HasPrefix(kv, "OPENCODE_SERVER_PASSWORD=") {
+			continue
+		}
+		env = append(env, kv)
+	}
+	env = append(env, "PI_CODING_AGENT_DIR="+cfg.AgentDir)
+	cmd.Env = append(env, cfg.Env...)
 	if cfg.Dir != "" {
 		cmd.Dir = cfg.Dir
 	}

@@ -53,6 +53,11 @@ func startPiSupervisorSubprocess(t *testing.T, extraEnv ...string) *piSubprocess
 	cmd := exec.Command(bin, "supervise-pi")
 	cmd.Env = append([]string{
 		"HOME=" + t.TempDir(),
+		// The bridge password the supervisor reads from env
+		// (readBridgePasswordEnv — fatal on empty). Explicit here so
+		// the test never depends on the runner's own
+		// /sandbox-cfg/password existing.
+		"OPENCODE_SERVER_PASSWORD=test-bridge-password",
 		"LLMSAFESPACES_PI_BINARY=" + fakePi,
 		"LLMSAFESPACES_PI_SESSION_DIR=" + filepath.Join(fixture, "sessions"),
 		"LLMSAFESPACES_PI_AGENT_DIR=" + filepath.Join(fixture, "agent"),
@@ -113,19 +118,22 @@ func TestSupervisePiSubprocess_GracefulShutdown(t *testing.T) {
 	p := startPiSupervisorSubprocess(t, "LLMSAFESPACES_PI_ATTACH_ON_BOOT=s-grace")
 
 	// The child booted (boot log proves the boot-attach path spawned
-	// the fake pi with the pinned session id).
+	// the fake pi with the pinned session id). 60s window: CI's race
+	// legs run the whole package on 2 cores — the boot path (version
+	// probe + socket binds + child spawn) took >15s there on loaded
+	// runners; locally it lands in low single digits.
 	bootPath := filepath.Join(p.fixture, "boot", "s-grace.boot")
 	require.Eventually(t, func() bool {
 		lines := piFakeLines(bootPath)
 		return len(lines) >= 1 &&
 			strings.Contains(lines[0], "--session-id s-grace") &&
 			strings.Contains(lines[0], "--mode rpc")
-	}, 15*time.Second, 50*time.Millisecond, "boot attach must spawn the session child")
+	}, 60*time.Second, 50*time.Millisecond, "boot attach must spawn the session child")
 
 	// ONE SIGTERM: the graceful rpc.md ladder — stdin EOF first, the
 	// child's default disposition exits cleanly, exit code 0.
 	require.NoError(t, p.cmd.Process.Signal(syscall.SIGTERM))
-	require.Equal(t, 0, p.waitExit(t, 20*time.Second), "graceful shutdown exits 0")
+	require.Equal(t, 0, p.waitExit(t, 60*time.Second), "graceful shutdown exits 0")
 }
 
 func TestSupervisePiSubprocess_RepeatSignalExitsAtOnce(t *testing.T) {
@@ -142,7 +150,7 @@ func TestSupervisePiSubprocess_RepeatSignalExitsAtOnce(t *testing.T) {
 	bootPath := filepath.Join(p.fixture, "boot", "s-stuck.boot")
 	require.Eventually(t, func() bool {
 		return len(piFakeLines(bootPath)) >= 1
-	}, 15*time.Second, 50*time.Millisecond)
+	}, 60*time.Second, 50*time.Millisecond)
 
 	start := time.Now()
 	require.NoError(t, p.cmd.Process.Signal(syscall.SIGTERM))
@@ -150,8 +158,12 @@ func TestSupervisePiSubprocess_RepeatSignalExitsAtOnce(t *testing.T) {
 	// grace. Give the ladder room to reach the kill rung.
 	time.Sleep(300 * time.Millisecond)
 	require.NoError(t, p.cmd.Process.Signal(syscall.SIGTERM))
-	p.waitExit(t, 15*time.Second)
-	require.Less(t, time.Since(start), 20*time.Second,
+	p.waitExit(t, 60*time.Second)
+	// The bound is the GRACE itself (30s): a ladder that waited out
+	// the pending-work grace would exit at ≈30s+; the kill rung lands
+	// well under it even on loaded CI runners (29s keeps the margin
+	// honest without re-flaking the 2-core race legs).
+	require.Less(t, time.Since(start), 29*time.Second,
 		"repeat signal must not wait out the pending-work grace")
 }
 

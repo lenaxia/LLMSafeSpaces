@@ -45,7 +45,7 @@ import (
 // derivation and boot config writer). Wired by the controller ONLY for
 // non-default harnesses: absent = opencode, so a default pod's env —
 // and every behavior keyed on it — is byte-identical pre/post-S5.
-const envAgentdHarness = "AGENTD_HARNESS"
+const envAgentdHarness = agentd.EnvAgentdHarness
 
 // harnessFromEnv resolves the harness selector, defaulting to opencode.
 func harnessFromEnv(getenv func(string) string) string {
@@ -96,10 +96,11 @@ func (s *harnessStatusStore) snapshot() (harnessStatusSnapshot, bool) {
 	return s.snap, s.ok
 }
 
-// harnessStatusPoller is the sidecar's pi driver: it polls the
-// supervisor's control socket (`harness_status`) on a fixed cadence
-// into a harnessStatusStore. Implements the background-loop shape the
-// opencode path fills with refreshIsHealthyLoop/SSE-subscribe.
+// harnessStatusPoller is the sidecar's pi driver carrier: the control
+// socket address, the poll cadence, and the snapshot store the
+// readiness loop (sidecar_pi.go runPiReadinessLoop — which ALSO
+// maintains the healthz cache, why the loop is not a method here)
+// writes and statusz/readyz read.
 type harnessStatusPoller struct {
 	addr  string
 	store *harnessStatusStore
@@ -111,31 +112,6 @@ func newHarnessStatusPoller(addr string, every time.Duration) *harnessStatusPoll
 		every = 5 * time.Second
 	}
 	return &harnessStatusPoller{addr: addr, store: &harnessStatusStore{}, every: every}
-}
-
-// run polls until ctx ends. A failed poll NEVER clears the last good
-// snapshot (a single control-socket hiccup must not blank statusz) —
-// the fetchedAt staleness is observable via StatuszResponse.Uptime
-// drift and the supervisor-status poller's own degrade surface.
-func (p *harnessStatusPoller) run(ctx context.Context) {
-	t := time.NewTicker(p.every)
-	defer t.Stop()
-	for {
-		p.pollOnce(ctx)
-		select {
-		case <-ctx.Done():
-			return
-		case <-t.C:
-		}
-	}
-}
-
-func (p *harnessStatusPoller) pollOnce(ctx context.Context) {
-	snap, err := fetchHarnessStatus(ctx, p.addr)
-	if err != nil {
-		return
-	}
-	p.store.store(snap)
 }
 
 // fetchHarnessStatus performs one control-socket `harness_status`

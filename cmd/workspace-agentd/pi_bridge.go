@@ -301,6 +301,9 @@ func (b *piBridge) handleSessionRPC(w http.ResponseWriter, r *http.Request, id s
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
+	// #nosec G705 -- response body is the child's JSON RPC reply under
+	// an explicit application/json Content-Type; the bridge is not an
+	// HTML surface (basic-auth'd, consumed by the API server).
 	_, _ = w.Write(resp)
 }
 
@@ -329,7 +332,10 @@ func (b *piBridge) handleControlRPC(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		// WithoutCancel keeps the request's values but detaches its
+		// lifetime: the shutdown ladder must run to completion even
+		// when the caller has already vanished (contextcheck).
+		ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), 3*time.Second)
 		defer cancel()
 		_ = child.Shutdown(ctx, 2*time.Second, time.Second)
 	}()
@@ -406,6 +412,9 @@ func (b *piBridge) handleSessionEvents(w http.ResponseWriter, r *http.Request, i
 		case <-r.Context().Done():
 			return
 		case raw := <-ch:
+			// #nosec G705 -- SSE records under an explicit
+			// text/event-stream Content-Type (set above); not an HTML
+			// surface — the consumer is the API server's pi transport.
 			_, _ = fmt.Fprintf(w, "data: %s\n\n", raw)
 			flusher.Flush()
 		case <-heartbeat.C:

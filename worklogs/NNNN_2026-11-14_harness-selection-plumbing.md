@@ -56,3 +56,25 @@ The prior attempt stranded a merge mid-flight and never compiled: `app.go` decla
 - `controller/internal/workspace/pi_overlay_test.go` — S5 semantics update
 - `controller/internal/webhooks/workspace_webhook_test.go` — immutability tests
 - `cmd/workspace-agentd/pi_supervisor_test.go` — helper rename
+
+## Review round 2 (CHANGES_REQUESTED response) — this session
+
+The first AI review round returned CHANGES_REQUESTED with five findings; the CI race leg also surfaced two timing failures, golangci-lint thirteen findings, and the latent-boot bug below.
+
+**Finding 1 (correctness)** — `PodTransport` shared a 120s `http.Client.Timeout` with the SSE `Events` subscription: every stream died mid-turn at exactly 120s. Fixed with the client split (`client` 120s for RPC, `streamClient` no client-wide Timeout — the caller's context governs the subscription), pinned by `TestPodTransport_ClientTimeoutSplit`.
+
+**Finding 2 (correctness)** — `singleProcessPolicy.Attach` held `p.mu` across the blocking `switch_session` Call; the pump's `sessionOf` closure needs the same mutex on every event. Restructured: state under `p.mu`, the blocking Call outside it, serialized by a dedicated `switchMu` the pump never takes. Events in flight during a switch attribute to the old session until `p.current` updates (GenerationStart marks the boundary) — noted in-code.
+
+**Finding 3 (security) — root-caused deeper than the finding** — the review said the pi branch's `OPENCODE_SERVER_PASSWORD` env "has no pi-path consumer". The truth was worse: the bridge password came from `readAgentPassword()` — the `/sandbox-cfg/password` FILE the main container never mounts in sidecar pods → every real pi pod would boot-fatal at the supervisor (the subprocess tests passed only by accidentally reading the dev runner's own password file). Fixed the delivery properly: the supervisor reads the env (`readBridgePasswordEnv`, fatal on empty — G46 parity), and the child spawn in `pi_rpc.go` STRIPS the password from the `os.Environ()` passthrough (no child leak — the original finding's concern). The subprocess test now sets the env explicitly.
+
+**Finding 4 (test-integrity)** — zero PodTransport tests. Added `pkg/agent/pi/podtransport_test.go`: resolver error surfaces (incl. `ErrNoRunningPod`), basic-auth on every call, JSON roundtrip, error-field surface + 404→`errPiSessionGone` (the mapping was missing in `Call` — added for the SessionClient contract), SSE events with injected sessionId + keepalive skipping, control-client no-stream, and the timeout-split pin.
+
+**Finding 5 (test-integrity)** — no assembled `spec.harness=pi` leg; duplicated env literals. Fixed: `AGENTD_HARNESS`/`LLMSAFESPACES_PI_AGENT_DIR` single-sourced as `pkg/agentd.EnvAgentdHarness`/`EnvPiAgentDir` (pinning test in pkg/agentd; all five spell-time sites now reference the constants), and `TestHarnessDelivery_Assembled_PiWorkspaceReconcile` drives the FULL Reconcile from PhaseCreating and asserts the created pod (supervise-pi args, exactly-one harness overlay, PiAgentDir on main, `AGENTD_HARNESS=pi` on the native-sidecar init container).
+
+**Lint round**: bodyclose (goroutine hand-off nolint with justification), contextcheck (`context.WithoutCancel(r.Context())` for the shutdown ladder), gosec G702/G705 (verified-overlay argv; non-HTML content types), noctx (`net.ListenConfig{}.Listen`), misspell (analog/marshaled), dead `harnessStatusPoller.run/pollOnce` removed (the loop lives in sidecar_pi.go — it also feeds the healthz cache).
+
+**CI race round**: the two supervise-pi subprocess tests' 15s boot-attach windows exceeded on loaded 2-core runners — widened to 60s (exit waits too); the repeat-signal bound re-derived as <29s (the semantic is "did not wait out the 30s grace", not "fast on an idle box").
+
+**govulncheck**: GO-2026-6859 (net/http, fixed in go1.26.11) fails the Security scan on origin/main's own head (ccccb580) — pre-existing toolchain CVE, not this diff; flagged to the orchestrator in the PR.
+
+**Verify**: `go build ./...`, `go vet`, `make fmt-check` clean; race suites green: cmd/workspace-agentd (410s), controller/internal/workspace, controller/internal/webhooks, api/internal/app, pkg/agent/..., pkg/agentd, pkg/apis.

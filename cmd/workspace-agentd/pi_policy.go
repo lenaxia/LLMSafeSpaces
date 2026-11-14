@@ -494,6 +494,12 @@ type singleProcessPolicy struct {
 	mu      sync.Mutex
 	child   *supervisedPiChild
 	current string
+	// switchMu serializes session switches and is NEVER taken by the
+	// event pump: the blocking switch_session RPC runs WITHOUT p.mu
+	// held (the pump's sessionOf closure takes p.mu on every event —
+	// holding it across the call would stall the sole response
+	// deliverer mid-switch, the review finding).
+	switchMu sync.Mutex
 }
 
 func newSingleProcessPolicy(base piSpawnConfig, log *zap.Logger, agg *piStateAggregator) *singleProcessPolicy {
@@ -515,29 +521,42 @@ func (p *singleProcessPolicy) Attach(ctx context.Context, sessionID string) (piS
 	}
 	p.mu.Lock()
 	p.ensureStartedLocked()
+	child := p.child
 	p.mu.Unlock()
-	if !p.child.waitLive() {
+	if !child.waitLive() {
 		return nil, errors.New("pi single-process policy: supervisor exited")
 	}
+	p.switchMu.Lock()
+	defer p.switchMu.Unlock()
+
 	p.mu.Lock()
-	defer p.mu.Unlock()
-	if p.current != sessionID {
-		if st := p.agg.Snapshot(time.Now()); st.SessionsActive > 0 {
-			return nil, errPiBusySwitch
-		}
-		path, err := piSessionPath(p.sessionDir, sessionID)
-		if err != nil {
-			return nil, err
-		}
-		if _, err := p.child.Call(ctx, map[string]any{
-			"type": "switch_session", "sessionPath": path,
-		}); err != nil {
-			return nil, fmt.Errorf("pi switch_session: %w", err)
-		}
-		p.current = sessionID
-		p.agg.GenerationStart(sessionID, p.child.Generation())
+	if p.current == sessionID {
+		p.mu.Unlock()
+		return child, nil
 	}
-	return p.child, nil
+	if st := p.agg.Snapshot(time.Now()); st.SessionsActive > 0 {
+		p.mu.Unlock()
+		return nil, errPiBusySwitch
+	}
+	path, err := piSessionPath(p.sessionDir, sessionID)
+	p.mu.Unlock()
+	if err != nil {
+		return nil, err
+	}
+	// The blocking switch_session Call runs WITHOUT p.mu: the pump's
+	// sessionOf closure keeps flowing (events in flight during the
+	// switch attribute to the OLD session until p.current updates
+	// below — the GenerationStart there marks the boundary).
+	if _, err := child.Call(ctx, map[string]any{
+		"type": "switch_session", "sessionPath": path,
+	}); err != nil {
+		return nil, fmt.Errorf("pi switch_session: %w", err)
+	}
+	p.mu.Lock()
+	p.current = sessionID
+	p.agg.GenerationStart(sessionID, child.Generation())
+	p.mu.Unlock()
+	return child, nil
 }
 
 // ensureStartedLocked spawns the singleton child on first use.

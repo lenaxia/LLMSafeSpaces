@@ -40,6 +40,16 @@ type PodTransport struct {
 	pw     func(ctx context.Context, workspaceID string) (string, error)
 	ip     agent.WorkspacePodResolver
 	client *http.Client
+	// streamClient carries the SSE subscriptions (Events). It has NO
+	// client-wide Timeout: a live event stream is unbounded by design
+	// — the shared 120s client would kill every stream mid-turn at
+	// exactly 120s. Per-subscription lifetime is the caller's context
+	// (the adapter cancels on stream close), and the bridge's SSE
+	// heartbeat keeps half-open connections honest.
+	streamClient *http.Client
+	// port is the bridge port (agentd.AgentPort in production; the
+	// same-package tests point it at an httptest listener).
+	port   int
 	logger *zap.Logger
 }
 
@@ -57,6 +67,15 @@ func NewPodTransport(
 		pw:     pw,
 		ip:     ip,
 		client: &http.Client{Timeout: 120 * time.Second},
+		streamClient: &http.Client{
+			// No Timeout: governed per-request by the caller's context.
+			Transport: &http.Transport{
+				// SSE-appropriate keep-alive defaults; the bridge fans
+				// out server-side, so subscriptions are long-lived.
+				MaxIdleConnsPerHost: 8,
+			},
+		},
+		port:   agentd.AgentPort,
 		logger: logger,
 	}
 }
@@ -84,7 +103,7 @@ func (t *PodTransport) resolve(ctx context.Context, workspaceID string) (target,
 		return target{}, fmt.Errorf("workspace %s: %w", workspaceID, agent.ErrNoRunningPod)
 	}
 	return target{
-		baseURL:  fmt.Sprintf("http://%s:%d", ip, agentd.AgentPort),
+		baseURL:  fmt.Sprintf("http://%s:%d", ip, t.port),
 		password: pw,
 	}, nil
 }
@@ -270,6 +289,15 @@ func (c *bridgeSessionClient) Call(ctx context.Context, command map[string]any) 
 			Error string `json:"error"`
 		}
 		_ = json.Unmarshal(body, &e)
+		if resp.StatusCode == http.StatusNotFound {
+			// SessionClient contract (transport.go): session-gone
+			// phrasings wrap errPiSessionGone so the adapter surfaces
+			// agent.ErrSessionNotFound.
+			if e.Error == "" {
+				e.Error = resp.Status
+			}
+			return nil, fmt.Errorf("%s: %w", e.Error, errPiSessionGone)
+		}
 		if e.Error == "" {
 			e.Error = resp.Status
 		}
@@ -280,7 +308,7 @@ func (c *bridgeSessionClient) Call(ctx context.Context, command map[string]any) 
 
 // Events subscribes to the session's live records over SSE. Each
 // subscription opens its own bridge stream (the bridge fans out
-// server-side; N subscribers = N streams, the HTTP analogue of the
+// server-side; N subscribers = N streams, the HTTP analog of the
 // in-process fan-out). Records carry the injected sessionId (the S4
 // transport contract — ContextUsageFromEvent's non-empty-sessionID
 // guarantee).
@@ -294,7 +322,14 @@ func (c *bridgeSessionClient) Events(ctx context.Context) (<-chan EventRecord, e
 	}
 	req.SetBasicAuth(agentd.AuthUsername, c.tgt.password)
 	req.Header.Set("Accept", "text/event-stream")
-	resp, err := c.t.client.Do(req)
+	// streamClient (no client-wide Timeout — see the struct comment):
+	// the subscription lives as long as the caller's context.
+	//
+	//nolint:bodyclose // resp.Body ownership passes to the pump
+	// goroutine below, which closes it on every exit path (the >=400
+	// early return closes it inline above); bodyclose cannot trace the
+	// goroutine hand-off.
+	resp, err := c.t.streamClient.Do(req)
 	if err != nil {
 		return nil, err
 	}

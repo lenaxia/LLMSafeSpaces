@@ -10,7 +10,7 @@ package workspace
 //     harness-omitted workspace and an explicit harness=opencode
 //     workspace render byte-identical pod specs, in both pod
 //     topologies — the zero-behavior-change constraint, pinned as a
-//     marshalled-spec equality so ANY divergence (env order, volume
+//     marshaled-spec equality so ANY divergence (env order, volume
 //     order, a stray field) fails the diff.
 //   - The supervisor subcommand follows spec.harness:
 //     supervise-opencode (default and explicit) vs supervise-pi.
@@ -23,9 +23,14 @@ import (
 	"encoding/json"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 
 	v1 "github.com/lenaxia/llmsafespaces/pkg/apis/llmsafespaces/v1"
+	"github.com/lenaxia/llmsafespaces/pkg/agentd"
 )
 
 // --- golden zero-diff (the S5 constraint) -----------------------------------
@@ -33,7 +38,7 @@ import (
 // TestHarnessDelivery_DefaultWorkspaceGoldenZeroDiff: the recorded S5
 // constraint — spec.harness="" (the CRD default, every pre-S5 Workspace)
 // and spec.harness="opencode" (the explicit form) produce IDENTICAL pod
-// specs. Byte-level over the marshalled spec; the opencode-branch
+// specs. Byte-level over the marshaled spec; the opencode-branch
 // overlay invariants themselves are pinned by the unchanged S1-era
 // opencode_overlay_test.go suite.
 func TestHarnessDelivery_DefaultWorkspaceGoldenZeroDiff(t *testing.T) {
@@ -58,7 +63,7 @@ func TestHarnessDelivery_DefaultWorkspaceGoldenZeroDiff(t *testing.T) {
 			"golden pod-spec diff MUST be empty: harness=%q vs harness=%q (sidecar=%v)",
 			wsDefault.Spec.Harness, wsExplicit.Spec.Harness, sidecar)
 		require.Equal(t, string(defJSON), string(explicitJSON),
-			"the marshalled specs must be byte-identical, not merely deeply equal")
+			"the marshaled specs must be byte-identical, not merely deeply equal")
 
 		// Non-triviality: the compared specs actually carry the opencode
 		// overlay (an empty-vs-empty pass would vacuously "succeed").
@@ -136,4 +141,66 @@ func TestValidateWorkspaceHarness_Refusals(t *testing.T) {
 	unpinned.PiImage = ""
 	err = unpinned.validateWorkspaceHarness(piHarnessWorkspace(t))
 	require.ErrorContains(t, err, "requires its overlay delivery")
+}
+
+// --- assembled system: full Reconcile for a spec.harness=pi workspace ---------
+//
+// The review finding: buildPod-level assertions alone do not prove the
+// wiring survives the WHOLE path (validation, defaulting, secret/PVC
+// preconditions, sidecar injection). This leg drives the real
+// Reconcile from PhaseCreating and asserts the CREATED pod object.
+
+func TestHarnessDelivery_Assembled_PiWorkspaceReconcile(t *testing.T) {
+	ws := makeWorkspace("ws-pi-assembled", "default", v1.WorkspacePhaseCreating)
+	ws.Spec.Harness = v1.HarnessPi
+	ws.Status.PVCName = "workspace-ws-pi-assembled"
+	pvc := makeBoundPVC("workspace-ws-pi-assembled", "default", ws.UID)
+	pwSecret := makePasswordSecret("ws-pi-assembled", "default")
+	rte := &v1.RuntimeEnvironment{
+		ObjectMeta: metav1.ObjectMeta{Name: "python-3.11"},
+		Spec:       v1.RuntimeEnvironmentSpec{Image: "ghcr.io/test/python:3.11", Language: "python", Version: "3.11"},
+	}
+	r := reconcilerFor(t, ws, pvc, pwSecret, rte)
+	// pi requires the sidecar topology (validateWorkspaceHarness).
+	r.AgentdSidecarEnabled = true
+
+	_, err := r.Reconcile(context.Background(), reqFor("ws-pi-assembled", "default"))
+	require.NoError(t, err)
+
+	pod := &corev1.Pod{}
+	err = r.Get(context.Background(), types.NamespacedName{Name: podName("ws-pi-assembled", string(ws.UID)), Namespace: "default"}, pod)
+	require.NoError(t, err, "the pi workspace's pod must be created")
+
+	// The supervisor subcommand follows spec.harness through the FULL
+	// reconcile path, not just buildPod.
+	require.Equal(t, []string{"supervise-pi"}, pod.Spec.Containers[0].Args)
+
+	// Exactly one harness overlay: pi wired, opencode absent.
+	volNames := map[string]bool{}
+	for _, v := range pod.Spec.Volumes {
+		if v.Image != nil {
+			volNames[v.Name] = true
+		}
+	}
+	assert.True(t, volNames["pi"], "the pi overlay volume is wired")
+	assert.False(t, volNames["opencode"], "the opencode overlay volume is absent on a pi workspace")
+
+	mainEnv := map[string]string{}
+	for _, e := range pod.Spec.Containers[0].Env {
+		mainEnv[e.Name] = e.Value
+	}
+	require.Equal(t, piAgentDirMountPath, mainEnv[agentd.EnvPiAgentDir],
+		"the shared pi agent-dir coordinate rides the main container")
+
+	// The sidecar is a NATIVE sidecar (the last init container,
+	// restartPolicy Always) and carries the harness selection
+	// (AGENTD_HARNESS=pi — absent means opencode on a mixed fleet).
+	require.NotEmpty(t, pod.Spec.InitContainers, "sidecar topology: the native sidecar init container must exist")
+	sidecar := pod.Spec.InitContainers[len(pod.Spec.InitContainers)-1]
+	sidecarEnv := map[string]string{}
+	for _, e := range sidecar.Env {
+		sidecarEnv[e.Name] = e.Value
+	}
+	assert.Equal(t, "pi", sidecarEnv[agentd.EnvAgentdHarness],
+		"the sidecar's harness branch keys on the shared env name (pkg/agentd.EnvAgentdHarness)")
 }
