@@ -2028,6 +2028,125 @@ func bytesAllIndexes(haystack, needle []byte) []int {
 // leading ref with a loud warning. The two probes below are the EXACT
 // live shapes.
 
+// --- recoverInjectedDestination direct unit tests (r1 review B1: the
+// sibling extractor's pinned convention — rejection table, acceptance
+// half, boundaries, the v1-continuity claim, precedence) ---
+
+func TestRecoverInjectedDestination_RejectionTable(t *testing.T) {
+	for _, tc := range []struct {
+		name, v string
+	}{
+		{"clean ses_ id", "ses_abc123"},
+		{"clean phrase", "calm-otter-naps"},
+		{"empty", ""},
+		{"leading quote", `","message":"x`},
+		{"ContainsAny hit, no quote (brace only)", "ses_abc{}"},
+		{"tail-guard rejection: quote but neither key-colon nor brace", `ses_abc"justtext`},
+		{"target fails recoverableRefForm (not ses_, not phrase)", `zzz","message":"x}`},
+		{"over-length target (125+ chars after ses_)", "ses_" + strings.Repeat("a", 125) + `","message":"x`},
+		{"non-string junk entirely", "random text with quotes and braces but no valid leading ref"},
+	} {
+		target, ok := recoverInjectedDestination(tc.v)
+		assert.False(t, ok, tc.name+": must NOT recover")
+		assert.Empty(t, target, tc.name)
+	}
+}
+
+func TestRecoverInjectedDestination_Acceptance(t *testing.T) {
+	for _, tc := range []struct {
+		name, v, want string
+	}{
+		{"live shape: brace + prose", `torrid-oxbow-indicates","message":"this is the last probe — full report follows"}`, "torrid-oxbow-indicates"},
+		{"live shape: brace-less, prose tail", `rainy-welder-restricts","message":"ruling (b) posted on PR 2009 — reopen, CI`, "rainy-welder-restricts"},
+		{"brace-only arm", `ses_abc"}`, "ses_abc"},
+		{"key-colon arm, no brace", `ses_abc","message":"x`, "ses_abc"},
+		{"v1 shape with JUNK origin (continuity: the old extractor rejects the junk origin; this path recovers the target)", `ses_abc","lsp_injected_session":"JUNK_NOT_AN_ID"}`, "ses_abc"},
+		{"ses_ 124-char boundary + injection", "ses_" + strings.Repeat("a", 124) + `","message":"x`, "ses_" + strings.Repeat("a", 124)},
+	} {
+		target, ok := recoverInjectedDestination(tc.v)
+		assert.True(t, ok, tc.name+": must recover")
+		assert.Equal(t, tc.want, target, tc.name)
+	}
+}
+
+// TestRecoverInjectedDestination_V1Precedence — a VALID-origin v1 shape
+// keeps the OLD extractor (splitDuplicatedArgFragment) and its richer
+// embedded-origin-mismatch warnings; the generalized path only fires
+// when the old extractor rejects (r1 review B3: precedence pinned).
+func TestMCPSendMessage_V1ValidOriginKeepsRichRecovery(t *testing.T) {
+	f := newFakeAgent()
+	target := f.newSession("target")
+	origin := f.newSession("origin")
+	withAgentServer(t, f.handler(t))
+
+	// v1 shape with a VALID embedded origin: splitDuplicatedArgFragment
+	// handles it — the result carries the #1530-specific warning, not
+	// the generic injection warning.
+	req := mcpRequest{JSONRPC: "2.0", ID: 1, Method: "tools/call",
+		Params: marshalParams(t, map[string]any{
+			"name": "send_message",
+			"arguments": map[string]any{
+				"destination":          target + `","lsp_injected_session":"` + origin + `"}`,
+				"message":              "v1-shape precedence probe",
+				"lsp_injected_session": origin,
+			},
+		})}
+	body, _ := json.Marshal(req)
+	w := httptest.NewRecorder()
+	r := mcpAuthedRequest(body)
+	mcpHandler(mcpTestPassword)(w, r)
+
+	var resp struct {
+		Result struct {
+			Content []struct {
+				Text string `json:"text"`
+			} `json:"content"`
+		} `json:"result"`
+	}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+	require.NotEmpty(t, resp.Result.Content)
+	assert.Contains(t, resp.Result.Content[0].Text, "duplicated-argument fragment",
+		"the v1 shape keeps the OLD extractor's richer warning")
+	assert.NotContains(t, resp.Result.Content[0].Text, "injected JSON fragments",
+		"the generic injection warning must not co-fire on v1-valid shapes")
+}
+
+// TestMCPSendMessage_RecoveredNonexistentTargetFailsLoudly — a
+// recovered destination that does not EXIST fails with the STRIPPED id
+// named (the diagnosability improvement over the pre-recovery mangled
+// blob; r1 review B2).
+func TestMCPSendMessage_RecoveredNonexistentTargetFailsLoudly(t *testing.T) {
+	f := newFakeAgent()
+	caller := f.newSession("caller")
+	withAgentServer(t, f.handler(t))
+
+	req := mcpRequest{JSONRPC: "2.0", ID: 1, Method: "tools/call",
+		Params: marshalParams(t, map[string]any{
+			"name": "send_message",
+			"arguments": map[string]any{
+				"destination":          `ses_ghost_recoverable","message":"x}`,
+				"message":              "must fail loudly naming the stripped id",
+				"lsp_injected_session": caller,
+			},
+		})}
+	body, _ := json.Marshal(req)
+	w := httptest.NewRecorder()
+	r := mcpAuthedRequest(body)
+	mcpHandler(mcpTestPassword)(w, r)
+
+	var resp struct {
+		Result struct {
+			Content []struct {
+				Text string `json:"text"`
+			} `json:"content"`
+		} `json:"result"`
+	}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+	require.NotEmpty(t, resp.Result.Content)
+	assert.Contains(t, resp.Result.Content[0].Text, "ses_ghost_recoverable",
+		"the error names the STRIPPED id — diagnosable, not the injected blob")
+}
+
 func TestMCPSendMessage_InjectedDestinationRecovers_HandlerLevel(t *testing.T) {
 	f := newFakeAgent()
 	target := f.newSession("target")

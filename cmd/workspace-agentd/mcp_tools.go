@@ -1713,9 +1713,20 @@ func resolveSingleBusySession(ctx context.Context, client *opencode.Client) (str
 // (scripts/1530-arg-mutation-probe.mjs) falsified the plugin/
 // serializer race: the escapes exist only in JSON SOURCE TEXT, so
 // the corruption predates serialization. Both extracted ids must be
-// well-formed session ids; anything else is NOT the shape and
-// returns ok=false (the caller keeps the original value and its
-// normal error path — the guard never mangles clean input).
+// well-formed session ids.
+//
+// CONTRACT UPDATE (2026-11-14, post-v3 review r1): ok=false no longer
+// means "the caller keeps the original value and its normal error
+// path" for every rejection row. Rows whose LEADING ref is still a
+// valid target (junk/empty/malformed embedded origins, trailing
+// }junk, multi-mark values) now fall through to
+// recoverInjectedDestination and DELIVER to the leading id with the
+// generic injection warning — the intent-preserving choice (the
+// #2030 live losses had clean leading ids and intact messages).
+// Rows whose leading ref is invalid still fail normally. Precedence:
+// a VALID-origin v1 shape keeps this extractor and its richer
+// embedded-origin warnings; the generalized path only fires when
+// this extractor rejects (pinned: TestMCPSendMessage_V1ValidOriginKeepsRichRecovery).
 const dupFragmentMark = `","lsp_injected_session":"`
 
 // sesIDPattern is a PREFIX-RESTRICTED SUBSET of the adapter seam's
@@ -1838,13 +1849,10 @@ func mcpSendMessage(ctx context.Context, password, sessionID, message, injectedS
 	if sessionID == "" {
 		return "", fmt.Errorf("destination is required")
 	}
-	// #1530 emission-duplication recovery: a session_id carrying the
-	// duplicated-argument fragment (model emission slip — see
-	// splitDuplicatedArgFragment) still encodes the intended target
-	// in its leading id. Recover it and deliver; the result warns
-	// loudly instead of losing the message to a resolution error
-	// (the 13-instance misfire class — messages were lost though the
-	// intent was mechanically recoverable).
+	// #1530 emission-duplication recovery + post-v3 generalized
+	// injection recovery (see splitDuplicatedArgFragment and
+	// recoverInjectedDestination for the exact shape contracts and
+	// precedence).
 	recoveredTarget, embeddedOrigin, recovered := splitDuplicatedArgFragment(sessionID)
 	if recovered {
 		sessionID = recoveredTarget
