@@ -1,0 +1,22 @@
+{
+  "mcpServers": {
+    "docs": {
+      "url": "https://docs.example.test/mcp",
+      "headers": {
+        "Authorization": "Bearer ${DOCS_TOKEN}"
+      },
+      "timeout": 3
+    },
+    "filesystem": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "@modelcontextprotocol/server-filesystem",
+        "."
+      ],
+      "env": {
+        "CI": "1"
+      }
+    }
+  }
+}
