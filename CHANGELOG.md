@@ -5,8 +5,7 @@ All notable changes to LLMSafeSpaces are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
-
+## [0.44.13] - 2026-11-14
 
 ### Fixed — the glm-5.3 tool-call tiling runaway: aged-arg compaction v3 renders prior tool usage as lossless markdown (issue #1949, PR follow-up to #1954)
 
