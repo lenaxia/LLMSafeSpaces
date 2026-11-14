@@ -160,6 +160,29 @@ export function doneReadiness(task: { acceptance_criteria?: Array<{ text: string
   return { allMet: unmet.length === 0, unmet };
 }
 
+// --- Done column ordering (owner ask 2026-11-13) -------------------------------
+
+/** The done-ness clock: stage_entered_at (when the row entered Done —
+ * set by every stage write, engine-side) with updated_at as the degrade
+ * fallback; 0 when neither parses (quiet rows) so sorts stay total. */
+export function doneSortKey(task: { stage_entered_at?: string | null; updated_at?: string | null }): number {
+  return Date.parse(task.stage_entered_at ?? "") || Date.parse(task.updated_at ?? "") || 0;
+}
+
+/** Newest-done first — the Done column's order pin (owner ask
+ * 2026-11-13): the most recently completed stories render first, in
+ * BOTH the capped inline preview and the show-all drawer. The server
+ * list arrives created_at-asc (reads.go's ORDER BY), so the recency
+ * order is applied view-side; short_id asc is the deterministic
+ * tiebreak for equal/absent clocks. Pure: never mutates the input. */
+export function sortDoneNewestFirst<T extends { stage_entered_at?: string | null; updated_at?: string | null; short_id: string }>(
+  tasks: T[],
+): T[] {
+  return [...tasks].sort(
+    (a, b) => doneSortKey(b) - doneSortKey(a) || a.short_id.localeCompare(b.short_id),
+  );
+}
+
 // --- OR4: the pr:N PR-drift anchor (owner ruling OR4) --------------------------
 
 /** The ONE PR-drift anchor form the reconciler's RC2 pass consumes

@@ -1259,6 +1259,69 @@ test.describe("2026-10-28 board declutter — capped epic list, mobile columns/w
     expect(rowBox.bottom).toBeLessThanOrEqual(listBox.bottom + 0.5);
   });
 
+  // Owner ask 2026-11-13: the Done column caps its inline cards (10
+  // newest-done) + the show-all drawer carrying the full set in its own
+  // scroll region — the terminal column no longer pushes the board
+  // layout when a lane accumulates hundreds of completed stories.
+  test("done column caps inline cards at 10 + the show-all drawer reveals the full set, newest first", async ({ page }) => {
+    // 13 done stories entered on staggered days 01..13 (plus lane B's
+    // ordinary rows) — tsk-done0013 is the NEWEST done.
+    const doneRows = Array.from({ length: 13 }, (_, i) =>
+      task({
+        short_id: `tsk-done${String(i + 1).padStart(4, "0")}`,
+        title: `Done 10-${String(i + 1).padStart(2, "0")}`,
+        stage: "done",
+        project_id: PROJECT_A,
+        epic_id: "epic-1",
+        stage_entered_at: `2026-10-${String(i + 1).padStart(2, "0")}T00:00:00Z`,
+        updated_at: `2026-10-${String(i + 1).padStart(2, "0")}T00:00:00Z`,
+      }),
+    );
+    const state = await openBoard(page, { tasks: [...freshState().tasks.filter((t) => t.stage !== "done"), ...doneRows] });
+    expect(state.tasks.filter((t) => t.stage === "done")).toHaveLength(13);
+
+    const lane = page.getByTestId(`swimlane-${PROJECT_A}`);
+    const cell = lane.getByTestId("stage-drop-done");
+
+    // The cap: exactly 10 inline, newest-done FIRST (the oldest three
+    // live only behind the affordance).
+    const inlineIds = await cell.locator("[data-task-card]").evaluateAll((els) =>
+      els.map((el) => el.getAttribute("data-task-card")),
+    );
+    expect(inlineIds).toEqual([
+      "tsk-done0013", "tsk-done0012", "tsk-done0011", "tsk-done0010", "tsk-done0009",
+      "tsk-done0008", "tsk-done0007", "tsk-done0006", "tsk-done0005", "tsk-done0004",
+    ]);
+
+    // The affordance names the FULL count; the header badge keeps the
+    // lane's truth (13, never the capped 10).
+    const affordance = lane.getByTestId(`done-show-all-${PROJECT_A}`);
+    await expect(affordance).toBeVisible();
+    await expect(affordance).toContainText("Show all 13 done");
+
+    // Opening reveals the FULL set in the drawer's own scroll region.
+    await affordance.click();
+    const drawerList = page.getByTestId("done-drawer-list");
+    await expect(drawerList).toBeVisible();
+    await expect(drawerList.locator("[data-task-card]")).toHaveCount(13);
+    const drawerIds = await drawerList.locator("[data-task-card]").evaluateAll((els) =>
+      els.map((el) => el.getAttribute("data-task-card")),
+    );
+    expect(drawerIds[0]).toBe("tsk-done0013");
+    expect(drawerIds[12]).toBe("tsk-done0001");
+    const metrics = await drawerList.evaluate((el) => {
+      const cs = getComputedStyle(el);
+      return { overflowY: cs.overflowY, scrollHeight: el.scrollHeight, clientHeight: el.clientHeight };
+    });
+    expect(["auto", "scroll"]).toContain(metrics.overflowY);
+    expect(metrics.scrollHeight).toBeGreaterThan(metrics.clientHeight);
+
+    // Close returns to the board (the capped column is intact).
+    await page.getByTestId("done-drawer-close").click();
+    await expect(page.getByTestId("done-drawer-list")).toHaveCount(0);
+    await expect(cell.locator("[data-task-card]")).toHaveCount(10);
+  });
+
   test("mobile: 2-column grid, long titles wrap INSIDE the card, action buttons never bleed", async ({ page }) => {
     // Ruling 5: 4 columns cannot wrap cleanly at mobile widths — the
     // grid collapses to 2 columns on small screens (4 from md up), the
