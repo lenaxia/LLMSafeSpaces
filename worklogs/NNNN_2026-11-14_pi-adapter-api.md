@@ -163,3 +163,21 @@ New `pkg/agent/pi` adapter surface (beside S3's configwriter):
 - govulncheck FAIL is pre-existing on main (GO-2026-6859, net/http
   stdlib, go1.26.10 → 1.26.11) — no traced symbol touches
   pkg/agent/pi; repo-wide toolchain bump is outside this story.
+- **r2 CHANGES_REQUESTED** (SHA 28334183): all r1 fixes verified
+  (mutation-verified by the reviewer in a scratch worktree — the
+  ringDelta guards, the mid-stream mint, the rune truncation each go
+  red when reverted). One remaining gap: the adapter-level stateless
+  id mint (ClientEventsFromEvent's beginMessage) was load-bearing for
+  message_update/tool_execution_* traffic yet unpinned.
+- **r2 fix**: TestReviewR2_StatelessIDsOnEveryEvent pins non-empty
+  MessageID/PartID on text_delta, toolcall_start, and
+  tool_execution_end stateless events; mutation-verified locally
+  (removing the mint turns it red), then re-verified by the reviewer.
+- **r3 APPROVED** (github-actions[bot], 2026-11-14T02:41:07Z, head
+  822e17f2347205b5be5fcbd38c194084fbd3838e): "The r2→r3 delta is
+  exactly the one-line-class fix r2 demanded … No production code
+  changed since the r2-reviewed head. CI is fully green on this exact
+  head." — Test (full suite, race), Test (-short), SDK contract,
+  Harness ABI, Lint, builds all SUCCESS on 822e17f; govulncheck
+  remains the pre-existing main-branch stdlib finding (no traced
+  symbol touches pkg/agent/pi).
