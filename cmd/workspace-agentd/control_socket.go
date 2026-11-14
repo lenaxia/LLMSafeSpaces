@@ -485,7 +485,6 @@ func writeJSON(conn net.Conn, resp controlResponse) {
 	_ = json.NewEncoder(conn).Encode(resp)
 }
 
-
 // harnessStatusMethod serves `harness_status`: the harness driver's
 // parity snapshot (sessions, busy ages, last progress, version) as the
 // result map. Capability-typed: a server without the field answers

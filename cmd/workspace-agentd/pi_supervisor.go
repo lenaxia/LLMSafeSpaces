@@ -177,9 +177,9 @@ func runSupervisePiCommand(_ []string) int {
 // health loop. Constructed from env by the subcommand; constructed
 // directly by tests.
 type piSupervisor struct {
-	log       *zap.Logger
-	policy    piProcessPolicy
-	agg       *piStateAggregator
+	log    *zap.Logger
+	policy piProcessPolicy
+	agg    *piStateAggregator
 	// cfg is the spawn contract (binary/dir/env) — S5's bridge reads
 	// it for the ephemeral control child; the policies keep their own
 	// copies for the session children.
