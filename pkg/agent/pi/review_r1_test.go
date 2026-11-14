@@ -163,6 +163,42 @@ func TestReviewR1_MidStreamMessageEnd_MintsID(t *testing.T) {
 	}
 }
 
+// TestReviewR2_StatelessIDsOnEveryEvent pins the adapter-level
+// beginMessage mint (adapter.go's ClientEventsFromEvent): EVERY
+// stateless event class that carries ids — message_update's part
+// events (the majority of emitted traffic) and the tool_execution_*
+// part snapshots, not just message_end's self-mint — must carry a
+// non-empty MessageID/PartID. Red without the mint (r2's
+// mutation-verified gap).
+func TestReviewR2_StatelessIDsOnEveryEvent(t *testing.T) {
+	a := NewAdapter(nil, nil)
+
+	// message_update text_delta → part.delta with both ids.
+	evs := a.ClientEventsFromEvent("message_update", `{"type":"message_update","assistantMessageEvent":{"type":"text_delta","contentIndex":0,"delta":"hi"}}`)
+	if len(evs) != 1 {
+		t.Fatalf("delta events: %+v", evs)
+	}
+	if evs[0].MessageID == "" || evs[0].PartID == "" {
+		t.Fatalf("stateless part.delta carries empty ids: %+v", evs[0])
+	}
+
+	// message_update toolcall_start → part.start with both ids.
+	evs = a.ClientEventsFromEvent("message_update", `{"type":"message_update","assistantMessageEvent":{"type":"toolcall_start","contentIndex":1,"id":"call_x","toolName":"bash"}}`)
+	if len(evs) != 1 || evs[0].MessageID == "" || evs[0].PartID == "" {
+		t.Fatalf("stateless toolcall_start ids: %+v", evs)
+	}
+
+	// tool_execution_end → part.end snapshot with both ids (the
+	// mint-on-the-fly path for calls with no streamed block).
+	evs = a.ClientEventsFromEvent("tool_execution_end", `{"type":"tool_execution_end","toolCallId":"call_y","toolName":"bash","result":{"content":[]},"isError":false}`)
+	if len(evs) != 1 || evs[0].MessageID == "" || evs[0].PartID == "" {
+		t.Fatalf("stateless tool_execution_end ids: %+v", evs)
+	}
+	if evs[0].Part == nil || evs[0].Part.Tool == nil || evs[0].Part.Tool.CallID != "call_y" {
+		t.Fatalf("stateless tool snapshot: %+v", evs[0].Part)
+	}
+}
+
 // 3. validateSessionID: the guard in front of every file name and
 // spawn arg.
 func TestReviewR1_ValidateSessionID(t *testing.T) {
