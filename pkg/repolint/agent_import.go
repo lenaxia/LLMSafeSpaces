@@ -127,15 +127,16 @@ func (r AgentImportReport) String() string {
 		return "(ok)"
 	}
 	var b strings.Builder
-	fmt.Fprintf(&b, "  %d file(s) import %s from outside the allowed seam:\n",
+	fmt.Fprintf(&b, "  %d file(s) import an agent implementation package (%s and siblings behind the same seam) from outside the allowed boundary:\n",
 		len(r.Violations), AgentImportForbiddenPath)
 	for _, v := range r.Violations {
 		fmt.Fprintf(&b, "    - %s (%s)\n", v.File, v.Reason)
 	}
 	b.WriteString("  Platform code must import pkg/agent (interface) and\n" +
 		"  pkg/session (contract types). Only api/internal/app/ (construction)\n" +
-		"  and cmd/workspace-agentd/ (config writer) may import the opencode\n" +
-		"  implementation. See design/0049 §4.6 and Epic 65 US-65.6.\n")
+		"  and cmd/workspace-agentd/ (config writer) may import an agent\n" +
+		"  implementation (opencode or pi). See design/0049 §4.6 and Epic 65\n" +
+		"  US-65.6.\n")
 	return b.String()
 }
 

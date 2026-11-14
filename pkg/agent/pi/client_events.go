@@ -163,11 +163,16 @@ func (tr *streamTranslator) beginMessage() string {
 }
 
 // endMessage builds the authoritative final message from message_end's
-// payload. Non-user/assistant roles produce nothing.
+// payload. Non-user/assistant roles produce nothing. A subscription
+// that started mid-message (no message_start seen) still mints an id
+// so no contract Message ever carries an empty one.
 func (tr *streamTranslator) endMessage(raw json.RawMessage, sessionID string, now time.Time) *session.Message {
 	var msg piAgentMessage
 	if err := json.Unmarshal(raw, &msg); err != nil {
 		return nil
+	}
+	if tr.currentMsgID == "" {
+		tr.beginMessage()
 	}
 	switch msg.Role {
 	case "user":
