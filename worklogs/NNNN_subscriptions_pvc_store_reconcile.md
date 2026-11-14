@@ -230,3 +230,44 @@ The govulncheck disposition is unchanged (inherited from main,
 GO-2026-6859, owner/orchestrator territory — same red on main @
 bb2538ff). Full `go test ./cmd/workspace-agentd/` green at this head
 (374.9s); `make fmt-check` clean.
+
+## §8 Review round 3 — the publish-stamp reborrow race and its pin (board reviewer r3, head 73e512648)
+
+1. **MAJOR — publish-stamp-reborrow-race.** `publishSettle` re-read
+   the latch stamp AFTER `debounceFired`'s unlock (Publish is I/O, the
+   bus leg runs unlocked): a fold completing a full busy→settle
+   episode in that window re-stamps the latch, and the in-flight
+   publish then broadcast AND advanced the LATER settle's stamp — a
+   hard kill inside the still-armed next debounce left
+   watermark==stamp and the boot reconcile silent: that wake-up
+   permanently lost (r2 finding-2's class reopened through the
+   publish-side window). **Fix: the settle's identity is captured at
+   ARMING time** — `armedDebounce.stamp`, set under the same mu
+   critical section that writes the latch (both arming sites), and
+   threaded `debounceFired → publishSettle` (payload + advance) and
+   `debounceFired → collectSettlesLocked` (the direct leg's advance
+   stops reading the latch too — identity over coincidence). The
+   direct leg's collect was already inside one critical section
+   (unreachable window) but now carries the same explicit identity.
+2. **MAJOR — the publish leg was unpinned.** Zero assertion coverage
+   for the publish-success advance and the settled_at payload.
+   **Fixed with finding 1's pins (same region, same vehicle):**
+   `TestPublishSettleCarriesStampAndAdvancesWatermarks` (a fake Bus
+   driven through the real debounce fire: payload settled_at equals
+   the settling stamp, the watermark advances post-publish, the outbox
+   stays empty) and `TestPublishSettleUsesArmingStampNotLaterLatch`
+   (the mid-publish latch re-stamp — the racing fold's durable write
+   lands inside Publish — must NOT leak into the payload or the
+   advance; the boot reconcile then still fires the later settle's
+   wake-up). Both `-count=3` deterministic.
+3. **minor — inherited CI red.** `TestPrReviewPromptCIFirstExecutionPolicy`
+   (tests/ghaworkflows) failed on both Test jobs — inherited from
+   main's own red (2c4f8d682 in the merge base); the owner's fix
+   landed as main ccccb58017. Action: the new main tip is merged
+   before this push; the green Test runs on the exact final head are
+   cited in the handoff. govulncheck GO-2026-6859 remains the
+   adjudicated inherited advisory (identical red on main's tip —
+   waiver/toolchain-bump stays owner territory).
+
+Full `go test ./cmd/workspace-agentd/` green at this head (375.2s);
+`make fmt-check` clean.

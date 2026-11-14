@@ -16,6 +16,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -500,4 +501,140 @@ func TestReconcileMissedSettlesFailedDeliveryRidesRetryOutbox(t *testing.T) {
 	assert.InDelta(t, 1, notifyOutcome(t, "outbox_retried_delivered")-retriedBefore, 0,
 		"outbox_retried_delivered ticked exactly once")
 	assertNoNotice(t, f.deliver.ch, 100*time.Millisecond, "never an unbounded ladder")
+}
+
+// ---- review round 3: the publish-leg identity pins ----------------------
+
+// captureBus is a settlePublisher fake for the publish-leg pins: it
+// records every published event and runs onPublish INSIDE Publish —
+// the hook where a racing fold's durable writes land while the real
+// publish does its I/O (the r3 reborrow window).
+type captureBus struct {
+	mu        sync.Mutex
+	events    []eventbus.Event
+	onPublish func()
+}
+
+func (b *captureBus) Publish(_ context.Context, ev eventbus.Event) (string, error) {
+	if b.onPublish != nil {
+		b.onPublish()
+	}
+	b.mu.Lock()
+	b.events = append(b.events, ev)
+	b.mu.Unlock()
+	return "pub_1", nil
+}
+
+func (b *captureBus) published() []eventbus.Event {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	out := make([]eventbus.Event, len(b.events))
+	copy(out, b.events)
+	return out
+}
+
+// newBusLegFixture builds one notifier whose settle leg rides a fake
+// Bus (the publish path under test; no consumer group).
+func newBusLegFixture(t *testing.T) (*sessionNotifier, *sessionSubscriptionStore, *captureBus) {
+	t.Helper()
+	store := newSessionSubscriptionStore(storePath(t))
+	bus := &captureBus{}
+	n := newSessionNotifier(sessionNotifierConfig{
+		Store:    store,
+		Facts:    mapSessionFacts{subtasks: map[string]bool{}, gone: map[string]bool{}},
+		Debounce: 25 * time.Millisecond,
+		Deliver:  newChanDeliverer(),
+		Bus:      bus,
+		Logger:   zap.NewNop(),
+	})
+	t.Cleanup(func() { quiesceNotifier(n) })
+	return n, store, bus
+}
+
+// TestPublishSettleCarriesStampAndAdvancesWatermarks (review r3
+// finding 2 — the publish leg had ZERO assertion coverage): a settle
+// through the bus path publishes settled_at equal to the settling
+// stamp and advances the delivered-watermark to it — deleting either
+// the payload field or the publish-success advance reddens this pin.
+func TestPublishSettleCarriesStampAndAdvancesWatermarks(t *testing.T) {
+	n, store, bus := newBusLegFixture(t)
+	_, err := n.Subscribe("ses_w", "ses_m", []string{subscriptionEventIdle})
+	require.NoError(t, err)
+
+	n.handleFrame(statusFrame("ses_w", abiv1.SessionStatus_SESSION_STATUS_BUSY))
+	n.handleFrame(statusFrame("ses_w", abiv1.SessionStatus_SESSION_STATUS_IDLE))
+	settled := store.latchFor("ses_w").LastSettleAt
+	require.False(t, settled.IsZero(), "the settle edge stamped before arming")
+
+	require.Eventually(t, func() bool { return len(bus.published()) == 1 },
+		2*time.Second, 5*time.Millisecond, "the debounce published the settle")
+	ev := bus.published()[0]
+	assert.Equal(t, eventbus.SessionSettleTopic("ses_w", subscriptionEventIdle), ev.Topic)
+	raw, ok := ev.Payload["settled_at"]
+	require.True(t, ok, "the payload carries the settle identity")
+	stamp, err := time.Parse(time.RFC3339Nano, raw)
+	require.NoError(t, err)
+	// Instant equality (the parsed form carries no monotonic reading).
+	assert.True(t, stamp.Equal(settled), "settled_at equals the settling stamp")
+	require.Eventually(t, func() bool {
+		return store.rowsForSubscriber("ses_m")[0].LastDeliveredSettle.Equal(settled)
+	}, 2*time.Second, 5*time.Millisecond, "the publish-success advance ran")
+	assert.Zero(t, store.outboxLen(), "the bus path never enqueues outbox intents")
+}
+
+// TestPublishSettleUsesArmingStampNotLaterLatch (review r3 finding 1
+// — the publish-stamp reborrow race): a fold completing its durable
+// write DURING the publish I/O re-stamps the latch; the in-flight
+// publish must still broadcast and advance ITS OWN episode's
+// arming-time stamp — never the later value. The pin ends with the
+// boot reconcile firing for the re-stamped settle: jumping the
+// watermark there (the pre-fix behavior) would have permanently
+// silenced that wake-up.
+func TestPublishSettleUsesArmingStampNotLaterLatch(t *testing.T) {
+	n, store, bus := newBusLegFixture(t)
+	deliver := n.cfg.Deliver.(*chanDeliverer)
+	_, err := n.Subscribe("ses_w", "ses_m", []string{subscriptionEventIdle})
+	require.NoError(t, err)
+
+	// Episode one settles and publishes cleanly first (its debounce
+	// fully resolves — a second busy inside the window would be §4.3's
+	// legitimate cancel, not the race under test).
+	n.handleFrame(statusFrame("ses_w", abiv1.SessionStatus_SESSION_STATUS_BUSY))
+	n.handleFrame(statusFrame("ses_w", abiv1.SessionStatus_SESSION_STATUS_IDLE))
+	require.Eventually(t, func() bool { return len(bus.published()) == 1 },
+		2*time.Second, 5*time.Millisecond, "episode one published")
+
+	// The racing fold's durable write lands while episode two's publish
+	// is in flight: the latch is re-stamped to a LATER identity.
+	bus.onPublish = func() {
+		cur := store.latchFor("ses_w").LastSettleAt
+		store.setLatch("ses_w", sessionLatch{LastDerivedBusy: false, SawBusy: true,
+			LastSettleAt: cur.Add(time.Minute), LastSettleKind: subscriptionEventIdle})
+	}
+
+	n.handleFrame(statusFrame("ses_w", abiv1.SessionStatus_SESSION_STATUS_BUSY))
+	n.handleFrame(statusFrame("ses_w", abiv1.SessionStatus_SESSION_STATUS_IDLE))
+	arming2 := store.latchFor("ses_w").LastSettleAt
+	require.False(t, arming2.IsZero(), "episode two stamped")
+
+	require.Eventually(t, func() bool { return len(bus.published()) == 2 },
+		2*time.Second, 5*time.Millisecond, "episode two published")
+	later := store.latchFor("ses_w").LastSettleAt // the hook's re-stamp
+	require.True(t, later.After(arming2), "the mid-publish re-stamp is the later identity")
+
+	stamp, err := time.Parse(time.RFC3339Nano, bus.published()[1].Payload["settled_at"])
+	require.NoError(t, err)
+	assert.True(t, stamp.Equal(arming2),
+		"the publish broadcasts the ARMING-time stamp, not the mid-publish latch value")
+	wm := store.rowsForSubscriber("ses_m")[0].LastDeliveredSettle
+	assert.True(t, wm.Equal(arming2),
+		"the advance carries the arming-time stamp, not the mid-publish latch value")
+	assert.True(t, wm.Before(later), "the later settle is NOT absorbed")
+
+	// The lost-wake-up regression: a hard kill now (latch=later,
+	// watermark=arming2) must still reconcile the later settle's
+	// wake-up — the pre-fix jump-to-later would have silenced it.
+	n.ReconcileMissedSettles(context.Background())
+	notice := waitForNotice(t, deliver.ch)
+	assert.True(t, notice.EnqueuedAt.Equal(later), "the later settle's wake-up survives")
 }
