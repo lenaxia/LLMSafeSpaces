@@ -123,7 +123,8 @@ func parseISO(s string) time.Time {
 
 // firstUserText returns the first user-message text on the ACTIVE
 // branch (the title fallback — mirrors what pi's own /resume listing
-// shows when no session_info name is set).
+// shows when no session_info name is set). Truncation is rune-safe:
+// multi-byte first messages must not yield malformed-UTF-8 titles.
 func (s *sessionFileSummary) firstUserText() string {
 	byID := make(map[string]*piEntry, len(s.Entries))
 	for i := range s.Entries {
@@ -131,14 +132,22 @@ func (s *sessionFileSummary) firstUserText() string {
 	}
 	for _, e := range activeBranch(byID, s.LeafID) {
 		if e.Message != nil && e.Message.Role == "user" {
-			t := e.Message.textContent()
-			if len(t) > 80 {
-				t = t[:80]
-			}
-			return t
+			return truncateRunes(e.Message.textContent(), 80)
 		}
 	}
 	return ""
+}
+
+// truncateRunes cuts s to at most n runes.
+func truncateRunes(s string, n int) string {
+	if n <= 0 {
+		return ""
+	}
+	runes := []rune(s)
+	if len(runes) <= n {
+		return s
+	}
+	return string(runes[:n])
 }
 
 // title resolves the list title: explicit session_info name, else the

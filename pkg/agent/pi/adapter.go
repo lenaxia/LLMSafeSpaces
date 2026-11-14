@@ -233,9 +233,6 @@ func (a *Adapter) DeleteSession(ctx context.Context, userID, workspaceID, sessio
 		return err
 	}
 	if err := a.transport.RemoveSessionFile(ctx, userID, workspaceID, sessionID); err != nil {
-		if errors.Is(err, agent.ErrSessionNotFound) {
-			return err
-		}
 		return err
 	}
 	a.ringsMu.Lock()
@@ -616,7 +613,10 @@ func (a *Adapter) ContextUsageFromEvent(eventType string, rawData string) (strin
 // ClientEventsFromEvent implements agent.Adapter: one raw event record
 // in, zero or more contract events out. nil for records with no
 // client-facing signal (the majority — the type probe runs before any
-// payload parse).
+// payload parse). This path is STATELESS per call: the per-record
+// translator mints deterministic ids (pi events carry none), so ids
+// correlate across records only by that determinism — the stateful
+// Stream path owns real correlation.
 func (a *Adapter) ClientEventsFromEvent(eventType string, rawData string) []session.Event {
 	if eventType != "" && !knownEventTypes[eventType] {
 		return nil
@@ -625,7 +625,9 @@ func (a *Adapter) ClientEventsFromEvent(eventType string, rawData string) []sess
 	if !ok {
 		return nil
 	}
-	return clientEvents(ev, "", time.Now().UTC(), newStreamTranslator())
+	tr := newStreamTranslator()
+	tr.beginMessage() // deterministic non-empty MessageID on every emitted event
+	return clientEvents(ev, "", time.Now().UTC(), tr)
 }
 
 // RetryFromEvent implements agent.Adapter: auto_retry_start/end into

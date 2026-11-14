@@ -149,7 +149,22 @@ func (a *Adapter) historyPage(ctx context.Context, c SessionClient, workspaceID,
 // ringDelta fetches only the entries after the ring's cursor and
 // advances the window. The returned ring is the advanced copy; the
 // stored one is replaced by the caller on success only.
+//
+// Linear extension is trusted ONLY when the window is on the append
+// tail (cursor == leaf) AND the delta chains from the cursor (its
+// first entry's parent is the cursor) AND the delta's tail is the new
+// leaf. Anything else — rewind-then-append (the review-r1 ghost-leak
+// repro: pi's rewind is a leaf MOVE over an append-only file, so the
+// post-rewind delta's tail IS a fresh leaf while the window still
+// holds the abandoned branch), fork, or tree surgery — rebuilds from a
+// full fetch.
 func (a *Adapter) ringDelta(ctx context.Context, c SessionClient, r *historyRing) ([]session.Message, *historyRing, error) {
+	if r.cursor != r.leafID {
+		// The window's branch tail is not the append tail (built from
+		// a session whose active leaf sat behind abandoned appends):
+		// never extend linearly.
+		return nil, nil, errCursorStale
+	}
 	d, err := fetchEntriesSince(ctx, c, r.cursor)
 	if err != nil {
 		return nil, nil, err
@@ -163,10 +178,12 @@ func (a *Adapter) ringDelta(ctx context.Context, c SessionClient, r *historyRing
 		}
 		return r.msgs, r, nil
 	}
+	first := d.Entries[0]
 	last := d.Entries[len(d.Entries)-1].ID
-	if leaf != "" && leaf != last {
-		// The delta's tail is not the active leaf (fork/rewind moved
-		// the branch): the window cannot be extended linearly.
+	chained := first.ParentID != nil && *first.ParentID == r.cursor
+	if !chained || (leaf != "" && leaf != last) {
+		// The delta does not continue the window's branch, or its
+		// tail is not the active leaf: rebuild.
 		return nil, nil, errCursorStale
 	}
 	// The delta entries are, by construction, the newest appends on

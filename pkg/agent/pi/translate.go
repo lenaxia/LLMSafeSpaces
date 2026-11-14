@@ -98,13 +98,16 @@ type piAgentMessage struct {
 	ToolName   string `json:"toolName,omitempty"`
 	IsError    bool   `json:"isError"`
 
-	// BashExecution fields.
+	// BashExecution fields. pi's wire also carries a British-spelled
+	// cancellation boolean (message-types.md BashExecutionMessage) that
+	// the platform shape does not consume — it is deliberately NOT
+	// modeled, so it stays an ignored unknown field (the
+	// defensive-decode posture; modeling it would put the British
+	// spelling in a struct tag, and the raw misspell fixer rewrites
+	// tags — the r1 Lint gate finding).
 	Command  string `json:"command,omitempty"`
 	Output   string `json:"output,omitempty"`
 	ExitCode *int   `json:"exitCode,omitempty"`
-	// Canceled carries pi's wire field (British spelling, kept verbatim
-	// as the wire contract) — see message-types.md BashExecutionMessage.
-	Canceled bool `json:"cancelled"` //nolint:misspell // pi wire field name
 
 	// Custom message fields.
 	CustomType string `json:"customType,omitempty"`

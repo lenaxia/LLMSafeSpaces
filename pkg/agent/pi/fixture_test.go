@@ -46,6 +46,9 @@ type fixtureTransport struct {
 	drainResponse []string                 // texts clear_queue returns (queued input)
 	eventsScript  []byte                   // raw records replayed per subscription
 	clock         func() time.Time         // appended-entry timestamps
+	failCommands  map[string]error         // per-command failure injection
+	disposition   string                   // override for prompt/steer/follow_up disposition
+	streamError   error                    // injected terminal stream failure
 }
 
 type fixtureSub struct {
@@ -244,6 +247,15 @@ type fixtureClient struct {
 func (fc *fixtureClient) Call(ctx context.Context, command map[string]any) (json.RawMessage, error) {
 	name, _ := command["type"].(string)
 	fc.ft.record(fc.session, name, command)
+	fc.ft.mu.Lock()
+	fail := fc.ft.failCommands[name]
+	fc.ft.mu.Unlock()
+	if bare, ok := fail.(errBareSuccess); ok {
+		return json.RawMessage(`{"type":"response","command":"` + bare.command + `","success":true}`), nil
+	}
+	if fail != nil {
+		return nil, fail
+	}
 	switch name {
 	case "get_state":
 		return fc.replaySessionEnvelope("testdata/get_state_response.json")
@@ -272,6 +284,52 @@ func (fc *fixtureClient) Call(ctx context.Context, command map[string]any) (json
 	default:
 		return okEnvelope(name, nil), nil
 	}
+}
+
+// armFail injects a per-command failure (nil error value clears it).
+func (ft *fixtureTransport) armFail(command string, err error) {
+	ft.mu.Lock()
+	defer ft.mu.Unlock()
+	if err == nil {
+		delete(ft.failCommands, command)
+		return
+	}
+	if ft.failCommands == nil {
+		ft.failCommands = map[string]error{}
+	}
+	ft.failCommands[command] = err
+}
+
+// armBareSuccess makes one command answer success with NO data (the
+// no-disposition drift shape).
+func (ft *fixtureTransport) armBareSuccess(command string) {
+	ft.mu.Lock()
+	defer ft.mu.Unlock()
+	if ft.failCommands == nil {
+		ft.failCommands = map[string]error{}
+	}
+	ft.failCommands[command] = errBareSuccess{command: command}
+}
+
+// errBareSuccess routes through the failure injection but answers a
+// bare success envelope instead of an error.
+type errBareSuccess struct{ command string }
+
+func (e errBareSuccess) Error() string { return "bare success" }
+
+// armDisposition overrides the delivery disposition.
+func (ft *fixtureTransport) armDisposition(d string) {
+	ft.mu.Lock()
+	defer ft.mu.Unlock()
+	ft.disposition = d
+}
+
+// armStreamError injects a terminal stream failure into new
+// subscriptions.
+func (ft *fixtureTransport) armStreamError(err error) {
+	ft.mu.Lock()
+	defer ft.mu.Unlock()
+	ft.streamError = err
 }
 
 // replaySessionEnvelope replays a recorded response with the requesting
@@ -305,7 +363,17 @@ func (fc *fixtureClient) replaySessionEnvelope(path string) (json.RawMessage, er
 }
 
 func (fc *fixtureClient) Events(ctx context.Context) (<-chan EventRecord, error) {
+	fc.ft.mu.Lock()
+	streamErr := fc.ft.streamError
+	fc.ft.mu.Unlock()
 	sub := &fixtureSub{ch: make(chan EventRecord, 64)}
+	if streamErr != nil {
+		go func() {
+			sub.ch <- EventRecord{Err: streamErr}
+			close(sub.ch)
+		}()
+		return sub.ch, nil
+	}
 	fc.ft.mu.Lock()
 	fc.ft.subs[fc.session] = append(fc.ft.subs[fc.session], sub)
 	fc.ft.mu.Unlock()
@@ -324,8 +392,19 @@ func (fc *fixtureClient) Events(ctx context.Context) (<-chan EventRecord, error)
 // deliver simulates a run: append the user + assistant entries to the
 // persisted file (current-clock timestamps so since-floors behave),
 // replay the event script to subscribers, and answer with the started
-// disposition.
+// disposition. An armed disposition override short-circuits the run
+// (handled = consumed by an extension, queued = not persisted until
+// delivery — neither appends entries nor starts the event script).
 func (fc *fixtureClient) deliver(command map[string]any, name string) (json.RawMessage, error) {
+	fc.ft.mu.Lock()
+	disp := fc.ft.disposition
+	fc.ft.mu.Unlock()
+	if disp == "" {
+		disp = "started"
+	}
+	if disp != "started" {
+		return okEnvelope(name, map[string]any{"disposition": disp}), nil
+	}
 	text, _ := command["message"].(string)
 	now := fc.ft.now()
 	fc.ft.appendEntry(fc.session, map[string]any{
@@ -346,7 +425,7 @@ func (fc *fixtureClient) deliver(command map[string]any, name string) (json.RawM
 			"stopReason": "stop", "timestamp": then.UnixMilli(),
 		},
 	})
-	return okEnvelope(name, map[string]any{"disposition": "started"}), nil
+	return okEnvelope(name, map[string]any{"disposition": disp}), nil
 }
 
 func (ft *fixtureTransport) now() time.Time {
@@ -461,15 +540,26 @@ func (ft *fixtureTransport) broadcast(session string, raw []byte) {
 
 // appendEntry appends one JSON line to the session's persisted file,
 // chained onto the current leaf (pi appends at the active position —
-// the file's last line is always the newest append).
+// the file's last line is always the newest append). rewind=true
+// appendEntryRaw semantics: keep the caller's parentId (the
+// rewind-then-append repro).
 func (ft *fixtureTransport) appendEntry(session string, e map[string]any) {
+	ft.appendEntryChained(session, e, true)
+}
+
+func (ft *fixtureTransport) appendEntryRaw(session string, e map[string]any) {
+	ft.appendEntryChained(session, e, false)
+}
+
+func (ft *fixtureTransport) appendEntryChained(session string, e map[string]any, chain bool) {
 	name := ft.sessionFile(session)
 	if name == "" {
 		return
 	}
 	path := filepath.Join(ft.dir, name)
-	parent := ft.lastEntryID(path)
-	e["parentId"] = parent
+	if chain {
+		e["parentId"] = ft.lastEntryID(path)
+	}
 	raw, err := json.Marshal(e)
 	if err != nil {
 		return

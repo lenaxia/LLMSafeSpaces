@@ -124,10 +124,42 @@ New `pkg/agent/pi` adapter surface (beside S3's configwriter):
 
 - `ClientEventsFromEvent` is stateless per call (the interface shape);
   pi part correlation across records is the Stream translator's state.
-  The stateless path mints index-keyed part ids — documented
-  limitation of pi's id-less event stream.
+  The stateless path mints DETERMINISTIC per-record ids (pi-msg-1 /
+  c<index> — no empty contract IDs) — correlation across records holds
+  only by that determinism; documented.
 - The transport contract requires sessionId injection into raw event
   records (the fixture does it; S5's production transport must too) —
   required by ContextUsageFromEvent's non-empty-sessionID contract.
 - Ring eviction is dumb-full-evict at 256 sessions; rings are pure
   caches, correctness never depends on them.
+- validateSessionID is deliberately STRICTER than pi's charset (no
+  dots — UUID-safe subset only; minted ids are [0-9a-f]) so ids stay
+  path-safe for every transport implementation.
+
+## Review trail
+
+- PR #2027 (https://github.com/lenaxia/LLMSafeSpaces/pull/2027).
+- **r1 CHANGES_REQUESTED** (github-actions[bot], SHA 8b7f640e):
+  1. warm-ring rewind-then-append ghost leak — CONFIRMED and FIXED
+     (ringDelta's linear-trust now requires cursor==leaf AND the
+     delta's first entry to chain from the cursor AND its tail to be
+     the leaf; the reviewer's repro is the regression test
+     TestReviewR1_RewindThenAppend_RebuildsInsteadOfLeaking).
+  2. dead branch in DeleteSession — collapsed.
+  3. byte-slicing UTF-8 titles — rune-safe truncateRunes + test.
+  4. raw misspell fixer rewrote the British wire tag — the field was
+     never consumed; dropped entirely (tolerated-as-unknown, the
+     defensive-decode posture; no British literal remains in source,
+     fixer verified noop).
+  5. self-pass commit had no reproducing test — mutation-caught now:
+     TestReviewR1_MidStreamMessageEnd_MintsID pins it (both paths).
+  6. stateless ClientEventsFromEvent empty/colliding ids — mints
+     deterministic non-empty ids + doc + test.
+  7. all five enumerated missing test classes added
+     (review_r1_test.go): validateSessionID paths, Abort unhappy
+     (clear_queue failure tolerated / abort-failure-after-drain
+     restores), Send unhappy (no-disposition error, mid-run stream
+     error, handled + queued verdicts).
+- govulncheck FAIL is pre-existing on main (GO-2026-6859, net/http
+  stdlib, go1.26.10 → 1.26.11) — no traced symbol touches
+  pkg/agent/pi; repo-wide toolchain bump is outside this story.
