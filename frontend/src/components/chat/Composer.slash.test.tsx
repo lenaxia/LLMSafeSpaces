@@ -85,6 +85,10 @@ describe("Composer slash commands (#1496 part 1)", () => {
     vi.clearAllMocks();
     mockSettings = {};
     setMobileMatchMedia(false); // desktop: Enter/Ctrl+Enter paths active
+    // The Composer persists per-session drafts (2026-11-13): every
+    // test here mounts the same ws-1/ses-1 composer, so a previous
+    // test's leftover text must not hydrate into the next one.
+    localStorage.removeItem("llmsafespaces_session_drafts");
   });
 
   it("opens the palette on a leading / and lists every registered command", async () => {

@@ -5,6 +5,7 @@ import { useParams } from "react-router-dom";
 import { useUserEventStream } from "../hooks/useUserEventStream";
 import { workspacesApi } from "../api/workspaces";
 import { sessionsApi } from "../api/sessions";
+import { clearSessionDraft, clearWorkspaceDrafts } from "../lib/sessionDrafts";
 import type { InputRequest } from "../api/types";
 import {
   eventInternalSessionId,
@@ -1578,6 +1579,9 @@ export function SessionActivityProvider({ children }: { children: ReactNode }) {
               predicate: (q) => Array.isArray(q.queryKey) && q.queryKey.includes(sid),
             });
             setDeletedSessions((prev) => (prev.has(sid) ? prev : new Set(prev).add(sid)));
+            // Per-session draft lifecycle (owner ask 2026-11-13): the
+            // session is gone — its persisted composer draft goes with it.
+            clearSessionDraft(wsId, sid);
           }
         } else if (evt.status === "idle") {
           // #1848 r5 finding 2: a post-wipe idle delta is
@@ -1640,6 +1644,13 @@ export function SessionActivityProvider({ children }: { children: ReactNode }) {
         if (evt.status === "archived" || evt.status === "unarchived") {
           const sessionsKey = ["sessions", evt.workspace_id];
           const archived = evt.status === "archived";
+          // Per-session draft lifecycle (owner ask 2026-11-13): an
+          // archived session is read-only — its composer draft can
+          // never be sent, so it is deleted at the transition.
+          // Unarchive does NOT resurrect it (fresh composer).
+          if (archived && evt.session_id) {
+            clearSessionDraft(evt.workspace_id!, evt.session_id);
+          }
           const existing = queryClient.getQueryData(sessionsKey);
           if (existing) {
             queryClient.setQueryData(sessionsKey, (old: unknown) => {
@@ -1752,6 +1763,14 @@ export function SessionActivityProvider({ children }: { children: ReactNode }) {
 
       if (evt.type === "workspace.phase" && evt.workspace_id && evt.phase) {
         const wsId = evt.workspace_id;
+        // Per-session draft lifecycle (owner ask 2026-11-13): a
+        // workspace being DELETED takes its whole draft subtree — the
+        // sessions are gone. Suspending/Suspended/Failed stay put:
+        // those workspaces can resume, and their drafts should
+        // survive the round trip.
+        if (evt.phase === "Terminating" || evt.phase === "Terminated") {
+          clearWorkspaceDrafts(wsId);
+        }
         if (NON_ACTIVE_PHASES.has(evt.phase)) {
           seededRef.current.delete(wsId);
           // #1848 r1 finding 5: a flight that fetched while Active and
