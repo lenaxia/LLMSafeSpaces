@@ -106,6 +106,16 @@ func WithRoleDirectory(d RoleDirectory) Option {
 	return func(s *Service) { s.roles = d }
 }
 
+// WithSuspendSource installs the workspace-suspension freeze seam (the
+// 2026-11-13/14 incident fix): while a workspace is suspended its
+// claims are frozen (RC1 renews, nothing escalates) and the claim choke
+// point grants nothing into it. Nil (or absent) is the inert contract —
+// today's semantics: leases lapse and reclaim regardless of workspace
+// phase (pinned).
+func WithSuspendSource(src SuspendSource) Option {
+	return func(s *Service) { s.suspended = src }
+}
+
 // WithPRDriftSource installs the RC2 external-truth source.
 func WithPRDriftSource(src PRDriftSource) Option {
 	return func(s *Service) { s.drift = src }
@@ -148,6 +158,10 @@ type Service struct {
 	// session. Nil = no nudge ladder (expiry with no observation falls
 	// to today's wall-clock reclaim).
 	nudger NudgeSender
+	// suspended answers which workspaces are currently suspended (the
+	// freeze seam, suspend.go): RC1 freezes those claims, the choke
+	// point grants nothing into them. Nil = inert (today's semantics).
+	suspended SuspendSource
 	// busySrc answers "is this assignee mid-turn right now?" for the
 	// read edge (RC-C S2 badge honesty + the busy TTL — busy.go). Nil
 	// = inert: nothing is ever reported busy; claimed rows render

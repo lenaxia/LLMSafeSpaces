@@ -1693,6 +1693,14 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 				// onto the workspace streams post-commit (nil-receiver
 				// safe: unarmed = inert, the ladder unchanged).
 				board.WithLeaseEventSink(boardLeaseBus.LeaseEventSink),
+				// The suspension freeze (2026-11-13/14 incident): while a
+				// workspace is Suspending/Suspended its claims are frozen
+				// (RC1 renews, no attempt burn) and nothing new is granted
+				// into it (a spawn would auto-RESUME the workspace through
+				// the activator). The adapter answers from the watcher's
+				// phase cache — nil-safe and honest (an unseen workspace
+				// is never frozen; today's semantics).
+				board.WithSuspendSource(newBoardSuspendSource(proxyHandler.GetAllKnownPhases)),
 				board.WithWorkerSpawner(newBoardSpawner(
 					&apiwf.K8sWorkspaceActivator{K8sClient: k8sClient, Namespace: cfg.Kubernetes.Namespace},
 					&apiwf.HTTPAgentExecutor{Port: 4097, PasswordProvider: proxyHandler},

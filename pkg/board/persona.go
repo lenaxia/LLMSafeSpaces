@@ -321,7 +321,7 @@ func personaClaimEventTx(ctx context.Context, tx pgx.Tx, projectID, taskID, stag
 // owner-blocked park (drift_review) out of the persona re-arm feed
 // (the claim-predicate pin: stage ∈ claimable AND !flag).
 const personaRearmCandidatesSQL = `
-	SELECT t.id, t.project_id, t.failure_count
+	SELECT t.id, t.project_id, t.failure_count, COALESCE(p.target_workspace_id::text,'')
 	FROM tasks t
 	JOIN epics e ON e.id = t.epic_id
 	JOIN projects p ON p.id = t.project_id

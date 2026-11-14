@@ -82,9 +82,10 @@ func (s *Service) ClaimNext(ctx context.Context, workerID, workspaceID string) (
 		switch status {
 		case "granted", "escalated":
 			return claim, nil
-		case "capped", "pressured":
-			// #1747 backpressure: the quiet gates — the row stays ready,
-			// the sweep retries; reads carry the informational note.
+		case "capped", "pressured", "suspended":
+			// #1747 backpressure + the suspension freeze: the quiet
+			// gates — the row stays ready, the sweep retries; reads
+			// carry the informational note.
 			return nil, ErrNoCandidate
 		case "project_empty":
 			// Project-level rollover: the claimer locked p but the
@@ -170,6 +171,13 @@ func (s *Service) TaskStart(ctx context.Context, actor Actor, taskID, shortIDOrI
 	// no-grant has no manual counterpart); workspace pressure likewise.
 	if sample := s.ActivePressure(p.TargetWorkspaceID); sample != nil && sample.Pressured() {
 		return nil, &GuardError{Code: GuardBackpressure, Detail: "the target workspace is under resource pressure (" + sample.Summary() + ") — claiming pauses until it clears"}
+	}
+	// Suspension freeze (suspend.go): the manual lever refuses loud too
+	// — the spawn would auto-RESUME a suspended workspace through the
+	// activator. The task stays backlog-ready; task_start succeeds
+	// after resume with no cleanup.
+	if s.workspaceSuspended(ctx, p.TargetWorkspaceID) {
+		return nil, &GuardError{Code: GuardBackpressure, Detail: "the target workspace is suspended — claims and dispatches resume when the workspace does (the freeze holds existing claims; no attempts burn)"}
 	}
 	if cs := s.concurrencyFor(ctx, p); cs.UserAtCap || cs.GlobalAtCap {
 		return nil, &GuardError{Code: GuardConcurrency, Detail: "concurrency limit reached (per-user or per-instance in_progress cap) — the task stays ready; retry when a claim completes"}
@@ -347,6 +355,15 @@ func (s *Service) claimOnce(ctx context.Context, workerID, workspaceID string) (
 	}
 	if sample := s.ActivePressure(targetWS); sample != nil && sample.Pressured() {
 		return nil, "pressured", projectID, nil
+	}
+	// Suspension freeze (suspend.go): a suspended workspace grants
+	// nothing — the fresh worker's spawn would auto-RESUME the
+	// workspace through the activator (the platform suspended it; the
+	// board must not lift that), and a minted claim nobody can serve
+	// burns an attempt on lapse. Quiet no-grant, the pressure gate's
+	// shape: the row stays ready, the sweep re-drives after resume.
+	if s.workspaceSuspended(ctx, targetWS) {
+		return nil, "suspended", projectID, nil
 	}
 	if counts.UserAtCap(s.cfg.UserClaimCap) || counts.GlobalAtCap(s.cfg.GlobalClaimCap) {
 		return nil, "capped", projectID, nil

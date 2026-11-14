@@ -49,6 +49,11 @@ const (
 	RenewSourceMovement  = "movement"            // observed delta since last sweep (frame stream / index)
 	RenewSourceReaction  = "post_nudge_reaction" // events landed after the sentinel
 	RenewSourceBusy      = "busy_gate"           // derived-busy: mid-turn, silent but alive (the 2026-10-29 busy-gate)
+	// RenewSourceSuspended: the workspace-suspension freeze (suspend.go)
+	// — the workspace is Suspending/Suspended, the worker CANNOT answer,
+	// so the claim is renewed without expiry evaluation (no attempt
+	// burn; the 2026-11-13/14 incident class).
+	RenewSourceSuspended = "workspace_suspended"
 )
 
 // Reclaim reasons — WHY the claim was re-queued (LeaseEventReclaimed).
