@@ -382,7 +382,7 @@ func (h *AgentRoleHandler) DeleteOrg(c *gin.Context) {
 // --- Workspace Role Selection ---
 
 // ListForMe renders the acting user's SELECTABLE agent-role vocabulary
-// (member-readable, route GET /api/v1/me/agent-roles): platform roles
+// (member-readable, route GET /api/v1/auth/me/agent-roles): platform roles
 // plus their org's when they belong to one. This is the surface the
 // board persona editor's per-stage dropdown consumes and the set the
 // board config's persona RoleID validation resolves against — the

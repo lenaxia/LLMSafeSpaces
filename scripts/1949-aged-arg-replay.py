@@ -10,12 +10,11 @@
 #   poisoned old-shape history + new schemas -> RUNAWAY (last row)
 #   poisoned history + aged-arg compaction   -> CLEAN   (row 4 — the cure)
 #
-# The poisoned arm reproduces the mechanism on CURRENT main behavior:
-# main has NO relay-side compaction, so what the model sees is exactly
-# what this harness sends. The compacted arm applies the SAME stub
+# The poisoned arm reproduces the mechanism on CURRENT main behavior.
+# The compacted arm applies the SAME restructure
 # payload the relay-router (cmd/relay-router agedarg.go) applies in-path
 # — the python stub is byte-identical to the Go stub (pinned by
-# TestAgedArgStubMatchesReplayHarness, which executes this script's
+# TestAgedArgRenderMatchesReplayHarness, which executes this script's
 # --print-stub and compares bytes).
 #
 # Arms:
@@ -23,8 +22,9 @@
 #               the harness must NOT runaway on its own)
 #   poisoned  — old-shape bulk-first llmsafespaces_* prior calls in the
 #               in-context history, new (post-#1929 bulk-last) schemas
-#   compacted — the poisoned body with aged llmsafespaces_* arguments
-#               stubbed (recent window untouched, results untouched)
+#   compacted — the poisoned body with prior tool usage RESTRUCTURED
+#               into markdown bullets (lossless — v3; window 0 = every
+#               call)
 #
 # Scorer signatures (the #1929/#1849 classes): duplicate JSON keys,
 # degenerate fragment tiling (>=10x), malformed arguments, native-markup
@@ -49,11 +49,20 @@ import urllib.error
 import urllib.request
 
 TOOL_PREFIX = "llmsafespaces_"
-# Mirror of the Go default (cmd/relay-router/agedarg.go): the most recent
-# 30 tool calls (any tool) form the untouched recent window.
-RECENT_TOOL_CALLS = 30
-STUB_NOTE = ("arguments removed by relay aged-arg compaction "
-             "(full text preserved in the session audit trail)")
+# v3 HISTORY RESTRUCTURE (2026-11-13) — python mirror of
+# cmd/relay-router/agedarg.go: prior tool usage is rendered as PLAIN
+# MARKUP inside the assistant message ("- Called `name`(**k**: v)"
+# bullets + "  - Result:" lines), removing the tool_call STRUCTURE the
+# tiling pattern-continues, at zero information cost. Verified
+# cross-context (myriad 3/3, quick-panda 3/3 clean on exact live
+# replays). Supersedes v1 (prose-note stub — leaked, failed) and v2
+# (value-dotting — clean but lossy).
+RECENT_TOOL_CALLS = 0  # 0 = restructure every tool call (validated).
+# NOTE: the mirror always restructures all calls (window-0 semantics);
+# the window>0 tuning knob is Go-only (agedarg.go) and not mirrored.
+# Gate mirroring the Go kill switch (BYO_AGED_ARG_RECENT_TOOL_CALLS=-1
+# == False). Wired into restructure() below.
+RESTRUCTURE_TOOL_CALLS = True
 
 WORDS = ("drain ledger reclaim wedge sentinel charter posture seam verdict "
          "thumbprint cadence harness relay compact stub aged emission "
@@ -230,44 +239,168 @@ FINAL_REQUEST = ("Create one more task in epic epc-drill3 titled 'Final replay "
 
 # ---- the compaction (python mirror of cmd/relay-router/agedarg.go) ----
 
-def stub_json():
-    # The stub payload, byte-identical to the Go transform's
-    # json.Marshal (cmd/relay-router/agedarg.go agedArgStub) — compact
-    # separators, no space after the colon. The parity is PINNED by
-    # TestAgedArgStubMatchesReplayHarness, which executes this script
-    # (--print-stub) and compares bytes.
-    return json.dumps({"note": STUB_NOTE}, separators=(",", ":"))
+def _compact_json(v):
+    # Mirror Go: compact separators, no HTML escaping. NUMBER CAVEAT
+    # (documented in the Go test header too): python re-serializes
+    # number FORMATS ({"a":1.50} -> **a**: 1.5; Go json.Number keeps
+    # 1.50) — parity is semantic for values, byte-exact for keys and
+    # strings.
+    return json.dumps(v, separators=(",", ":"), ensure_ascii=False)
 
 
-def compact(body, recent_tool_calls=RECENT_TOOL_CALLS):
+def render_arguments(args_str):
+    # Deterministic parameter list in the payload's OWN key order:
+    # "**k**: v" comma-separated, values compact-JSON. Unparseable
+    # payloads render verbatim.
+    try:
+        obj = json.loads(args_str)
+    except (json.JSONDecodeError, TypeError):
+        return args_str
+    if not isinstance(obj, dict):
+        return args_str
+    return ", ".join(f"**{k}**: {_compact_json(v)}" for k, v in obj.items())
+
+
+def restructure_messages(msgs):
+    # v3 validate-then-merge (mirror of Go tryRestructureSpan): a span is
+    # merged ONLY when it validates perfectly clean — every call named
+    # with a unique string id, every result paired exactly-once with
+    # string content, no unknown assistant fields. ANY anomaly → the
+    # span forwards VERBATIM (lossless by construction; the r1 draft
+    # dropped orphans — reproduced and fixed).
+    out = []
+    i = 0
+    n = 0
+    while i < len(msgs):
+        m = msgs[i]
+        calls = m.get("tool_calls") if isinstance(m, dict) else None
+        if not isinstance(calls, list) or not calls:
+            out.append(m)
+            i += 1
+            continue
+        # unknown assistant fields → passthrough span; role must be
+        # EXACTLY "assistant" (r3 finding 1 — the merge hardcodes it;
+        # reshaping a user/role-less span is fabrication). Defensive
+        # type checks mirror Go's passthrough-on-surprise.
+        if isinstance(m, dict):
+            extra = set(m.keys()) - {"role", "content", "tool_calls"}
+            if extra:
+                out.append(m)
+                i += 1
+                continue
+            role = m.get("role")
+            if role != "assistant":
+                out.append(m)
+                i += 1
+                continue
+        j = i + 1
+        span_tools = []
+        while j < len(msgs):
+            t = msgs[j]
+            if isinstance(t, dict) and t.get("role") == "tool":
+                span_tools.append(t)
+                j += 1
+                continue
+            break
+        # validate calls
+        parsed = []
+        ok = True
+        for c in calls:
+            if not isinstance(c, dict):
+                ok = False
+                break
+            fn = c.get("function")
+            if not isinstance(fn, dict):
+                ok = False
+                break
+            name = fn.get("name")
+            cid = c.get("id")
+            args = fn.get("arguments")
+            if not isinstance(name, str) or not name or not isinstance(cid, str) or not cid or not isinstance(args, str):
+                ok = False
+                break
+            parsed.append((cid, name, args))
+        if not ok:
+            out.extend(msgs[i:j])
+            i = j
+            continue
+        # validate results: string ids, unique, string content,
+        # exactly bijective with the rendered calls
+        result_by_id = {}
+        seen = set()
+        for t in span_tools:
+            cid = t.get("tool_call_id")
+            content = t.get("content")
+            if not isinstance(cid, str) or not cid or cid in seen:
+                ok = False
+                break
+            if not isinstance(content, str):
+                ok = False
+                break
+            seen.add(cid)
+            result_by_id[cid] = content
+        if not ok or len(result_by_id) != len(parsed) or any(cid not in result_by_id for cid, _, _ in parsed):
+            out.extend(msgs[i:j])
+            i = j
+            continue
+        # r2-finding-4 mirror, r6-corrected: non-string NON-NULL
+        # assistant content (array/parts or number) → passthrough span,
+        # matching Go exactly. ABSENT content merges (Go: the gate
+        # applies only when content is present) and NULL content merges
+        # as empty (Go: null-into-string is a silent no-op — accepted
+        # by documented decision; tool-message null ids/content are
+        # rejected via *string because they DELETE data, a different
+        # class).
+        content = m.get("content")
+        if content is not None and not isinstance(content, str):
+            out.extend(msgs[i:j])
+            i = j
+            continue
+        lines = []
+        if isinstance(content, str) and content.strip():
+            lines.append(content.strip())
+        for cid, name, args in parsed:
+            lines.append("- Called `" + name + "`(" + render_arguments(args) + ")")
+            lines.append("  - Result: " + result_by_id[cid])
+            n += 1
+        merged = {"role": "assistant", "content": "\n".join(lines) + "\n"}
+        out.append(merged)
+        i = j
+    return out, n
+
+
+def restructure(body):
+    # RESTRUCTURE_TOOL_CALLS gates the whole transform (the Go kill
+    # switch mirror: BYO_AGED_ARG_RECENT_TOOL_CALLS=-1 == False).
+    if not RESTRUCTURE_TOOL_CALLS:
+        return json.dumps(body, separators=(",", ":"), ensure_ascii=False), 0
     msgs = body.get("messages")
     if not isinstance(msgs, list):
         return json.dumps(body), 0
-    flat = []  # (msg_idx, call_idx) of every tool call, forward order
-    for mi, m in enumerate(msgs):
-        if isinstance(m, dict) and isinstance(m.get("tool_calls"), list):
-            for ci in range(len(m["tool_calls"])):
-                flat.append((mi, ci))
-    protected = set(flat[-recent_tool_calls:]) if recent_tool_calls > 0 else set()
-    stubbed = 0
-    stub = stub_json()
-    for mi, ci in flat:
-        if (mi, ci) in protected:
-            continue
-        call = msgs[mi]["tool_calls"][ci]
-        if not isinstance(call, dict):
-            continue
-        fn = call.get("function")
-        if not isinstance(fn, dict):
-            continue
-        name = fn.get("name", "")
-        if not isinstance(name, str) or not name.startswith(TOOL_PREFIX):
-            continue
-        if fn.get("arguments") == stub:
-            continue  # already stubbed (idempotent across turns)
-        fn["arguments"] = stub
-        stubbed += 1
-    return json.dumps(body), stubbed
+    new_msgs, n = restructure_messages(msgs)
+    body["messages"] = new_msgs
+    return json.dumps(body, separators=(",", ":"), ensure_ascii=False), n
+
+
+SAMPLE_BODY = {
+    "model": "glm-5.3",
+    "messages": [
+        {"role": "user", "content": "go < & >"},
+        {"role": "assistant", "content": "working",
+         "tool_calls": [{"id": "call_1", "type": "function", "function": {
+             "name": "llmsafespaces_board_create_task",
+             "arguments": json.dumps({"epicId": "epc-1 < & >", "title": "t"}, separators=(",", ":"))}}]},
+        {"role": "tool", "tool_call_id": "call_1", "content": json.dumps({"ok": True}, separators=(",", ":"))},
+    ],
+}
+
+
+def print_sample():
+    # Deterministic-rendering pin: the restructured form of the fixed
+    # sample body, byte-for-byte (the Go test replicates this body).
+    out, _ = restructure(json.loads(json.dumps(SAMPLE_BODY)))
+    print(out)
+    return 0
 
 
 # ---- scorer ----
@@ -482,12 +615,12 @@ def main():
     ap.add_argument("--max-tokens", type=int, default=6000)
     ap.add_argument("--print-stub", action="store_true",
                     help="print the stub payload (byte-parity pin for the Go "
-                         "transform; used by TestAgedArgStubMatchesReplayHarness) "
+                         "transform; used by TestAgedArgRenderMatchesReplayHarness) "
                          "and exit")
     args = ap.parse_args()
 
     if args.print_stub:
-        print(stub_json())
+        print_sample()
         return 0
 
     base = os.environ.get("REPLAY_BASE_URL", "")
@@ -520,17 +653,17 @@ def main():
         msgs = base_msgs
         body = {"model": model, "messages": msgs, "tools": tools,
                 "max_tokens": args.max_tokens}
-        stubbed = 0
+        restructured = 0
         if arm == "compacted":
-            body_bytes, stubbed = compact(body)
+            body_bytes, restructured = restructure(body)
         else:
             body_bytes = json.dumps(body)
         n_old = sum(1 for m in msgs if isinstance(m, dict)
                     and isinstance(m.get("tool_calls"), list)
                     for c in m["tool_calls"]
                     if (c.get("function") or {}).get("name", "").startswith(TOOL_PREFIX))
-        print(f"  arm={arm} llmsafespaces_* prior calls={n_old} stubbed={stubbed} "
-              f"body={len(body_bytes)}B")
+        print(f"  arm={arm} llmsafespaces_* prior calls={n_old} restructured={restructured} "
+              f"body={len(body_bytes)}B")  # label NOTE: 'stubbed' == restructured (v3)
         results[arm] = run_arm(arm, body_bytes.encode(), args.runs, base, key, model, args.pace)
 
     expected = {"neutral": "CLEAN", "poisoned": "RUNAWAY", "compacted": "CLEAN"}

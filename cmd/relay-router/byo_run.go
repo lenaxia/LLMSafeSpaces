@@ -44,12 +44,13 @@ type byoRunConfig struct {
 	maxRespBytes   int64
 	informerResync time.Duration
 
-	// agedArgRecentToolCalls (#1949): aged-arg compaction recent window —
-	// the last N tool calls (any tool) stay untouched; older
-	// llmsafespaces_* call arguments are stubbed before forwarding.
-	// Default 30 (a heavy board turn's working set). 0 stubs every
-	// llmsafespaces_* call; negative disables the compaction (kill
-	// switch). Threshold-teachable by design (#1949 constraints).
+	// agedArgRecentToolCalls (#1949): aged-arg v3 restructure window —
+	// the last N tool calls (any tool) stay in verbatim tool-call form;
+	// older tool usage is restructured into markdown bullets (params +
+	// results visible — LOSSLESS) before forwarding. Default 0 =
+	// restructure every tool call (the validated setting; any real-
+	// valued survivor re-seeds the tiling). Negative disables the
+	// transform entirely (kill switch). Threshold-teachable.
 	agedArgRecentToolCalls int
 }
 

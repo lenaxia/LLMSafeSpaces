@@ -48,7 +48,13 @@ type AgentdDelivery = workspace.AgentdDeliveryConfig
 // contract at startup.
 type OpencodeDelivery = workspace.OpencodeDeliveryConfig
 
-func SetupControllers(mgr ctrl.Manager, inferenceRelayURL, apiServiceURL, apiPublicURL, apiInternalToken, defaultRuntimeClass, previewOriginBaseDomain, workspaceEventbusAddr, eventbusPasswordSecretName, eventbusPasswordSecretKey string, uploadStaging workspace.UploadStagingConfig, agentdDelivery AgentdDelivery, opencodeDelivery OpencodeDelivery, agentdSidecarEnabled bool, maxConcurrentReconciles int, relayStaging *workspace.RelayStagingConfig, workspaceTerminationGrace int64) error {
+// PiDelivery is the second-harness image-volume pi delivery
+// configuration (design 0053 §5.4). There is no zero-value mode: pi was
+// never baked into the base image, so validatePiDeliveryConfig refuses
+// an empty image at startup — the pin is mandatory from day one.
+type PiDelivery = workspace.PiDeliveryConfig
+
+func SetupControllers(mgr ctrl.Manager, inferenceRelayURL, apiServiceURL, apiPublicURL, apiInternalToken, defaultRuntimeClass, previewOriginBaseDomain, workspaceEventbusAddr, eventbusPasswordSecretName, eventbusPasswordSecretKey string, uploadStaging workspace.UploadStagingConfig, agentdDelivery AgentdDelivery, opencodeDelivery OpencodeDelivery, piDelivery PiDelivery, agentdSidecarEnabled bool, maxConcurrentReconciles int, relayStaging *workspace.RelayStagingConfig, workspaceTerminationGrace int64) error {
 	logger := log.Log.WithName("controller")
 	logger.Info("Setting up controllers")
 
@@ -95,6 +101,9 @@ func SetupControllers(mgr ctrl.Manager, inferenceRelayURL, apiServiceURL, apiPub
 		OpencodeImage:             opencodeDelivery.Image,
 		OpencodeBinarySHA256AMD64: opencodeDelivery.BinarySHA256AMD64,
 		OpencodeBinarySHA256ARM64: opencodeDelivery.BinarySHA256ARM64,
+		PiImage:                   piDelivery.Image,
+		PiBinarySHA256AMD64:       piDelivery.BinarySHA256AMD64,
+		PiBinarySHA256ARM64:       piDelivery.BinarySHA256ARM64,
 		AgentdSidecarEnabled:      agentdSidecarEnabled,
 		UploadStaging:             uploadStaging,
 		Recorder:                  mgr.GetEventRecorderFor("workspace-controller"),
@@ -133,7 +142,10 @@ type RelayArtifactConfig struct {
 // the controller's distinct exit code for "deployed relay-only but not
 // armed" — the fifth rung of the fail-closed doctrine's ladder
 // (81/82: agentd verify; 83/84: opencode verify; 85: relay staging not
-// armed). A CrashLoop with this code is one describe-pod away from its
+// armed). NOTE: 85 here is the CONTROLLER process's code; the pi
+// overlay's 85/86 (workspace container, pi_overlay.go) is a different
+// process on a different pod — attribution is by which pod crashed
+// (the treaty comment lives in workspace/pi_overlay.go). A CrashLoop with this code is one describe-pod away from its
 // reason; the enable line ("relay-only key delivery enabled") is the
 // armed contract its absence betrays. The #1548 split-brain (an inert
 // staging binary booted green while workspaces starved) is the class

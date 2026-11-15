@@ -43,7 +43,8 @@ func helmRenderRaw(t *testing.T, valuesYAML string) []byte {
 	}
 	args = append(args,
 		"--set", "controller.agentdDelivery.image="+testAgentdPin,
-		"--set", "controller.opencodeDelivery.image="+testOpencodePin)
+		"--set", "controller.opencodeDelivery.image="+testOpencodePin,
+		"--set", "controller.piDelivery.image="+testPiPin)
 	cmd := exec.Command("helm", args...)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout

@@ -151,7 +151,7 @@ function applySnapshot(atSeq: bigint, sessions: SessionSnapshot[]) {
   act(() => { capturedContractOptions?.onSnapshot(contractState); });
 }
 
-function getStreamParts(): Array<{ type: string; text: string; partID?: string; toolState?: string; toolStartedAt?: string; toolCallID?: string }> {
+function getStreamParts(): Array<{ type: string; text: string; partID?: string; toolState?: string; toolStartedAt?: string; toolCallID?: string; toolError?: string }> {
   const el = screen.getByTestId("chat-view");
   return JSON.parse(el.getAttribute("data-stream-parts") || "[]");
 }
@@ -183,7 +183,7 @@ function textDelta(partId: string, delta: string, messageId?: string): Event {
   return abiEvent({ type: 6, partId, messageId, delta });
 }
 
-function toolPartEnd(partId: string, tool: { name: string; callId?: string; status?: number }, messageId?: string): Event {
+function toolPartEnd(partId: string, tool: { name: string; callId?: string; status?: number; error?: string; output?: string }, messageId?: string): Event {
   return abiEvent({
     type: 7,
     partId,
@@ -196,7 +196,10 @@ function toolPartEnd(partId: string, tool: { name: string; callId?: string; stat
         value: {
           callId: tool.callId ?? "",
           name: tool.name,
-          ...(tool.status !== undefined ? { state: { status: tool.status } } : {}),
+          ...(tool.output !== undefined ? { output: new TextEncoder().encode(JSON.stringify(tool.output)) } : {}),
+          ...(tool.status !== undefined || tool.error !== undefined
+            ? { state: { ...(tool.status !== undefined ? { status: tool.status } : {}), ...(tool.error !== undefined ? { error: tool.error } : {}) } }
+            : {}),
         },
       },
     }),
@@ -478,6 +481,27 @@ describe("ChatPage event dispatch (contract stream + platform stream)", () => {
       expect(tool.type).toBe("tool");
       expect(tool.toolState).toBe("completed");
       expect(tool.toolCallID).toBe("call-1");
+    });
+
+    // Owner report 2026-11-12 (tsk-copper-archer-rushes): a failed tool
+    // call showed ✗ + input but never the error — the runtime sends
+    // ToolState.error on the wire and the SSE decode dropped it. The
+    // error text must reach the streaming part (the transcript renders
+    // it from there).
+    it("threads the ABI ToolState error onto the streaming part", async () => {
+      const qc = makeQueryClient();
+      await renderReady(qc);
+      sendContractEvent(toolPartEnd("tp-err", {
+        name: "llmsafespaces_board_import_plan",
+        callId: "call-err",
+        status: 4, // TOOL_STATUS_ERROR
+        error: "HTTP 409 epic_state: epic is not active",
+      }, "msg_err"));
+      await waitFor(() => expect(getStreamParts()).toHaveLength(1));
+      const tool = getStreamParts()[0]!;
+      expect(tool.type).toBe("tool");
+      expect(tool.toolState).toBe("error");
+      expect(tool.toolError).toBe("HTTP 409 epic_state: epic is not active");
     });
 
     // #1307 r2 gating finding: the live-SSE notice branch — a custom

@@ -1713,9 +1713,20 @@ func resolveSingleBusySession(ctx context.Context, client *opencode.Client) (str
 // (scripts/1530-arg-mutation-probe.mjs) falsified the plugin/
 // serializer race: the escapes exist only in JSON SOURCE TEXT, so
 // the corruption predates serialization. Both extracted ids must be
-// well-formed session ids; anything else is NOT the shape and
-// returns ok=false (the caller keeps the original value and its
-// normal error path — the guard never mangles clean input).
+// well-formed session ids.
+//
+// CONTRACT UPDATE (2026-11-14, post-v3 review r1): ok=false no longer
+// means "the caller keeps the original value and its normal error
+// path" for every rejection row. Rows whose LEADING ref is still a
+// valid target (junk/empty/malformed embedded origins, trailing
+// }junk, multi-mark values) now fall through to
+// recoverInjectedDestination and DELIVER to the leading id with the
+// generic injection warning — the intent-preserving choice (the
+// #2030 live losses had clean leading ids and intact messages).
+// Rows whose leading ref is invalid still fail normally. Precedence:
+// a VALID-origin v1 shape keeps this extractor and its richer
+// embedded-origin warnings; the generalized path only fires when
+// this extractor rejects (pinned: TestMCPSendMessage_V1ValidOriginKeepsRichRecovery).
 const dupFragmentMark = `","lsp_injected_session":"`
 
 // sesIDPattern is a PREFIX-RESTRICTED SUBSET of the adapter seam's
@@ -1735,6 +1746,41 @@ const dupFragmentMark = `","lsp_injected_session":"`
 // data — the pattern exists to reject shapes that merely CONTAIN
 // the fragment mark by accident, not to second-guess the id format.
 var sesIDPattern = regexp.MustCompile(`^ses_[A-Za-z0-9_-]{1,124}$`)
+
+// recoverInjectedDestination generalizes the #1530 recovery for the
+// post-v3 emission class (2026-11-14 live shapes, merry-finch-loses):
+// the model injects ESCAPED-JSON STRUCTURAL FRAGMENTS into the
+// destination string value mid-emission — `TARGET\",\"message\":\"<prose>\"}`
+// (the escaped-quote seam, arbitrary prose tail, closing brace
+// optional). The parsed Go string therefore contains REAL quote
+// characters — a clean destination (ses_ id or 3-word phrase) can
+// never contain one. Recovery: split at the first quote, deliver to
+// the leading ref (re-validated by SessionExists), warn loudly. The
+// v1 shape (`,`+`lsp_injected_session`+id) remains covered — its
+// embedded origin is obsolete junk now (origin is always
+// platform-injected) and rides out with the tail.
+func recoverInjectedDestination(v string) (target string, ok bool) {
+	if !strings.ContainsAny(v, `"{}`) {
+		return "", false // a clean ref contains none of the injection alphabet
+	}
+	i := strings.IndexByte(v, '"')
+	if i <= 0 {
+		return "", false
+	}
+	target = v[:i]
+	if !recoverableRefForm(target) {
+		return "", false
+	}
+	// The tail must LOOK like escaped-JSON injection, not like a
+	// legit id that happens to contain a quote (impossible for the
+	// ref grammar — the guard rejects shapes that merely contain a
+	// quote by accident).
+	tail := v[i:]
+	if !strings.Contains(tail, "\":") && !strings.Contains(tail, "}") {
+		return "", false
+	}
+	return target, true
+}
 
 func splitDuplicatedArgFragment(v string) (target, embeddedOrigin string, ok bool) {
 	i := strings.Index(v, dupFragmentMark)
@@ -1803,16 +1849,29 @@ func mcpSendMessage(ctx context.Context, password, sessionID, message, injectedS
 	if sessionID == "" {
 		return "", fmt.Errorf("destination is required")
 	}
-	// #1530 emission-duplication recovery: a session_id carrying the
-	// duplicated-argument fragment (model emission slip — see
-	// splitDuplicatedArgFragment) still encodes the intended target
-	// in its leading id. Recover it and deliver; the result warns
-	// loudly instead of losing the message to a resolution error
-	// (the 13-instance misfire class — messages were lost though the
-	// intent was mechanically recoverable).
+	// #1530 emission-duplication recovery + post-v3 generalized
+	// injection recovery (see splitDuplicatedArgFragment and
+	// recoverInjectedDestination for the exact shape contracts and
+	// precedence).
 	recoveredTarget, embeddedOrigin, recovered := splitDuplicatedArgFragment(sessionID)
 	if recovered {
 		sessionID = recoveredTarget
+	}
+	// Post-v3 generalized injection recovery (2026-11-14 live shapes,
+	// merry-finch-loses): the emission now injects escaped-JSON
+	// fragments INTO the destination string value —
+	// `TARGET","message":"<prose>"}` (the fragment vocabulary moved
+	// from lsp_injected_session to whatever key follows in the
+	// model's emission; two live losses tonight, both with a clean
+	// leading id). recoverInjectedDestination splits at the first
+	// quote and re-validates the leading ref; delivery proceeds to
+	// the recovered target with a loud warning.
+	injectionRecovered := false
+	if !recovered {
+		if rt, ok := recoverInjectedDestination(sessionID); ok {
+			sessionID = rt
+			injectionRecovered = true
+		}
 	}
 	message = strings.TrimSpace(message)
 	if message == "" {
@@ -1910,6 +1969,10 @@ func mcpSendMessage(ctx context.Context, password, sessionID, message, injectedS
 	if sessionID == origin {
 		warnParts = append(warnParts,
 			"target is your own session — this message will come back to you as your next turn, not reach another agent. If you meant a different session, re-check the ID (session_list / session_metadata); if this is an intentional self-note, carry on.")
+	}
+	if injectionRecovered {
+		warnParts = append(warnParts,
+			"destination carried injected JSON fragments (emission slip — the escaped-quote/structural syntax after the target id was stripped): delivered to the leading id — re-check the destination you pass (session_list / session_metadata).")
 	}
 	if recovered {
 		// #1816 emission closure: the warning's ids are caller-facing

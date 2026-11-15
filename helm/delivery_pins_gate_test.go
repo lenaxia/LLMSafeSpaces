@@ -14,7 +14,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// Design 0053 §4.5 (S3): both delivery pins are MANDATORY at render
+// Design 0053 §4.5 (S3) + §5.4: ALL THREE delivery pins are MANDATORY at render
 // time. An empty image must fail the render with an operator-actionable
 // message — the base image carries no platform binaries, so an
 // unpinned controller would build pods that PATH-look up binaries that
@@ -51,6 +51,17 @@ controller:
     image: ghcr.io/lenaxia/llmsafespaces/agentd@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
 `,
 			wantErrOn: "opencodeDelivery.image is mandatory",
+		},
+		{
+			name: "agentd + opencode pinned / pi missing",
+			values: `
+controller:
+  agentdDelivery:
+    image: ghcr.io/lenaxia/llmsafespaces/agentd@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+  opencodeDelivery:
+    image: ghcr.io/lenaxia/llmsafespaces/opencode@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+`,
+			wantErrOn: "piDelivery.image is mandatory",
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

@@ -53,6 +53,9 @@ const (
 	wiringOpencodeImg  = "ghcr.io/lenaxia/llmsafespaces/opencode@sha256:fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210"
 	wiringOpencodeAMD  = "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
 	wiringOpencodeARM  = "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+	wiringPiImg        = "ghcr.io/lenaxia/llmsafespaces/pi@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+	wiringPiAMD        = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+	wiringPiARM        = "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
 	wiringRTEImage     = "registry.example.com/runtimes/python:3.11-wffc"
 )
 
@@ -82,6 +85,7 @@ func TestEnvtestSetupWiring_EventbusArmsPodEnv(t *testing.T) {
 		workspace.UploadStagingConfig{},
 		controller.AgentdDelivery{Image: wiringAgentdImage, BinarySHA256AMD64: wiringAgentdSHAAMD, BinarySHA256ARM64: wiringAgentdSHAARM},
 		controller.OpencodeDelivery{Image: wiringOpencodeImg, BinarySHA256AMD64: wiringOpencodeAMD, BinarySHA256ARM64: wiringOpencodeARM},
+		controller.PiDelivery{Image: wiringPiImg, BinarySHA256AMD64: wiringPiAMD, BinarySHA256ARM64: wiringPiARM},
 		false, 1, nil, 0),
 		"SetupControllers must carry the armed bus wiring into the Workspace reconciler")
 

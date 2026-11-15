@@ -2019,6 +2019,282 @@ func bytesAllIndexes(haystack, needle []byte) []int {
 // one-release alias) must deliver at the HANDLER level — the alias is
 // what prior-call precedent in a live model's context emits during
 // transition.
+// --- post-v3 destination-injection recovery (2026-11-14 live shapes) ---
+//
+// The emission now injects escaped-JSON fragments INTO the destination
+// string value (TARGET","message":"<prose>" } — the fragment vocabulary
+// moved; two live losses tonight, both with a clean leading id). The
+// generalized recovery splits at the first quote and delivers to the
+// leading ref with a loud warning. The two probes below are the EXACT
+// live shapes.
+
+// --- recoverInjectedDestination direct unit tests (r1 review B1: the
+// sibling extractor's pinned convention — rejection table, acceptance
+// half, boundaries, the v1-continuity claim, precedence) ---
+
+func TestRecoverInjectedDestination_RejectionTable(t *testing.T) {
+	// CONTRACT (post-v3, 2026-11-14): rows whose LEADING ref is a valid
+	// target (junk/empty/malformed embedded origins, trailing }junk,
+	// multi-mark) NO LONGER refuse recovery at handler level - they fall
+	// through to recoverInjectedDestination and DELIVER to the leading
+	// id with the generic warning (the #2030 intent-preserving
+	// inversion, pinned at handler level by
+	// TestMCPSendMessage_V1ValidOriginKeepsRichRecovery and the
+	// InjectedDestination live-shape pins; the junk-origin fall-through
+	// itself is pinned by TestMCPSendMessage_V1MarkJunkOriginFalls-
+	// ThroughToGenericRecovery). THIS unit table pins the EXTRACTOR's
+	// own rejections: these rows must return ok=false so the caller's
+	// fall-through has something to fall through TO.
+	for _, tc := range []struct {
+		name, v string
+	}{
+		{"clean ses_ id", "ses_abc123"},
+		{"clean phrase", "calm-otter-naps"},
+		{"empty", ""},
+		{"leading quote", `","message":"x`},
+		{"ContainsAny hit, no quote (brace only)", "ses_abc{}"},
+		{"tail-guard rejection: quote but neither key-colon nor brace", `ses_abc"justtext`},
+		{"target fails recoverableRefForm (not ses_, not phrase)", `zzz","message":"x}`},
+		{"over-length target (125+ chars after ses_)", "ses_" + strings.Repeat("a", 125) + `","message":"x`},
+		{"junk with quote+brace, invalid leading ref (alphabet gate — no ses_ prefix)", "random text with quotes and braces but no valid leading ref"},
+	} {
+		target, ok := recoverInjectedDestination(tc.v)
+		assert.False(t, ok, tc.name+": must NOT recover")
+		assert.Empty(t, target, tc.name)
+	}
+}
+
+func TestRecoverInjectedDestination_Acceptance(t *testing.T) {
+	for _, tc := range []struct {
+		name, v, want string
+	}{
+		{"live shape: brace + prose", `torrid-oxbow-indicates","message":"this is the last probe — full report follows"}`, "torrid-oxbow-indicates"},
+		{"live shape: brace-less, prose tail", `rainy-welder-restricts","message":"ruling (b) posted on PR 2009 — reopen, CI`, "rainy-welder-restricts"},
+		{"brace-only arm", `ses_abc"}`, "ses_abc"},
+		{"key-colon arm, no brace", `ses_abc","message":"x`, "ses_abc"},
+		{"v1 shape with JUNK origin (continuity: the old extractor rejects the junk origin; this path recovers the target)", `ses_abc","lsp_injected_session":"JUNK_NOT_AN_ID"}`, "ses_abc"},
+		{"ses_ 124-char boundary + injection", "ses_" + strings.Repeat("a", 124) + `","message":"x`, "ses_" + strings.Repeat("a", 124)},
+	} {
+		target, ok := recoverInjectedDestination(tc.v)
+		assert.True(t, ok, tc.name+": must recover")
+		assert.Equal(t, tc.want, target, tc.name)
+	}
+}
+
+// TestRecoverInjectedDestination_V1Precedence — a VALID-origin v1 shape
+// keeps the OLD extractor (splitDuplicatedArgFragment) and its richer
+// embedded-origin-mismatch warnings; the generalized path only fires
+// when the old extractor rejects (r1 review B3: precedence pinned).
+func TestMCPSendMessage_V1ValidOriginKeepsRichRecovery(t *testing.T) {
+	f := newFakeAgent()
+	target := f.newSession("target")
+	origin := f.newSession("origin")
+	withAgentServer(t, f.handler(t))
+
+	// v1 shape with a VALID embedded origin: splitDuplicatedArgFragment
+	// handles it — the result carries the #1530-specific warning, not
+	// the generic injection warning.
+	req := mcpRequest{JSONRPC: "2.0", ID: 1, Method: "tools/call",
+		Params: marshalParams(t, map[string]any{
+			"name": "send_message",
+			"arguments": map[string]any{
+				"destination":          target + `","lsp_injected_session":"` + origin + `"}`,
+				"message":              "v1-shape precedence probe",
+				"lsp_injected_session": origin,
+			},
+		})}
+	body, _ := json.Marshal(req)
+	w := httptest.NewRecorder()
+	r := mcpAuthedRequest(body)
+	mcpHandler(mcpTestPassword)(w, r)
+
+	var resp struct {
+		Result struct {
+			Content []struct {
+				Text string `json:"text"`
+			} `json:"content"`
+		} `json:"result"`
+	}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+	require.NotEmpty(t, resp.Result.Content)
+	assert.Contains(t, resp.Result.Content[0].Text, "duplicated-argument fragment",
+		"the v1 shape keeps the OLD extractor's richer warning")
+	assert.NotContains(t, resp.Result.Content[0].Text, "injected JSON fragments",
+		"the generic injection warning must not co-fire on v1-valid shapes")
+}
+
+// TestMCPSendMessage_RecoveredNonexistentTargetFailsLoudly — a
+// recovered destination that does not EXIST fails with the STRIPPED id
+// named (the diagnosability improvement over the pre-recovery mangled
+// blob; r1 review B2).
+func TestMCPSendMessage_RecoveredNonexistentTargetFailsLoudly(t *testing.T) {
+	f := newFakeAgent()
+	caller := f.newSession("caller")
+	withAgentServer(t, f.handler(t))
+
+	req := mcpRequest{JSONRPC: "2.0", ID: 1, Method: "tools/call",
+		Params: marshalParams(t, map[string]any{
+			"name": "send_message",
+			"arguments": map[string]any{
+				"destination":          `ses_ghost_recoverable","message":"x}`,
+				"message":              "must fail loudly naming the stripped id",
+				"lsp_injected_session": caller,
+			},
+		})}
+	body, _ := json.Marshal(req)
+	w := httptest.NewRecorder()
+	r := mcpAuthedRequest(body)
+	mcpHandler(mcpTestPassword)(w, r)
+
+	var resp struct {
+		Result struct {
+			Content []struct {
+				Text string `json:"text"`
+			} `json:"content"`
+		} `json:"result"`
+	}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+	require.NotEmpty(t, resp.Result.Content)
+	assert.Contains(t, resp.Result.Content[0].Text, "ses_ghost_recoverable",
+		"the error names the STRIPPED id — diagnosable, not the injected blob")
+	// r2 B7 - the DISCRIMINATING half: pre-recovery code failed with the
+	// whole injected blob (which CONTAINS the stripped id as a substring,
+	// so a Contains pin passes either way). The stripped form must NOT
+	// carry the injected tail.
+	assert.NotContains(t, resp.Result.Content[0].Text, `","message":"`,
+		"the error names the clean stripped id, not the injected blob")
+}
+
+func TestMCPSendMessage_V1MarkJunkOriginFallsThroughToGenericRecovery(t *testing.T) {
+	// r2 B8: a v1 MARK with a REJECTED (junk) embedded origin — the old
+	// extractor refuses, the generalized path recovers the target, and
+	// the GENERIC injection warning fires (not the rich v1 warning).
+	// A regression confined to this composition would pass the whole
+	// suite without this pin.
+	f := newFakeAgent()
+	target := f.newSession("target")
+	caller := f.newSession("caller")
+	withAgentServer(t, f.handler(t))
+
+	dest := target + `","lsp_injected_session":"JUNK_NOT_AN_ID"}`
+	req := mcpRequest{JSONRPC: "2.0", ID: 1, Method: "tools/call",
+		Params: marshalParams(t, map[string]any{
+			"name": "send_message",
+			"arguments": map[string]any{
+				"destination":          dest,
+				"message":              "junk-origin fall-through probe",
+				"lsp_injected_session": caller,
+			},
+		})}
+	body, _ := json.Marshal(req)
+	w := httptest.NewRecorder()
+	r := mcpAuthedRequest(body)
+	mcpHandler(mcpTestPassword)(w, r)
+
+	var resp struct {
+		Result struct {
+			Content []struct {
+				Text string `json:"text"`
+			} `json:"content"`
+		} `json:"result"`
+	}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+	require.NotEmpty(t, resp.Result.Content)
+	assert.NotContains(t, resp.Result.Content[0].Text, "Error:", "falls through and delivers to the leading id")
+	assert.Contains(t, resp.Result.Content[0].Text, "injected JSON fragments",
+		"the GENERIC injection warning fires")
+	assert.NotContains(t, resp.Result.Content[0].Text, "duplicated-argument fragment",
+		"the rich v1 warning must not co-fire")
+	require.Eventually(t, func() bool { return len(f.sentFor(target)) == 1 }, 5*time.Second, 50*time.Millisecond)
+}
+
+func TestMCPSendMessage_InjectedDestinationRecovers_HandlerLevel(t *testing.T) {
+	f := newFakeAgent()
+	target := f.newSession("target")
+	caller := f.newSession("caller")
+	withAgentServer(t, f.handler(t))
+
+	dest := target + `","message":"this is the last probe — the result is: short clean, long send payloads still storm — full report follows"}`
+	req := mcpRequest{JSONRPC: "2.0", ID: 1, Method: "tools/call",
+		Params: marshalParams(t, map[string]any{
+			"name": "send_message",
+			"arguments": map[string]any{
+				"destination":          dest,
+				"message":              "probe sequence complete: short payloads emit clean",
+				"lsp_injected_session": caller,
+			},
+		})}
+	body, _ := json.Marshal(req)
+	w := httptest.NewRecorder()
+	r := mcpAuthedRequest(body)
+	mcpHandler(mcpTestPassword)(w, r)
+
+	var resp struct {
+		Result struct {
+			StructuredContent map[string]any `json:"structuredContent"`
+			Content           []struct {
+				Text string `json:"text"`
+			} `json:"content"`
+		} `json:"result"`
+	}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+	require.NotEmpty(t, resp.Result.Content)
+	assert.NotContains(t, resp.Result.Content[0].Text, "Error:",
+		"the injected destination recovers and delivers")
+	assert.Contains(t, resp.Result.Content[0].Text, `"warning"`,
+		"the recovery warns loudly")
+	require.Eventually(t, func() bool { return len(f.sentFor(target)) == 1 }, 5*time.Second, 50*time.Millisecond,
+		"delivered to the leading id")
+}
+
+func TestMCPSendMessage_InjectedDestinationNoCloseBraceStillRecovers(t *testing.T) {
+	f := newFakeAgent()
+	target := f.newSession("rainy-welder")
+	caller := f.newSession("caller")
+	withAgentServer(t, f.handler(t))
+
+	dest := target + `","message":"ruling (b) posted on PR 2009 — reopen, apply alias entry, catch up vs main, re-push, CI, /review`
+	req := mcpRequest{JSONRPC: "2.0", ID: 1, Method: "tools/call",
+		Params: marshalParams(t, map[string]any{
+			"name": "send_message",
+			"arguments": map[string]any{
+				"destination":          dest,
+				"message":              "end of turn",
+				"lsp_injected_session": caller,
+			},
+		})}
+	body, _ := json.Marshal(req)
+	w := httptest.NewRecorder()
+	r := mcpAuthedRequest(body)
+	mcpHandler(mcpTestPassword)(w, r)
+
+	var resp struct {
+		Result struct {
+			Content []struct {
+				Text string `json:"text"`
+			} `json:"content"`
+		} `json:"result"`
+	}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+	require.NotEmpty(t, resp.Result.Content)
+	assert.NotContains(t, resp.Result.Content[0].Text, "Error:", "the brace-less injection still recovers")
+	require.Eventually(t, func() bool { return len(f.sentFor(target)) == 1 }, 5*time.Second, 50*time.Millisecond)
+}
+
+func TestMCPSendMessage_CleanDestinationNeverMangled(t *testing.T) {
+	f := newFakeAgent()
+	target := f.newSession("target")
+	caller := f.newSession("caller")
+	withAgentServer(t, f.handler(t))
+
+	// A destination that merely CONTAINS a quote-shaped prefix is not
+	// the shape: non-recoverable prefixes fall to the normal error path
+	// unmangled.
+	_, err := mcpSendMessage(context.Background(), mcpTestPassword, `weird"quote`+target, "hi", caller)
+	require.Error(t, err, "a quote-containing destination is not silently recovered unless the leading ref is valid")
+	assert.Empty(t, f.msgArrived)
+}
+
 func TestMCPSendMessage_LegacySessionIdAliasDelivers_HandlerLevel(t *testing.T) {
 	f := newFakeAgent()
 	target := f.newSession("target")
@@ -3110,9 +3386,14 @@ func TestMCPSendMessage_EmissionDuplicationGuard_MismatchedEmbeddedOriginStillDe
 	}, 5*time.Second, 50*time.Millisecond)
 }
 
-// The predicate's documented rejection contract ("Both extracted ids
-// must be well-formed session ids; anything else is NOT the shape")
-// — the never-guess boundary. Every row must refuse recovery.
+// The predicate's EXTRACTOR-level contract ("Both extracted ids must
+// be well-formed session ids") — the never-guess boundary: every row
+// must refuse extraction. HANDLER-level behavior diverges deliberately
+// since the post-v3 recovery (2026-11-14): rows with a VALID leading
+// ses_TARGET fall through to recoverInjectedDestination and DELIVER
+// (pinned: TestMCPSendMessage_V1MarkJunkOriginFallsThroughToGeneric-
+// Recovery; see the CONTRACT note on the rejection-table comment
+// above and the CONTRACT UPDATE in the extractor doc).
 func TestSplitDuplicatedArgFragment_RejectionHalf(t *testing.T) {
 	for _, tc := range []struct {
 		name  string

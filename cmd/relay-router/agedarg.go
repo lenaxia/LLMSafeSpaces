@@ -7,87 +7,100 @@ import (
 	"bytes"
 	"encoding/json"
 	"slices"
+	"strings"
 )
 
-// Aged-arg compaction (#1949): the poisoned-context emission CURE.
+// Aged-arg HISTORY RESTRUCTURE (v3, 2026-11-13): the verified cure for
+// the glm-5.3 tool-call emission tiling (#1949).
 //
-// #1929's replay evidence split the defense: schema reordering is
-// PREVENTION (fresh sessions emit the bulk-last shape), but a context
-// whose history already carries old-shape bulk-first llmsafespaces_*
-// tool-call arguments pattern-continues into duplicate-key/tiling
-// runaways EVEN with the new schemas live (their last row: RUNAWAY 3/3;
-// production confirmations 2026-10-25). Their row 4 proved the cure:
-// stub the prior args (CLEAN 3/3). This transform implements that cure
-// in the BYO resolve router's request path.
+// Root behavior (60/60 events across three workspaces): the model
+// pattern-continues its OWN prior tool-call structures in history.
+// When it emits a new call of the same family, the generation latches
+// into a duplicate-key/fragment-tiling loop that burns to the token
+// cap (unparseable arguments, 16k+ tokens, ~100s per event).
 //
-// Semantics (security-sensitive: this rewrites what the model sees of
-// its own history):
-//   - STUB the `arguments` of every llmsafespaces_* tool call OLDER than
-//     the recent window. Call identity (id), tool name, and outcome
-//     semantics (role:"tool" result messages) are preserved untouched.
-//   - The recent window is the last N tool calls of ANY tool (positional,
-//     flattened across messages): active-turn work keeps full fidelity —
-//     no semantic change to recent calls.
-//   - Never touches non-llmsafespaces_* tools (platform tools are the
-//     proven-safe precedent), tool RESULTS, the tools array, or anything
-//     outside messages[].tool_calls.
-//   - Audit-preserving: the router never persists bodies (K7) — the
-//     on-disk session store in the workspace keeps every original arg.
-//   - Passthrough-safe: no llmsafespaces_* name in the body, no messages
-//     array, or anything unexpected → the body is forwarded byte-identical.
-//     Compaction never rejects or breaks a request.
-//   - Idempotent: the stub replaces itself byte-identically on re-runs
-//     (the client re-sends its stored history every turn; the router
-//     re-compacts each time — output is stable).
-//   - Loudly observable: callers log (metadata-only, K7) and count via
-//     metrics whenever compaction fires — silent history rewriting is
-//     the failure mode to avoid.
+// v3 renders prior tool usage as PLAIN MARKUP TEXT inside the assistant
+// message that made the calls:
+//
+//	<original assistant content>
+//	- Called `tool_name`(**param**: value, ...)
+//	  - Result: <result content verbatim>
+//
+// replacing the assistant tool_calls entry and its paired role:"tool"
+// messages. The model re-plans with ZERO tool_call JSON anywhere in its
+// history — the emission template is gone — while parameters AND
+// outputs stay fully visible. LOSSLESS, precisely: parameters and
+// outputs are preserved VERBATIM in the bullets; assistant prose is
+// preserved with edge whitespace trimmed (r3 finding 5 — the bare
+// "lossless" claim was overstated; content is exact, formatting is
+// normalized). Unlike v1 stubbing / v2 dotting, nothing is dropped.
+//
+// Verified (exact-context replays via litellm, glm-5.3, 2026-11-13):
+//
+//	myriad (live fleet-cascade context):   baseline 1/1 RUNAWAY -> 3/3 CLEAN
+//	quick-panda (send_message, 3/4 base):  3/3 CLEAN, correct calls emitted
+//
+// FAILURE POST-MORTEMS (preserved — do not regress):
+//
+//	v1 prose-note stub ({"note":"arguments removed by relay …"}) FAILED
+//	in production: word-bearing values are the tiling attractor itself
+//	(controlled pair on the live Nov-12 context: v1 stub → cap-burn,
+//	{"note":"..."} → clean), and the v1 sentence leaked into 4 delivered
+//	agent messages. v2 value-dotting ("..." over string values) was
+//	cross-context clean (3/3 electric, 3/3 myriad) but LOSSY. v3
+//	supersedes both at zero information cost.
+//
+// DETERMINISM CONTRACT (cache-critical): the rendering is a pure
+// function of the message bytes — fixed bullet format, parameter order
+// taken from the arguments JSON's OWN key order (decoded with a token
+// decoder; never Go maps), numbers byte-preserved via json.Number,
+// results verbatim, no timestamps, no counters. A restructured message
+// renders identically on every request: prefix caching pays ONE bust
+// per restructured message (a full bust at enablement) and is
+// byte-stable thereafter.
+//
+// Scope: ALL tool calls are restructured — platform tools too. That is
+// the validated configuration (the harness arms merged every family),
+// and their parameters/outputs remain fully visible in the bullets.
+//
+// Config: BYO_AGED_ARG_RECENT_TOOL_CALLS < 0 disables (kill switch);
+// 0 (default) restructures every tool call; > 0 keeps the last N tool
+// calls (any tool, flattened across messages) in verbatim tool-call
+// form (untested tuning knob — the validated setting is 0).
 const (
-	agedArgToolPrefix  = "llmsafespaces_"
-	agedArgDefaultWins = 30
+	agedArgDefaultWins = 0
 
-	// agedArgStubNote mirrors the checked-in replay harness's stub
-	// (scripts/1949-aged-arg-replay.py) byte-for-byte — the parity pin
-	// lives in TestAgedArgStubMatchesReplayHarness.
-	agedArgStubNote = "arguments removed by relay aged-arg compaction (full text preserved in the session audit trail)"
+	agedArgBulletPrefix = "- Called `"
+	agedArgResultPrefix = "  - Result: "
 )
 
-// agedArgStub is the replacement arguments payload: one short note, the
-// single-field bulk-last-safe shape (nothing for emission to resume
-// mid-skeleton — the poison was the bulk-first array/string skeleton).
-func agedArgStub() []byte {
-	stub, _ := json.Marshal(map[string]string{"note": agedArgStubNote})
-	return stub
-}
-
-// agedArgStats reports what one compaction pass did (log/metric inputs).
+// agedArgStats reports what one restructure pass did (log/metric inputs).
 type agedArgStats struct {
-	CallsStubbed int  // llmsafespaces_* tool-call arguments replaced
+	CallsStubbed int  // tool calls restructured into prose
 	BytesBefore  int  // request body bytes in
 	BytesAfter   int  // request body bytes out
-	Changed      bool // any stub applied
+	Changed      bool // any restructure applied
 }
 
-// agedArgCompactor stubs aged llmsafespaces_* tool-call arguments in
+// agedArgCompactor restructures prior tool usage into plain text in
 // chat-completion request bodies. RecentToolCalls < 0 disables the
-// compaction entirely (kill switch); 0 stubs every llmsafespaces_* call.
+// transform entirely (kill switch); 0 restructures every tool call.
 type agedArgCompactor struct {
-	ToolPrefix string
 	// RecentToolCalls is the number of most-recent tool calls (any tool,
-	// flattened across messages) left untouched.
+	// flattened across messages) left in verbatim tool-call form.
 	RecentToolCalls int
 }
 
 func newAgedArgCompactor() *agedArgCompactor {
-	return &agedArgCompactor{ToolPrefix: agedArgToolPrefix, RecentToolCalls: agedArgDefaultWins}
+	return &agedArgCompactor{RecentToolCalls: agedArgDefaultWins}
 }
 
 func newAgedArgCompactorWindow(window int) *agedArgCompactor {
-	return &agedArgCompactor{ToolPrefix: agedArgToolPrefix, RecentToolCalls: window}
+	return &agedArgCompactor{RecentToolCalls: window}
 }
 
 // recentWindow reports the configured recent-window size (nil-safe —
-// used in the compaction log line).
+// used in the restructure log line).
 func (c *agedArgCompactor) recentWindow() int {
 	if c == nil {
 		return 0
@@ -96,15 +109,15 @@ func (c *agedArgCompactor) recentWindow() int {
 }
 
 // Compact returns the rewritten body. On any structural surprise the
-// input is returned unchanged (Compaction is best-effort; inference
+// input is returned unchanged (the transform is best-effort; inference
 // must never fail because of it).
 func (c *agedArgCompactor) Compact(body []byte) ([]byte, agedArgStats) {
 	stats := agedArgStats{BytesBefore: len(body), BytesAfter: len(body)}
-	if c == nil || c.RecentToolCalls < 0 || c.ToolPrefix == "" {
+	if c == nil || c.RecentToolCalls < 0 {
 		return body, stats
 	}
-	// Fast pre-filter: nothing to do unless a prefixed tool name appears.
-	if !bytes.Contains(body, []byte(`"`+c.ToolPrefix)) {
+	// Fast pre-filter: nothing to do without any tool call in the body.
+	if !bytes.Contains(body, []byte(`"tool_calls"`)) {
 		return body, stats
 	}
 	var top map[string]json.RawMessage
@@ -121,9 +134,8 @@ func (c *agedArgCompactor) Compact(body []byte) ([]byte, agedArgStats) {
 	}
 
 	// Pass 1 (backward): flatten tool-call positions to decide the
-	// protected recent window. Positions are (message, call-index).
-	// Window <= 0 protects nothing (0 = stub every llmsafespaces_* call).
-	type callPos struct{ msg, idx int }
+	// protected verbatim window. Window <= 0 protects nothing (0 =
+	// restructure every tool call — the validated setting).
 	var flat []callPos
 	if c.RecentToolCalls > 0 {
 		for mi := len(msgs) - 1; mi >= 0; mi-- {
@@ -147,46 +159,70 @@ func (c *agedArgCompactor) Compact(body []byte) ([]byte, agedArgStats) {
 		protected[p] = true
 	}
 
-	// Pass 2 (forward): rewrite aged llmsafespaces_* calls.
-	changed := false
-	for mi, raw := range msgs {
+	// Pass 2 (forward): merge each assistant tool-call message and its
+	// following role:"tool" results into one plain-text assistant
+	// message — but ONLY when the whole span validates clean (see
+	// tryRestructureSpan). Any anomaly → the span is forwarded
+	// VERBATIM: lossless-by-construction beats cleverness (r1 review:
+	// the v3 draft silently dropped orphaned/duplicate/non-string
+	// results and array-shaped assistant content).
+	out := make([]json.RawMessage, 0, len(msgs))
+	i := 0
+	for i < len(msgs) {
+		raw := msgs[i]
 		calls, ok := toolCallsOf(raw)
+		if !ok || len(calls) == 0 {
+			out = append(out, raw)
+			i++
+			continue
+		}
+		// Find the span: the message + its directly following tool msgs.
+		j := i + 1
+		for j < len(msgs) {
+			role, ok := messageRole(msgs[j])
+			if !ok || role != "tool" {
+				break
+			}
+			j++
+		}
+		merged, n, ok := tryRestructureSpan(raw, msgs[i:j], calls, protected, i)
 		if !ok {
+			// Anomaly (or fully protected): forward the span verbatim.
+			out = append(out, msgs[i:j]...)
+			i = j
 			continue
 		}
-		needStub := false
-		for ci, call := range calls {
-			if protected[callPos{mi, ci}] {
-				continue
-			}
-			name, ok := toolCallName(call)
-			if ok && bytes.HasPrefix(name, []byte(c.ToolPrefix)) {
-				needStub = true
-			}
-		}
-		if !needStub {
-			continue
-		}
-		rewritten, n, err := stubAgedCalls(raw, c.ToolPrefix, func(mi2, ci int) bool {
-			return protected[callPos{mi2, ci}]
-		}, mi)
-		if err != nil {
-			continue // malformed entry: leave the whole message untouched
-		}
-		msgs[mi] = rewritten
+		out = append(out, merged)
 		stats.CallsStubbed += n
-		changed = changed || n > 0
+		stats.Changed = true
+		i = j
 	}
-	if !changed {
+	if !stats.Changed {
 		return body, stats
 	}
-	out, err := marshalTop(top, msgs)
+	outBody, err := marshalTop(top, out)
 	if err != nil {
 		return body, stats
 	}
-	stats.BytesAfter = len(out)
-	stats.Changed = true
-	return out, stats
+	stats.BytesAfter = len(outBody)
+	return outBody, stats
+}
+
+// messageRole extracts the role of a message (unquoted).
+func messageRole(msg json.RawMessage) (string, bool) {
+	var m map[string]json.RawMessage
+	if err := json.Unmarshal(msg, &m); err != nil {
+		return "", false
+	}
+	role, ok := m["role"]
+	if !ok {
+		return "", false
+	}
+	var s string
+	if err := json.Unmarshal(role, &s); err != nil {
+		return "", false
+	}
+	return s, true
 }
 
 // toolCallsOf reports the raw tool_calls array of a message, if any.
@@ -206,113 +242,297 @@ func toolCallsOf(msg json.RawMessage) ([]json.RawMessage, bool) {
 	return calls, true
 }
 
-// toolCallName extracts function.name from one tool-call entry (unquoted).
-func toolCallName(call json.RawMessage) ([]byte, bool) {
-	var c map[string]json.RawMessage
-	if err := json.Unmarshal(call, &c); err != nil {
-		return nil, false
-	}
-	fn, ok := c["function"]
-	if !ok {
-		return nil, false
-	}
-	var f map[string]json.RawMessage
-	if err := json.Unmarshal(fn, &f); err != nil {
-		return nil, false
-	}
-	name, ok := f["name"]
-	if !ok {
-		return nil, false
-	}
-	var nameStr string
-	if err := json.Unmarshal(name, &nameStr); err != nil {
-		return nil, false
-	}
-	return []byte(nameStr), true
-}
+// callPos identifies one tool call position (message index, call index)
+// within the flattened history — the window bookkeeping key.
+type callPos struct{ msg, idx int }
 
-// stubAgedCalls rewrites one message: every non-protected tool call whose
-// function.name carries the prefix gets arguments = the stub. Every
-// VALUE of the message (content, ids, names, other fields, non-matching
-// calls) is preserved byte-exact via RawMessage; the enclosing message
-// and rewritten tool-call objects re-serialize in canonical key order.
-func stubAgedCalls(msg json.RawMessage, prefix string, isProtected func(msgIdx, callIdx int) bool, msgIdx int) (json.RawMessage, int, error) {
+// tryRestructureSpan validates and renders one span (an assistant
+// tool-call message plus its following tool messages) as a single
+// plain-text assistant message. ok=false means the span carries ANY
+// anomaly — protected calls, non-string assistant content, unpairable
+// ids, duplicate ids, non-string ids, non-string result content, or a
+// call missing its name — and must be forwarded verbatim. Lossless by
+// construction: we never drop or reshape what we cannot perfectly
+// pair (r1 review findings 1-5,7).
+func tryRestructureSpan(msg json.RawMessage, span []json.RawMessage, calls []json.RawMessage, protected map[callPos]bool, msgIdx int) (json.RawMessage, int, bool) {
+	// Window: a span holding ANY protected call stays verbatim (per-
+	// message granularity — r1-reviewed; the validated production
+	// setting is window 0 = protect nothing).
+	for ci := range calls {
+		if protected[callPos{msgIdx, ci}] {
+			return nil, 0, false
+		}
+	}
+
 	var m map[string]json.RawMessage
 	if err := json.Unmarshal(msg, &m); err != nil {
-		return nil, 0, err
+		return nil, 0, false
 	}
-	var calls []json.RawMessage
-	if err := json.Unmarshal(m["tool_calls"], &calls); err != nil {
-		return nil, 0, err
-	}
-	stubbed := 0
-	for ci, call := range calls {
-		if isProtected(msgIdx, ci) {
-			continue
+	// Role must be EXACTLY "assistant" — the merge hardcodes it, and
+	// silently reshaping a user/role-less span into an assistant turn is
+	// role fabrication (r3 finding 1, probe-reproduced).
+	if roleRaw, ok := m["role"]; ok {
+		var role string
+		if err := json.Unmarshal(roleRaw, &role); err != nil || role != "assistant" {
+			return nil, 0, false
 		}
+	} else {
+		return nil, 0, false
+	}
+	// Assistant content must be a string (or absent). Array/parts-shaped
+	// content → passthrough (r1 finding 4).
+	//
+	// r2 finding 3: the assistant message must carry NO fields beyond
+	// role/content/tool_calls — a real glm wire field (reasoning_content)
+	// would be silently dropped by the {role, content} merge marshal.
+	// Lossless means lossless: unknown fields → passthrough span.
+	for k := range m {
+		switch k {
+		case "role", "content", "tool_calls":
+		default:
+			return nil, 0, false
+		}
+	}
+	assistantPrefix := ""
+	if contentRaw, ok := m["content"]; ok {
+		var cs string
+		if err := json.Unmarshal(contentRaw, &cs); err != nil {
+			return nil, 0, false
+		}
+		if strings.TrimSpace(cs) != "" {
+			assistantPrefix = strings.TrimSpace(cs)
+		}
+	}
+
+	// Parse every call: name (string), arguments (string), id (string).
+	type parsedCall struct {
+		id, name, argsBullet string
+	}
+	parsed := make([]parsedCall, 0, len(calls))
+	for _, call := range calls {
 		var c map[string]json.RawMessage
 		if err := json.Unmarshal(call, &c); err != nil {
-			return nil, 0, err
+			return nil, 0, false
 		}
 		fn, ok := c["function"]
 		if !ok {
-			continue
+			return nil, 0, false
 		}
 		var f map[string]json.RawMessage
 		if err := json.Unmarshal(fn, &f); err != nil {
-			continue
+			return nil, 0, false
 		}
-		name, ok := f["name"]
+		var name string
+		nameRaw, hasName := f["name"]
+		if !hasName || json.Unmarshal(nameRaw, &name) != nil || name == "" {
+			return nil, 0, false // r1 finding 5: unnameable call → passthrough span
+		}
+		var id string
+		idRaw, hasID := c["id"]
+		if !hasID || json.Unmarshal(idRaw, &id) != nil || id == "" {
+			return nil, 0, false // r1 finding 5: non-string/absent id → passthrough span
+		}
+		argsRaw, hasArgs := f["arguments"]
+		if !hasArgs {
+			return nil, 0, false
+		}
+		var argsInner string
+		if err := json.Unmarshal(argsRaw, &argsInner); err != nil {
+			return nil, 0, false
+		}
+		parsed = append(parsed, parsedCall{id: id, name: name, argsBullet: renderArguments(argsInner)})
+	}
+
+	// Pair results: every tool message in the span must carry a string
+	// tool_call_id matching exactly one parsed call, exactly once, with
+	// string content. Anything else → passthrough span (r1 findings
+	// 1,2,3,7).
+	resultByID := make(map[string]string, len(span))
+	seenIDs := make(map[string]bool, len(span))
+	for _, t := range span[1:] {
+		var tm map[string]json.RawMessage
+		if err := json.Unmarshal(t, &tm); err != nil {
+			return nil, 0, false
+		}
+		idRaw, ok := tm["tool_call_id"]
 		if !ok {
-			continue
+			return nil, 0, false // r1 finding 7: id-less tool message → passthrough
 		}
-		var nameStr string
-		if err := json.Unmarshal(name, &nameStr); err != nil || !bytes.HasPrefix([]byte(nameStr), []byte(prefix)) {
-			continue
+		// r2 finding 2: JSON null into *string unmarshals as a no-op —
+		// a null id is PRESENT-but-invalid: reject explicitly (the v3
+		// draft landed it in resultByID[""], unreachable → deleted).
+		var idPtr *string
+		if err := json.Unmarshal(idRaw, &idPtr); err != nil || idPtr == nil {
+			return nil, 0, false
 		}
-		// Replace arguments (whatever it was — string, object, or absent)
-		// with the stub JSON string, preserving every other field.
-		wireStub := json.RawMessage(agedArgStubJSONString())
-		if bytes.Equal(bytes.TrimSpace(f["arguments"]), wireStub) {
-			continue // already stubbed (idempotent across re-sent turns)
+		id := *idPtr
+		if id == "" {
+			return nil, 0, false
 		}
-		f["arguments"] = wireStub
-		newFn, err := marshalOrderedMap(f, []string{"name", "arguments"})
-		if err != nil {
-			return nil, 0, err
+		if seenIDs[id] {
+			return nil, 0, false // r1 finding 2: duplicate result id → passthrough
 		}
-		c["function"] = newFn
-		newCall, err := marshalOrderedMap(c, []string{"id", "type", "function"})
-		if err != nil {
-			return nil, 0, err
+		seenIDs[id] = true
+		contentRaw, ok := tm["content"]
+		if !ok {
+			return nil, 0, false // r1 finding 3: absent content → passthrough
 		}
-		calls[ci] = newCall
-		stubbed++
+		// r2 finding 7: null content is PRESENT-but-invalid — same
+		// null-into-string no-op class as the id. Passthrough.
+		var contentPtr *string
+		if err := json.Unmarshal(contentRaw, &contentPtr); err != nil || contentPtr == nil {
+			return nil, 0, false
+		}
+		resultByID[id] = *contentPtr
 	}
-	newCalls, err := json.Marshal(calls)
-	if err != nil {
-		return nil, 0, err
+	// r2 finding 1: the pairing must be EXACTLY bijective — every result
+	// consumed (this direction was missing; an orphan riding alongside a
+	// complete pair was silently deleted) and every call paired.
+	if len(resultByID) != len(parsed) {
+		return nil, 0, false
 	}
-	m["tool_calls"] = newCalls
-	// Message shape on the wire: role/content first, tool_calls last.
-	out, err := marshalOrderedMap(m, []string{"role", "content", "tool_calls"})
-	if err != nil {
-		return nil, 0, err
+	for _, pc := range parsed {
+		if _, ok := resultByID[pc.id]; !ok {
+			return nil, 0, false
+		}
 	}
-	return out, stubbed, nil
+	// r2 finding 7: duplicate CALL ids — one result would render on both
+	// bullets. Any duplicate call id → passthrough.
+	//
+	// DOCUMENTED ASYMMETRY (r6 review note): assistant content:null is
+	// ACCEPTED (merges as empty prefix) while tool-message null
+	// tool_call_id/content are REJECTED — the asymmetry is deliberate:
+	// a null on the TOOL side deletes data the model re-sees, a null on
+	// the assistant side carries nothing. Alignment offered, chosen
+	// documented over aligned.
+	seenCalls := make(map[string]bool, len(parsed))
+	for _, pc := range parsed {
+		if seenCalls[pc.id] {
+			return nil, 0, false
+		}
+		seenCalls[pc.id] = true
+	}
+
+	// Render.
+	var b strings.Builder
+	if assistantPrefix != "" {
+		b.WriteString(assistantPrefix)
+		b.WriteString("\n")
+	}
+	rendered := 0
+	for _, pc := range parsed {
+		b.WriteString(agedArgBulletPrefix)
+		b.WriteString(pc.name)
+		b.WriteString("`(")
+		b.WriteString(pc.argsBullet)
+		b.WriteString(")\n")
+		b.WriteString(agedArgResultPrefix)
+		b.WriteString(resultByID[pc.id])
+		b.WriteString("\n")
+		rendered++
+	}
+	// The span was validated to carry ONLY role/content/tool_calls, so
+	// {role, content} is lossless here (r2 finding 3 handled by the
+	// unknown-field gate above, not by a wider marshal). Key order
+	// role-first (matches the python mirror's dict insertion order —
+	// cosmetic parity, r2 finding 5 note), HTML-escape-free.
+	var obuf strings.Builder
+	oenc := json.NewEncoder(&obuf)
+	oenc.SetEscapeHTML(false)
+	if err := oenc.Encode(struct {
+		Role    string `json:"role"`
+		Content string `json:"content"`
+	}{Role: "assistant", Content: b.String()}); err != nil {
+		return nil, 0, false
+	}
+	return json.RawMessage(strings.TrimRight(obuf.String(), "\n")), rendered, true
 }
 
-// agedArgStubJSONString is the stub object serialized as a JSON string
-// literal (arguments is a string on the OpenAI wire).
-func agedArgStubJSONString() string {
-	wire, _ := json.Marshal(string(agedArgStub()))
-	return string(wire)
+// renderArguments renders one tool-call arguments payload (a JSON string
+// on the wire) as a deterministic parameter list: "**k**: v"
+// comma-separated, in the payload's OWN key order (token-decoded —
+// never Go maps), duplicate keys COLLAPSED last-wins-first-position
+// (matching the python mirror's dict semantics — and removing the
+// duplicate-key attractor rather than re-rendering it, r1 finding 8),
+// values as compact JSON with numbers byte-preserved (json.Number) and
+// HTML escaping disabled. TOTAL function: ANY parse deviation — a
+// non-object payload, a mid-payload break, or trailing content after
+// the object (r1 finding 6's `{"…"} GARBAGE` splice shape) — renders
+// the RAW inner text verbatim, never a partial bullet and never an
+// error upward. Lossless and deterministic on every input.
+func renderArguments(inner string) string {
+	dec := json.NewDecoder(strings.NewReader(inner))
+	dec.UseNumber()
+	tok, err := dec.Token()
+	if err != nil {
+		return inner
+	}
+	d, ok := tok.(json.Delim)
+	if !ok || d != '{' {
+		return inner
+	}
+	var order []string
+	values := make(map[string]json.RawMessage)
+	for dec.More() {
+		kt, err := dec.Token()
+		if err != nil {
+			return inner
+		}
+		key, ok := kt.(string)
+		if !ok {
+			return inner
+		}
+		var val json.RawMessage
+		if err := dec.Decode(&val); err != nil {
+			return inner
+		}
+		if _, seen := values[key]; !seen {
+			order = append(order, key)
+		}
+		values[key] = val // last value wins, first position kept
+	}
+	if _, err := dec.Token(); err != nil { // closing brace
+		return inner
+	}
+	// Anything after the closing brace — a trailing token, or garbage
+	// the decoder would ERROR on (e.g. `]`: More() is false and Token()
+	// errors, so neither decoder probe catches it — r1 finding 4) —
+	// means a non-object payload: raw verbatim. Byte-offset peek, total.
+	if rest := strings.TrimLeft(inner[dec.InputOffset():], " \t\r\n"); rest != "" {
+		return inner
+	}
+	parts := make([]string, 0, len(order))
+	for _, k := range order {
+		pv, err := compactJSON(values[k])
+		if err != nil {
+			return inner
+		}
+		parts = append(parts, "**"+k+"**: "+pv)
+	}
+	return strings.Join(parts, ", ")
+}
+
+// compactJSON renders one value as compact JSON with HTML escaping
+// disabled and numbers byte-preserved (json.Number) — deterministic.
+func compactJSON(raw json.RawMessage) (string, error) {
+	dec := json.NewDecoder(strings.NewReader(string(raw)))
+	dec.UseNumber()
+	if err := dec.Decode(&raw); err != nil {
+		return "", err
+	}
+	var buf strings.Builder
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(raw); err != nil {
+		return "", err
+	}
+	return strings.TrimRight(buf.String(), "\n"), nil
 }
 
 // marshalOrderedMap marshals m with the named keys first (in the given
 // order) and any remaining keys after, alphabetically — deterministic
 // output (Go maps otherwise randomize; determinism is what makes the
-// transform idempotent across turns).
+// transform stable across turns).
 func marshalOrderedMap(m map[string]json.RawMessage, first []string) (json.RawMessage, error) {
 	var buf bytes.Buffer
 	buf.WriteByte('{')
@@ -339,7 +559,6 @@ func marshalOrderedMap(m map[string]json.RawMessage, first []string) (json.RawMe
 			rest = append(rest, k)
 		}
 	}
-	// insertion order for the rest: sort for determinism
 	slices.Sort(rest)
 	for _, k := range rest {
 		v := m[k]
@@ -372,11 +591,17 @@ func marshalTop(top map[string]json.RawMessage, msgs []json.RawMessage) ([]byte,
 		for k, v := range top {
 			m[k] = v
 		}
-		newMsgs, err := json.Marshal(msgs)
-		if err != nil {
+		// Re-compact WITHOUT HTML escaping — plain json.Marshal would
+		// turn literal <, >, & into \u003c/\u003e/\u0026, defeating the
+		// no-escaping contract (r3 finding 2, probe: x<y&z rode the wire
+		// as \u003c...).
+		var mbuf strings.Builder
+		menc := json.NewEncoder(&mbuf)
+		menc.SetEscapeHTML(false)
+		if err := menc.Encode(msgs); err != nil {
 			return nil, err
 		}
-		m["messages"] = newMsgs
+		m["messages"] = json.RawMessage(strings.TrimRight(mbuf.String(), "\n"))
 	}
 	first := make([]string, 0, len(m))
 	for k := range m {

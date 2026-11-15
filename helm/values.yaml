@@ -442,6 +442,39 @@ controller:
     binarySHA256Amd64: ""
     binarySHA256Arm64: ""
 
+  # Second harness (design 0053 §5.4: "a second agent is a different
+  # image at the same mount point, not a redesign"): the pi overlay —
+  # digest-pinned image volume mounted read-only at /pi on the workspace
+  # container. The artifact is a directory TREE (binary + runtime
+  # assets + offline model data), trusted hash-the-binary +
+  # digest-the-tree (ruling in runtimes/pi/Dockerfile): the binary at
+  # /pi/pi carries the per-arch sha256 pins the supervisor verifies at
+  # boot (exit 85/86 → PiVerified condition + critical alert — disjoint
+  # from agentd's 81/82 and opencode's 83/84); every other tree member
+  # is non-executable data covered by the image digest. SEPARATE pin
+  # from agentd/opencode by design (independent rollback + cadence; pi
+  # releases ~2×/week upstream).
+  #
+  # MANDATORY from day one — unlike agentd/opencode there was never a
+  # baked-in mode to fall back to (pi never shipped in runtimes/base):
+  # empty fails the Helm render here and controller startup
+  # (ValidatePiDelivery) with the same operator hint.
+  #
+  # RENOVATE-FRIENDLY PIN (the normal form): set ONLY the image:
+  #
+  #   image: ghcr.io/lenaxia/llmsafespaces/pi:1.5.2@sha256:<manifest-digest>
+  #
+  # The per-arch BINARY sha256s are stamped onto the image index as OCI
+  # annotations (dev.llmsafespaces/pi.sha256-{amd64,arm64}) by CI and
+  # resolved by the controller at startup (cached in the
+  # llmsafespaces-pi-pins ConfigMap for registry outages) — they can
+  # never desync from the digest. binarySHA256* are optional per-image
+  # overrides (break-glass): set BOTH or NEITHER.
+  piDelivery:
+    image: ""
+    binarySHA256Amd64: ""
+    binarySHA256Arm64: ""
+
   # Design 0051 (agentd uid separation): split agentd into a native
   # sidecar container (uid 2000/gid 1000, policy half: muxes, watchdog,
   # SSE tracking, relay injector, credential boot phase) plus a same-uid
