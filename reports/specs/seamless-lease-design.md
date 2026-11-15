@@ -20,7 +20,12 @@ were themselves among the eaten rows — the board cannot land its own rescue.
 ### The loop (final form)
 
 1. **Movement → renew.** The reconciler renews when the harness observed the assignee session do
-   ANYTHING since the last sweep (delta, never wall-clock recency). Nudge state clears.
+   WORKER-ACTIVITY since the last sweep (delta, never wall-clock recency; #2040 amendment:
+   message/part activity only — management frames (session-state settles, reseeds, lease-state
+   transitions, input materializations, errors, unknown types) are the OPAQUE class and carry
+   ZERO renewal authority: the row takes the quiet arms (nudge → verdict) on the FIRST
+   settle-only evidence — a settle after a sentinel is not an answer, and settle-true-forever
+   cannot hold the lease). Nudge state clears.
 2. **Lease expiry, no movement → NUDGE.** One sentinel nudge; the row records a single nullable
    `nudge_id` — overwritten on each nudge, nothing older tracked. The nudge requires the worker to
    RESPOND via `board_heartbeat` FIRST (the response channel — item 6 amendment below), then
@@ -72,7 +77,9 @@ type AssigneeLivenessSource interface {
 }
 
 type Observation struct {
-    MovedSinceLastSweep bool          // renewal evidence
+    MovedSinceLastSweep bool          // renewal evidence (worker activity only — #2040)
+    MovedOpaque         bool          // management-frame delta: ZERO renewal authority
+                                      // (telemetry; quiet arms on first evidence; #2042)
     Exists              bool          // false = dead-evidence → fast reclaim
     EventsAfterNudge    bool          // ordinal; valid only when NudgeMarkKnown
     NudgeMarkKnown      bool          // THIS source holds the sentinel's mark —

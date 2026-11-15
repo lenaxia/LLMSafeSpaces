@@ -81,8 +81,20 @@ type AssigneeObservation struct {
 	// dead-evidence).
 	Observed bool
 	// MovedSinceLastSweep: renewal evidence (delta since the source's
-	// previous answer for this session).
+	// previous answer for this session). After the #2040 movement
+	// allowlist this is WORKER-ACTIVITY delta only (message/part
+	// activity) — management frames (settles, reseeds, lease-state
+	// transitions, input materializations, errors) never assert it.
 	MovedSinceLastSweep bool
+	// MovedOpaque: the source observed a NON-worker-activity delta for
+	// this session (the opaque class). It carries ZERO renewal
+	// authority engine-side — quiet arms arm on the FIRST settle-only
+	// evidence (a settle is never worker evidence; #2042 round-1
+	// review). It is telemetry, not renewal input: the engine ignores
+	// it for renewal. Unknown future frame types are opaque — never
+	// invisible; their only cost is one wrongful nudge a healthy
+	// worker answers.
+	MovedOpaque bool
 	// Exists: false = the session provably does not exist. Only
 	// meaningful when Observed.
 	Exists bool
