@@ -132,10 +132,15 @@ DESIGN CHANGE, not a patch:
   `TestIntegrationLeaseLiveness_OrdinalLegIsWorkerActivityOnly`);
   restored → green. Command: the three-pin `-run` filter above, mutant
   armed via the one-line `return true` early-return.
-- **F5 (depose-guard-opaque-divergence-doc, advisory)** — `deposeShowsLife`'s
-  mirror-the-ladder comment is stale for the opaque class. **Fixed**: a
-  comment stating the deliberate exclusion (mirroring would recreate the
-  salvage lockout).
+- **F5 (depose-guard-opaque-divergence-doc, advisory)** — RESOLUTION
+  CORRECTED in round 2 (the first record claimed "fixed in-tree" for an
+  edit that never landed — the python insertion no-op'd and the commit
+  message asserted an edit that does not exist; exactly the
+  claim-vs-tree drift this lane polices). Under zero authority the
+  concern EVAPORATED: `deposeShowsLife` consults exactly the ladder's
+  renewal set (worker movement / busy≤cap / post-sentinel reaction), so
+  its mirror-the-ladder contract comment is consistent again — no
+  comment needed, no edit made. The reviewer's own analysis agrees.
 
 **AC amendments recorded on #2042** (owner-delegated decisions, 2026-11-15):
 AC1 satisfied literally; R2 superseded — the strict bound on opaque
@@ -144,6 +149,28 @@ future activity types — buys a 3-window slot hold at the price of the
 mutual-re-arm class; one wrongful nudge a healthy worker answers is the
 cheap direction); AC6's cap mutation is moot (no cap) and replaced by the
 recorded allowlist mutation above.
+
+## Round-2 adversarial review (verdict: request-changes) — findings and resolutions
+
+All five round-1 findings verified FIXED by the reviewer (it re-ran the
+recorded allowlist mutation live on this tree). Three new findings — all
+record-layer completeness, zero engine changes:
+
+- **phantom-opaque-migration-shipped** — the four 000055 files still
+  existed at HEAD: the working-tree `rm` was never staged (`git rm`),
+  so the commit shipped a column with zero consumers under operator
+  notes denying a schema change. **Fixed: the deletions are now staged
+  and committed** — main's migration set is restored and the records
+  are true. The reviewer's suggested schema-vs-code grep pin is filed
+  as its own follow-up (see the issue link in this PR's description).
+- **zero-authority-records-stale** — the redesign was half-recorded:
+  design-doc loop prose, the seam comment, the hub comment, the
+  CHANGELOG telemetry source list and the PR body still described the
+  capped intermediate. **Fixed**: every site now states zero renewal
+  authority (a settle is never worker evidence; quiet arms arm on the
+  first settle-only evidence).
+- **f5-fix-claim-unsubstantiated** — see the corrected F5 record above;
+  the issue-thread correction is posted alongside this push.
 
 ## Verdicts
 

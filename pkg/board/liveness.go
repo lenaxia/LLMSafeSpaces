@@ -87,11 +87,13 @@ type AssigneeObservation struct {
 	// transitions, input materializations, errors) never assert it.
 	MovedSinceLastSweep bool
 	// MovedOpaque: the source observed a NON-worker-activity delta for
-	// this session (the opaque class). It carries BOUNDED renewal
-	// authority engine-side (boardOpaqueRenewCap per claim epoch, then
-	// the quiet arms); a healthy worker never relies on it. Unknown
-	// future frame types are opaque — bounded renewals plus a visible
-	// counter, never invisible and never unbounded.
+	// this session (the opaque class). It carries ZERO renewal
+	// authority engine-side — quiet arms arm on the FIRST settle-only
+	// evidence (a settle is never worker evidence; #2042 round-1
+	// review). It is telemetry, not renewal input: the engine ignores
+	// it for renewal. Unknown future frame types are opaque — never
+	// invisible; their only cost is one wrongful nudge a healthy
+	// worker answers.
 	MovedOpaque bool
 	// Exists: false = the session provably does not exist. Only
 	// meaningful when Observed.

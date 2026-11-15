@@ -23,9 +23,9 @@ were themselves among the eaten rows — the board cannot land its own rescue.
    WORKER-ACTIVITY since the last sweep (delta, never wall-clock recency; #2040 amendment:
    message/part activity only — management frames (session-state settles, reseeds, lease-state
    transitions, input materializations, errors, unknown types) are the OPAQUE class and carry
-   BOUNDED renewal authority: at `boardOpaqueRenewCap` consecutive opaque-only renewals the row
-   falls to the quiet arms as if unmoved — a settle after a sentinel is not an answer, and
-   opaque-true-forever cannot hold the lease). Nudge state clears.
+   ZERO renewal authority: the row takes the quiet arms (nudge → verdict) on the FIRST
+   settle-only evidence — a settle after a sentinel is not an answer, and settle-true-forever
+   cannot hold the lease). Nudge state clears.
 2. **Lease expiry, no movement → NUDGE.** One sentinel nudge; the row records a single nullable
    `nudge_id` — overwritten on each nudge, nothing older tracked. The nudge requires the worker to
    RESPOND via `board_heartbeat` FIRST (the response channel — item 6 amendment below), then

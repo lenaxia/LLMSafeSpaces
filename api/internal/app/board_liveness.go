@@ -111,9 +111,10 @@ type boardLivenessHub struct {
 	// domain for every ordinal comparison). framesWorker holds
 	// worker-activity stamps (MESSAGE_*/PART_* — renewal evidence);
 	// framesOpaque holds every other class's stamps (management
-	// publishes, unknown types) — bounded renewal authority engine-side,
-	// never invisible, never uncounted (#2040 incident: synthesized
-	// settles stamped movement for silent sessions).
+	// publishes, unknown types) — ZERO renewal authority engine-side
+	// (quiet arms arm on the first settle-only evidence; #2042 round-1
+	// review), never invisible, never uncounted (#2040 incident:
+	// synthesized settles stamped movement for silent sessions).
 	framesWorker map[string]uint64
 	framesOpaque map[string]uint64
 	// nudges holds the send-mark per nudge id: the frame stamp at send
@@ -427,9 +428,10 @@ func (h *boardLivenessHub) ObserveAssignees(sweepCtx context.Context, sess board
 
 		// The frame stamps: per class, whichever identity key moved
 		// latest. Worker-activity delta is renewal evidence; opaque
-		// delta is reported separately (bounded renewal authority
-		// engine-side) — the 2026-11-15 incident rode a settle stamped
-		// as movement for a session that had emitted nothing.
+		// delta is telemetry with zero renewal authority (quiet arms
+		// arm on first settle-only evidence) — the 2026-11-15 incident
+		// rode a settle stamped as movement for a session that had
+		// emitted nothing.
 		stamp := h.framesWorker[row.rawID]
 		if p := h.framesWorker[row.phrase]; p > stamp {
 			stamp = p
