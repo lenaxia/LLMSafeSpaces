@@ -2,7 +2,7 @@
 
 **Date:** 2026-11-13
 **Session:** tsk-sober-oxbow-indicates (owner ask 2026-11-13; epic "Frontend reliability mopup")
-**Status:** MERGE-READY — AI reviewer APPROVED the code head e0a800563 (round 4, 2026-11-14 00:46Z; rounds 1-3 remediated); round 5 (docs-only head) requested record corrections alone — test counts reconciled to the tree-verified 38 and the Blockers line updated here, origin/main catch-up merged, gates re-run green (2686/2686; sole red remains the pre-existing govulncheck Go-stdlib advisory set in untouched Go files, adjudicated diff-independent by every review round). Never self-merge — the orchestrator merges.
+**Status:** MERGE-READY — AI reviewer APPROVED the code head e0a800563 (round 4, 2026-11-14 00:46Z; rounds 1-3 remediated); round 5 (docs-only head) requested record corrections alone — test counts reconciled to the tree-verified 38 and the Blockers line updated here (landed in 0d245e91d after r6 caught the r5 claim landing without its hunk); origin/main catch-ups merged after rounds 5 and 6, gates re-run green (2714/2714; security scan green — main's Go toolchain bump cleared the govulncheck advisories). Never self-merge — the orchestrator merges.
 
 ---
 
@@ -84,7 +84,7 @@ r2's blocking finding ruled RESOLVED (born-RED pin verified), but the reviewer p
 
 ## Verification
 
-- `vitest run` full frontend suite: **2686/2686 green (235 files)** at the final head (origin/main catch-up merged after review round 5 — main's own new suites moved the total past the round-4-verified 2643/233). This PR's five new suites contribute **38 tests** (tree-verified: 33 at first push + 5 review-round pins).
+- `vitest run` full frontend suite: **2714/2714 green (236 files)** at the final head (origin/main catch-ups merged after review rounds 5 and 6 — main's own new suites moved the total past the round-4-verified 2643/233, then past the first catch-up's 2686/235). This PR's five new suites contribute **38 tests** (tree-verified: 33 at first push + 5 review-round pins).
 - `tsc --noEmit` clean; `eslint src/` 0 errors (warnings all pre-existing in generated `src/abi/*_pb.ts` — none in touched files); `make fmt-check` green; `make repolint` green.
 - Isolated worktree `/tmp/opencode/drafts-wt` (branch `feat/session-drafts` off `origin/main` @ d5a638fae); `node_modules` symlinked from the shared checkout.
 
