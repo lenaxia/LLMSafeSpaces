@@ -56,6 +56,12 @@ func reconcilerFor(t *testing.T, objs ...runtime.Object) *WorkspaceReconciler {
 	r.OpencodeImage = testOpencodeImage
 	r.OpencodeBinarySHA256AMD64 = testOpencodeSHAAMD64
 	r.OpencodeBinarySHA256ARM64 = testOpencodeSHAARM64
+	// Design 0053 §5.4: the pi overlay joins the mandatory pin set —
+	// the default test reconciler stays a fully-pinned production
+	// reconciler (three artifacts).
+	r.PiImage = testPiImage
+	r.PiBinarySHA256AMD64 = testPiSHAAMD64
+	r.PiBinarySHA256ARM64 = testPiSHAARM64
 	return r
 }
 

@@ -279,7 +279,7 @@ func TestDBInit_RequiresSuperuserSecretName(t *testing.T) {
 	require.NoError(t, writeFile(valuesPath,
 		"dbInit:\n  enabled: true\n  superuserSecret:\n    name: \"\"\n"+
 			"controller:\n  agentdDelivery:\n    image: ghcr.io/lenaxia/llmsafespaces/agentd@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\n"+
-			"  opencodeDelivery:\n    image: ghcr.io/lenaxia/llmsafespaces/opencode@sha256:fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210\n"))
+			"  opencodeDelivery:\n    image: ghcr.io/lenaxia/llmsafespaces/opencode@sha256:fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210\n"+"  piDelivery:\n    image: ghcr.io/lenaxia/llmsafespaces/pi@sha256:9999999999999999999999999999999999999999999999999999999999999999\n"))
 	out, err := helmTemplateRaw(t, valuesPath)
 	require.Error(t, err,
 		"helm template must fail when dbInit.enabled=true but superuserSecret.name is empty")

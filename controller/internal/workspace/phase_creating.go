@@ -293,6 +293,17 @@ func (r *WorkspaceReconciler) handleCreating(ctx context.Context, workspace *v1.
 		return ctrl.Result{RequeueAfter: opencodeVerifyFailureRequeue}, nil
 	}
 
+	// Second-harness pi overlay: same first-boot/resume rationale; exit
+	// 85/86 fires before the container is ever Ready and is disjoint
+	// from agentd's 81/82 and opencode's 83/84.
+	if r.detectPiVerificationFailure(ctx, workspace, existingPod) {
+		if err := r.Status().Update(ctx, workspace); err != nil {
+			recordStatusUpdateConflictOnError("handleCreating_pi_verify", err)
+			return ctrl.Result{}, err
+		}
+		return ctrl.Result{RequeueAfter: piVerifyFailureRequeue}, nil
+	}
+
 	// Design 0051 sidecar migration step 1: platform boot-phase failure
 	// visibility. A crash-looping platform container (init-fs/bootstrap/
 	// materialize/sidecar boot) never becomes Ready — surface the reason
