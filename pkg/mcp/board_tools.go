@@ -110,14 +110,17 @@ var boardReadTool = mcp.NewTool("board_read",
 	mcp.WithString("q", mcp.Description("Search query (short id exact or title substring)")),
 	mcp.WithArray("tags", mcp.WithStringItems(), mcp.Description("Search filter: stories carrying ALL of these tags")),
 	mcp.WithString("epic_id", mcp.Description("Search filter: narrow to one epic (epc-…, phrase or legacy form)")),
-	mcp.WithBoolean("health", mcp.Description("Render the board health snapshot (leases, cooldowns, reclaims, pending origins)")),
+	mcp.WithBoolean("health", mcp.Description("Render the board health snapshot (leases, cooldowns, reclaims, pending origins, and the observation plane's recent audit window — observation_events)")),
 	mcp.WithReadOnlyHintAnnotation(true),
 )
 
 var boardHealthTool = mcp.NewTool("board_health",
 	mcp.WithDescription("The board health snapshot (design 0067 §4.8): active leases with expiry, recent "+
 		"reclaims, story and project-slot cooldowns, pending_input counts by origin, per-project worker "+
-		"slots in use. The same projection board_read?health=true renders."),
+		"slots in use, and the observation plane's recent audit window (observation_events: stamped/nudged/"+
+		"renewed/lapse_verdict/reclaimed/deposed with their detail — lag, rung, source, evidence, reason, "+
+		"salvage — newest first, retention self-documented in observation_retention). The same projection "+
+		"board_read?health=true renders."),
 	mcp.WithReadOnlyHintAnnotation(true),
 )
 
@@ -362,7 +365,7 @@ var boardDeposeStoryTool = mcp.NewTool("board_depose_story",
 		"A backlog row takes the pointer alone (the reclaim already ran). GUARDS: a live healthy claim refuses (409 claim_live — "+
 		"unexpired lease, or life evidence on the expired one: movement/mid-turn busy/post-sentinel reaction/post-nudge heartbeat); "+
 		"done/failed/in_review rows refuse; every deposition is audit-logged (action 'depose')"),
-	mcp.WithString("story_id", mcp.Required(), mcp.Description("Story short id, phrase form (tsk-crimson-finch-blooms; legacy tsk-XXXXXXXX still resolves, deprecated)")),
+	mcp.WithString("story_id", mcp.Required(), mcp.Description("Story short id (tsk-…, phrase or legacy form)")),
 	mcp.WithString("branch", mcp.Description("The pushed branch name the deposed attempt left behind")),
 	mcp.WithString("pr", mcp.Description("The open pull request's number or URL")),
 	mcp.WithString("head", mcp.Description("The last known commit SHA on the branch")),
@@ -574,7 +577,12 @@ var boardStoryToolAliases = map[string]string{
 	"board_rearm_task":    "board_rearm_story",
 	"board_pause_task":    "board_pause_story",
 	"board_resume_task":   "board_resume_story",
-	"board_depose_task":   "board_depose_story",
+	// The orchestrator's 2026-11-02 ruling (b): board_depose_task
+	// SHIPPED to main task-prefixed via #2006 (b1a00ef67) while this
+	// lane had already renamed it story-first — the alias window
+	// exists precisely for shipped names, so the shipped spelling
+	// resolves as a deprecated alias instead of forking the naming.
+	"board_depose_task": "board_depose_story",
 }
 
 // storyDeprecationMiddleware is the notice carrier for the alias
@@ -1520,7 +1528,10 @@ func boardStoryAliasRegistrations(srv *server.MCPServer, h *handlers) {
 		"board_rearm_story":    {boardRearmStoryTool, h.boardRearmStory},
 		"board_pause_story":    {boardPauseStoryTool, h.boardPauseStory},
 		"board_resume_story":   {boardResumeStoryTool, h.boardResumeStory},
-		"board_depose_story":   {boardDeposeStoryTool, h.boardDeposeStory},
+		// Ruling (b)'s shipped-name alias: the canonical depose tool is
+		// story-first on this lane; the task-prefixed spelling that
+		// main shipped via #2006 resolves through the window.
+		"board_depose_story": {boardDeposeStoryTool, h.boardDeposeStory},
 	}
 	for _, pair := range sortedStoryAliases() {
 		reg, ok := canonical[pair.canonical]

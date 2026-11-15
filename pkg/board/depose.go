@@ -110,8 +110,11 @@ func (s *Service) DeposeTask(ctx context.Context, actor Actor, taskID, shortIDOr
 
 	// deposedSession carries the pre-write assignee out of the
 	// transaction for the post-commit DEPOSED directive (the UPDATE
-	// nulls the row's copy); failureCountAfter feeds the lease event.
-	var deposedSession string
+	// nulls the row's copy); failureCountAfter feeds the lease event;
+	// fromStage carries the ROW-LOCKED stage the deposition acted on
+	// (the resolve's t.Stage can go stale in the resolve→tx window —
+	// the trail row must agree with the ledger's own payload).
+	var deposedSession, fromStage string
 	var requeued bool
 	var failureCountAfter int32
 
@@ -123,6 +126,7 @@ func (s *Service) DeposeTask(ctx context.Context, actor Actor, taskID, shortIDOr
 			return nil, err
 		}
 		deposedSession = cur.AssigneeSession
+		fromStage = cur.Stage
 		switch cur.Stage {
 		case StageDone:
 			return nil, &GuardError{Code: GuardDone, Detail: "done is immutable — nothing to depose"}
@@ -216,7 +220,22 @@ func (s *Service) DeposeTask(ctx context.Context, actor Actor, taskID, shortIDOr
 	if err != nil {
 		return nil, err
 	}
-	_ = dup
+	// S7: the deposition lands on the observation trail (post-commit,
+	// fail-open — recordObservation's contract). A replayed requestId
+	// (dup) skips the row: the original run already recorded it, and a
+	// replay is not a second deposition. The salvage pointer rides the
+	// detail — the trail's row is the pointer WITH its context (which
+	// session, from which row-locked stage, requeued or pointer-alone).
+	// The requeued arm additionally records reclaimed{reason: deposed}
+	// via main's r6 emitLease above — two true facts of one action.
+	if dup == nil {
+		s.recordObservation(ctx, ObservationEvent{
+			Kind: ObservationDeposed, TaskID: t.ID, Session: deposedSession,
+			Detail: map[string]any{
+				"salvage": ptr, "from_stage": fromStage, "requeued": requeued,
+			},
+		})
+	}
 	if requeued {
 		// S4/S5: the depose IS a reclaim the observation plane reports
 		// (which claim went away and why — the invisible-lapse class

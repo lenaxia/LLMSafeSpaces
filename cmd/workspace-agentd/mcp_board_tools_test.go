@@ -472,6 +472,11 @@ func TestMCPBoard_ManagerWireContract(t *testing.T) {
 		assert.JSONEq(t, `"ses-1"`, string(wire["sessionId"]), "the injected session identity (audit attribution)")
 	})
 
+	// Review r4's missing pin 1 lives with its family:
+	// TestBoardStoryAlias_DeposeCanonicalKey (board_story_alias_test.go)
+	// drives the canonical storyId key over the tools/call path — the
+	// mcpAutomation helper bypasses the handler's key normalization.
+
 	t.Run("board_delete_epic wire (force query)", func(t *testing.T) {
 		api, rec := newAutomationAPI(t, 200, `{"item_kind":"epic"}`)
 		setupRenameWorkspaceEnv(t, api)

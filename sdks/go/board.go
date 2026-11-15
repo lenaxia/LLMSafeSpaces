@@ -627,14 +627,37 @@ type BoardHealthProjectSlots struct {
 	InUse       int    `json:"in_use"`
 }
 
+// BoardHealthObservation is one recent observation-plane action on the
+// health snapshot (S7 — the audit trail's recent window): what the
+// platform DID to this story (stamped/nudged/renewed/lapse_verdict/
+// reclaimed/deposed), when, to whom.
+type BoardHealthObservation struct {
+	TaskID            string                 `json:"task_id"`
+	ShortID           string                 `json:"short_id"`
+	Kind              string                 `json:"kind"`
+	Session           string                 `json:"session,omitempty"`
+	SessionDeprecated bool                   `json:"session_deprecated,omitempty"`
+	Detail            map[string]interface{} `json:"detail,omitempty"`
+	At                string                 `json:"at"`
+}
+
+// BoardHealthObservationRetention self-documents the observation
+// window's retention boundary on every read.
+type BoardHealthObservationRetention struct {
+	PerTaskEvents int    `json:"per_task_events"`
+	TTL           string `json:"ttl"`
+}
+
 // BoardHealth is the §4.8 health panel snapshot.
 type BoardHealth struct {
-	ActiveLeases         []BoardHealthLease           `json:"active_leases"`
-	TaskCooldowns        []BoardHealthTaskCooldown    `json:"task_cooldowns"`
-	ProjectCooldowns     []BoardHealthProjectCooldown `json:"project_cooldowns"`
-	PendingInputByOrigin map[string]int               `json:"pending_input_by_origin"`
-	RecentReclaims       []BoardHealthReclaim         `json:"recent_reclaims"`
-	ProjectSlots         []BoardHealthProjectSlots    `json:"project_slots"`
+	ActiveLeases         []BoardHealthLease              `json:"active_leases"`
+	TaskCooldowns        []BoardHealthTaskCooldown       `json:"task_cooldowns"`
+	ProjectCooldowns     []BoardHealthProjectCooldown    `json:"project_cooldowns"`
+	PendingInputByOrigin map[string]int                  `json:"pending_input_by_origin"`
+	RecentReclaims       []BoardHealthReclaim            `json:"recent_reclaims"`
+	ProjectSlots         []BoardHealthProjectSlots       `json:"project_slots"`
+	ObservationEvents    []BoardHealthObservation        `json:"observation_events"`
+	ObservationRetention BoardHealthObservationRetention `json:"observation_retention"`
 }
 
 // GetBoardHealth renders the caller's board health snapshot.

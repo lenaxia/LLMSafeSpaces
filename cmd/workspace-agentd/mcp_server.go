@@ -165,7 +165,7 @@ func boardManagerTools() []mcpTool {
 		{
 			Name:        "board_health",
 			Annotations: annot(true, false, false),
-			Description: "The WORKSPACE's board health snapshot (#1837 P2a): active leases with expiry and assignee, story and project-slot cooldowns, pending_input counts by origin, recent reclaims, and per-project worker slots in use — one call over every board this workspace's projects carry. Use it to answer 'what is in flight, what is stuck, what cools down' before scheduling decisions. Workspace-scoped; open to any in-workspace session (the manager-grant gate is repealed, ruling 2026-10-27, tsk-copper-refectory-generates).",
+			Description: "The WORKSPACE's board health snapshot (#1837 P2a): active leases with expiry and assignee, story and project-slot cooldowns, pending_input counts by origin, recent reclaims, per-project worker slots in use, and the observation plane's recent audit window (observation_events: stamped/nudged/renewed/lapse_verdict/reclaimed/deposed with their detail — lag, rung, source, evidence, reason, salvage — newest first, retention self-documented in observation_retention) — one call over every board this workspace's projects carry. Use it to answer 'what is in flight, what is stuck, what cools down' before scheduling decisions. Workspace-scoped; open to any in-workspace session (the manager-grant gate is repealed, ruling 2026-10-27, tsk-copper-refectory-generates).",
 			InputSchema: map[string]any{"type": "object", "properties": map[string]any{}},
 		},
 		{
@@ -345,7 +345,7 @@ func boardManagerTools() []mcpTool {
 		},
 		{
 			Name:        "board_depose_story",
-			Description: "Depose a LAPSED claim on a story (the REST wire term is 'task'; S5, the DEPOSED directive — 2026-10-30 incident remediation): record the salvage pointer — branch, PR number, last known state — on the row so the NEXT claim's charter embeds it automatically (inherit, don't restart; no more hand-written salvage notes). An in_progress lapsed claim is requeued exactly as the reclaim would (failure overlay + backoff cooldown) and the stale session receives a DEPOSED directive (stop working; your token is revoked); a backlog row takes the pointer alone (the reclaim already ran). GUARDS: a live healthy claim refuses (409 claim_live — an unexpired lease, or life evidence on the expired one: movement, mid-turn busy under the ladder's cap, post-sentinel reaction, or a post-nudge heartbeat); done/failed/in_review rows refuse; every deposition is audit-logged (action 'depose', payload = the pointer). At least one of branch/pr/head/state/note is required. Open to any in-workspace session (the manager-grant gate is repealed, ruling 2026-10-27).",
+			Description: "Depose a LAPSED claim on a story (the REST wire term is 'task'; S5, the DEPOSED directive — 2026-10-30 incident remediation): record the salvage pointer — branch, PR number, last known state — on the row so the NEXT claim's charter embeds it automatically (inherit, don't restart; no more hand-written salvage notes). An in_progress lapsed claim is requeued exactly as the reclaim would (failure overlay + backoff cooldown) and the stale session receives a DEPOSED directive (stop working; your token is revoked); a backlog row takes the pointer alone (the reclaim already ran). GUARDS: a live healthy claim refuses (409 claim_live — an unexpired lease, or life evidence on the expired one: movement, mid-turn busy, post-sentinel reaction, or a post-nudge heartbeat); done/failed/in_review rows refuse; every deposition is audit-logged (action 'depose', payload = the pointer). At least one of branch/pr/head/state/note is required. Open to any in-workspace session (the manager-grant gate is repealed, ruling 2026-10-27).",
 			InputSchema: map[string]any{"type": "object", "properties": map[string]any{
 				"storyId": map[string]any{"type": "string", "description": "Story short id (phrase form tsk-crimson-finch-blooms, legacy tsk-XXXXXXXX forms still resolve, or UUID)"},
 				"branch":  map[string]any{"type": "string", "description": "The pushed branch name the deposed attempt left behind"},
@@ -354,7 +354,7 @@ func boardManagerTools() []mcpTool {
 				"state":   map[string]any{"type": "string", "description": "Last known state, free text: what was done, what gates ran, what remains"},
 				"note":    map[string]any{"type": "string", "description": "Guidance for the inheriting worker (verify-first, what to build on)"},
 				"requestId": map[string]any{"type": "string",
-					"description": "Optional idempotency key: reuse ONE id per logical operation across retries"},
+					"description": "Optional idempotency key: reuse ONE per logical operation across retries"},
 			}, "required": []string{"storyId"}},
 		},
 		{

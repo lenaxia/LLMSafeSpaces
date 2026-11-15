@@ -1860,3 +1860,57 @@ func TestEmitShortOnlyRawBody_MalformedJSONPassesThrough(t *testing.T) {
 	got := emitShortOnlyRawBody(raw)
 	assert.Equal(t, string(raw), got, "malformed bodies return byte-identical")
 }
+
+// Review r4's missing pin 2 (the catch-up round): every registry
+// InputSchema must be internally consistent — each `required` entry
+// names a key the same schema declares in `properties`. The catch-up's
+// rename resolution left board_depose_story advertising
+// required:["taskId"] against a storyId property (invisible to every
+// behavior suite: the hand-rolled dispatcher never validates against
+// the schema — a spec-following client is the injured party). This
+// table test makes the advertised contract drift-visible on its own.
+func TestRegistryInputSchema_RequiredKeysAreDeclared(t *testing.T) {
+	// requiredKeys reads `required` under BOTH spellings: Go-literal
+	// map schemas carry []string, JSON-decoded RawMessage ones []any.
+	requiredKeys := func(v any) []string {
+		switch r := v.(type) {
+		case []string:
+			return r
+		case []any:
+			out := make([]string, 0, len(r))
+			for _, k := range r {
+				s, _ := k.(string)
+				if s != "" {
+					out = append(out, s)
+				}
+			}
+			return out
+		}
+		return nil
+	}
+	decode := func(schema any) (map[string]any, []string) {
+		switch s := schema.(type) {
+		case map[string]any:
+			props, _ := s["properties"].(map[string]any)
+			return props, requiredKeys(s["required"])
+		case json.RawMessage:
+			var decoded struct {
+				Properties map[string]any `json:"properties"`
+				Required   []string       `json:"required"`
+			}
+			if json.Unmarshal(s, &decoded) != nil {
+				return nil, nil
+			}
+			return decoded.Properties, decoded.Required
+		}
+		return nil, nil
+	}
+	for _, tool := range mcpToolCatalog() {
+		props, required := decode(tool.InputSchema)
+		for _, k := range required {
+			if _, ok := props[k]; !ok {
+				t.Errorf("%s: required key %q is not declared in properties — the advertised schema is self-contradictory (a spec-following client would refuse the canonical call)", tool.Name, k)
+			}
+		}
+	}
+}
