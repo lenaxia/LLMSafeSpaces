@@ -69,6 +69,20 @@ type opsMetrics struct {
 	// window is the drain doing its job's remainder; sustained growth
 	// outside deploy windows points at a flaky provider path.
 	turnResumes *prometheus.CounterVec
+	// admissionFailures counts #2045 message-ADMISSION failures: a
+	// POST /session/:id/message that died awaiting response headers
+	// (client timeout / context deadline — the prompt-path wedge's wire
+	// signature). Fast provider 4xx refusals and slow-body (successful)
+	// admissions never tick it. Three on one session inside 10 minutes
+	// is a wedge suspect.
+	admissionFailures *prometheus.CounterVec
+	// wedgeSuspects counts #2045 wedge-suspect declarations (per session
+	// per 10-minute window, from either detector: the admission canary's
+	// 3-strike ring or the turn-resume supervisor's repeated-failure
+	// escalation). Growth with suppressed restarts every ~30 minutes
+	// means a wedge that SURVIVES restarts — the operator note in
+	// README-LLM's runbook.
+	wedgeSuspects *prometheus.CounterVec
 }
 
 // pkgOpsMetrics is the package-level singleton. Tests create their own
@@ -80,12 +94,12 @@ func newOpsMetrics() *opsMetrics {
 	return &opsMetrics{
 		restartsTotal: promauto.NewCounterVec(prometheus.CounterOpts{
 			Name: "workspace_restarts_total",
-			Help: "Total opencode restarts by reason (env_secrets, api_key, credential_reload, crash, oom, user_requested, health_watchdog, health_watchdog_unknown_episode, relay_injector)",
+			Help: "Total opencode restarts by reason (env_secrets, api_key, credential_reload, crash, oom, user_requested, health_watchdog, health_watchdog_unknown_episode, relay_injector, prompt_path_wedge)",
 		}, []string{"workspace_id", "reason"}),
 
 		restartsSuppressed: promauto.NewCounterVec(prometheus.CounterOpts{
 			Name: "workspace_restarts_suppressed_total",
-			Help: "Restart requests withheld by the supervisor's credential_reload rev gate (served revision already spawned); recorded by the sidecar from the control-socket outcome",
+			Help: "Restart requests withheld: the supervisor's credential_reload rev gate (served revision already spawned; recorded by the sidecar from the control-socket outcome) and the prompt_path_wedge storm guard (#2045: at most one fired wedge restart per 30 minutes per workspace)",
 		}, []string{"workspace_id", "reason"}),
 
 		trackerBusyResets: promauto.NewCounterVec(prometheus.CounterOpts{
@@ -163,6 +177,14 @@ func newOpsMetrics() *opsMetrics {
 			Name: "workspace_agentd_turn_resumes_total",
 			Help: "Roll-classified turn auto-resumes (#1732): an assistant turn ended finish=unknown with no session.error (infra-loss wire shape) and the supervisor re-prompted the session once",
 		}, []string{"workspace_id"}),
+		admissionFailures: promauto.NewCounterVec(prometheus.CounterOpts{
+			Name: "agentd_message_admission_failures_total",
+			Help: "Message-admission failures (#2045): POST /session/:id/message died awaiting response headers (client timeout / context deadline — the prompt-path wedge wire shape); fast 4xx refusals and slow-body successes never count",
+		}, []string{"workspace_id"}),
+		wedgeSuspects: promauto.NewCounterVec(prometheus.CounterOpts{
+			Name: "agentd_session_wedge_suspects_total",
+			Help: "Prompt-path wedge-suspect declarations (#2045): ≥3 admission failures on one session in 10 minutes (the canary ring) or a repeated admission-timeout resume failure (turn-resume R4); deduped per session per window",
+		}, []string{"workspace_id"}),
 	}
 }
 
@@ -172,6 +194,24 @@ func (m *opsMetrics) RecordTurnResume(workspaceID string) {
 		workspaceID = "unknown"
 	}
 	m.turnResumes.WithLabelValues(workspaceID).Add(1)
+}
+
+// RecordMessageAdmissionFailure counts one classified message-admission
+// failure (#2045 R3).
+func (m *opsMetrics) RecordMessageAdmissionFailure(workspaceID string) {
+	if workspaceID == "" {
+		workspaceID = "unknown"
+	}
+	m.admissionFailures.WithLabelValues(workspaceID).Inc()
+}
+
+// RecordSessionWedgeSuspect counts one wedge-suspect declaration
+// (#2045 R3; callers dedupe per session per window).
+func (m *opsMetrics) RecordSessionWedgeSuspect(workspaceID string) {
+	if workspaceID == "" {
+		workspaceID = "unknown"
+	}
+	m.wedgeSuspects.WithLabelValues(workspaceID).Inc()
 }
 
 // RecordTrackerBusyReset adds n healed sessions to the busy-reset
@@ -297,6 +337,16 @@ func (m *opsMetrics) restartCounter(workspaceID, reason string) prometheus.Count
 
 func (m *opsMetrics) restartSuppressedCounter(workspaceID, reason string) prometheus.Counter {
 	return m.restartsSuppressed.WithLabelValues(workspaceID, reason)
+}
+
+// admissionFailuresCounter and wedgeSuspectsCounter expose the #2045
+// counters for tests (same testutil.ToFloat64 contract).
+func (m *opsMetrics) admissionFailuresCounter(workspaceID string) prometheus.Counter {
+	return m.admissionFailures.WithLabelValues(workspaceID)
+}
+
+func (m *opsMetrics) wedgeSuspectsCounter(workspaceID string) prometheus.Counter {
+	return m.wedgeSuspects.WithLabelValues(workspaceID)
 }
 
 // SetMemoryUsage sets the current memory usage gauge.

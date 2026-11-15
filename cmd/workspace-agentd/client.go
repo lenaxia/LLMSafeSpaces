@@ -59,6 +59,14 @@ func (c *OpenCodeClient) ResumeTurn(ctx context.Context, sessionID, text string)
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := c.client.Do(req)
 	if err != nil {
+		// #2045: an await-headers timeout (client whole-request timeout
+		// or ctx deadline) is the prompt-path wedge's wire signature —
+		// classified so the admission canary can count it per session.
+		// Fast 4xx refusals and slow-BODY timeouts never classify (Do
+		// returned; the drain below ignores body errors).
+		if classified := classifyAdmission(sessionID, err); classified != nil {
+			return classified
+		}
 		return err
 	}
 	defer func() { _ = resp.Body.Close() }()

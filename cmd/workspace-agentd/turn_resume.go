@@ -68,6 +68,13 @@ type turnResumeSupervisor struct {
 	// prompt executes the resume. Nil disables the supervisor (bare
 	// tracker behavior — pre-#1732 constructions).
 	prompt turnResumePrompter
+	// watch is the #2045 prompt-path admission canary. Timeout-class
+	// resume failures feed it (strike ring + restart escalation), and
+	// a REPEATED failure within ResumeCooldown escalates the give-up
+	// log to ERROR with wedge_suspect=true plus the suspects counter
+	// (R4 — the incident's six silent WARNs). Defaults to the
+	// process-wide pkgAdmissionWatch; injectable for tests.
+	watch *admissionWatch
 	// now is the clock seam (tests).
 	now func() time.Time
 
@@ -86,11 +93,22 @@ type turnResumeSession struct {
 	// budget ledger.
 	lastResumeAt time.Time
 	resumes      []time.Time
+	// admissionFailures is the #2045 R4 ledger: timeout-class
+	// resume-prompt failures, pruned to ResumeCooldown. The second
+	// failure inside the window is the wedge-suspect escalation.
+	admissionFailures []time.Time
 }
 
 func newTurnResumeSupervisor(prompt turnResumePrompter) *turnResumeSupervisor {
+	return newTurnResumeSupervisorWithWatch(prompt, pkgAdmissionWatch)
+}
+
+// newTurnResumeSupervisorWithWatch is the test seam for an isolated
+// canary (the production constructions share pkgAdmissionWatch).
+func newTurnResumeSupervisorWithWatch(prompt turnResumePrompter, watch *admissionWatch) *turnResumeSupervisor {
 	return &turnResumeSupervisor{
 		prompt: prompt,
+		watch:  watch,
 		now:    time.Now,
 		state:  map[string]*turnResumeSession{},
 	}
@@ -189,15 +207,51 @@ func (s *turnResumeSupervisor) eligibleLocked(st *turnResumeSession, now time.Ti
 // ledger is stamped ONLY on a successful prompt, so a wedged harness
 // (prompt refused) stays eligible and the next interrupted turn retries
 // within the same bounds.
+//
+// #2045 R4: a timeout-class failure additionally feeds the admission
+// canary (strike ring), and the SECOND such failure inside
+// ResumeCooldown escalates this give-up to ERROR with
+// wedge_suspect=true and increments the suspects counter — the
+// incident's signature (six silent WARNs for the wedged session over
+// ~15 minutes, nothing escalated) can no longer disappear into WARN.
+// Non-timeout failures never declare a suspect (R5).
 func (s *turnResumeSupervisor) resume(sessionID string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	if err := s.prompt.ResumeTurn(ctx, sessionID, TurnResumeText); err != nil {
+		if classified := classifyAdmission(sessionID, err); classified != nil {
+			s.watch.record(classified)
+			if s.noteAdmissionFailure(sessionID, s.now()) {
+				log.Error("turn auto-resume prompt failed repeatedly — session wedge-suspect (admission timeouts inside the cooldown window)",
+					zap.String("sessionID", sessionID),
+					zap.Bool("wedge_suspect", true),
+					zap.Error(err))
+				s.watch.noteSuspect(sessionID)
+				return
+			}
+		}
 		log.Warn("turn auto-resume prompt failed (roll-classified loss; bounded retry on the next interrupted turn)",
 			zap.String("sessionID", sessionID), zap.Error(err))
 		return
 	}
 	s.noteTurnResume(sessionID)
+}
+
+// noteAdmissionFailure records one timeout-class resume failure in the
+// R4 ledger and reports whether this failure is the ≥2nd inside
+// ResumeCooldown (the escalation trigger).
+func (s *turnResumeSupervisor) noteAdmissionFailure(sessionID string, now time.Time) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	st := s.stateFor(sessionID)
+	kept := st.admissionFailures[:0]
+	for _, at := range st.admissionFailures {
+		if now.Sub(at) < ResumeCooldown {
+			kept = append(kept, at)
+		}
+	}
+	st.admissionFailures = append(kept, now)
+	return len(st.admissionFailures) >= 2
 }
 
 // noteTurnResume records a fired resume (the ledger the eligibility

@@ -73,6 +73,17 @@ const (
 	// member of the control socket's closed reason enum (control_
 	// socket.go), so supervisor- and agentd-side attributions agree.
 	RestartReasonRelayInjector = "relay_injector"
+
+	// RestartReasonPromptPathWedge (#2045) is recorded when the
+	// prompt-path admission canary declares a wedge suspect (≥3
+	// message-admission timeouts on one session in 10 minutes) and
+	// requests a supervised restart through the same session-aware
+	// decision path — the recovery empirically validated against the
+	// Nov 13-15 2026 incident (opencode HTTP-healthy, one session's
+	// prompt pipeline dead). The same string is a member of the control
+	// socket's closed reason enum (control_socket.go); the restart
+	// log's reason additionally carries the offending session id(s).
+	RestartReasonPromptPathWedge = "prompt_path_wedge"
 )
 
 // restartReason is the on-disk JSON shape of the restart-reason marker.

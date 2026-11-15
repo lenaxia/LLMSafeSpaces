@@ -2028,6 +2028,13 @@ func mcpSendMessage(ctx context.Context, password, sessionID, message, injectedS
 		if _, err := client.SessionSend(context.WithoutCancel(ctx), sessionID, composed, "", nil); err != nil {
 			logger.Warn("send_message: background delivery failed",
 				zap.String("sessionID", sessionID), zap.Error(err))
+			// #2045: an await-headers timeout on the admission POST is
+			// the wedge's wire signature — feed the canary (fast 4xx
+			// refusals and slow-body successes never classify, so the
+			// unclassified pass-through is the R5 exclusion).
+			if classified := classifyAdmission(sessionID, err); classified != nil {
+				pkgAdmissionWatch.record(classified)
+			}
 		}
 	}()
 
