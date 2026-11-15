@@ -32,7 +32,7 @@ session do ANYTHING", which conflates platform bookkeeping with worker progress.
   worker-frame-ever stays unknown.
 - `boardLiveCursor` carries both stamps; `pruneLocked` covers both maps.
 
-**Engine half — the bounded authority** (`pkg/board/reconciler.go`,
+**Engine half — zero authority** (`pkg/board/reconciler.go`, [the bounded-intermediate text below is the ROUND-1-REJECTED design — superseded, see the round-1 section]:
 `engine.go`, `stage.go`, `rearm.go`, `lease_events.go`, `ladder_metrics.go`):
 - New rung after the strong-renewal arm: `MovedOpaque && opaqueRenews < boardOpaqueRenewCap`
   (3) → renew (`RenewSourceOpaque = "opaque_movement"`, counter increments);

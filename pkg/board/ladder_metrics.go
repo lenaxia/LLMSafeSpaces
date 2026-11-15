@@ -42,3 +42,11 @@ var (
 		Help: "Board ladder ordinal wedge verdicts (sentinel positioned, worker-activity silence after it).",
 	})
 )
+
+// LeaseRenewals exposes the renewal counter (by source) for tests and
+// dashboards — the StampWriteFailures accessor pattern: the counters are
+// package-private; this is the read handle the increment pins assert
+// deltas through (#2042 AC5).
+func LeaseRenewals() *prometheus.CounterVec   { return leaseRenewalsBySource }
+func LadderNudgesCounter() prometheus.Counter { return ladderNudges }
+func LadderWedgesCounter() prometheus.Counter { return ladderWedges }

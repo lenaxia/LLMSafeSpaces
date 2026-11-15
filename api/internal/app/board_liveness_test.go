@@ -651,7 +651,9 @@ func TestIntegrationLeaseLiveness_ProductionWiring_ToolStartFrameRenews(t *testi
 // worker-activity frames (MESSAGE_*/PART_*) are renewal evidence; every
 // other class (session-status settles, reseed publications, lease-state
 // transitions, input materializations, error runs — and any unknown future
-// type) stamps the OPAQUE index, whose renewal authority the engine caps.
+// type) stamps the OPAQUE index, which carries ZERO renewal authority —
+// the engine's quiet arms arm on the first settle-only evidence (round-1
+// review).
 
 func TestLeaseLivenessHub_ManagementEventsAreNotWorkerMovement(t *testing.T) {
 	hub := newBoardLivenessHub(nil)
@@ -672,7 +674,7 @@ func TestLeaseLivenessHub_ManagementEventsAreNotWorkerMovement(t *testing.T) {
 	hub.mu.Unlock()
 	assert.False(t, settleWorkerRaw, "a management settle must not stamp the worker index (raw key)")
 	assert.False(t, settleWorkerPhrase, "a management settle must not stamp the worker index (phrase key)")
-	assert.Positive(t, settleOpaqueRaw, "the opaque index holds the settle (bounded renewal authority)")
+	assert.Positive(t, settleOpaqueRaw, "the opaque index holds the settle (zero renewal authority — telemetry)")
 	assert.Positive(t, settleOpaquePhrase, "the opaque index holds the settle (both identity keys)")
 
 	// Error runs and input materializations are opaque, never worker evidence.
@@ -683,7 +685,8 @@ func TestLeaseLivenessHub_ManagementEventsAreNotWorkerMovement(t *testing.T) {
 	hub.mu.Unlock()
 	assert.False(t, errWorker, "error runs are evidence-neutral for movement")
 
-	// Unknown future types are opaque (bounded), never invisible and never worker.
+	// Unknown future types are opaque (never invisible, never worker
+// evidence — their only cost is one wrongful nudge a healthy worker answers).
 	hub.ObserveFrame("ws", &abiv1.Event{Type: abiv1.EventType_EVENT_TYPE_SESSION_UPDATED, InternalSessionId: "ses_settle"})
 	hub.mu.Lock()
 	unknownOpaque := hub.framesOpaque["ses_settle"]
@@ -727,7 +730,7 @@ func TestIntegrationLeaseLiveness_ManagementFramesDoNotRenew(t *testing.T) {
 	})
 	res := hub.ObserveAssignees(context.Background(), board.SessionObservations{Refs: []board.AssigneeRef{{SessionID: "ses_quiet2"}}})
 	assert.False(t, res["ses_quiet2"].MovedSinceLastSweep, "a synthesized settle is NOT renewal evidence (the incident's poisoning leg)")
-	assert.True(t, res["ses_quiet2"].MovedOpaque, "the settle stamps the opaque class (bounded renewal authority)")
+	assert.True(t, res["ses_quiet2"].MovedOpaque, "the settle stamps the opaque class (zero renewal authority — quiet arms arm on it)")
 
 	// Worker activity still renews.
 	hub.ObserveFrame("ws-lease-allowlist", &abiv1.Event{

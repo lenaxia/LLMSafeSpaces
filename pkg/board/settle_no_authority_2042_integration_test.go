@@ -16,6 +16,9 @@
 package board_test
 
 import (
+	"github.com/prometheus/client_golang/prometheus/testutil"
+	"github.com/stretchr/testify/assert"
+
 	"github.com/lenaxia/llmsafespaces/pkg/board"
 )
 
@@ -107,4 +110,45 @@ func (s *BoardSuite) TestPin_2042C_WorkerMovementStillRenews() {
 	s.Equal(board.StageInProgress, row.Stage, "worker movement renews")
 	s.leaseFuture(task.ID)
 	s.Equal(0, nudger.count())
+}
+
+// PIN 2042-D (AC5, the reviewer's increment shape): the always-on ladder
+// telemetry is load-bearing — a deleted Inc() or a corrupted source label
+// must go red. Deltas asserted on the existing fixtures (the
+// StampWriteFailures precedent): 2042-C's sweep renews +1 with
+// source=movement; 2042-A's sweep nudges +1 and renews +0 (the
+// settle's zero-authority signature, visible in one scrape).
+func (s *BoardSuite) TestPin_2042D_TelemetryCountersIncrement() {
+	ws := s.seedWorkspace()
+	p := s.seedProject(ws, 4)
+	e := s.seedEpic(p, board.EpicActive)
+	task := s.seedTask(e, "telemetry-deltas", nil, false)
+
+	c := s.claimOrFail(ws)
+	nudgesBefore := testutil.ToFloat64(board.LadderNudgesCounter())
+	movementBefore := testutil.ToFloat64(board.LeaseRenewals().WithLabelValues("movement"))
+	opaqueBefore := testutil.ToFloat64(board.LeaseRenewals().WithLabelValues("opaque_movement"))
+
+	// Leg 1 — worker movement: renewal +1 labeled movement, no nudge.
+	lives := &fakeLiveness{}
+	lives.set(c.Task.AssigneeSession, board.AssigneeObservation{
+		Observed: true, Exists: true, MovedSinceLastSweep: true,
+	})
+	recon := s.pinRecon(lives, (&fakeNudger{}).Send)
+	s.expireLease(task.ID)
+	s.rc1Sweep(recon)
+	assert.Equal(s.T(), movementBefore+1, testutil.ToFloat64(board.LeaseRenewals().WithLabelValues("movement")),
+		"a worker-movement renewal counts under source=movement")
+
+	// Leg 2 — the incident shape: settle-only evidence nudges (renewals
+	// of every label stay flat — the zero-authority signature).
+	lives.set(c.Task.AssigneeSession, opaqueOnly())
+	s.expireLease(task.ID)
+	s.rc1Sweep(recon)
+	s.Greater(testutil.ToFloat64(board.LadderNudgesCounter()), nudgesBefore,
+		"a settle-only sweep arms a sentinel (nudges counter moves)")
+	s.Equal(movementBefore+1, testutil.ToFloat64(board.LeaseRenewals().WithLabelValues("movement")),
+		"no renewal source may count a settle-only sweep")
+	s.Equal(opaqueBefore, testutil.ToFloat64(board.LeaseRenewals().WithLabelValues("opaque_movement")),
+		"opaque_movement is not a renewal source (removed with the capped intermediate)")
 }
