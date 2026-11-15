@@ -15,7 +15,7 @@ implementation charters from the findings.
 
 ## Seam verification (all anchors checked against main at de99d5361)
 
-- Epic auto-complete: `epicCompletionCheck` pkg/board/store.go:449-465; five call sites
+- Epic auto-complete: `epicCompletionCheck` pkg/board/store.go:449-463; five call sites
   (stage.go:516 doneCascade, review.go:141, service.go:866 epicLifecycle, reconciler.go:1308
   drift-done, reconciler.go:1517 rc4Net) — confirmed SINGLE seam, one-function
   interception design.
