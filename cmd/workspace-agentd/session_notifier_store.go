@@ -5,8 +5,12 @@ package main
 
 // session_notifier_store.go — session idle-subscriptions v1, §4.1: the
 // durable subscription registry. Three persisted document classes in
-// ONE JSON file at /sandbox-runtime/session-subscriptions.json (the
-// session-shortids replica's storage class):
+// ONE JSON file at /platform/session-subscriptions.json (the platform/
+// PVC subPath — sessionstate.DefaultPlatformDir, the seq cursor's
+// storage class; owner ruling 2026-11-14: the registry must share the
+// PVC durability envelope of the sessions the edges reference — the
+// old /sandbox-runtime emptyDir died with the pod and took every edge
+// with it):
 //
 //   - rows:    SubscriptionRow edges, canonical-id keyed (phrase input
 //     is resolved at the MCP boundary; §7.8 tolerates the cold-replica
@@ -37,12 +41,24 @@ import (
 	"path/filepath"
 	"sync"
 	"time"
+
+	"github.com/lenaxia/llmsafespaces/cmd/workspace-agentd/sessionstate"
 )
 
-// defaultSessionSubscriptionsPath is the memory-backed registry file
-// (same emptyDir class as the shortids replica; survives agentd
-// restarts, dies with the pod — re-subscription is the recovery).
-const defaultSessionSubscriptionsPath = "/sandbox-runtime/session-subscriptions.json"
+// defaultSessionSubscriptionsPath is the PVC-backed registry file
+// (sessionstate.DefaultPlatformDir — the platform/ subPath mount, the
+// same durability envelope as the durable seq cursor: survives agentd
+// restarts AND pod recreation/suspend-resume).
+const defaultSessionSubscriptionsPath = sessionstate.DefaultPlatformDir + "/session-subscriptions.json"
+
+// legacySessionSubscriptionsPath is the pre-PVC registry file (the
+// /sandbox-runtime emptyDir — memory-backed, wiped on every pod
+// recreation). Read EXACTLY ONCE at boot when the PVC file is absent
+// (owner ruling 2026-11-14): the loaded document is adopted into the
+// new location so in-flight upgrades don't drop edges; the legacy copy
+// stays in place, readable, and is never consulted again once the new
+// file exists.
+const legacySessionSubscriptionsPath = "/sandbox-runtime/session-subscriptions.json"
 
 // maxSubscribersPerBroadcaster is the §4.1 registration cap (default
 // 32): the storm backstop. The exclusions and the cycle refusal are
@@ -73,6 +89,17 @@ type SubscriptionRow struct {
 	Subscriber  string    `json:"subscriber"`
 	Events      []string  `json:"events"`
 	CreatedAt   time.Time `json:"created_at"`
+	// LastDeliveredSettle is the per-edge delivered-watermark (owner
+	// ruling 2026-11-14, the in-flight-at-kill window): the stamp of
+	// the broadcaster's latest settle this edge has PROCESSED —
+	// delivered, suppressed, or skipped (all final outcomes). A boot
+	// where the broadcaster's latch carries a newer settle stamp than
+	// this watermark reconciles exactly one missed notification (the
+	// settle fired, the debounce/outbox never delivered it — a hard
+	// kill inside the debounce window). A fresh edge initializes to
+	// the broadcaster's current settle stamp: pre-subscription settles
+	// are not this edge's to deliver.
+	LastDeliveredSettle time.Time `json:"last_delivered_settle,omitempty"`
 }
 
 // sessionLatch is the §4.2 per-broadcaster latch. SawBusy is the
@@ -80,9 +107,16 @@ type SubscriptionRow struct {
 // projection after reseed/restart must not read as a settle), while a
 // busy we observed — in this generation OR persisted across a restart
 // — settles. LastDerivedBusy is the busy edge the latch last saw.
+// LastSettleAt/LastSettleKind stamp the latest observed settle edge
+// (the durable comparison side of the per-edge delivered-watermark —
+// stamped BEFORE the debounce is armed, so a hard kill inside the
+// debounce window leaves a latch stamp newer than every edge
+// watermark, which the boot reconciliation resolves).
 type sessionLatch struct {
-	LastDerivedBusy bool `json:"last_derived_busy"`
-	SawBusy         bool `json:"saw_busy"`
+	LastDerivedBusy bool      `json:"last_derived_busy"`
+	SawBusy         bool      `json:"saw_busy"`
+	LastSettleAt    time.Time `json:"last_settle_at,omitempty"`
+	LastSettleKind  string    `json:"last_settle_kind,omitempty"`
 }
 
 // pendingNotification is one outbox intent (ruling 4, option A): the
@@ -120,17 +154,44 @@ type sessionSubscriptionStore struct {
 // store. An empty path selects the production default (task 4's main
 // wiring); an absent, unparseable, or crash-torn file boots empty: the
 // atomic-or-absent contract means the only readable states are
-// complete ones.
+// complete ones. When the default path is absent but the LEGACY
+// /sandbox-runtime document exists, the legacy document is adopted
+// (loaded and persisted to the new location) exactly once — the
+// in-flight-upgrade migration (owner ruling 2026-11-14).
 func newSessionSubscriptionStore(path string) *sessionSubscriptionStore {
 	if path == "" {
 		path = defaultSessionSubscriptionsPath
 	}
+	legacy := ""
+	if path == defaultSessionSubscriptionsPath {
+		legacy = legacySessionSubscriptionsPath
+	}
+	return newSessionSubscriptionStoreWithLegacy(path, legacy)
+}
+
+// newSessionSubscriptionStoreWithLegacy is the constructor body: loads
+// (best-effort) and returns the store. An absent, unparseable, or
+// crash-torn file boots empty: the atomic-or-absent contract means the
+// only readable states are complete ones. When the primary path is
+// absent but the legacy document exists, the legacy document is
+// adopted (loaded and persisted to the new location) exactly once —
+// the in-flight-upgrade migration (owner ruling 2026-11-14). The
+// legacy path is only ever passed for the production default;
+// explicit test paths never migrate.
+func newSessionSubscriptionStoreWithLegacy(path, legacyPath string) *sessionSubscriptionStore {
+	if path == "" {
+		path = defaultSessionSubscriptionsPath
+	}
+	// The PVC dir exists by boot (platform-init / platform-dirs, the
+	// seq cursor's openSeqCursor precedent); best-effort ensure keeps
+	// the first persist from ENOENT on a dev box or a staging chart.
+	_ = os.MkdirAll(filepath.Dir(path), 0o750)
 	s := &sessionSubscriptionStore{
 		path:    path,
 		latches: map[string]*sessionLatch{},
 	}
-	raw, err := os.ReadFile(path)
-	if err != nil {
+	raw, adopted := readSubscriptionDocument(path, legacyPath)
+	if raw == nil {
 		return s
 	}
 	var f subscriptionFile
@@ -149,7 +210,33 @@ func newSessionSubscriptionStore(path string) *sessionSubscriptionStore {
 		}
 	}
 	s.outbox = f.Outbox
+	if adopted {
+		// One-time adoption: write the loaded document to the new
+		// location so the legacy file is never consulted again.
+		_ = s.persistLocked()
+	}
 	return s
+}
+
+// readSubscriptionDocument resolves the registry bytes: the file at
+// path, falling back to legacyPath exactly once when path is absent
+// (the pre-PVC upgrade window). Reports the bytes (nil when nothing
+// readable) and whether they were adopted from the legacy location.
+// The legacy path is only ever consulted by callers passing it — the
+// production default; explicit test paths never migrate.
+func readSubscriptionDocument(path, legacyPath string) ([]byte, bool) {
+	raw, err := os.ReadFile(path)
+	if err == nil {
+		return raw, false
+	}
+	if !os.IsNotExist(err) || legacyPath == "" {
+		return nil, false
+	}
+	legacy, lerr := os.ReadFile(legacyPath)
+	if lerr != nil {
+		return nil, false
+	}
+	return legacy, true
 }
 
 // validateSubscriptionEvents normalizes the requested event set: an
@@ -193,9 +280,40 @@ func (s *sessionSubscriptionStore) subscribe(broadcaster, subscriber string, eve
 		}
 	}
 	row := &SubscriptionRow{Broadcaster: broadcaster, Subscriber: subscriber, Events: events, CreatedAt: now}
+	// A fresh edge starts current: pre-subscription settles are not
+	// this edge's to deliver, so the delivered-watermark initializes to
+	// the broadcaster's latest settle stamp (the boot reconciliation
+	// must not wake a subscriber for idleness that predates it).
+	if l := s.latches[broadcaster]; l != nil {
+		row.LastDeliveredSettle = l.LastSettleAt
+	}
 	s.edges = append(s.edges, row)
 	_ = s.persistLocked()
 	return row
+}
+
+// advanceSettleWatermarksForKind forward-advances the delivered-
+// watermark of every broadcaster edge whose event set matches kind to
+// stamp. Called when a settle of that kind has been PROCESSED for the
+// broadcaster — delivered, suppressed, or subscriber-side-skipped, all
+// final outcomes — so a later boot never reconciles a settle the live
+// path already dispositioned. Forward-only; a zero stamp is a no-op.
+func (s *sessionSubscriptionStore) advanceSettleWatermarksForKind(broadcaster, kind string, stamp time.Time) {
+	if s == nil || stamp.IsZero() {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	changed := false
+	for _, row := range s.edges {
+		if row.Broadcaster == broadcaster && subscriptionEventMatches(row.Events, kind) && stamp.After(row.LastDeliveredSettle) {
+			row.LastDeliveredSettle = stamp
+			changed = true
+		}
+	}
+	if changed {
+		_ = s.persistLocked()
+	}
 }
 
 // unsubscribe removes one edge; reports whether a row was removed
