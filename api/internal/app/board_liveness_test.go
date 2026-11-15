@@ -640,3 +640,137 @@ func TestIntegrationLeaseLiveness_ProductionWiring_ToolStartFrameRenews(t *testi
 		require.NotNil(t, token)
 	}
 }
+
+// --- #2040 pins: the movement allowlist (two-class evidence) ------------------
+//
+// The 2026-11-15 incident: agentd's session-state settle published a
+// synthesized SESSION_STATUS event for sessions that had emitted nothing,
+// the hub stamped it as movement, and the ladder's renewal arm outran the
+// wedge ladder indefinitely — three halted workers held their slots for
+// hours on evidence they never produced. The contract fix: only
+// worker-activity frames (MESSAGE_*/PART_*) are renewal evidence; every
+// other class (session-status settles, reseed publications, lease-state
+// transitions, input materializations, error runs — and any unknown future
+// type) stamps the OPAQUE index, whose renewal authority the engine caps.
+
+func TestLeaseLivenessHub_ManagementEventsAreNotWorkerMovement(t *testing.T) {
+	hub := newBoardLivenessHub(nil)
+
+	// A synthesized settle — the incident shape.
+	hub.ObserveFrame("ws", &abiv1.Event{
+		Type:              abiv1.EventType_EVENT_TYPE_SESSION_STATUS,
+		Status:            abiv1.SessionStatus_SESSION_STATUS_IDLE,
+		InternalSessionId: "ses_settle",
+		SessionId:         "settle-phrase",
+	})
+
+	hub.mu.Lock()
+	_, settleWorkerRaw := hub.framesWorker["ses_settle"]
+	_, settleWorkerPhrase := hub.framesWorker["settle-phrase"]
+	settleOpaqueRaw := hub.framesOpaque["ses_settle"]
+	settleOpaquePhrase := hub.framesOpaque["settle-phrase"]
+	hub.mu.Unlock()
+	assert.False(t, settleWorkerRaw, "a management settle must not stamp the worker index (raw key)")
+	assert.False(t, settleWorkerPhrase, "a management settle must not stamp the worker index (phrase key)")
+	assert.Positive(t, settleOpaqueRaw, "the opaque index holds the settle (bounded renewal authority)")
+	assert.Positive(t, settleOpaquePhrase, "the opaque index holds the settle (both identity keys)")
+
+	// Error runs and input materializations are opaque, never worker evidence.
+	hub.ObserveFrame("ws", &abiv1.Event{Type: abiv1.EventType_EVENT_TYPE_ERROR, InternalSessionId: "ses_settle"})
+	hub.ObserveFrame("ws", &abiv1.Event{Type: abiv1.EventType_EVENT_TYPE_INPUT_RESOLVED, InternalSessionId: "ses_settle"})
+	hub.mu.Lock()
+	_, errWorker := hub.framesWorker["ses_settle"]
+	hub.mu.Unlock()
+	assert.False(t, errWorker, "error runs are evidence-neutral for movement")
+
+	// Unknown future types are opaque (bounded), never invisible and never worker.
+	hub.ObserveFrame("ws", &abiv1.Event{Type: abiv1.EventType_EVENT_TYPE_SESSION_UPDATED, InternalSessionId: "ses_settle"})
+	hub.mu.Lock()
+	unknownOpaque := hub.framesOpaque["ses_settle"]
+	_, unknownWorker := hub.framesWorker["ses_settle"]
+	hub.mu.Unlock()
+	assert.Positive(t, unknownOpaque)
+	assert.False(t, unknownWorker)
+
+	// Worker activity stamps the worker index under both identity keys.
+	hub.ObserveFrame("ws", &abiv1.Event{
+		Type:              abiv1.EventType_EVENT_TYPE_PART_DELTA,
+		InternalSessionId: "ses_settle",
+		SessionId:         "settle-phrase",
+	})
+	hub.mu.Lock()
+	workerRaw := hub.framesWorker["ses_settle"]
+	workerPhrase := hub.framesWorker["settle-phrase"]
+	hub.mu.Unlock()
+	assert.Positive(t, workerRaw, "PART_DELTA is worker movement evidence")
+	assert.Positive(t, workerPhrase, "both identity keys stamp")
+}
+
+// TestIntegrationLeaseLiveness_ManagementFramesDoNotRenew pins the
+// observation-plane half of the incident fix: a synthesized settle is not
+// renewal evidence, but worker activity still is.
+func TestIntegrationLeaseLiveness_ManagementFramesDoNotRenew(t *testing.T) {
+	pool := livenessPool(t)
+	_, err := pool.Exec(context.Background(), `DELETE FROM session_index WHERE workspace_id = 'ws-lease-allowlist'`)
+	require.NoError(t, err)
+
+	hub := newBoardLivenessHub(pool)
+	seedLivenessSession(t, pool, "ws-lease-allowlist", "ses_quiet2", "quiet2-teapot-verifies", 2, false)
+	// Baseline the cursor.
+	_ = hub.ObserveAssignees(context.Background(), board.SessionObservations{Refs: []board.AssigneeRef{{SessionID: "ses_quiet2"}}})
+
+	// The incident shape: a settle for a session that emitted nothing.
+	hub.ObserveFrame("ws-lease-allowlist", &abiv1.Event{
+		Type:              abiv1.EventType_EVENT_TYPE_SESSION_STATUS,
+		Status:            abiv1.SessionStatus_SESSION_STATUS_IDLE,
+		InternalSessionId: "ses_quiet2",
+	})
+	res := hub.ObserveAssignees(context.Background(), board.SessionObservations{Refs: []board.AssigneeRef{{SessionID: "ses_quiet2"}}})
+	assert.False(t, res["ses_quiet2"].MovedSinceLastSweep, "a synthesized settle is NOT renewal evidence (the incident's poisoning leg)")
+	assert.True(t, res["ses_quiet2"].MovedOpaque, "the settle stamps the opaque class (bounded renewal authority)")
+
+	// Worker activity still renews.
+	hub.ObserveFrame("ws-lease-allowlist", &abiv1.Event{
+		Type:              abiv1.EventType_EVENT_TYPE_PART_END,
+		InternalSessionId: "ses_quiet2",
+	})
+	res = hub.ObserveAssignees(context.Background(), board.SessionObservations{Refs: []board.AssigneeRef{{SessionID: "ses_quiet2"}}})
+	assert.True(t, res["ses_quiet2"].MovedSinceLastSweep, "PART_END is renewal evidence")
+	assert.False(t, res["ses_quiet2"].MovedOpaque)
+}
+
+// TestIntegrationLeaseLiveness_OrdinalLegIsWorkerActivityOnly pins the
+// ordinal wedge question: post-sentinel REACTION is worker activity only.
+// A settle landing after the sentinel must not read as "the worker
+// answered" (the second poisoning leg).
+func TestIntegrationLeaseLiveness_OrdinalLegIsWorkerActivityOnly(t *testing.T) {
+	pool := livenessPool(t)
+	_, err := pool.Exec(context.Background(), `DELETE FROM session_index WHERE workspace_id = 'ws-lease-ordinal2'`)
+	require.NoError(t, err)
+
+	hub := newBoardLivenessHub(pool)
+	seedLivenessSession(t, pool, "ws-lease-ordinal2", "ses_ord", "ord-teapot-verifies", 2, false)
+	_ = hub.ObserveAssignees(context.Background(), board.SessionObservations{Refs: []board.AssigneeRef{{SessionID: "ses_ord"}}})
+	hub.markNudge(context.Background(), "nudge-allowlist-1", "ses_ord")
+
+	// A settle lands after the sentinel.
+	hub.ObserveFrame("ws-lease-ordinal2", &abiv1.Event{
+		Type:              abiv1.EventType_EVENT_TYPE_SESSION_STATUS,
+		Status:            abiv1.SessionStatus_SESSION_STATUS_IDLE,
+		InternalSessionId: "ses_ord",
+	})
+	res := hub.ObserveAssignees(context.Background(), board.SessionObservations{Refs: []board.AssigneeRef{
+		{SessionID: "ses_ord", NudgeID: "nudge-allowlist-1"},
+	}})
+	assert.False(t, res["ses_ord"].EventsAfterNudge, "a post-sentinel settle is not a reaction")
+
+	// A worker part lands after the sentinel.
+	hub.ObserveFrame("ws-lease-ordinal2", &abiv1.Event{
+		Type:              abiv1.EventType_EVENT_TYPE_PART_START,
+		InternalSessionId: "ses_ord",
+	})
+	res = hub.ObserveAssignees(context.Background(), board.SessionObservations{Refs: []board.AssigneeRef{
+		{SessionID: "ses_ord", NudgeID: "nudge-allowlist-1"},
+	}})
+	assert.True(t, res["ses_ord"].EventsAfterNudge, "post-sentinel worker activity is the reaction")
+}

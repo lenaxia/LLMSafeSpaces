@@ -1,0 +1,15 @@
+-- 000055_opaque_renews (issue #2042 — the #2040 incident's insurance cap)
+--
+-- The seamless-lease ladder's renewal arm (#2040, 2026-11-15 incident):
+-- opaque-class movement (management frames: session-state settles,
+-- reseed publications, lease-state transitions, input materializations,
+-- errors, unknown future types) carried UNBOUNDED renewal authority — a
+-- halt whose machinery kept settling its busy view held its slot
+-- forever. This column counts CONSECUTIVE opaque-only renewals in one
+-- claim epoch; at boardOpaqueRenewCap the ladder proceeds as if the
+-- movement were false (quiet arms: nudge, then verdict) — the same
+-- consecutive-only discipline as busy_renews (000053). Any
+-- worker-activity / heartbeat / reaction renewal resets it to 0;
+-- claims, re-queues, heartbeat responses and re-arm reset it with the
+-- rest of the epoch counters.
+ALTER TABLE tasks ADD COLUMN opaque_renews integer NOT NULL DEFAULT 0;

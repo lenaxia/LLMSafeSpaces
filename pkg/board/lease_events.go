@@ -49,6 +49,7 @@ const (
 	RenewSourceMovement  = "movement"            // observed delta since last sweep (frame stream / index)
 	RenewSourceReaction  = "post_nudge_reaction" // events landed after the sentinel
 	RenewSourceBusy      = "busy_gate"           // derived-busy: mid-turn, silent but alive (the 2026-10-29 busy-gate)
+	RenewSourceOpaque    = "opaque_movement"     // management-frame delta (#2042): BOUNDED authority — boardOpaqueRenewCap per claim epoch
 )
 
 // Reclaim reasons — WHY the claim was re-queued (LeaseEventReclaimed).

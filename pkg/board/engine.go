@@ -248,7 +248,7 @@ func (s *Service) TaskStart(ctx context.Context, actor Actor, taskID, shortIDOrI
 		UPDATE tasks t SET stage='in_progress', stage_entered_at=now(),
 			claim_token=gen_random_uuid(), assignee_session=NULL, implementer_session=NULL, claim_persona=NULL,
 			lease_expires_at=now()+make_interval(secs=>$2::float8),
-			last_progress_at=now(), attempts=attempts+1,
+			last_progress_at=now(), attempts=attempts+1, opaque_renews=0,
 			claim_incremented_attempts=true,
 			-- the claim mint RESETS the lease-episode slots: a prior
 			-- episode's nudge/heartbeat evidence must never inherit into
@@ -408,7 +408,7 @@ func (s *Service) claimOnce(ctx context.Context, workerID, workspaceID string) (
 		UPDATE tasks t SET stage='in_progress', stage_entered_at=now(),
 			claim_token=gen_random_uuid(), assignee_session=NULL, implementer_session=NULL, claim_persona=NULL,
 			lease_expires_at=now()+make_interval(secs=>$2::float8),
-			last_progress_at=now(), attempts=attempts+1,
+			last_progress_at=now(), attempts=attempts+1, opaque_renews=0,
 			claim_incremented_attempts=true,
 			-- the claim mint RESETS the lease-episode slots: a prior
 			-- episode's nudge/heartbeat evidence must never inherit into

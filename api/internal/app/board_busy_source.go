@@ -81,8 +81,13 @@ func (h *boardLivenessHub) BusyAssignees(ctx context.Context, refs []string) map
 		if !row.present || row.deleted {
 			continue // unknown here, or provably gone: quiet
 		}
-		stamp := h.frames[row.rawID]
-		if p := h.frames[row.phrase]; p > stamp {
+		// The distrust guard reads the WORKER index: the event that
+		// flips a session busy (a PART_START consult) is worker
+		// activity by the #2040 allowlist, so busy-with-no-worker-frame-
+		// ever stays unknown (an opaque-only stamp must not vouch for a
+		// busy leg it never produced).
+		stamp := h.framesWorker[row.rawID]
+		if p := h.framesWorker[row.phrase]; p > stamp {
 			stamp = p
 		}
 		if stamp == 0 {
