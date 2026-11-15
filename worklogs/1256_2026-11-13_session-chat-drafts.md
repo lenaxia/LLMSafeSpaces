@@ -2,7 +2,7 @@
 
 **Date:** 2026-11-13
 **Session:** tsk-sober-oxbow-indicates (owner ask 2026-11-13; epic "Frontend reliability mopup")
-**Status:** MERGE-READY — AI reviewer APPROVED 2026-11-14 00:46Z on head e0a800563 (round 4; rounds 1-3 remediated); CI green on the exact head (Frontend/Test/Lint/builds SUCCESS; the sole red is the pre-existing govulncheck Go-stdlib advisory set in untouched Go files, adjudicated diff-independent by every review round). Never self-merge — the orchestrator merges.
+**Status:** MERGE-READY — AI reviewer APPROVED the code head e0a800563 (round 4, 2026-11-14 00:46Z; rounds 1-3 remediated); round 5 (docs-only head) requested record corrections alone — test counts reconciled to the tree-verified 38 and the Blockers line updated here, origin/main catch-up merged, gates re-run green (2686/2686; sole red remains the pre-existing govulncheck Go-stdlib advisory set in untouched Go files, adjudicated diff-independent by every review round). Never self-merge — the orchestrator merges.
 
 ---
 
@@ -41,12 +41,12 @@ No session (`!workspaceId || !sessionId`) → plain useState, nothing persisted.
 - `Composer.tsx`: `useState("")` → `useSessionDraft(workspaceId, sessionId)` (one line + comment; both props already threaded by ChatPage/ChatView).
 - `SessionActivityProvider.tsx`: the three lifecycle insertions (deleted / archived / Terminating+Terminated).
 
-### 4. Pins (43 new tests, all green; the three behavior pins the charter named)
+### 4. Pins (38 new tests, all green — 33 at first push + 5 review-round pins; the three behavior pins the charter named)
 
-- `lib/sessionDrafts.test.ts` (12): roundtrip + per-workspace keying, reload survival, empty-save removal, clearSession/clearWorkspace, TTL expiry + bucket pruning + the throttled lazy sweep, oversize skip, corrupted-JSON degradation, quota never throws.
+- `lib/sessionDrafts.test.ts` (14): roundtrip + per-workspace keying, reload survival, empty-save removal, clearSession/clearWorkspace, TTL expiry + bucket pruning + the throttled lazy sweep, oversize skip, corrupted-JSON degradation, valid-JSON wrong-shape degradation (review r1), prototype-polluting key drops seeded as RAW JSON (review r2, re-seeded r3), quota never throws.
 - `hooks/useSessionDraft.test.tsx` (6): mount hydration, write-through/consume, switch-without-remount never cross-saves (session and workspace variants), unkeyed no-persist.
-- `components/chat/Composer.drafts.test.tsx` (5, real Composer): remount restores; send consumes (box AND store); per-session + per-workspace isolation; unmount persists.
-- `pages/ChatPage.drafts.test.tsx` (3, REAL ChatPage→ChatView→Composer over real route navigation): **PIN (a)** type→switch→switch-back→restored; **PIN (b)** send→consumed, store checked empty, switch-back empty; independent drafts both directions.
+- `components/chat/Composer.drafts.test.tsx` (7, real Composer): remount restores; send consumes (box AND store); per-session + per-workspace isolation; unmount persists; the review-r2 mid-browse-refetch pin; the review-r3 warm-cache-switch-mid-browse pin (both mutation-verified born-RED).
+- `pages/ChatPage.drafts.test.tsx` (4, REAL ChatPage→ChatView→Composer over real route navigation): **PIN (a)** type→switch→switch-back→restored; **PIN (b)** send→consumed, store checked empty, switch-back empty; independent drafts both directions; the review-r1 Up-recall-then-switch pin.
 - `providers/SessionActivityProvider.drafts.test.tsx` (7, real provider + captured event callback): **PIN (c)** deleted/archived clear the session draft; unarchive no-op; Terminated/Terminating clear the workspace subtree; Suspended KEEPS drafts; busy/idle never touches them.
 
 ### 4b. Test-harness interactions (the honest cost of a persistence feature)
@@ -84,7 +84,7 @@ r2's blocking finding ruled RESOLVED (born-RED pin verified), but the reviewer p
 
 ## Verification
 
-- `vitest run` full frontend suite: **2643/2643 green (233 files)** post-r3 (+48 new; 2638 at the first push, 2595 pre-change).
+- `vitest run` full frontend suite: **2686/2686 green (235 files)** at the final head (origin/main catch-up merged after review round 5 — main's own new suites moved the total past the round-4-verified 2643/233). This PR's five new suites contribute **38 tests** (tree-verified: 33 at first push + 5 review-round pins).
 - `tsc --noEmit` clean; `eslint src/` 0 errors (warnings all pre-existing in generated `src/abi/*_pb.ts` — none in touched files); `make fmt-check` green; `make repolint` green.
 - Isolated worktree `/tmp/opencode/drafts-wt` (branch `feat/session-drafts` off `origin/main` @ d5a638fae); `node_modules` symlinked from the shared checkout.
 
