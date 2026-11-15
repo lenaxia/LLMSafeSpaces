@@ -232,7 +232,9 @@ func (s *Service) DeposeTask(ctx context.Context, actor Actor, taskID, shortIDOr
 		// names the assignee, so the captured pre-write identity is the
 		// only address; a lost directive self-heals (the deposed
 		// worker's next token-carrying write 409s and it re-reads).
-		s.deliverDeposedDirective(ctx, deposedSession, t.ShortID)
+		// #2046: the audited seam — the delivery writes its "directive"
+		// event (task, session, outcome) like every cascade.
+		s.deliverDeposedDirective(ctx, p.ID, t.ID, t.ShortID, deposedSession)
 		// The requeued row is claimable now (subject to its cooldown):
 		// feed the dispatch drive.
 		s.pokeDrive(p.ID)
@@ -287,14 +289,16 @@ func (s *Service) deposeShowsLife(ctx context.Context, q Queryer, cur *Task) boo
 }
 
 // deliverDeposedDirective sends the DEPOSED directive to the deposed
-// session over the messenger seam (fire-and-forget, like
-// deliverToWorker — but address-direct: the row no longer carries the
-// assignee after the requeue).
-func (s *Service) deliverDeposedDirective(ctx context.Context, session, shortID string) {
+// session over the audited messenger seam (#2046 — the same
+// deliverDirective every cascade rides: structured, delivery-outcome
+// event, best-effort) — address-direct: the row no longer carries the
+// assignee after the requeue, so the captured pre-write identity is the
+// address.
+func (s *Service) deliverDeposedDirective(ctx context.Context, projectID, taskID, shortID, session string) {
 	if s.messenger == nil || session == "" {
 		return
 	}
-	_ = s.messenger(ctx, session, DirectiveDeposed, shortID)
+	s.deliverDirective(ctx, projectID, taskID, shortID, session, DirectiveDeposed)
 }
 
 // claimSalvage loads the row's salvage pointer for a claim's charter

@@ -44,6 +44,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/lenaxia/llmsafespaces/pkg/board"
 )
 
 // stubRealOpencode is the REAL-SEMANTICS opencode backend (#1959c): the
@@ -292,13 +294,15 @@ func TestBoardWorkerComms_PhraseResolution_DirectivesResolveToo(t *testing.T) {
 
 	messenger := newBoardMessenger((&stubScope{}).resolve, newBoardResolvingSender(adapter, registry.lookup))
 
-	require.NoError(t, messenger(context.Background(), implPhrase, "halt", phraseShort))
+	require.NoError(t, messenger(context.Background(), implPhrase,
+		board.Directive{Kind: board.DirectiveHalt, TaskShortID: phraseShort, AuditID: "dir-phrase-halt"}))
 	require.Eventually(t, func() bool {
 		posted, _, _, _ := stub.snapshot()
 		return len(posted) >= 1
 	}, 5*time.Second, 20*time.Millisecond, "the halt directive must be delivered")
 
-	require.NoError(t, messenger(context.Background(), implPhrase, "resume", phraseShort))
+	require.NoError(t, messenger(context.Background(), implPhrase,
+		board.Directive{Kind: board.DirectiveResume, TaskShortID: phraseShort, AuditID: "dir-phrase-resume"}))
 	require.Eventually(t, func() bool {
 		posted, _, _, _ := stub.snapshot()
 		return len(posted) >= 2
@@ -309,7 +313,9 @@ func TestBoardWorkerComms_PhraseResolution_DirectivesResolveToo(t *testing.T) {
 	assert.Equal(t, []string{implRaw, implRaw}, posted,
 		"every directive must be posted to the RAW id — the phrase never reaches the route")
 	require.Len(t, texts, 2)
+	assert.Contains(t, texts[0], "lsp:agent-message-v1", "#2046: the directive carries the sentinel")
 	assert.Contains(t, texts[0], "BOARD PAUSE DIRECTIVE")
+	assert.Contains(t, texts[1], "lsp:agent-message-v1")
 	assert.Contains(t, texts[1], "BOARD RESUME DIRECTIVE")
 }
 

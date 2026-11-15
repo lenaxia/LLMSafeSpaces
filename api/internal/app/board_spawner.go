@@ -104,6 +104,18 @@ func boardCharterPrompt(c *board.Claim) string {
 		b.WriteString("there is more work to do; otherwise move the task to in_review with evidence. The claim token\n")
 		b.WriteString("above authorizes your in-flight writes for this task only.\n")
 	}
+	// #2046 R5 — the directive contract (what halt/resume mean for an
+	// in-flight charter): turn-boundary control messages, never aborts.
+	// The sentinel (lsp:agent-message-v1, mode board-directive) makes
+	// them machine-detectable; the prose below is the whole worker-side
+	// obligation.
+	b.WriteString("\nBOARD DIRECTIVES (halt/resume): the orchestrator may pause or resume your task. A\n")
+	b.WriteString("BOARD PAUSE DIRECTIVE means: finish your current thought, then STOP and wait — your claim\n")
+	b.WriteString("and lease stay yours while paused, but forward stage-writes refuse (409 task_paused) until a\n")
+	b.WriteString("BOARD RESUME DIRECTIVE arrives; on resume, continue where you stopped (if your claim lapsed\n")
+	b.WriteString("while paused, your next write returns 409 claim_token — re-read the task with board_read).\n")
+	b.WriteString("A directive is a turn-boundary message, never an abort: never restart, never re-claim, never\n")
+	b.WriteString("treat it as a failure of your work.\n")
 	return b.String()
 }
 

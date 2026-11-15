@@ -25,6 +25,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"sync"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -169,49 +170,98 @@ func (s *Service) projectPause(ctx context.Context, actor Actor, projectID, shor
 	return out, nil
 }
 
-// --- directive delivery ---------------------------------------------------------
+// --- directive delivery (#2046 discipline) ---------------------------------------
+//
+// Every delivery is structured (Directive{Kind, TaskShortID, AuditID}),
+// audited (a "directive" board_event carrying the delivery outcome,
+// sentinel-keyed on task + audit id), and best-effort: a delivery
+// failure WARNs with task + session and lands in the event payload —
+// the pause/resume that triggered it NEVER fails (the flags are the
+// authority; a lost directive self-heals at lease lapse).
+
+// directiveDeliveryOutcomes.
+const (
+	directiveOutcomeDispatched = "dispatched"
+	directiveOutcomeFailed     = "failed"
+)
+
+// boardDirectiveDeliveryConcurrency bounds the cascade's parallel
+// messenger calls (the nudge sweep's semaphore pattern): a project-wide
+// pause must not serialize N fast-fail windows.
+const boardDirectiveDeliveryConcurrency = 8
 
 // deliverToWorker sends one directive to a task's live in-flight
-// session (halt/resume), if any — best-effort, never blocking the write.
-func (s *Service) deliverToWorker(ctx context.Context, t *Task, directive string) {
+// session (halt/resume), if any — best-effort, never blocking the write
+// beyond the messenger's fast-fail window.
+func (s *Service) deliverToWorker(ctx context.Context, t *Task, kind string) {
 	if s.messenger == nil {
 		return
 	}
 	if t.AssigneeSession == "" || t.Stage != StageInProgress {
 		return
 	}
-	_ = s.messenger(ctx, t.AssigneeSession, directive, t.ShortID)
+	s.deliverDirective(ctx, t.ProjectID, t.ID, t.ShortID, t.AssigneeSession, kind)
+}
+
+// deliverDirective delivers one structured directive and writes its
+// audit event. The messenger's return is the delivery outcome the event
+// records: nil = dispatched (a busy target queues server-side at its
+// turn boundary); an error = a failure observed inside the seam's
+// fast-fail window.
+func (s *Service) deliverDirective(ctx context.Context, projectID, taskID, shortID, session, kind string) {
+	d := Directive{Kind: kind, TaskShortID: shortID, AuditID: uuidNew()}
+	err := s.messenger(ctx, session, d)
+	outcome := directiveOutcomeDispatched
+	if err != nil {
+		outcome = directiveOutcomeFailed
+		slog.WarnContext(ctx, "board: worker directive delivery failed (flags stay authoritative; lease lapse heals)",
+			"directive", kind, "task", shortID, "session", session,
+			"auditId", d.AuditID, "error", err.Error())
+	}
+	s.recordDirectiveEvent(ctx, projectID, taskID, session, d, outcome, err)
 }
 
 // deliverToEpicWorkers cascades a directive to every in-flight worker
-// under an epic.
-func (s *Service) deliverToEpicWorkers(ctx context.Context, epicID, directive string) {
-	if s.messenger == nil {
-		return
-	}
-	for _, w := range s.inFlightUnder(ctx, `t.epic_id = $1`, epicID) {
-		_ = s.messenger(ctx, w.session, directive, w.shortID)
-	}
+// under an epic — one audit event per delivery, bounded concurrency.
+func (s *Service) deliverToEpicWorkers(ctx context.Context, epicID, kind string) {
+	s.cascadeDirective(ctx, `t.epic_id = $1`, epicID, kind)
 }
 
 // deliverToProjectWorkers cascades a directive to every in-flight
 // worker under a project.
-func (s *Service) deliverToProjectWorkers(ctx context.Context, projectID, directive string) {
+func (s *Service) deliverToProjectWorkers(ctx context.Context, projectID, kind string) {
+	s.cascadeDirective(ctx, `t.project_id = $1`, projectID, kind)
+}
+
+func (s *Service) cascadeDirective(ctx context.Context, predicate, id, kind string) {
 	if s.messenger == nil {
 		return
 	}
-	for _, w := range s.inFlightUnder(ctx, `t.project_id = $1`, projectID) {
-		_ = s.messenger(ctx, w.session, directive, w.shortID)
+	workers := s.inFlightUnder(ctx, predicate, id)
+	if len(workers) == 0 {
+		return
 	}
+	var wg sync.WaitGroup
+	sem := make(chan struct{}, boardDirectiveDeliveryConcurrency)
+	for _, w := range workers {
+		wg.Add(1)
+		go func(w inFlightWorker) {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+			s.deliverDirective(ctx, w.projectID, w.taskID, w.shortID, w.session, kind)
+		}(w)
+	}
+	wg.Wait()
 }
 
 type inFlightWorker struct {
-	session, shortID string
+	taskID, projectID, session, shortID string
 }
 
 func (s *Service) inFlightUnder(ctx context.Context, predicate, id string) []inFlightWorker {
 	rows, err := s.q().Query(ctx, fmt.Sprintf(`
-		SELECT assignee_session, short_id FROM tasks t
+		SELECT t.id::text, t.project_id::text, t.assignee_session, t.short_id FROM tasks t
 		WHERE %s AND t.stage='in_progress' AND t.assignee_session IS NOT NULL`, predicate), id)
 	if err != nil {
 		// r2 explicit-error fix: a DB blip must not silently disable the
@@ -225,7 +275,7 @@ func (s *Service) inFlightUnder(ctx context.Context, predicate, id string) []inF
 	var out []inFlightWorker
 	for rows.Next() {
 		var w inFlightWorker
-		if err := rows.Scan(&w.session, &w.shortID); err != nil {
+		if err := rows.Scan(&w.taskID, &w.projectID, &w.session, &w.shortID); err != nil {
 			slog.WarnContext(ctx, "board: in-flight worker census scan failed",
 				"error", err.Error())
 			return nil

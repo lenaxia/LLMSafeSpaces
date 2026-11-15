@@ -176,6 +176,14 @@ func (s *boardResolvingSender) ResolveSessionRef(ctx context.Context, workspaceI
 var (
 	boardV1FastFail       = 10 * time.Second
 	boardV1DeliveryBudget = 30 * time.Minute
+	// boardDirectiveFastFail bounds how long a DIRECTIVE delivery waits
+	// for a synchronous verdict (#2046): a dead/reaped session 4xx's in
+	// well under a second, so 3s gives a slow resolve headroom while
+	// keeping the pause/resume request responsive (the cascade fans out
+	// at bounded concurrency). A busy target queues the POST
+	// server-side — the window expiring returns nil ("dispatched"),
+	// never a failure on a timing artifact.
+	boardDirectiveFastFail = 3 * time.Second
 )
 
 // deliverBoardTextV1 delivers text to an existing session over the V1
@@ -253,17 +261,25 @@ func deliverBoardTextV1(ctx context.Context, sender boardV1Sender, what, userID,
 
 // haltDirectiveText / resumeDirectiveText / deposedDirectiveText render
 // the worker-facing directive messages (the charter envelope's voice).
-func haltDirectiveText(shortID string) string {
-	return fmt.Sprintf("BOARD PAUSE DIRECTIVE: your task %s has been PAUSED by the owner. "+
-		"Finish your current thought, then STOP and wait. Do not move the task's stage and do not "+
-		"start new work while paused (forward writes will be refused with 409 task_paused). "+
-		"A resume directive will follow when work continues.", shortID)
+// #2046: each carries the lsp:agent-message-v1 sentinel line with the
+// TYPED directive payload (mode board-directive, the kind, the task,
+// the audit id) — grammar-ignorant workers see plain prose; parsers get
+// the machine marker. The sentinel line itself is composed by the ONE
+// shared composer (agentMessageSentinelLine, board_liveness.go) that
+// leaseNudgeText also rides — single-owned message format.
+func haltDirectiveText(d board.Directive) string {
+	return agentMessageSentinelLine(boardDirectiveSentinel(d)) +
+		fmt.Sprintf("BOARD PAUSE DIRECTIVE: your task %s has been PAUSED by the owner. "+
+			"Finish your current thought, then STOP and wait. Do not move the task's stage and do not "+
+			"start new work while paused (forward writes will be refused with 409 task_paused). "+
+			"A resume directive will follow when work continues.", d.TaskShortID)
 }
 
-func resumeDirectiveText(shortID string) string {
-	return fmt.Sprintf("BOARD RESUME DIRECTIVE: your task %s was resumed — continue working. "+
-		"If your claim lapsed while paused, your next write returns 409 claim_token: re-read the "+
-		"task with board_read; the engine may already have spawned a fresh worker.", shortID)
+func resumeDirectiveText(d board.Directive) string {
+	return agentMessageSentinelLine(boardDirectiveSentinel(d)) +
+		fmt.Sprintf("BOARD RESUME DIRECTIVE: your task %s was resumed — continue working. "+
+			"If your claim lapsed while paused, your next write returns 409 claim_token: re-read the "+
+			"task with board_read; the engine may already have spawned a fresh worker.", d.TaskShortID)
 }
 
 // deposedDirectiveText is the S5 DEPOSED directive: the stale session's
@@ -272,12 +288,35 @@ func resumeDirectiveText(shortID string) string {
 // deposed worker's job is to STOP — its next token-carrying write 409s
 // (the row was requeued with the claim cleared); the pointer contents
 // live on the row for the inheritor, not here.
-func deposedDirectiveText(shortID string) string {
-	return fmt.Sprintf("BOARD DEPOSED DIRECTIVE: your lapsed claim on task %s was deposed by the "+
-		"orchestrator — a salvage pointer (branch/PR/last known state) was recorded on the row and "+
-		"the next claim's charter embeds it. STOP working on this task: the row was requeued and your "+
-		"claim token is revoked (your next write returns 409 claim_token). Do not re-claim it yourself; "+
-		"do not touch the branch further unless a fresh claim directs you to.", shortID)
+func deposedDirectiveText(d board.Directive) string {
+	return agentMessageSentinelLine(boardDirectiveSentinel(d)) +
+		fmt.Sprintf("BOARD DEPOSED DIRECTIVE: your lapsed claim on task %s was deposed by the "+
+			"orchestrator — a salvage pointer (branch/PR/last known state) was recorded on the row and "+
+			"the next claim's charter embeds it. STOP working on this task: the row was requeued and your "+
+			"claim token is revoked (your next write returns 409 claim_token). Do not re-claim it yourself; "+
+			"do not touch the branch further unless a fresh claim directs you to.", d.TaskShortID)
+}
+
+// directiveSentinel is the additive agentmessage-v1 payload a directive
+// message carries (the grammar's unknown-key forward-compatibility
+// makes this a legal v1 extension, exactly like the lease-nudge
+// sentinel — parsers that don't know the keys read plain prose).
+type directiveSentinel struct {
+	Mode      string `json:"mode"` // always "board-directive"
+	Directive string `json:"directive"`
+	TaskID    string `json:"taskId"`
+	AuditID   string `json:"auditId"`
+}
+
+// directiveMode is the sentinel payload's mode for every board directive.
+const directiveMode = "board-directive"
+
+// boardDirectiveSentinel builds the typed payload for one directive —
+// the single place Mode is stamped (an unstamped mode would decode as
+// "" and break the parser contract; the constructor makes that
+// unwritable).
+func boardDirectiveSentinel(d board.Directive) directiveSentinel {
+	return directiveSentinel{Mode: directiveMode, Directive: d.Kind, TaskID: d.TaskShortID, AuditID: d.AuditID}
 }
 
 // boardScopeResolver resolves (owner, target workspace) for a task —
@@ -325,27 +364,36 @@ func newBoardAborter(scope boardScopeResolver, sender boardV1Sender) board.Worke
 	}
 }
 
-// newBoardMessenger builds the halt/resume directive seam: the V1 Send
-// fires DETACHED (fire-and-forget) — a busy worker queues the POST
-// server-side and sees the directive at its turn boundary, exactly the
+// newBoardMessenger builds the halt/resume/deposed directive seam: the
+// V1 Send fires DETACHED — a busy worker queues the POST server-side
+// and sees the directive at its turn boundary, exactly the
 // pause-must-pause contract; the pause/resume request returns without
-// waiting on any worker's turn (the callers' best-effort contract
-// keeps every error discarded — delivery failures surface as the
-// detached goroutine's warn line, never a blocked or failed pause).
+// waiting on any worker's turn. #2046 discipline: the closure takes the
+// STRUCTURED directive (kind + task + audit id — the sentinel's payload
+// and the audit event key), composes the sentinel-marked text via the
+// shared composer, and returns a bounded DELIVERY OUTCOME: failures
+// observed inside the fast-fail window (scope miss, unresolvable
+// session, dead-target 4xx) return synchronously — the board-side
+// cascade WARNs and records them in the "directive" audit event — while
+// a healthy or busy target's in-flight delivery returns nil
+// ("dispatched"; a wedged admission POST is the canary's domain, #2045).
+// The outcome is informational only: pause/resume never fails on it.
 func newBoardMessenger(scope boardScopeResolver, sender boardV1Sender) board.WorkerMessenger {
-	return func(ctx context.Context, sessionID, directive, taskShortID string) error {
-		userID, workspaceID, err := scope(ctx, taskShortID)
+	return func(ctx context.Context, sessionID string, d board.Directive) error {
+		userID, workspaceID, err := scope(ctx, d.TaskShortID)
 		if err != nil {
 			return fmt.Errorf("board: directive scope: %w", err)
 		}
-		text := resumeDirectiveText(taskShortID)
-		switch directive {
+		var text string
+		switch d.Kind {
 		case board.DirectiveHalt:
-			text = haltDirectiveText(taskShortID)
+			text = haltDirectiveText(d)
 		case board.DirectiveDeposed:
-			text = deposedDirectiveText(taskShortID)
+			text = deposedDirectiveText(d)
+		default:
+			text = resumeDirectiveText(d)
 		}
-		return deliverBoardTextV1(ctx, sender, directive+" directive", userID, workspaceID, sessionID, text, 0)
+		return deliverBoardTextV1(ctx, sender, d.Kind+" directive", userID, workspaceID, sessionID, text, boardDirectiveFastFail)
 	}
 }
 

@@ -519,22 +519,36 @@ type leaseNudgeSentinel struct {
 	Expects string `json:"expects"`
 }
 
+// agentMessageSentinelLine renders the lsp:agent-message-v1 marker line
+// carrying payload — THE one sentinel composer (#2046: single-owned
+// message format; leaseNudgeText and the directive texts are its two
+// callers). Byte shape: prefix + one-line JSON + suffix + newline; the
+// JSON encoding keeps any payload single-line. These payloads are plain
+// structs — marshal cannot fail, and on impossible failure the line
+// degrades to an empty prefix (prose stays deliverable, parsers see
+// plain text — the format's documented fallback).
+func agentMessageSentinelLine(payload any) string {
+	b, err := json.Marshal(payload)
+	if err != nil {
+		return ""
+	}
+	return "<!-- lsp:agent-message-v1 " + string(b) + " -->\n"
+}
+
 // leaseNudgeText composes the sentinel message: the v1 marker line
 // carrying the ordinal anchor, then the surgical prose — the FULL
 // nudge contract (item 6 amendment, owner ruling 2026-10-28: respond
 // via board_heartbeat FIRST, then continue / advance / declare
 // failure; NEVER a restart).
 func leaseNudgeText(shortID string, p board.NudgePayload) string {
-	payload, _ := json.Marshal(leaseNudgeSentinel{
+	text := agentMessageSentinelLine(leaseNudgeSentinel{
 		Mode:    "lease-nudge",
 		TaskID:  shortID,
 		NudgeID: p.NudgeID,
 		Expects: "respond|advance|fail",
 	})
 	var b strings.Builder
-	b.WriteString("<!-- lsp:agent-message-v1 ")
-	b.Write(payload)
-	b.WriteString(" -->\n")
+	b.WriteString(text)
 	fmt.Fprintf(&b, "BOARD LEASE NUDGE: your claim on task %s has gone quiet. "+
 		"First RESPOND (call board_heartbeat once, with your claimToken) to confirm you are active — "+
 		"respond before running any long command so the wedge clock clears. "+
