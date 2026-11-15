@@ -26,8 +26,13 @@ export const mockDeleteTask = vi.fn();
 export const mockAddDependency = vi.fn();
 export const mockRemoveDependency = vi.fn();
 export const mockStartTask = vi.fn();
+export const mockPauseTask = vi.fn();
+export const mockResumeTask = vi.fn();
+export const mockRearmTask = vi.fn();
 export const mockActivateEpic = vi.fn();
 export const mockPauseEpic = vi.fn();
+export const mockArchiveEpic = vi.fn();
+export const mockUnarchiveEpic = vi.fn();
 export const mockDeleteEpic = vi.fn();
 export const mockArchiveProject = vi.fn();
 export const mockUnarchiveProject = vi.fn();
@@ -48,6 +53,9 @@ vi.mock("../api/board", () => ({
     taskEvents: (id: string, limit?: number) => mockTaskEvents(id, limit),
     moveStage: (id: string, to: string, ev?: string) => mockMoveStage(id, to, ev),
     startTask: (id: string) => mockStartTask(id),
+    pauseTask: (id: string) => mockPauseTask(id),
+    resumeTask: (id: string) => mockResumeTask(id),
+    rearmTask: (id: string) => mockRearmTask(id),
     createProject: (input: unknown) => mockCreateProject(input),
     createEpic: (pid: string, input: unknown) => mockCreateEpic(pid, input),
     getEpic: (id: string) => mockGetEpic(id),
@@ -58,6 +66,8 @@ vi.mock("../api/board", () => ({
     removeDependency: (id: string, dep: string) => mockRemoveDependency(id, dep),
     activateEpic: (id: string) => mockActivateEpic(id),
     pauseEpic: (id: string) => mockPauseEpic(id),
+    archiveEpic: (id: string) => mockArchiveEpic(id),
+    unarchiveEpic: (id: string) => mockUnarchiveEpic(id),
     deleteEpic: (id: string, force?: boolean) => mockDeleteEpic(id, force),
     archiveProject: (id: string) => mockArchiveProject(id),
     unarchiveProject: (id: string) => mockUnarchiveProject(id),
@@ -163,6 +173,25 @@ export const TASK_IN_PROGRESS: BoardTask = {
   // (the 2026-10-29 ruling's link target + display text).
   assignee_session: "amber-falcon-glides",
   attempts: 1,
+  // The kebab's per-criterion toggles (owner ask 2026-11-14) pin on
+  // this row: one met, one unmet, both directions exercised.
+  acceptance_criteria: [
+    { text: "Engine compiles the charter", met: true },
+    { text: "Engine rejects a seedless node", met: false },
+  ],
+};
+
+/** A paused in_progress row (the #1747 lever's visible state) — the
+ * kebab's Resume item and the optimistic paused-badge flip pin here. */
+export const TASK_PAUSED: BoardTask = {
+  ...base,
+  id: "task-uuid-9",
+  project_id: "proj-uuid-a",
+  epic_id: "epic-uuid-1",
+  short_id: "tsk-99990009",
+  title: "Held for later",
+  stage: "in_progress",
+  paused: true,
 };
 
 export const TASK_IN_REVIEW: BoardTask = {
