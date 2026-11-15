@@ -47,12 +47,23 @@ func reviewEvidenceFallback(subject *Task) string {
 	return "board://review/" + subject.ShortID
 }
 
+// settleOut collects one settle walk's post-commit side effects: the
+// publishable events, the project ids the settle touched (sibling
+// projects of the subject — the dispatch drive feed), and the S8
+// deposed claimants (anchored review tasks that held a LIVE claim when
+// the subject's completion ended it — the caller aborts them
+// POST-COMMIT of the transaction it owns).
+type settleOut struct {
+	events  []Event
+	pokes   []string
+	deposed []deposedWorker
+}
+
 // completeReviewTasks settles the anchored review tasks of a task that
-// just reached done, inside the caller's transaction. It returns the
-// post-commit publishable events for the settles plus the project ids
-// the settle touched (sibling projects of the subject — the dispatch
-// drive feed).
-func (s *Service) completeReviewTasks(ctx context.Context, tx pgx.Tx, subject *Task, evidence string, visited map[string]bool) ([]Event, []string, error) {
+// just reached done, inside the caller's transaction. Post-commit side
+// effects accumulate in out (events + pokes + deposed claimants) for
+// the caller, which owns the commit.
+func (s *Service) completeReviewTasks(ctx context.Context, tx pgx.Tx, subject *Task, evidence string, visited map[string]bool, out *settleOut) error {
 	if visited == nil {
 		visited = map[string]bool{}
 	}
@@ -62,52 +73,51 @@ func (s *Service) completeReviewTasks(ctx context.Context, tx pgx.Tx, subject *T
 	}
 	candidates, err := s.reviewCandidates(ctx, tx, subject)
 	if err != nil {
-		return nil, nil, err
+		return err
 	}
 	sys := Actor{Kind: ActorSystem, Surface: "engine"}
-	var out []Event
-	var pokes []string
 	for _, cand := range candidates {
 		if visited[cand.ID] {
 			continue
 		}
 		if criteriaAllMet(cand) {
-			evt, err := s.completeReviewTask(ctx, tx, cand, subject, evidence, sys)
+			evt, err := s.completeReviewTask(ctx, tx, cand, subject, evidence, sys, out)
 			if err != nil {
-				return out, pokes, err
+				return err
 			}
 			if evt != nil {
-				out = append(out, *evt)
-				pokes = append(pokes, cand.ProjectID)
+				out.events = append(out.events, *evt)
+				out.pokes = append(out.pokes, cand.ProjectID)
 				visited[cand.ID] = true
 				// Chained delegation: the completed review may anchor
 				// its own reviewers. The visited set + the done
 				// predicate bound the walk.
-				more, morePokes, err := s.completeReviewTasks(ctx, tx, cand, evidence, visited)
-				if err != nil {
-					return out, pokes, err
+				if err := s.completeReviewTasks(ctx, tx, cand, evidence, visited, out); err != nil {
+					return err
 				}
-				out = append(out, more...)
-				pokes = append(pokes, morePokes...)
 			}
 		} else {
 			evt, err := s.parkReviewTask(ctx, tx, cand, subject, evidence, sys)
 			if err != nil {
-				return out, pokes, err
+				return err
 			}
 			if evt != nil {
-				out = append(out, *evt)
+				out.events = append(out.events, *evt)
 			}
 		}
 	}
-	return out, pokes, nil
+	return nil
 }
 
 // completeReviewTask lands one eligible review task in done (guarded
 // UPDATE; a raced row converged by its own writer) with transition +
 // deterministic event, then the done-cascade effects (reverse-edge
 // unblock + epic completion). Returns nil when the guard lost the row.
-func (s *Service) completeReviewTask(ctx context.Context, tx pgx.Tx, cand, subject *Task, evidence string, sys Actor) (*Event, error) {
+// S8: the settle ENDS any live claim the anchored review task held —
+// platform-initiated (the SUBJECT's completion, not this reviewer's own
+// write) — so the deposed claimant is recorded here (audit row in this
+// transaction; delivery is the caller's, post-commit).
+func (s *Service) completeReviewTask(ctx context.Context, tx pgx.Tx, cand, subject *Task, evidence string, sys Actor, out *settleOut) (*Event, error) {
 	from := cand.Stage
 	tag, err := tx.Exec(ctx, `
 		UPDATE tasks SET stage='done', stage_entered_at=now(),
@@ -143,6 +153,16 @@ func (s *Service) completeReviewTask(ctx context.Context, tx pgx.Tx, cand, subje
 	}
 	slog.InfoContext(ctx, "board: review task completed with its subject",
 		"task", cand.ShortID, "subject", subject.ShortID)
+	// S8: the guarded done UPDATE ended the claim the row held — depose
+	// its holder (the deposal audit row rides this transaction; the
+	// pointer names the review_complete event just recorded).
+	if d, aevt, ok, derr := s.deposeTaskTx(ctx, tx, cand,
+		"engine:review_complete:"+cand.ID+":"+subject.ID); derr != nil {
+		return nil, derr
+	} else if ok {
+		out.deposed = append(out.deposed, d)
+		out.events = append(out.events, aevt)
+	}
 	if evt.ID == "" {
 		return nil, nil // replayed deterministic id: inert, nothing to publish
 	}
