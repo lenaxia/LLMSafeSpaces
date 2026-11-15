@@ -156,7 +156,18 @@ jobs:
           git checkout -b "$BRANCH"
           git add runtimes/opencode/Dockerfile local/bootstrap.sh
           git commit -m "chore(runtime): opencode ${PINNED} → ${TARGET} (automated bump)"
-          git push origin "$BRANCH"
+          # FORCE-push the bot-owned branch: the previous plain push
+          # wedged 5 consecutive weekly runs (Oct 12 → Nov 9, 2026 —
+          # first fire stranded the branch on origin, later fires
+          # rebuilt on a moved main parent and were rejected
+          # non-fast-forward; zero bump PRs ever opened). The branch
+          # is bot-owned deterministic content, so overwrite is the
+          # correct idempotency semantic.
+          git push --force origin "$BRANCH"
+          # The label must exist or `gh pr create --label` exits
+          # non-zero and strands the pushed branch (the wedge's first
+          # step). Idempotent: already-exists is the success case.
+          gh label create opencode-bump --description "Automated opencode bump (opencode-version-bump.yml)" --color 0e8a16 >/dev/null 2>&1 || true
           if gh pr view "$BRANCH" >/dev/null 2>&1; then
             gh pr edit "$BRANCH" --body "$BODY" --title "chore(runtime): opencode ${PINNED} → ${TARGET} (automated bump)"
           else

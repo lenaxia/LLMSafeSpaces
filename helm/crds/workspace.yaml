@@ -36,6 +36,11 @@ spec:
                 runtime:
                   type: string
                   description: "Runtime environment (e.g. python:3.11)"
+                harness:
+                  type: string
+                  enum: ["opencode", "pi"]
+                  default: "opencode"
+                  description: "Coding-agent harness this workspace runs. Immutable after create: sessions, agent config, and artifacts are harness-specific — recreate the Workspace to switch. Enforced by the validating webhook."
                 architecture:
                   type: string
                   enum: ["amd64", "arm64"]

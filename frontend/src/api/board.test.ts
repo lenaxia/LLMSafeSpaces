@@ -83,6 +83,30 @@ describe("boardApi wire shapes", () => {
     expect(mockPost.mock.calls[0]![0]).toBe("/me/epics/epc-bbbb2222/activate");
   });
 
+  it("activate's 200 is the {epic, initial_ready_set} wrapper, returned verbatim (hurl-pinned)", async () => {
+    const wrapper = { epic: { id: "e1", short_id: "epc-bbbb2222", status: "active" }, initial_ready_set: ["tsk-aaaa0001"] };
+    mockPost.mockResolvedValue(wrapper);
+    const out = await boardApi.activateEpic("epc-bbbb2222");
+    expect(out).toEqual(wrapper);
+  });
+
+  it("rearm posts its action route with a requestId body (#1832 WS3)", async () => {
+    mockPost.mockResolvedValue({ stage: "backlog", attempts: 0 });
+    await boardApi.rearmTask("tsk-ffff0008");
+    const [path, body] = mockPost.mock.calls[0] as [string, Record<string, unknown>];
+    expect(path).toBe("/me/tasks/tsk-ffff0008/rearm");
+    expect(typeof body.requestId).toBe("string");
+    expect(body.requestId).not.toBe("");
+  });
+
+  it("setCriteriaMet carries the #1837 P2b two-way {index, met} wire form", async () => {
+    mockPatch.mockResolvedValue({ acceptance_criteria: [] });
+    await boardApi.updateTask("tsk-bbbb0002", { setCriteriaMet: { index: 1, met: true } });
+    const [path, body] = mockPatch.mock.calls[0] as [string, Record<string, unknown>];
+    expect(path).toBe("/me/tasks/tsk-bbbb0002");
+    expect(body.setCriteriaMet).toEqual({ index: 1, met: true });
+  });
+
   it("creates tasks under the epic route with OR4-carrying tags", async () => {
     mockPost.mockResolvedValue({ id: "t1" });
     await boardApi.createTask("epc-bbbb2222", { title: "T", tags: ["pr:1702"], acceptanceCriteria: [{ text: "c", met: false }] });

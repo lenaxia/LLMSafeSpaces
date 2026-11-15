@@ -1,0 +1,60 @@
+{
+  "piVersion": "1.5.2",
+  "capturedAt": "2026-11-13",
+  "provenance": "Live capture from the pinned binary in RPC mode (pi --mode rpc, session dir on disk) against a fixture OpenAI endpoint; session file is the real persisted artifact. Capture harness + redaction rules: REFRESH.md (this directory).",
+  "notes": [
+    "This manifest is the recorded RPC surface of the PINNED pi version — the baseline the U-8 question (were commands ever removed/renamed upstream?) is settled against. A fixture refresh that drops, adds, or renames anything here must update this file in the same change; the driftgate tests enforce that consciously, while the adapter's defensive decode keeps tolerating unknown additions at runtime (pi's own posture: treat unknown values as normal usage, session-format.md).",
+    "requiredFields/fields lists name the fields the PLATFORM's decode consumes for its core signal — presence is asserted against the fixtures, so an upstream rename (usage -> tokenUsage, disposition -> delivery, ...) fails the gate instead of silently zeroing. Optional fields are tolerated-present-or-absent.",
+    "fixturePresent=false event types are doc-derived tolerance entries (json.md / rpc-extension-ui.md): known to the taxonomy, not exercised by the capture. Every other type MUST appear in testdata/events_stream.jsonl."
+  ],
+  "commands": [
+    { "name": "abort", "fields": ["type"] },
+    { "name": "clear_queue", "fields": ["type"] },
+    { "name": "follow_up", "fields": ["type", "message"] },
+    { "name": "get_available_models", "fields": ["type"] },
+    { "name": "get_entries", "fields": ["type"], "optionalFields": ["since"] },
+    { "name": "get_session_stats", "fields": ["type"] },
+    { "name": "get_state", "fields": ["type"] },
+    { "name": "prompt", "fields": ["type", "message"], "optionalFields": ["streamingBehavior", "images"] },
+    { "name": "set_model", "fields": ["type", "provider", "modelId"] },
+    { "name": "set_session_name", "fields": ["type", "name"] },
+    { "name": "steer", "fields": ["type", "message"] }
+  ],
+  "responses": [
+    { "command": "clear_queue", "recorded": false, "dataFields": ["steering", "followUp"] },
+    { "command": "get_available_models", "recorded": true, "dataFields": ["models"] },
+    { "command": "get_entries", "recorded": false, "dataFields": ["entries", "leafId"] },
+    { "command": "get_session_stats", "recorded": true, "dataFields": ["sessionId", "sessionFile", "userMessages", "assistantMessages", "toolCalls", "toolResults", "totalMessages", "tokens", "cost", "contextUsage"] },
+    { "command": "get_state", "recorded": true, "dataFields": ["model", "thinkingLevel", "isStreaming", "isCompacting", "sessionId", "sessionFile", "messageCount"], "optionalDataFields": ["sessionName", "steeringMode", "followUpMode", "autoCompactionEnabled", "pendingMessageCount"] },
+    { "command": "prompt", "recorded": false, "dataFields": ["disposition"] },
+    { "command": "steer", "recorded": false, "dataFields": ["disposition"] },
+    { "command": "follow_up", "recorded": false, "dataFields": ["disposition"] }
+  ],
+  "events": [
+    { "type": "agent_start", "fixturePresent": true, "requiredFields": [] },
+    { "type": "agent_end", "fixturePresent": true, "requiredFields": [] },
+    { "type": "agent_settled", "fixturePresent": true, "requiredFields": [] },
+    { "type": "turn_start", "fixturePresent": true, "requiredFields": [] },
+    { "type": "turn_end", "fixturePresent": true, "requiredFields": [] },
+    { "type": "message_start", "fixturePresent": true, "requiredFields": ["message"] },
+    { "type": "message_update", "fixturePresent": true, "requiredFields": ["assistantMessageEvent"] },
+    { "type": "message_end", "fixturePresent": true, "requiredFields": ["message"] },
+    { "type": "tool_execution_start", "fixturePresent": true, "requiredFields": ["toolCallId", "toolName"] },
+    { "type": "tool_execution_update", "fixturePresent": true, "requiredFields": ["toolCallId"] },
+    { "type": "tool_execution_end", "fixturePresent": true, "requiredFields": ["toolCallId"] },
+    { "type": "bash_execution_update", "fixturePresent": true, "requiredFields": [] },
+    { "type": "queue_update", "fixturePresent": true, "requiredFields": [] },
+    { "type": "entry_appended", "fixturePresent": true, "requiredFields": ["entry"] },
+    { "type": "session_info_changed", "fixturePresent": true, "requiredFields": ["name"] },
+    { "type": "thinking_level_changed", "fixturePresent": true, "requiredFields": ["level"] },
+    { "type": "compaction_start", "fixturePresent": true, "requiredFields": [] },
+    { "type": "compaction_end", "fixturePresent": true, "requiredFields": ["result"] },
+    { "type": "auto_retry_start", "fixturePresent": true, "requiredFields": ["attempt"] },
+    { "type": "auto_retry_end", "fixturePresent": true, "requiredFields": ["attempt", "success"] },
+    { "type": "extension_error", "fixturePresent": true, "requiredFields": ["error"] },
+    { "type": "summarization_retry_scheduled", "fixturePresent": true, "requiredFields": [] },
+    { "type": "summarization_retry_attempt_start", "fixturePresent": true, "requiredFields": [] },
+    { "type": "summarization_retry_finished", "fixturePresent": true, "requiredFields": [] },
+    { "type": "extension_ui_request", "fixturePresent": false, "requiredFields": [] }
+  ]
+}
