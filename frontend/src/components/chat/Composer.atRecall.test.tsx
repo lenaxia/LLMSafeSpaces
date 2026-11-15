@@ -67,6 +67,10 @@ describe("Composer #-prompt recall (#1496 part 2; symbol moved @→# pre-release
     vi.clearAllMocks();
     mockSettings = {};
     setMobileMatchMedia(false);
+    // The Composer persists per-session drafts (2026-11-13): every
+    // test here mounts the same ws-1/ses-1 composer, so a previous
+    // test's leftover text must not hydrate into the next one.
+    localStorage.removeItem("llmsafespaces_session_drafts");
   });
 
   it("opens on # mid-sentence and lists prompts", async () => {
