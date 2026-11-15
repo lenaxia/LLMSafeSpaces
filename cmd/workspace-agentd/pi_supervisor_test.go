@@ -235,3 +235,51 @@ func TestSupervisePiPolicySwitchValidation(t *testing.T) {
 	require.Contains(t, err.Error(), piPolicyPerSession)
 	require.Contains(t, err.Error(), piPolicySingle)
 }
+
+// --- S6: pi --version -> statusz AgentVersion (fleet currency) -------
+
+// piVersionFakeBinary writes a tiny script standing in for the pinned
+// binary for --version probing only (the RPC fake above drives
+// sessions, not the version flag).
+func piVersionFakeBinary(t *testing.T, body string) string {
+	t.Helper()
+	dir := t.TempDir()
+	script := filepath.Join(dir, "pi")
+	if err := os.WriteFile(script, []byte("#!/bin/sh\n"+body), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return script
+}
+
+func TestProbePiVersion_ReportsTrimmedStdout(t *testing.T) {
+	withTestLogger(t)
+	bin := piVersionFakeBinary(t, `printf '1.5.2\n\n'`)
+	require.Equal(t, "1.5.2", probePiVersion(bin, zap.NewNop()))
+}
+
+func TestProbePiVersion_FailureIsUnreported(t *testing.T) {
+	withTestLogger(t)
+	bin := piVersionFakeBinary(t, `echo boom >&2; exit 3`)
+	require.Equal(t, "", probePiVersion(bin, zap.NewNop()), "a failed probe reports empty (unreported), never blocks boot")
+}
+
+func TestProbePiVersion_BoundedOnHang(t *testing.T) {
+	withTestLogger(t)
+	bin := piVersionFakeBinary(t, `sleep 60`)
+	start := time.Now()
+	require.Equal(t, "", probePiVersion(bin, zap.NewNop()))
+	require.Less(t, time.Since(start), 30*time.Second, "the 5s bound must cap a hanging --version")
+}
+
+func TestPiSupervisor_BootVersionFlowsToHarnessStatus(t *testing.T) {
+	withTestLogger(t)
+	t.Setenv(envPiImageVolume, "")
+	t.Setenv(envPiBinary, piVersionFakeBinary(t, `printf '1.5.2\n'`))
+	t.Setenv(envPiSessionDir, t.TempDir())
+	t.Setenv(envPiAgentDir, t.TempDir())
+	t.Setenv(envPiPolicy, piPolicyPerSession)
+	sup, err := newPiSupervisorFromEnv(zap.NewNop())
+	require.NoError(t, err)
+	require.Equal(t, "1.5.2", sup.HarnessStatus().AgentVersion,
+		"the boot probed --version must surface through HarnessStatus into statusz AgentVersion")
+}
