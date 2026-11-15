@@ -25,14 +25,18 @@ import (
 	v1 "github.com/lenaxia/llmsafespaces/pkg/apis/llmsafespaces/v1"
 )
 
-// reconcilerPinned returns a reconciler with BOTH overlay pins set —
-// the only supported configuration post-S3.
+// reconcilerPinned returns a reconciler with ALL THREE overlay pins
+// set — the only supported configuration post-S3 + the pi overlay
+// (design 0053 §5.4).
 func reconcilerPinned(t *testing.T) *WorkspaceReconciler {
 	t.Helper()
 	r := reconcilerWithAgentd(t)
 	r.OpencodeImage = testOpencodeImage
 	r.OpencodeBinarySHA256AMD64 = testOpencodeSHAAMD64
 	r.OpencodeBinarySHA256ARM64 = testOpencodeSHAARM64
+	r.PiImage = testPiImage
+	r.PiBinarySHA256AMD64 = testPiSHAAMD64
+	r.PiBinarySHA256ARM64 = testPiSHAARM64
 	return r
 }
 
@@ -83,6 +87,16 @@ func TestS3_MissingOpencodeImage_FailsLoud(t *testing.T) {
 	_, err := r.buildPod(context.Background(), ws)
 	require.Error(t, err, "post-S3 a missing opencode pin must fail the build, not fall back to a baked binary")
 	assert.Contains(t, err.Error(), "opencodeDelivery")
+}
+
+func TestS3_MissingPiImage_FailsLoud(t *testing.T) {
+	r := reconcilerPinned(t)
+	r.PiImage = ""
+	ws := newWorkspaceForSecurity(t)
+
+	_, err := r.buildPod(context.Background(), ws)
+	require.Error(t, err, "the pi pin is mandatory from day one — there was never a baked pi to fall back to")
+	assert.Contains(t, err.Error(), "piDelivery")
 }
 
 // --- main container: direct overlay exec -----------------------------------

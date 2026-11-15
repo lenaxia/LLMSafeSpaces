@@ -717,9 +717,10 @@ const notifyFactsRefreshInterval = 60 * time.Second
 
 // sessionNotifierWiring carries the main-wiring inputs for the session
 // notifier. StorePath "" selects the production registry file
-// (/sandbox-runtime/session-subscriptions.json — the shortids replica's
-// storage class); tests point it at a temp file to exercise the
-// restart/reload semantics hermetically.
+// (/platform/session-subscriptions.json — the PVC-backed platform/ dir,
+// the seq cursor's storage class; owner ruling 2026-11-14); tests point
+// it at a temp file to exercise the restart/reload semantics
+// hermetically.
 type sessionNotifierWiring struct {
 	Authority *sessionstate.Authority
 	Password  string
@@ -785,7 +786,11 @@ func wireSessionNotifier(w sessionNotifierWiring) *sessionNotifier {
 // — harness-gated outbox drain (ruling 4's retry-ONCE, sequenced after
 // the first successful session-list pull: the boot-reseed discipline,
 // never spending the one retry on a harness that is not up yet) and
-// the lineage-facts ticker.
+// the lineage-facts ticker. The drain is preceded by the boot-time
+// missed-settle reconciliation (ReconcileMissedSettles — the in-flight-
+// at-kill window): it enqueues fresh intents whose failed deliveries
+// then ride the immediately-following RetryOutbox retry-once, in the
+// same boot.
 func startSessionNotifierLoops(ctx context.Context, wg *sync.WaitGroup, n *sessionNotifier) {
 	if n == nil {
 		return
@@ -799,6 +804,7 @@ func startSessionNotifierLoops(ctx context.Context, wg *sync.WaitGroup, n *sessi
 	go func() {
 		defer wg.Done()
 		notifyWaitForHarness(ctx, n)
+		n.ReconcileMissedSettles(ctx)
 		n.RetryOutbox(ctx)
 		ticker := time.NewTicker(notifyFactsRefreshInterval)
 		defer ticker.Stop()
