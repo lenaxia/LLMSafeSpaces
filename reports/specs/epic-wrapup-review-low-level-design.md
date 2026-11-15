@@ -9,10 +9,26 @@ that story owns the change.
 
 ---
 
-## 1. Schema — migration `000055_epic_wrapup_review`
+## 1. Schema — TWO additive migrations (story-independent landings)
 
-Two files (`api/migrations/000055_epic_wrapup_review.{up,down}.sql`), the 000054
-additive-column pattern. Also mirrors under `helm/migrations/` per house convention.
+Landing as **two** migrations so `wrapup-config-persona` (keys) and `wrapup-engine`
+(columns) never share a file and can land in either order (the 000042→000049 precedent:
+vocabulary growth and row-shape growth are separate deliberate migrations). Files follow
+the 000054 additive pattern, mirrored under `helm/migrations/`.
+
+### 1a. `000055_board_wrapup_config_key` [wrapup-config-persona]
+
+```sql
+-- wrapUpReviewer joins BOTH tiers (user defaults + project overrides).
+ALTER TABLE board_config_defaults DROP CONSTRAINT board_config_defaults_key_check;
+ALTER TABLE board_config_defaults ADD CONSTRAINT board_config_defaults_key_check
+    CHECK (key IN ('reviewColumn','autoAssignReviewer','defaultWorkerSlots','stagePersonas','wrapUpReviewer'));
+ALTER TABLE board_project_config_overrides DROP CONSTRAINT board_project_config_overrides_key_check;
+ALTER TABLE board_project_config_overrides ADD CONSTRAINT board_project_config_overrides_key_check
+    CHECK (key IN ('reviewColumn','autoAssignReviewer','stagePersonas','wrapUpReviewer'));
+```
+
+### 1b. `000056_epic_wrapup_review` [wrapup-engine]
 
 ```sql
 -- tasks: the engine-owned row-class marker. 'story' is the default and the
@@ -26,14 +42,16 @@ ALTER TABLE tasks ADD CONSTRAINT tasks_kind_check
     CHECK (kind IN ('story','wrapup'));
 CREATE INDEX IF NOT EXISTS idx_tasks_kind ON public.tasks USING btree (epic_id, kind);
 
--- epics: the wrap-up lifecycle state. Explicit columns, never derived (D2).
+-- epics: the on/off flag + the wrap-up lifecycle state. Explicit columns,
+-- never derived (D2).
+ALTER TABLE epics ADD COLUMN IF NOT EXISTS wrap_up_review boolean NOT NULL DEFAULT false;
 ALTER TABLE epics ADD COLUMN IF NOT EXISTS last_wrapped_at  timestamp with time zone;
 ALTER TABLE epics ADD COLUMN IF NOT EXISTS wrapup_count     integer NOT NULL DEFAULT 0;
 ALTER TABLE epics ADD COLUMN IF NOT EXISTS wrapup_task_id   uuid;
 ALTER TABLE epics ADD COLUMN IF NOT EXISTS wrapup_ack_pending boolean NOT NULL DEFAULT false;
 
--- reference integrity for the in-flight pointer (FK dropped before the row:
--- wrap-up row deletion clears the pointer first, same transaction)
+-- reference integrity for the in-flight pointer (wrap-up row deletion clears
+-- the pointer, same transaction; ON DELETE SET NULL is the physical floor)
 DO $$ BEGIN
     IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'epics_wrapup_task_id_fkey') THEN
         ALTER TABLE public.epics
@@ -41,25 +59,9 @@ DO $$ BEGIN
             FOREIGN KEY (wrapup_task_id) REFERENCES public.tasks(id) ON DELETE SET NULL;
     END IF;
 END $$;
-
--- config key vocabulary (the 000049 growth pattern): wrapUpReviewer on BOTH tiers.
-ALTER TABLE board_config_defaults DROP CONSTRAINT board_config_defaults_key_check;
-ALTER TABLE board_config_defaults ADD CONSTRAINT board_config_defaults_key_check
-    CHECK (key IN ('reviewColumn','autoAssignReviewer','defaultWorkerSlots','stagePersonas','wrapUpReviewer'));
-ALTER TABLE board_project_config_overrides DROP CONSTRAINT board_project_config_overrides_key_check;
-ALTER TABLE board_project_config_overrides ADD CONSTRAINT board_project_config_overrides_key_check
-    CHECK (key IN ('reviewColumn','autoAssignReviewer','stagePersonas','wrapUpReviewer'));
 ```
 
-Down migration drops the columns/constraints/keys in reverse. `wrap_up_review` (the on/off
-epic flag) needs NO column beyond `epics.wrap_up_review boolean NOT NULL DEFAULT false` —
-add it in the same migration:
-
-```sql
-ALTER TABLE epics ADD COLUMN IF NOT EXISTS wrap_up_review boolean NOT NULL DEFAULT false;
-```
-
-Row-shape additions (Go): `Task.Kind string` (rows.go, `json:"kind,omitempty"` — story
+Down migrations drop in reverse. Row-shape additions (Go): `Task.Kind string` (rows.go, `json:"kind,omitempty"` — story
 omits), `Epic.WrapUpReview bool`, `Epic.LastWrappedAt *time.Time`,
 `Epic.WrapUpCount int`, `Epic.WrapUpTaskID *string` (rendered in reads as the live
 wrap-up short id — join at read time, never stored denormalized),
