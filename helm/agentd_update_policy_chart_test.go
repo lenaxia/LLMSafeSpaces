@@ -63,7 +63,8 @@ func TestAgentdUpdatePolicy_InvalidValueFailsRender(t *testing.T) {
 `), 0o600))
 	cmd := exec.Command("helm", "template", "test-release", chartDir(t), "-n", "test-ns",
 		"--kube-version", testKubeVersion, "-f", valuesPath,
-		"--set-string", "controller.opencodeDelivery.image=ghcr.io/lenaxia/llmsafespaces/opencode@sha256:fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210")
+		"--set-string", "controller.opencodeDelivery.image=ghcr.io/lenaxia/llmsafespaces/opencode@sha256:fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210",
+		"--set-string", "controller.piDelivery.image=ghcr.io/lenaxia/llmsafespaces/pi@sha256:9999999999999999999999999999999999999999999999999999999999999999")
 	out, err := cmd.CombinedOutput()
 	require.Error(t, err, "a typo'd updatePolicy must fail the render; output: %s", out)
 	require.Contains(t, string(out), "must be Rolling or OnRefresh", "output: %s", out)

@@ -53,6 +53,7 @@ const agentdVerifyFailureRequeue = 5 * time.Minute
 // opencode verify failures (exit 83/84) — same operator-action-only
 // semantics as the agentd constant above.
 const opencodeVerifyFailureRequeue = 5 * time.Minute
+const piVerifyFailureRequeue = 5 * time.Minute
 
 // stuckScheduledPendingTimeout is how long a pod can remain Pending
 // despite being scheduled (PodScheduled=True) before the controller

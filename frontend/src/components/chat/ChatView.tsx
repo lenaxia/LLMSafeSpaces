@@ -14,6 +14,7 @@ interface StreamingPart {
   type: "thinking" | "text" | "tool" | "file_notice";
   text: string;
   toolState?: string;
+  toolError?: string;
   toolStartedAt?: string;
   toolCallID?: string;
   toolInput?: unknown;
@@ -89,6 +90,7 @@ function partitionStreamPartsByMessage(streamParts: StreamingPart[]): Array<{ ke
       type: p.type === "tool" ? ("tool_use" as const) : p.type,
       text: p.text,
       ...(p.toolState ? { toolState: p.toolState } : {}),
+      ...(p.toolError ? { toolError: p.toolError } : {}),
       ...(p.toolStartedAt ? { toolStartedAt: p.toolStartedAt } : {}),
       ...(p.toolInput != null ? { input: p.toolInput } : {}),
       ...(p.toolOutput ? { toolOutput: p.toolOutput } : {}),

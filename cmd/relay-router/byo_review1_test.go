@@ -281,10 +281,9 @@ func TestBuildBYOServerPinsAgedArgCompactor(t *testing.T) {
 	svc, err := buildBYOServer(cfg, keys, newByoEnvelopeCache(), redactor, staticMintService{}, defaultRouterClient())
 	require.NoError(t, err)
 	require.NotNil(t, svc.agedArgs, "the aged-arg compactor must be wired on the production path")
-	assert.Equal(t, agedArgToolPrefix, svc.agedArgs.ToolPrefix)
 	assert.Equal(t, 7, svc.agedArgs.RecentToolCalls, "the env knob threads to the compactor window")
 
-	// The default window is the documented constant (threshold default 30).
+	// The default window is the documented constant (0 = restructure all).
 	svcDefault, err := buildBYOServer(loadByoRunConfig(), keys, newByoEnvelopeCache(), redactor, staticMintService{}, defaultRouterClient())
 	require.NoError(t, err)
 	require.NotNil(t, svcDefault.agedArgs)
