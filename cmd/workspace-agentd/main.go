@@ -402,6 +402,17 @@ func main() {
 			relayKillFunc(bgCtx, &bgWg, deps.proc, deps.sseTracker, liveSessions, deps.interrupter))
 	}
 
+	// #2045: the prompt-path admission canary's fire trigger — wedge
+	// suspects (≥3 admission timeouts on one session in 10 minutes)
+	// request a supervised restart through the SAME session-aware
+	// decision seam as the credential/relay/config classes. Installed
+	// after the deps exist; the canary itself (pkgAdmissionWatch) has
+	// been counting since boot — send-path failures before this point
+	// land in observability-only mode (metrics, no restart).
+	if deps.proc != nil {
+		installAdmissionWatchRestart(bgCtx, &bgWg, deps.proc, deps.sseTracker, liveSessionsLister(deps), deps.interrupter, restartLog)
+	}
+
 	adminSrv, userSrv, srvErr := wireHTTPServers(bgCtx, &bgWg, deps)
 
 	select {

@@ -501,6 +501,16 @@ Multi-tenant isolation rests on layered controls in a **shared namespace** (no p
 
 Org-specific quota overrides and billing-tier→quota mapping are deferred to Epic 43. See `design/stories/epic-51-tenant-isolation/README.md`.
 
+### Prompt-path wedge: admission canary + session-aware supervised restart (#2040)
+
+**Symptom:** message POSTs (`POST /session/:id/message`) for ONE session time out on the client while everything else looks green — `/global/health` answers fast, TCP dial succeeds, opencode 401s are quick. This is the wedge class the supervisor's health model structurally cannot see: the per-session prompt pipeline is dead (e.g. `SessionRunState.ensureRunning → SessionPrompt.run` failing with "No user message found in stream") but the HTTP server itself is alive. The Nov 13-15 2026 incident persisted for hours until a manual restart.
+
+**Detection:** agentd counts admission failures — a POST that dies awaiting response headers (client timeout / context deadline) counts; fast provider 4xx refusals and slow-body (successful admission) responses never count. Three failures on the same session inside a 10-minute window declare a wedge suspect: `agentd_message_admission_failures_total{workspace_id}` ticks per failure, `agentd_session_wedge_suspects_total{workspace_id}` per declaration (the turn-resume supervisor's repeated resume failures declare too, logging ERROR with `wedge_suspect=true`).
+
+**Recovery (automatic):** a wedge suspect requests a supervised restart through the same session-aware decision path as the credential/relay/config restart classes — deferred while other sessions are busy (progress-keyed, interrupt-first on stall), at most one fired restart per 30 minutes per workspace (storm guard anchored on the last fire; suppressed requests still count via `workspace_restarts_suppressed_total{reason="prompt_path_wedge"}`). Attribution: `workspace_restarts_total{reason="prompt_path_wedge"}`, the restart-reason marker, and the restart log (reason carries the offending session id(s)). Empirically, post-restart recovery is fast — the incident's manual restart had a probe admitted and real work resumed within ~30s.
+
+**Operator note:** a workspace whose suspects counter grows with suppressed restarts every ~30 minutes has a wedge that survives restarts — the fault is above the process boundary (e.g. persistent session state in opencode.db), and the session itself needs manual surgery (abort, or inspect `opencode.db` per the #1307 runbook) rather than another restart.
+
 ---
 
 ## Relay Config Subsystem

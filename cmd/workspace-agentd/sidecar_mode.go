@@ -380,6 +380,13 @@ func buildSidecarDeps(cfg sidecarConfig) serverDeps {
 		restartLog: newAgentRestartLog(),
 	}
 
+	// #2045: the prompt-path admission canary's fire trigger for the
+	// sidecar topology — the wedge restart crosses the control socket
+	// with the closed-enum prompt_path_wedge reason (the
+	// wedgeRestartProc; never misattributed as credential_reload).
+	// Nil-cc leaves the canary in observability-only mode.
+	installAdmissionWatchRestartSidecar(cc, deps.restartLog)
+
 	// #1601: the sidecar's /workspace mount is READ-ONLY and /home/sandbox
 	// is not mounted at all — recovery executes in the uid-1000
 	// supervisor over the control socket (same topology finding as the

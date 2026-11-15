@@ -71,8 +71,10 @@ type restartableProcess interface {
 
 // restartIdleCheckInterval is how often the deferred-restart goroutine
 // polls the sessionStatusTracker for busy→idle transitions. 5s per
-// the US-44.2 design.
-const restartIdleCheckInterval = 5 * time.Second
+// the US-44.2 design. A var (not a const) so tests can shrink it —
+// the established healthz_cache.go seam pattern; the production value
+// is unchanged.
+var restartIdleCheckInterval = 5 * time.Second
 
 // restartStallBound is the #1342 progress-keyed force bound: a busy
 // session with no harness activity for longer than this is stalled
