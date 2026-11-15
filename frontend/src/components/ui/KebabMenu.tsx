@@ -103,15 +103,20 @@ function MenuBody({ items, footer, onClose }: { items: KebabMenuItem[]; footer?:
 
   // Sectioned layout: items render in array order, with a labelled divider
   // whenever the `section` value changes (the header renders only for named
-  // sections; items without a section sit at the top with no header).
+  // sections; items without a section sit at the top with no header). An
+  // UNsectioned item following a sectioned one (the board menus' trailing
+  // destructive item) gets a bare divider — it closes the menu visually
+  // without claiming a header of its own.
   let prevSection: string | undefined;
   return (
     <>
       {items.map((item, i) => {
         const showHeader = item.section !== undefined && item.section !== prevSection;
+        const showDivider = item.section === undefined && prevSection !== undefined;
         prevSection = item.section;
         return (
           <Fragment key={i}>
+            {showDivider && <div className="border-t border-border mx-2 my-1" />}
             {showHeader && (
               <div className="border-t border-border mx-2 my-1">
                 <div className="px-3 pt-1 pb-0.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground/70">

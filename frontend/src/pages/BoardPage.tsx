@@ -11,7 +11,7 @@ import { Spinner } from "../components/ui/Spinner";
 import { TagInput } from "../components/ui/TagInput";
 import { StoryDeleteDialog, describeStoryDeleteResult } from "../components/board/StoryDeleteDialog";
 import { EpicDeleteDialog } from "../components/board/EpicDeleteDialog";
-import { KebabMenu } from "../components/ui/KebabMenu";
+import { KebabMenu, type KebabMenuItem } from "../components/ui/KebabMenu";
 import { BoardErrorNotice } from "../components/board/BoardErrorNotice";
 import { StoryCard } from "../components/board/StoryCard";
 import { StoryDialog } from "../components/board/StoryDialog";
@@ -52,6 +52,13 @@ const BOARD_REFETCH_MS = 30_000;
 function toBoardError(err: unknown): DescribedBoardError {
   if (err instanceof ApiClientError) return describeBoardError(err);
   return { message: err instanceof Error ? err.message : "Board request failed", suggestions: [] };
+}
+
+/** Kebab labels live in a w-40 portal menu — criterion text truncates
+ * (the full text renders in the edit dialog and the details drawer;
+ * the index keeps the item identifiable). */
+function kebabTruncate(text: string, max = 26): string {
+  return text.length > max ? `${text.slice(0, max - 1)}…` : text;
 }
 
 /** 2026-10-28 ruling 3: the visible-row cap for a project's epic list —
@@ -443,12 +450,16 @@ export function BoardPage() {
   });
 
   const runMove = useCallback(
-    async (task: BoardTask, toStage: string, evidence?: string) => {
+    async (task: BoardTask, toStage: string, evidence?: string, via?: () => Promise<unknown>) => {
       setDragError(null);
       setRefusedShortId(null);
       setOptimistic((prev) => ({ ...prev, [task.short_id]: { shortId: task.short_id, fromStage: task.stage, toStage } }));
       try {
-        await moveStageMutation.mutateAsync({ shortId: task.short_id, toStage, evidence });
+        // `via` swaps the wire call while keeping the optimistic stage
+        // placement + snap-back machinery (the kebab's Re-arm rides
+        // POST /rearm, not move-stage — same visual outcome: failed →
+        // backlog).
+        await (via ? via() : moveStageMutation.mutateAsync({ shortId: task.short_id, toStage, evidence }));
         // Authoritative row: invalidate the board read model (the SSE
         // board.event would do the same; the mutation path does not wait
         // for the stream).
@@ -653,35 +664,6 @@ export function BoardPage() {
     onError: (err) => setDrawerError(toBoardError(err)),
   });
 
-  // The owner ask 2026-11-13: activate/pause ON the epic band's kebab —
-  // no drawer trip needed. Same shape as handleProjectLifecycle: the
-  // server's returned row flips the band immediately (rememberEpic
-  // supersedes until the invalidated read lands), success names the
-  // epic in a page notice, failure renders the page-level error (the
-  // drawer is not open — drawerError would be invisible here). No
-  // confirmation: activation/pause is not destructive and the drawer's
-  // own buttons never confirm (codebase convention).
-  const handleEpicLifecycle = useCallback(
-    async (epic: BoardEpic, action: "activate" | "pause"): Promise<void> => {
-      setPageError(null);
-      const idOrShort = epic.short_id.startsWith("epc-") ? epic.short_id : epic.id;
-      try {
-        const updated =
-          action === "activate" ? (await boardApi.activateEpic(idOrShort)).epic : await boardApi.pauseEpic(idOrShort);
-        rememberEpic(updated);
-        await queryClient.invalidateQueries({ queryKey: ["board"] });
-        setPageNotice(
-          action === "activate"
-            ? `${epic.title}: activated — ready stories start feeding to fresh workers.`
-            : `${epic.title}: paused (in-flight leases run out; new claims stopped).`,
-        );
-      } catch (err) {
-        setPageError(toBoardError(err));
-      }
-    },
-    [queryClient, rememberEpic],
-  );
-
   // task_start (§4.2): the manual one-off dispatch — the designed UI exit
   // for backlog rows. Renders the engine's Claim honestly (escalated =
   // the attempts cap withheld the grant).
@@ -779,6 +761,256 @@ export function BoardPage() {
       setBoardActivity((prev) => [evt, ...prev].slice(0, 50));
     });
   }, []);
+
+  // Epic lifecycle on the band kebab (owner ask 2026-11-14; the
+  // activate/pause arm mirrors the drawer pattern — server-confirmed
+  // rememberEpic flip + ["board"] invalidate, page notice naming the
+  // epic, page-level BoardErrorNotice on failure (the drawer is not
+  // open; drawerError would be invisible here)). No confirmation:
+  // none of these writes is destructive (archive is reversible
+  // storage) and the drawer's own buttons never confirm.
+  const handleEpicLifecycle = useCallback(
+    async (epic: BoardEpic, action: "activate" | "pause"): Promise<void> => {
+      setPageError(null);
+      const idOrShort = epic.short_id.startsWith("epc-") ? epic.short_id : epic.id;
+      try {
+        const updated =
+          action === "activate" ? (await boardApi.activateEpic(idOrShort)).epic : await boardApi.pauseEpic(idOrShort);
+        rememberEpic(updated);
+        await queryClient.invalidateQueries({ queryKey: ["board"] });
+        setPageNotice(
+          action === "activate"
+            ? `${epic.title}: activated — ready stories start feeding to fresh workers.`
+            : `${epic.title}: paused (in-flight leases run out; new claims stopped).`,
+        );
+      } catch (err) {
+        setPageError(toBoardError(err));
+      }
+    },
+    [queryClient, rememberEpic],
+  );
+
+  // Archive/unarchive — the epic's reversible-storage lever, same shape
+  // as handleProjectLifecycle's archive arm. Unarchive always restores
+  // ACTIVE (the engine's resumable default — the epic seam has no
+  // separate resume endpoint; activate is the un-pause path).
+  const handleEpicArchive = useCallback(
+    async (epic: BoardEpic, action: "archive" | "unarchive"): Promise<void> => {
+      setPageError(null);
+      const idOrShort = epic.short_id.startsWith("epc-") ? epic.short_id : epic.id;
+      try {
+        const updated = action === "archive" ? await boardApi.archiveEpic(idOrShort) : await boardApi.unarchiveEpic(idOrShort);
+        rememberEpic(updated);
+        await queryClient.invalidateQueries({ queryKey: ["board"] });
+        setPageNotice(
+          action === "archive"
+            ? `${epic.title}: archived — it leaves the claimable set (unarchive restores it).`
+            : `${epic.title}: unarchived — active again; ready stories start feeding.`,
+        );
+      } catch (err) {
+        setPageError(toBoardError(err));
+      }
+    },
+    [queryClient, rememberEpic],
+  );
+
+  // The epic band kebab's item list per the engine's lifecycle
+  // allowed-map (service.go epicLifecycle): active ⟵
+  // {draft,paused,completed,archived} (unarchive owns the archived
+  // source — its dedicated endpoint), paused ⟵ {active}, archived ⟵
+  // {draft,active,paused,completed}. There is NO epic resume endpoint
+  // (activate un-pauses) — the inventory's "Resume" maps onto Activate.
+  const buildEpicKebabItems = useCallback(
+    (epic: BoardEpic): KebabMenuItem[] => {
+      if (epic.status === "archived") {
+        return [
+          { section: "Lifecycle", label: "Unarchive epic", onClick: () => void handleEpicArchive(epic, "unarchive") },
+          {
+            label: "Delete epic…",
+            destructive: true,
+            onClick: () => {
+              setDeleteError(null);
+              setEpicDeleteTarget(epic);
+            },
+          },
+        ];
+      }
+      return [
+        ...(epic.status === "active"
+          ? [{ section: "Lifecycle", label: "Pause epic", onClick: () => void handleEpicLifecycle(epic, "pause") }]
+          : [{ section: "Lifecycle", label: "Activate epic", onClick: () => void handleEpicLifecycle(epic, "activate") }]),
+        { section: "Lifecycle", label: "Archive epic", onClick: () => void handleEpicArchive(epic, "archive") },
+        {
+          label: "Delete epic…",
+          destructive: true,
+          onClick: () => {
+            setDeleteError(null);
+            setEpicDeleteTarget(epic);
+          },
+        },
+      ];
+    },
+    [handleEpicArchive, handleEpicLifecycle],
+  );
+
+  // --- Story card kebab: the per-entity action surface (owner ask
+  // 2026-11-14) ----------------------------------------------------------
+  // Non-stage writes (pause/resume, the criteria toggles) get their OWN
+  // lightweight optimism: a per-card override map flips the visible
+  // badge/criterion immediately, the override is CLEARED once the
+  // invalidated read lands the server's authoritative row (r2), and a
+  // refusal rolls it back and renders the page-level notice (the drag
+  // lane owns stage optimism — the kebab's stage items reuse runMove
+  // wholesale).
+  const [cardOverrides, setCardOverrides] = useState<Record<string, { paused?: boolean; acceptance_criteria?: BoardTask["acceptance_criteria"] }>>({});
+
+  const applyCardOverrides = useCallback(
+    (t: BoardTask): BoardTask => {
+      const o = cardOverrides[t.short_id];
+      if (!o) return t;
+      return { ...t, ...(o.paused === undefined ? {} : { paused: o.paused }), ...(o.acceptance_criteria ? { acceptance_criteria: o.acceptance_criteria } : {}) };
+    },
+    [cardOverrides],
+  );
+
+  /** Retires ONE field's optimism (r2 stale-card-override-mask): the
+   * success path calls it once the invalidated read has landed the
+   * authoritative row, the refusal path calls it to roll back — either
+   * way the override can never outlive the write it optimizes, so a
+   * later authoritative change (dialog criteria edit, second tab, SSE
+   * refetch) always renders. Dropping the entry when its last field
+   * leaves keeps the map from masking rows it no longer speaks for. */
+  const clearCardOverride = useCallback((shortId: string, field: "paused" | "acceptance_criteria") => {
+    setCardOverrides((prev) => {
+      const o = prev[shortId];
+      if (!o || o[field] === undefined) return prev;
+      const retained = { ...o };
+      delete retained[field];
+      if (retained.paused === undefined && !retained.acceptance_criteria) {
+        const next = { ...prev };
+        delete next[shortId];
+        return next;
+      }
+      return { ...prev, [shortId]: retained };
+    });
+  }, []);
+
+  /** Pause/resume (#1747 lever): the paused badge flips optimistically;
+   * failure rolls it back and renders at page level (the drag lane's
+   * snap-back is stage-specific — this is the flag's equivalent). */
+  const handleStoryPauseResume = useCallback(
+    async (task: BoardTask, action: "pause" | "resume"): Promise<void> => {
+      setPageError(null);
+      const target = action === "pause";
+      setCardOverrides((prev) => ({ ...prev, [task.short_id]: { ...prev[task.short_id], paused: target } }));
+      try {
+        await (action === "pause" ? boardApi.pauseTask(task.short_id) : boardApi.resumeTask(task.short_id));
+        await queryClient.invalidateQueries({ queryKey: ["board"] });
+        // The invalidated read has landed the server's row — retire
+        // this write's optimism so later authoritative changes render.
+        clearCardOverride(task.short_id, "paused");
+        setPageNotice(
+          action === "pause"
+            ? `${task.title}: paused — claim candidacy off; the in-flight worker halts at its turn's boundary.`
+            : `${task.title}: resumed — a survived lease continues; a lapsed one re-enters the FIFO pool.`,
+        );
+      } catch (err) {
+        clearCardOverride(task.short_id, "paused");
+        setPageError(toBoardError(err));
+      }
+    },
+    [clearCardOverride, queryClient],
+  );
+
+  /** Per-criterion check-off toggle (#1837 P2b's TWO-WAY wire form
+   * {index, met}): the glyph flips optimistically; failure rolls it
+   * back with the page-level notice. Never rides acceptanceCriteria —
+   * the indexed write cannot clobber a concurrent edit's array. */
+  const handleCriterionToggle = useCallback(
+    async (task: BoardTask, index: number): Promise<void> => {
+      setPageError(null);
+      const current = applyCardOverrides(task).acceptance_criteria;
+      const criterion = current[index];
+      if (!criterion) return;
+      const met = !criterion.met;
+      const nextCriteria = current.map((c, i) => (i === index ? { ...c, met } : c));
+      setCardOverrides((prev) => ({ ...prev, [task.short_id]: { ...prev[task.short_id], acceptance_criteria: nextCriteria } }));
+      try {
+        await boardApi.updateTask(task.short_id, { setCriteriaMet: { index, met } });
+        await queryClient.invalidateQueries({ queryKey: ["board"] });
+        // The invalidated read has landed the server's row — retire
+        // this write's optimism so later authoritative changes render.
+        clearCardOverride(task.short_id, "acceptance_criteria");
+        setPageNotice(`${task.title}: criterion ${index + 1} ${met ? "met" : "unmet"}.`);
+      } catch (err) {
+        clearCardOverride(task.short_id, "acceptance_criteria");
+        setPageError(toBoardError(err));
+      }
+    },
+    [applyCardOverrides, clearCardOverride, queryClient],
+  );
+
+  // The state matrix, pinned by BoardPage.kebab.test.tsx:
+  //   backlog        → Pause, criteria, Delete
+  //   in_progress    → Pause, Move to failed…, criteria, Delete
+  //   in_review      → Pause, Move to failed…, criteria, Delete
+  //   pending_input  → Pause, Requeue / Resume work, criteria, Delete
+  //   paused         → Resume, criteria, Delete
+  //   failed+esc     → Pause, Re-arm, criteria, Delete
+  //   done           → criteria, Delete ONLY (terminal: no stage items)
+  // Worker-owned transitions (→in_review, →done, the review bounce) are
+  // deliberately absent — the kebab is the manager surface; the drag
+  // affordance mirror (isManagerDragAllowed) keeps its own superset.
+  const buildStoryKebabItems = useCallback(
+    (task: BoardTask): KebabMenuItem[] => {
+      const items: KebabMenuItem[] = [];
+      const effective = applyCardOverrides(task);
+      const terminal = task.stage === STAGE_DONE;
+      if (effective.paused) {
+        items.push({ section: "Lifecycle", label: "Resume story", onClick: () => void handleStoryPauseResume(task, "resume") });
+      } else if (!terminal) {
+        items.push({ section: "Lifecycle", label: "Pause story", onClick: () => void handleStoryPauseResume(task, "pause") });
+      }
+      if (task.stage === "failed" && task.pending_origin === "escalated") {
+        items.push({
+          section: "Lifecycle",
+          label: "Re-arm story (reset attempts)",
+          onClick: () => void runMove(task, "backlog", undefined, () => boardApi.rearmTask(task.short_id)),
+        });
+      }
+      if (!terminal) {
+        if (task.pending_input) {
+          // 000050: the flag's two manager exits — the ONE attempts
+          // reset (the human re-queue is a fresh judgment).
+          items.push({ section: "Stage", label: "Requeue to backlog", onClick: () => void runMove(task, "backlog") });
+          items.push({ section: "Stage", label: "Resume work (re-claim)", onClick: () => void runMove(task, "in_progress") });
+        } else if (task.stage === "in_progress" || task.stage === "in_review") {
+          // stuck → failed: the failure terminus. A CLAIMED in_progress
+          // row additionally demands its live token (the engine's
+          // claim-token guard) — the honest 409 renders; in_review and
+          // unclaimed rows move.
+          items.push({ section: "Stage", label: "Move to failed…", onClick: () => void runMove(task, "failed") });
+        }
+      }
+      effective.acceptance_criteria.forEach((c, i) => {
+        items.push({
+          section: "Criteria",
+          label: `${c.met ? "✓" : "○"} ${i + 1}. ${kebabTruncate(c.text)}`,
+          onClick: () => void handleCriterionToggle(task, i),
+        });
+      });
+      items.push({
+        label: "Delete story…",
+        destructive: true,
+        onClick: () => {
+          setDeleteError(null);
+          setTaskDeleteTarget(task);
+        },
+      });
+      return items;
+    },
+    [applyCardOverrides, handleCriterionToggle, handleStoryPauseResume, runMove],
+  );
 
   // Open the epic drawer with the authoritative row (derived progress).
   // Failures render at PAGE level (r1: they previously landed in
@@ -947,38 +1179,27 @@ export function BoardPage() {
                     <span className="shrink-0 text-[10px] text-muted-foreground" data-testid={`band-progress-${epic.id}`}>
                       {epic.progress_done}/{epic.progress_total}
                     </span>
+                    {/* The band's status badges (owner ask 2026-11-14:
+                     * every non-active state is legible on the row —
+                     * the kebab's conditional items key on the same
+                     * status). */}
                     {epic.status === "paused" && <Badge variant="warning" className="shrink-0 px-1.5 py-0 text-[10px]">paused</Badge>}
                     {epic.status === "draft" && <Badge variant="muted" className="shrink-0 px-1.5 py-0 text-[10px]">draft</Badge>}
+                    {epic.status === "completed" && <Badge variant="default" className="shrink-0 px-1.5 py-0 text-[10px]">completed</Badge>}
+                    {epic.status === "archived" && <Badge variant="muted" className="shrink-0 px-1.5 py-0 text-[10px]">archived</Badge>}
                     {selected && <Badge variant="default" className="shrink-0 px-1.5 py-0 text-[10px]">selected</Badge>}
-                    {/* #1832 item 3: epic kebab — the lifecycle item
-                     * (owner ask 2026-11-13: activate/pause directly on
-                     * the band, no drawer trip) plus the delete flow
-                     * (in-flight surfacing + refuse/force-confirm
-                     * inside the modal). The trigger stops
-                     * propagation: the kebab never toggles the
-                     * row's selection. */}
+                    {/* #1832 item 3 + owner ask 2026-11-14: epic kebab —
+                     * the lifecycle surface (activate/pause,
+                     * archive/unarchive per the engine's allowed-map)
+                     * plus the delete flow (in-flight surfacing +
+                     * refuse/force-confirm inside the modal). The
+                     * trigger stops propagation: the kebab never
+                     * toggles the row's selection. */}
                     <span className="shrink-0">
                       <KebabMenu
                         ariaLabel={`Epic actions for ${epic.title}`}
                         testId={`epic-kebab-${epic.id}`}
-                        items={[
-                          {
-                            // Same rule as the drawer: anything not
-                            // active activates (draft/paused/completed/
-                            // archived are all legal sources — the
-                            // engine's allowed-map); active pauses.
-                            label: epic.status === "active" ? "Pause epic" : "Activate epic",
-                            onClick: () => void handleEpicLifecycle(epic, epic.status === "active" ? "pause" : "activate"),
-                          },
-                          {
-                            label: "Delete epic…",
-                            destructive: true,
-                            onClick: () => {
-                              setDeleteError(null);
-                              setEpicDeleteTarget(epic);
-                            },
-                          },
-                        ]}
+                        items={buildEpicKebabItems(epic)}
                       />
                     </span>
                   </div>
@@ -1014,10 +1235,8 @@ export function BoardPage() {
                 setStartingShortId(t.short_id);
                 startTaskMutation.mutate(t);
               }}
-              onCardDelete={(t) => {
-                setDeleteError(null);
-                setTaskDeleteTarget(t);
-              }}
+              storyKebabItems={buildStoryKebabItems}
+              decorateTask={applyCardOverrides}
               startingShortId={startingShortId}
               laneShortId={project.short_id}
               onShowAllDone={() => setDoneDrawerProjectId(project.id)}
@@ -1059,10 +1278,8 @@ export function BoardPage() {
                     setStartingShortId(t.short_id);
                     startTaskMutation.mutate(t);
                   }}
-                  onCardDelete={(t) => {
-                    setDeleteError(null);
-                    setTaskDeleteTarget(t);
-                  }}
+                  storyKebabItems={buildStoryKebabItems}
+                  decorateTask={applyCardOverrides}
                   startingShortId={startingShortId}
                 />
               ))}
@@ -1835,8 +2052,13 @@ interface StageCellProps {
   onCardDragStart: (t: BoardTask) => void;
   onCardDragEnd: () => void;
   onCardStart: (t: BoardTask) => void;
-  /** #1832 item 3: opens the task delete modal (card kebab). */
-  onCardDelete: (t: BoardTask) => void;
+  /** The card kebab's full item list (owner ask 2026-11-14) — built in
+   * page scope so every action closes over the real handlers; includes
+   * Delete (the former inline item). */
+  storyKebabItems: (t: BoardTask) => KebabMenuItem[];
+  /** Applies the kebab actions' per-card optimistic overrides (paused
+   * badge, criterion glyphs) ahead of the server's row. */
+  decorateTask: (t: BoardTask) => BoardTask;
   startingShortId: string | null;
   /** Owner ask 2026-11-13: the lane's short id — scopes the Done
    * column's show-all affordance (one per swimlane). */
@@ -1862,7 +2084,8 @@ function StageCell({
   onCardDragStart,
   onCardDragEnd,
   onCardStart,
-  onCardDelete,
+  storyKebabItems,
+  decorateTask,
   startingShortId,
   laneShortId,
   onShowAllDone,
@@ -1919,7 +2142,7 @@ function StageCell({
       {visibleCards.map((t) => (
         <StoryCard
           key={t.short_id}
-          task={t}
+          task={decorateTask(t)}
           projectTasks={allProjectTasks}
           workspaceId={workspaceId}
           pending={optimistic[t.short_id] !== undefined}
@@ -1930,13 +2153,7 @@ function StageCell({
           onStart={onCardStart}
           onOpen={onOpenCard}
           onDetails={onCardDetails}
-          kebabItems={[
-            {
-              label: "Delete story…",
-              destructive: true,
-              onClick: () => onCardDelete(t),
-            },
-          ]}
+          kebabItems={storyKebabItems(t)}
           onDragStart={onCardDragStart}
           onDragEnd={onCardDragEnd}
         />

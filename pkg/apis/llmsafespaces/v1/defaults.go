@@ -35,6 +35,9 @@ func SetDefaults_WorkspaceSpec(spec *WorkspaceSpec) {
 		return
 	}
 
+	if spec.Harness == "" {
+		spec.Harness = HarnessOpencode
+	}
 	if spec.Architecture == "" {
 		spec.Architecture = "amd64"
 	}

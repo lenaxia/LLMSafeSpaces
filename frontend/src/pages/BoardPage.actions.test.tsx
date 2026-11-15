@@ -93,7 +93,8 @@ describe("BoardPage r1 — delete / lifecycle / start / feed / concurrency", () 
 
   it("activates a paused epic from the drawer: status flips + board invalidates", async () => {
     mockGetEpic.mockResolvedValue({ ...EPIC_ROW, status: "paused" });
-    // Activate's 200 is the {epic, initial_ready_set} wrapper (hurl).
+    // Activate's 200 is the {epic, initial_ready_set} WRAPPER (hurl
+    // board.hurl) — the client unwraps .epic at both call sites.
     mockActivateEpic.mockResolvedValue({ epic: { ...EPIC_ROW, status: "active" }, initial_ready_set: ["tsk-aaaa0001"] });
     renderBoard();
     await screen.findByTestId("task-card-tsk-aaaa0001");
