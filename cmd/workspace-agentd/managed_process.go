@@ -167,6 +167,11 @@ func (p *managedProcess) start() {
 	if p.cmdFactory == nil {
 		p.cmdFactory = opencodeSpawnBaseFactory()
 	}
+	// Second-harness pi overlay (design 0053 §5.4): verify the pi tree
+	// at the same lazy seam the opencode verify rides. No-op without
+	// the PI_IMAGE_VOLUME marker; exits 85/86 on tamper before any
+	// child spawn (pi_overlay.go).
+	verifyPiOverlayAtBoot()
 	if p.healthCheckURL == "" {
 		p.healthCheckURL = healthCheckURL
 	}

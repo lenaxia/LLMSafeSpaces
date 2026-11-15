@@ -101,6 +101,10 @@ controller:
     image: "ghcr.io/lenaxia/llmsafespaces/opencode:%s@sha256:2222222222222222222222222222222222222222222222222222222222222222"
     binarySHA256Amd64: ""
     binarySHA256Arm64: ""
+  piDelivery:
+    image: "ghcr.io/lenaxia/llmsafespaces/pi@sha256:7777777777777777777777777777777777777777777777777777777777777777"
+    binarySHA256Amd64: ""
+    binarySHA256Arm64: ""
 frontend:
   image:
     repository: ghcr.io/lenaxia/llmsafespaces/frontend
@@ -338,7 +342,9 @@ func TestReleasePreflightScript_OnlineResolution(t *testing.T) {
 		agentdDig    = "lenaxia/llmsafespaces/agentd/manifests/sha256:1111111111111111111111111111111111111111111111111111111111111111"
 		opencodeTg   = "lenaxia/llmsafespaces/opencode/manifests/" // + pin tag
 		opencodeDg   = "lenaxia/llmsafespaces/opencode/manifests/sha256:2222222222222222222222222222222222222222222222222222222222222222"
+		piDg         = "lenaxia/llmsafespaces/pi/manifests/sha256:7777777777777777777777777777777777777777777777777777777777777777"
 		idx2222      = "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+		idx7777      = "sha256:7777777777777777777777777777777777777777777777777777777777777777"
 		idxSomething = "sha256:9999999999999999999999999999999999999999999999999999999999999999"
 	)
 
@@ -349,7 +355,7 @@ func TestReleasePreflightScript_OnlineResolution(t *testing.T) {
 		srv := stubRegistry(t, map[string]string{
 			apiTag: idxSomething, ctrlTag: idxSomething, feTag: idxSomething,
 			baseRef: idxSomething, agentdDig: idx2222,
-			ocTagRef: idx2222, opencodeDg: idx2222,
+			ocTagRef: idx2222, opencodeDg: idx2222, piDg: idx7777,
 		}, nil)
 		cmd := exec.Command("bash", "./"+preflightScript, onlineCandidate(t, srv.URL))
 		var out strings.Builder
@@ -367,7 +373,7 @@ func TestReleasePreflightScript_OnlineResolution(t *testing.T) {
 	t.Run("nonexistent base tag fails (incident 3, online)", func(t *testing.T) {
 		srv := stubRegistry(t, map[string]string{
 			apiTag: idxSomething, ctrlTag: idxSomething, feTag: idxSomething,
-			agentdDig: idx2222, ocTagRef: idx2222, opencodeDg: idx2222,
+			agentdDig: idx2222, ocTagRef: idx2222, opencodeDg: idx2222, piDg: idx7777,
 			// baseRef deliberately absent → 404
 		}, nil)
 		cmd := exec.Command("bash", "./"+preflightScript, onlineCandidate(t, srv.URL))
@@ -386,7 +392,7 @@ func TestReleasePreflightScript_OnlineResolution(t *testing.T) {
 			apiTag: idxSomething, ctrlTag: idxSomething, feTag: idxSomething,
 			baseRef: idxSomething,
 			// agentdDig deliberately absent → the agentd repo has no such digest
-			ocTagRef: idx2222, opencodeDg: idx2222,
+			ocTagRef: idx2222, opencodeDg: idx2222, piDg: idx7777,
 		}, nil)
 		cmd := exec.Command("bash", "./"+preflightScript, onlineCandidate(t, srv.URL))
 		var out strings.Builder
@@ -397,7 +403,7 @@ func TestReleasePreflightScript_OnlineResolution(t *testing.T) {
 		if !strings.Contains(out.String(), "does not belong to this image") {
 			t.Errorf("output must name the foreign digest:\n%s", out.String())
 		}
-		if strings.Contains(out.String(), "membership verified by P1 resolution") {
+		if strings.Contains(out.String(), "P2 agentdDelivery digest-only pin") {
 			t.Errorf("a digest P1 just refuted must NOT be reported as membership-verified:\n%s", out.String())
 		}
 		if !strings.Contains(out.String(), "RESULT: FAIL") {
@@ -410,7 +416,7 @@ func TestReleasePreflightScript_OnlineResolution(t *testing.T) {
 			apiTag: idxSomething, ctrlTag: idxSomething, feTag: idxSomething,
 			baseRef: idxSomething, agentdDig: idx2222,
 			ocTagRef:   idxSomething, // the tag now resolves to a DIFFERENT index than the pin
-			opencodeDg: idx2222,
+			opencodeDg: idx2222, piDg: idx7777,
 		}, nil)
 		cmd := exec.Command("bash", "./"+preflightScript, onlineCandidate(t, srv.URL))
 		var out strings.Builder
@@ -450,7 +456,7 @@ func TestReleasePreflightScript_OnlineResolution(t *testing.T) {
 		srv := stubRegistry(t, map[string]string{
 			apiTag: idxSomething, ctrlTag: idxSomething, feTag: idxSomething,
 			baseRef: idxSomething, agentdDig: idx2222,
-			ocTagRef: idx2222, opencodeDg: idx2222,
+			ocTagRef: idx2222, opencodeDg: idx2222, piDg: idx7777,
 		}, annotatedIndex)
 		cmd := exec.Command("bash", "./"+preflightScript,
 			onlineValues(t, srv.URL, binaryPinCandidate(t, amd64Hex, arm64Hex)))
@@ -468,7 +474,7 @@ func TestReleasePreflightScript_OnlineResolution(t *testing.T) {
 		srv := stubRegistry(t, map[string]string{
 			apiTag: idxSomething, ctrlTag: idxSomething, feTag: idxSomething,
 			baseRef: idxSomething, agentdDig: idx2222,
-			ocTagRef: idx2222, opencodeDg: idx2222,
+			ocTagRef: idx2222, opencodeDg: idx2222, piDg: idx7777,
 		}, annotatedIndex)
 		cmd := exec.Command("bash", "./"+preflightScript,
 			onlineValues(t, srv.URL, binaryPinCandidate(t, strings.Repeat("cccc1111", 8), arm64Hex))) // wrong amd64 pin
@@ -495,7 +501,7 @@ func TestReleasePreflightScript_OnlineResolution(t *testing.T) {
 		srv := stubRegistry(t, map[string]string{
 			apiTag: idxSomething, ctrlTag: idxSomething, feTag: idxSomething,
 			baseRef: idxSomething, agentdDig: idx2222,
-			ocTagRef: idx2222, opencodeDg: idx2222,
+			ocTagRef: idx2222, opencodeDg: idx2222, piDg: idx7777,
 		}, map[string]string{
 			agentdDig:  indexBodyWithAnnotations("agentd", amd64Hex, arm64Hex),
 			opencodeDg: indexBodyWithAnnotations("opencode", amd64Hex, arm64Hex),
@@ -539,7 +545,7 @@ func TestReleasePreflightScript_OnlineResolution(t *testing.T) {
 			apiTag: idxSomething, ctrlTag: idxSomething, feTag: idxSomething,
 			baseRef: idxSomething, agentdDig: idx2222,
 			// ocTagRef deliberately absent → the opencode tag 404s
-			opencodeDg: idx2222,
+			opencodeDg: idx2222, piDg: idx7777,
 		}, nil)
 		cmd := exec.Command("bash", "./"+preflightScript, onlineCandidate(t, srv.URL))
 		var out strings.Builder
@@ -568,7 +574,7 @@ func TestReleasePreflightScript_OnlineResolution(t *testing.T) {
 			apiTag: idxSomething, ctrlTag: idxSomething, feTag: idxSomething,
 			baseRef: idxSomething, agentdDig: idx2222,
 			// no ocTagRef: the mainline ref carries no tag at all
-			opencodeDg: idx2222,
+			opencodeDg: idx2222, piDg: idx7777,
 		}, nil)
 		values := strings.Replace(preflightHappyValues(t),
 			"opencode:"+repoPinnedOpencode(t)+"@", "opencode@", 1)
@@ -600,7 +606,7 @@ func TestReleasePreflightScript_OnlineResolution(t *testing.T) {
 		srv := stubRegistry(t, map[string]string{
 			apiTag: idxSomething, ctrlTag: idxSomething, feTag: idxSomething,
 			baseRef: idxSomething, agentdDig: idx2222,
-			ocTagRef: idx2222, opencodeDg: idx2222,
+			ocTagRef: idx2222, opencodeDg: idx2222, piDg: idx7777,
 		}, nil)
 		pin := repoPinnedOpencode(t)
 		scenarios := []struct {
@@ -653,7 +659,7 @@ func TestReleasePreflightScript_OnlineResolution(t *testing.T) {
 		srv := stubRegistry(t, map[string]string{
 			apiTag: idxSomething, ctrlTag: idxSomething, feTag: idxSomething,
 			baseRef: idxSomething, agentdDig: idx2222,
-			ocTagRef: idx2222, opencodeDg: idx2222,
+			ocTagRef: idx2222, opencodeDg: idx2222, piDg: idx7777,
 		}, map[string]string{agentdDig: indexBodyWithAnnotations("agentd", amd64Hex, "")})
 		cmd := exec.Command("bash", "./"+preflightScript,
 			onlineValues(t, srv.URL, binaryPinCandidate(t, amd64Hex, strings.Repeat("dddd2222", 8))))
@@ -678,7 +684,7 @@ func TestReleasePreflightScript_OnlineResolution(t *testing.T) {
 			apiTag: idxSomething, ctrlTag: idxSomething, feTag: idxSomething,
 			baseRef: idxSomething,
 			// agentdDig absent → P1 fails AND index_annotations cannot read
-			ocTagRef: idx2222, opencodeDg: idx2222,
+			ocTagRef: idx2222, opencodeDg: idx2222, piDg: idx7777,
 		}, nil)
 		cmd := exec.Command("bash", "./"+preflightScript,
 			onlineValues(t, srv.URL, binaryPinCandidate(t, amd64Hex, arm64Hex)))
@@ -699,7 +705,7 @@ func TestReleasePreflightScript_OnlineResolution(t *testing.T) {
 		srv := stubRegistry(t, map[string]string{
 			apiTag: idxSomething, ctrlTag: idxSomething, feTag: idxSomething,
 			baseRef: idxSomething, agentdDig: idx2222,
-			ocTagRef: idx2222, opencodeDg: idx2222,
+			ocTagRef: idx2222, opencodeDg: idx2222, piDg: idx7777,
 		}, map[string]string{opencodeDg: indexBodyWithAnnotations("opencode", amd64Hex, arm64Hex)})
 		values := strings.Replace(preflightHappyValues(t),
 			`  opencodeDelivery:
@@ -729,7 +735,7 @@ func TestReleasePreflightScript_OnlineResolution(t *testing.T) {
 		srv := stubRegistry(t, map[string]string{
 			apiTag: idxSomething, ctrlTag: idxSomething, feTag: idxSomething,
 			baseRef: idxSomething, agentdDig: idx2222,
-			ocTagRef: idx2222, opencodeDg: idx2222,
+			ocTagRef: idx2222, opencodeDg: idx2222, piDg: idx7777,
 		}, map[string]string{agentdDig: `{"schemaVersion":2,"mediaType":"application/vnd.oci.image.index.v1+json"}`})
 		cmd := exec.Command("bash", "./"+preflightScript,
 			onlineValues(t, srv.URL, binaryPinCandidate(t, amd64Hex, arm64Hex)))
