@@ -107,7 +107,16 @@ type boardLivenessHub struct {
 	// frames stamps the last frame-arrival stamp per key (the RAW
 	// harness id AND the wire phrase both get stamped — #1817: frames
 	// carry the phrase on emission, the raw id internally).
-	frames map[string]uint64
+	// Two-class movement index over ONE global counter (a single clock
+	// domain for every ordinal comparison). framesWorker holds
+	// worker-activity stamps (MESSAGE_*/PART_* — renewal evidence);
+	// framesOpaque holds every other class's stamps (management
+	// publishes, unknown types) — ZERO renewal authority engine-side
+	// (quiet arms arm on the first settle-only evidence; #2042 round-1
+	// review), never invisible, never uncounted (#2040 incident:
+	// synthesized settles stamped movement for silent sessions).
+	framesWorker map[string]uint64
+	framesOpaque map[string]uint64
 	// nudges holds the send-mark per nudge id: the frame stamp at send
 	// and the session_index message_count snapshot at send.
 	nudges map[string]boardNudgeMark
@@ -145,23 +154,47 @@ type boardNudgeMark struct {
 
 // boardLiveCursor is the same-source delta baseline for one ref.
 type boardLiveCursor struct {
-	frameStamp uint64
-	dbCount    int64 // message_count at the previous observation; -1 absent
+	frameStamp  uint64 // worker-activity stamp at the previous observation
+	opaqueStamp uint64 // opaque-class stamp at the previous observation
+	dbCount     int64  // message_count at the previous observation; -1 absent
 }
 
 func newBoardLivenessHub(pool *pgxpool.Pool) *boardLivenessHub {
 	return &boardLivenessHub{
-		pool:    pool,
-		frames:  map[string]uint64{},
-		nudges:  map[string]boardNudgeMark{},
-		cursors: map[string]boardLiveCursor{},
+		pool:         pool,
+		framesWorker: map[string]uint64{},
+		framesOpaque: map[string]uint64{},
+		nudges:       map[string]boardNudgeMark{},
+		cursors:      map[string]boardLiveCursor{},
+	}
+}
+
+// workerActivityStampsEvidence is the #2040 movement allowlist — the
+// single definition of "worker activity" on this surface: message and
+// part activity are what a productive worker emits. Everything else
+// (session-status settles, reseed publications, lease-state
+// transitions, input materializations, errors, and any unknown future
+// type) is the opaque class. One clock domain: both classes stamp the
+// same global counter; the ordinal wedge comparison reads the worker
+// map only (a reaction must be worker activity — a settle after a
+// sentinel is not an answer).
+func workerActivityStampsEvidence(evt *abiv1.Event) bool {
+	switch evt.GetType() {
+	case abiv1.EventType_EVENT_TYPE_MESSAGE_START,
+		abiv1.EventType_EVENT_TYPE_MESSAGE_END,
+		abiv1.EventType_EVENT_TYPE_PART_START,
+		abiv1.EventType_EVENT_TYPE_PART_DELTA,
+		abiv1.EventType_EVENT_TYPE_PART_END:
+		return true
+	default:
+		return false
 	}
 }
 
 // ObserveFrame is the usagestream OnFrame observer: one stamp per
-// applied frame, under both identity keys the frame carries. Cheap by
-// contract (a map write under one mutex); it must never block or panic
-// the fold goroutine.
+// applied frame, under both identity keys the frame carries, routed to
+// the frame's evidence class. Cheap by contract (a map write under one
+// mutex); it must never block or panic the fold goroutine.
 func (h *boardLivenessHub) ObserveFrame(_ string, evt *abiv1.Event) {
 	if evt == nil {
 		return
@@ -169,9 +202,15 @@ func (h *boardLivenessHub) ObserveFrame(_ string, evt *abiv1.Event) {
 	h.mu.Lock()
 	h.counter++
 	stamp := h.counter
+	var into map[string]uint64
+	if workerActivityStampsEvidence(evt) {
+		into = h.framesWorker
+	} else {
+		into = h.framesOpaque
+	}
 	for _, key := range [...]string{evt.GetInternalSessionId(), evt.GetSessionId()} {
 		if key != "" {
-			h.frames[key] = stamp
+			into[key] = stamp
 		}
 	}
 	h.mu.Unlock()
@@ -189,7 +228,8 @@ func (h *boardLivenessHub) pruneLocked() {
 			}
 		}
 	}
-	if len(h.frames) <= boardLivenessMaxEntries && len(h.cursors) <= boardLivenessMaxEntries {
+	if len(h.framesWorker) <= boardLivenessMaxEntries && len(h.framesOpaque) <= boardLivenessMaxEntries &&
+		len(h.cursors) <= boardLivenessMaxEntries {
 		return
 	}
 	// Over the cap: drop the quarter of each map with the smallest
@@ -213,7 +253,8 @@ func (h *boardLivenessHub) pruneLocked() {
 			delete(m, e.k)
 		}
 	}
-	pruneUint(h.frames)
+	pruneUint(h.framesWorker)
+	pruneUint(h.framesOpaque)
 	if len(h.cursors) > boardLivenessMaxEntries {
 		entries := make([]kv, 0, len(h.cursors))
 		for k, c := range h.cursors {
@@ -385,17 +426,26 @@ func (h *boardLivenessHub) ObserveAssignees(sweepCtx context.Context, sess board
 		}
 		obs := board.AssigneeObservation{Observed: true, Exists: !row.deleted}
 
-		// The frame stamp: whichever identity key moved latest.
-		stamp := h.frames[row.rawID]
-		if p := h.frames[row.phrase]; p > stamp {
+		// The frame stamps: per class, whichever identity key moved
+		// latest. Worker-activity delta is renewal evidence; opaque
+		// delta is telemetry with zero renewal authority (quiet arms
+		// arm on first settle-only evidence) — the 2026-11-15 incident
+		// rode a settle stamped as movement for a session that had
+		// emitted nothing.
+		stamp := h.framesWorker[row.rawID]
+		if p := h.framesWorker[row.phrase]; p > stamp {
 			stamp = p
+		}
+		opaque := h.framesOpaque[row.rawID]
+		if p := h.framesOpaque[row.phrase]; p > opaque {
+			opaque = p
 		}
 		cur := h.cursors[ref]
 		if _, hadCursor := h.cursors[ref]; !hadCursor {
 			// First observation of this ref: the DB leg establishes its
 			// baseline NOW (a message_count days old is not this
 			// episode's movement — it asserts itself from the next
-			// sweep on), while the frame leg deliberately baselines at
+			// sweep on), while the frame legs deliberately baseline at
 			// zero: any stamp this process ever saw for the session is
 			// post-spawn activity, and one possibly-gratuitous renewal
 			// for a long-quiet session is the safe direction (the busy
@@ -407,6 +457,8 @@ func (h *boardLivenessHub) ObserveAssignees(sweepCtx context.Context, sess board
 		if !row.deleted &&
 			(stamp > cur.frameStamp || row.messageCount > cur.dbCount) {
 			obs.MovedSinceLastSweep = true
+		} else if !row.deleted && opaque > cur.opaqueStamp {
+			obs.MovedOpaque = true
 		}
 		// The ordinal wedge arm: only the engine knows the live nudge
 		// id; answer positionally when we hold its send-mark. NO mark
@@ -416,9 +468,14 @@ func (h *boardLivenessHub) ObserveAssignees(sweepCtx context.Context, sess board
 		if row.nudgeID != "" {
 			if mark, ok := h.nudges[row.nudgeID]; ok {
 				obs.NudgeMarkKnown = true
+				// Worker map ONLY: a reaction must be worker activity —
+				// a settle after the sentinel is not an answer (the
+				// incident's second poisoning leg). One clock domain:
+				// both maps stamp the shared global counter the mark
+				// snapped.
 				after := stamp > mark.frameStamp
 				if !after && mark.dbCount >= 0 && row.messageCount > mark.dbCount {
-					after = true // the DB leg: something landed after the send
+					after = true // the DB leg: a message landed after the send
 				}
 				obs.EventsAfterNudge = after
 			}
@@ -436,12 +493,15 @@ func (h *boardLivenessHub) ObserveAssignees(sweepCtx context.Context, sess board
 		// stale-true) is bounded by the gate's own lifecycle: reconnect
 		// re-seeds derived from the authority snapshot, and a dropped
 		// gate takes the map with it.
+		// stamp here is the worker stamp — the event that flips a
+		// session busy (a PART_START consult) is worker activity by the
+		// allowlist, so busy-with-no-worker-frame-ever stays distrusted.
 		if !row.deleted && h.busyFn != nil && stamp > 0 {
 			if busy, known := h.busyFn(row.workspaceID, row.rawID); known && busy {
 				obs.Busy = true
 			}
 		}
-		h.cursors[ref] = boardLiveCursor{frameStamp: stamp, dbCount: row.messageCount}
+		h.cursors[ref] = boardLiveCursor{frameStamp: stamp, opaqueStamp: opaque, dbCount: row.messageCount}
 		out[ref] = obs
 	}
 	return out
