@@ -98,10 +98,18 @@ Evidence index: `design/evidence/pi-validation/` (one file per U-item, sources c
 @ `95f2c7f2f` (2026-11-13), all legs PASS:
 
 - S5.1/1b/1c missing-pin render refusals (all three overlays)
-- S5.2a-e launch→ready on the pinned overlays (PID1 = overlay agentd;
-  opencode serving; redact wrapper; per-harness selection since S5 — the
-  opencode pod mounts NO `/pi` and carries no `PiVerified` condition)
-- S5.3/S5.4/S5.4b verify-failure surfacing (exit 81 / 83 / **85** distinct)
+- S5.2a-e launch→ready (PID1 = overlay agentd; opencode serving; redact
+  wrapper). NOTE — that run predates S5's per-harness selection
+  (`harness_delivery.go` is absent at `95f2c7f2f`): its S5.2d/e asserted the
+  S1-era tri-overlay shape (pi mounted + verified on EVERY pod) and passed
+  as such. The current script's S5.2d/e assert the S5 semantics (opencode
+  pod mounts NO `/pi`, no `PiVerified` condition) — first proven green on
+  this head's run below. Likewise its S5.4b (exit 85 via an opencode-harness
+  pod) is S7.3 now (the exit-85 path requires a `harness=pi` workspace
+  under S5 semantics)
+- S5.3/S5.4/S5.4b verify-failure surfacing (exit 81 / 83 / **85** distinct
+  — the baseline's exit-85 leg ran under the tri-overlay semantics; the
+  S5-semantics proof is S7.3 on this head)
 - S5.4c pi pins ConfigMap survives registry outage + controller restart
 - **S5.5 cold-pull resume 17 s ≤ 120 s budget** (agentd+opencode+pi evicted; the ~59 MB pi overlay pulls inside the same resume budget the S5.5 precedent set — the size concern from scoping §2.3 item 5 is closed with margin)
 - S5.6 gVisor (runsc): workspace Active, both image volumes serve under gVisor
