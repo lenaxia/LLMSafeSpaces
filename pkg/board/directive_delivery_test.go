@@ -285,14 +285,14 @@ func (s *BoardSuite) TestKill_2046_DirectiveEventIdempotent() {
 	require.Len(s.T(), s.directiveEvents(t1.ID), 1)
 }
 
-// KILL-TEST 2046-f (audit survives a cancelled caller): the client
+// KILL-TEST 2046-f (audit survives a canceled caller): the client
 // disconnects the instant the pause commits — the delivery survives
 // (context.WithoutCancel in the messenger seam) and the AUDIT ROW must
 // survive too (review r1 finding: the audit write rode the cancelable
 // request ctx and was silently lost exactly when the requester left).
 // The hook cancels the request ctx AT messenger time — after the pause
 // commit, before recordDirectiveEvent — the production shape.
-func (s *BoardSuite) TestKill_2046_AuditSurvivesCancelledCtx() {
+func (s *BoardSuite) TestKill_2046_AuditSurvivesCanceledCtx() {
 	ws := s.seedWorkspace()
 	p := s.seedProject(ws, 4)
 	e := s.seedEpic(p, board.EpicActive)
@@ -315,10 +315,10 @@ func (s *BoardSuite) TestKill_2046_AuditSurvivesCancelledCtx() {
 	// the production shape (the client is gone).
 	_ = err
 
-	require.Len(s.T(), msg.calls, 1, "the delivery fired (and cancelled the caller's ctx)")
+	require.Len(s.T(), msg.calls, 1, "the delivery fired (and canceled the caller's ctx)")
 	events := s.directiveEvents(t1.ID)
 	require.Len(s.T(), events, 1,
-		"the audit row for the dispatched directive MUST land even though the caller's ctx was cancelled at delivery time")
+		"the audit row for the dispatched directive MUST land even though the caller's ctx was canceled at delivery time")
 	var pl map[string]any
 	s.Require().NoError(json.Unmarshal(events[0].Payload, &pl))
 	s.Equal("dispatched", pl["outcome"], "the messenger returned nil — the audit records the dispatch")
