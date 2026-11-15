@@ -71,7 +71,7 @@ gains `WrapUpReview *bool` (nil = unchanged on PATCH; create defaults false).
 
 ## 2. The drain/deferral seam — `wrapUpAwareEpicCompletion` [wrapup-engine]
 
-`epicCompletionCheck` (store.go:449-465) is replaced by a two-function shape in a NEW file
+`epicCompletionCheck` (store.go:449-463) is replaced by a two-function shape in a NEW file
 `pkg/board/wrapup.go`; the old name stays as the disabled-branch implementation so the
 five call sites (stage.go:516, review.go:141, service.go:866, reconciler.go:1308,
 reconciler.go:1517) each change exactly one token:
@@ -88,7 +88,7 @@ Body, in order (all anchors verified):
    wrapup_count, wrapup_ack_pending) — the serialization point for concurrent drains (D1).
    Absent row → no-op (deleted epic).
 2. `status <> 'active'` → no-op (today's `e.status='active'` guard, store.go:455-457).
-3. `wrap_up_review = false` → run today's statement VERBATIM (store.go:452-464 body;
+3. `wrap_up_review = false` → run today's statement VERBATIM (store.go:452-463 body;
    extract to `epicCompletionCheckPlain`) and return. [D9 regression pin lives here]
    **The disabled branch is the seam's ONLY completion path.** An enabled epic NEVER
    completes through the drain seam — completion of an enabled epic happens exactly
@@ -175,7 +175,7 @@ Guards, in order — each failure is a loud `GuardError`:
 3. **Claim-token guard** (the criteria_met.go:70-73 pattern): actor carries the row's live
    `claim_token` — the wrap-up reviewer's own token, the in-flight guard from its charter
    envelope.
-4. **Done-guard parity**: `criteriaAllMet(t)` (store.go:484) + `ReportURL != ""`. The
+4. **Done-guard parity**: `criteriaAllMet(t)` (store.go:487) + `ReportURL != ""`. The
    reviewer checks its own criteria via `board_update_story {setCriteriaMet}` — the #1946
    reviewer grant applies unchanged (it holds the row's claim).
 5. GAPS: resolve each ref (did-you-mean resolution, ids.go); every ref must be a
@@ -399,6 +399,8 @@ Surfaces: `POST /api/v1/board/projects/:pid/epics/:id/ack-wrapup`
 
 Events vocabulary (board_events): `wrapup_mint` (deterministic id per row),
 `wrapup_mint_deferred`, `wrapup_verdict` (deterministic id per row),
+`wrapup_epic_complete` (deterministic `"wrapup:epic_complete:"+epicID` — the PASS
+path's completion event, §4; rides the verdict transaction),
 `wrapup_ack_required` (deterministic `"wrapup:ackreq:"+epicID+":"+count`),
 `wrapup_ack` (requestID id). Payloads carry the window + counts (audit ≡ replay anchors).
 
