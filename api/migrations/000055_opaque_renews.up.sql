@@ -12,4 +12,6 @@
 -- worker-activity / heartbeat / reaction renewal resets it to 0;
 -- claims, re-queues, heartbeat responses and re-arm reset it with the
 -- rest of the epoch counters.
-ALTER TABLE tasks ADD COLUMN opaque_renews integer NOT NULL DEFAULT 0;
+-- IF NOT EXISTS: the migration-safety gate re-applies all up files raw
+-- (no version bookkeeping); a second pass must be a no-op (#2042 lane).
+ALTER TABLE tasks ADD COLUMN IF NOT EXISTS opaque_renews integer NOT NULL DEFAULT 0;
