@@ -313,7 +313,14 @@ func TestTrackerBusyToIdleNotifies(t *testing.T) {
 	// above can win that race, so the clear is awaited, not assumed.
 	require.Eventually(t, func() bool { return f.store.outboxLen() == 0 },
 		2*time.Second, 5*time.Millisecond, "a successful delivery clears its intent")
-	assert.Equal(t, sessionLatch{LastDerivedBusy: false, SawBusy: true}, f.store.latchFor("ses_worker"))
+	// The settle edge cleared the busy bit, kept saw-busy, and stamped
+	// the settle (kind + watermark comparison stamp — the boot
+	// reconciliation's durable input).
+	latch := f.store.latchFor("ses_worker")
+	assert.Equal(t, false, latch.LastDerivedBusy)
+	assert.True(t, latch.SawBusy)
+	assert.Equal(t, subscriptionEventIdle, latch.LastSettleKind)
+	assert.False(t, latch.LastSettleAt.IsZero(), "the settle edge stamps the latch before the debounce arms")
 	assertNoNotice(t, f.deliver.ch, f.debounce*3, "")
 }
 
