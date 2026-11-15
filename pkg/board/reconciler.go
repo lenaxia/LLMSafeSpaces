@@ -407,6 +407,7 @@ func (s *Service) rc1Reclaims(ctx context.Context) (int, error) {
 		id := uuidNew()
 		outbound = append(outbound, outboundNudge{v: v, id: id})
 		decisions[v.id] = ladderNudge
+		ladderNudges.Inc()
 		return id
 	}
 	for _, v := range victims {
@@ -475,6 +476,17 @@ func (s *Service) rc1Reclaims(ctx context.Context) (int, error) {
 				renewSource[v.id] = RenewSourceReaction
 			}
 			continue
+		// Opaque movement (management-frame deltas — settles, reseeds,
+		// lease-state transitions, input materializations, unknown
+		// types) carries ZERO renewal authority (#2042 round-1 fix): a
+		// settle is never worker evidence, so it renews nothing and
+		// arms nothing — the row falls straight through to the quiet
+		// arms below. The reviewer's first-settle shape is the pin:
+		// quiet + first settle + sweep → nudge, not renewal. (The
+		// capped-authority intermediate was rejected: it preserved the
+		// incident for ~3 lease windows per epoch and its counter
+		// mutually re-armed with the busy cap — the exact orbit this
+		// lane closes.) MovedOpaque remains on the seam for telemetry.
 		case !o.Exists:
 			decisions[v.id] = ladderReclaim // dead-evidence: the fast wall-clock path below
 			reclaimReason[v.id] = ReclaimReasonDeadEvidence
@@ -566,6 +578,7 @@ func (s *Service) rc1Reclaims(ctx context.Context) (int, error) {
 				v.id, s.cfg.LeaseDuration.Seconds(), busyOnlyRenew[v.id]); err != nil {
 				return 0, err
 			}
+			leaseRenewalsBySource.WithLabelValues(renewSource[v.id]).Inc()
 			ev := leaseEvt(v, LeaseEventRenewed)
 			ev.Source = renewSource[v.id]
 			leaseOut = append(leaseOut, ev)
@@ -640,6 +653,7 @@ func (s *Service) rc1Reclaims(ctx context.Context) (int, error) {
 			if tag.RowsAffected() == 0 {
 				continue
 			}
+			ladderWedges.Inc()
 			if err := writeTransition(ctx, txQ{tx}, v.id, StageInProgress, StageFailed, "", sys); err != nil {
 				return 0, err
 			}
