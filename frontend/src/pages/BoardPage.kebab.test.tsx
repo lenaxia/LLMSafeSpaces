@@ -1,7 +1,7 @@
 // Copyright (C) 2026 Michael Kao
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-import { screen, fireEvent, waitFor, within } from "@testing-library/react";
+import { screen, fireEvent, waitFor, within, act } from "@testing-library/react";
 import { describe, it, expect, beforeEach, vi } from "vitest";
 // boardTestUtils FIRST (its vi.mock registrations must evaluate before
 // BoardPage resolves ../api/board).
@@ -10,6 +10,7 @@ import {
   seedBoard,
   defaultTasks,
   mockListProjectEpics,
+  mockListProjectTasks,
   mockPauseTask,
   mockResumeTask,
   mockRearmTask,
@@ -29,7 +30,7 @@ import {
   TASK_PAUSED,
   PROJECT_A,
 } from "./boardTestUtils";
-import type { BoardEpic } from "../api/board";
+import type { BoardEpic, BoardTask } from "../api/board";
 
 // The story card kebab's per-entity action surface (owner ask
 // 2026-11-14): every item is CONDITIONAL on the row's state — the
@@ -282,6 +283,101 @@ describe("BoardPage story card kebab — actions fire their real endpoints", () 
     fireEvent.click(await screen.findByTestId(`task-kebab-${TASK_IN_PROGRESS.short_id}`));
     const reopened = within(screen.getByRole("menu"));
     expect(reopened.getByRole("menuitem", { name: /^○ 2\./ })).toBeInTheDocument();
+  });
+});
+
+// r2 (review finding stale-card-override-mask): the per-card override
+// map is an OPTIMISM vehicle, not a second source of truth — born-RED
+// at the r1 head, both pins below fail there (the override survived
+// its own successful write and masked every later authoritative row).
+describe("BoardPage story card kebab — optimism yields to authoritative rows (stale-card-override-mask)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    seedBoard([...defaultTasks(), TASK_PAUSED]);
+    serveEpics([]);
+  });
+
+  /** Serves per-project task rows from a call-indexed script — the
+   * reads must land the SERVER's truth for each leg (initial, the
+   * write's own invalidation refetch, then the cross-context read). */
+  function scriptReads(perProjectScript: (n: number) => BoardTask[]) {
+    const calls = new Map<string, number>();
+    mockListProjectTasks.mockImplementation(async (pid: string) => {
+      const n = (calls.get(pid) ?? 0) + 1;
+      calls.set(pid, n);
+      return perProjectScript(n).filter((t) => t.project_id === pid);
+    });
+  }
+
+  it("a successful toggle retires its override: a later authoritative criteria edit renders (dialog/second tab/SSE)", async () => {
+    const toggled = {
+      ...TASK_IN_PROGRESS,
+      acceptance_criteria: TASK_IN_PROGRESS.acceptance_criteria.map((c, i) => (i === 1 ? { ...c, met: true } : c)),
+    };
+    // The authoritative row moves UNDERNEATH the closed menu after the
+    // toggle lands: a dialog's full-array replace adds a THIRD
+    // criterion the override's two-item array never saw.
+    const edited = { ...toggled, acceptance_criteria: [...toggled.acceptance_criteria, { text: "Added via dialog", met: false }] };
+    const base = [...defaultTasks(), TASK_PAUSED];
+    const swap = (row: BoardTask) => base.map((t) => (t.id === TASK_IN_PROGRESS.id ? row : t));
+    // n=1 initial read (c2 unmet) → n=2 the toggle's own refetch (c2
+    // met, still two items) → n>=3 the cross-context read (three).
+    scriptReads((n) => (n <= 1 ? base : n === 2 ? swap(toggled) : swap(edited)));
+    mockUpdateTask.mockResolvedValue({ acceptance_criteria: [], mutated_criterion: { index: 1, met: true } });
+
+    const { queryClient } = renderBoard();
+    const menu = await openStoryMenu(TASK_IN_PROGRESS.short_id);
+    fireEvent.click(within(menu).getByRole("menuitem", { name: /^○ 2\./ }));
+    await waitFor(() => expect(mockUpdateTask).toHaveBeenCalledWith("tsk-bbbb0002", { setCriteriaMet: { index: 1, met: true } }));
+    await screen.findByTestId("board-notice");
+
+    // The cross-context update path (board.event / a second tab / the
+    // dialog's save): the invalidated read lands the EDITED row.
+    await act(async () => {
+      await queryClient.invalidateQueries({ queryKey: ["board"] });
+    });
+
+    // The authoritative third criterion renders — the retired override
+    // no longer masks it (at the r1 head this stayed invisible for the
+    // page's lifetime).
+    fireEvent.click(await screen.findByTestId(`task-kebab-${TASK_IN_PROGRESS.short_id}`));
+    const reopened = within(screen.getByRole("menu"));
+    expect(reopened.getByRole("menuitem", { name: /3\. Added via dialog/ })).toBeInTheDocument();
+    // The server's row also carries the toggle itself — c2 renders met
+    // from AUTHORITATIVE data, not from a surviving override.
+    expect(reopened.getByRole("menuitem", { name: /^✓ 2\./ })).toBeInTheDocument();
+  });
+
+  it("a successful pause retires its override: a later authoritative resume renders — no stale badge, no 409-bait Resume item", async () => {
+    const pausedRow = { ...TASK_IN_PROGRESS, paused: true };
+    const resumedRow = { ...TASK_IN_PROGRESS, paused: false };
+    const base = [...defaultTasks(), TASK_PAUSED];
+    const swap = (row: BoardTask) => base.map((t) => (t.id === TASK_IN_PROGRESS.id ? row : t));
+    // n=1 initial (unpaused) → n=2 the pause's own refetch (paused) →
+    // n>=3 the cross-context read (a manager resumed it elsewhere).
+    scriptReads((n) => (n <= 1 ? base : n === 2 ? swap(pausedRow) : swap(resumedRow)));
+    mockPauseTask.mockResolvedValue(pausedRow);
+
+    const { queryClient } = renderBoard();
+    const menu = await openStoryMenu(TASK_IN_PROGRESS.short_id);
+    fireEvent.click(within(menu).getByRole("menuitem", { name: "Pause story" }));
+    await waitFor(() => expect(mockPauseTask).toHaveBeenCalledWith("tsk-bbbb0002"));
+    await screen.findByTestId("board-notice");
+    // The pause renders (now from the server's own refetched row).
+    await waitFor(() => expect(screen.getByTestId("task-card-tsk-bbbb0002").textContent).toContain("paused"));
+
+    // Cross-context: the invalidated read lands the row RESUMED.
+    await act(async () => {
+      await queryClient.invalidateQueries({ queryKey: ["board"] });
+    });
+
+    // The badge clears and the kebab offers Pause (not the stale
+    // Resume item that would 409 at the server).
+    await waitFor(() => expect(screen.getByTestId("task-card-tsk-bbbb0002").textContent).not.toContain("paused"));
+    fireEvent.click(await screen.findByTestId(`task-kebab-${TASK_IN_PROGRESS.short_id}`));
+    const reopened = within(screen.getByRole("menu"));
+    expect(reopened.getByRole("menuitem", { name: "Pause story" })).toBeInTheDocument();
+    expect(reopened.queryByRole("menuitem", { name: "Resume story" })).toBeNull();
   });
 });
 

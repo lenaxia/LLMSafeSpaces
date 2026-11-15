@@ -857,10 +857,11 @@ export function BoardPage() {
   // 2026-11-14) ----------------------------------------------------------
   // Non-stage writes (pause/resume, the criteria toggles) get their OWN
   // lightweight optimism: a per-card override map flips the visible
-  // badge/criterion immediately, the server's row supersedes it after
-  // the invalidated read lands, and a refusal rolls the override back
-  // and renders the page-level notice (the drag lane owns stage
-  // optimism — the kebab's stage items reuse runMove wholesale).
+  // badge/criterion immediately, the override is CLEARED once the
+  // invalidated read lands the server's authoritative row (r2), and a
+  // refusal rolls it back and renders the page-level notice (the drag
+  // lane owns stage optimism — the kebab's stage items reuse runMove
+  // wholesale).
   const [cardOverrides, setCardOverrides] = useState<Record<string, { paused?: boolean; acceptance_criteria?: BoardTask["acceptance_criteria"] }>>({});
 
   const applyCardOverrides = useCallback(
@@ -871,6 +872,28 @@ export function BoardPage() {
     },
     [cardOverrides],
   );
+
+  /** Retires ONE field's optimism (r2 stale-card-override-mask): the
+   * success path calls it once the invalidated read has landed the
+   * authoritative row, the refusal path calls it to roll back — either
+   * way the override can never outlive the write it optimizes, so a
+   * later authoritative change (dialog criteria edit, second tab, SSE
+   * refetch) always renders. Dropping the entry when its last field
+   * leaves keeps the map from masking rows it no longer speaks for. */
+  const clearCardOverride = useCallback((shortId: string, field: "paused" | "acceptance_criteria") => {
+    setCardOverrides((prev) => {
+      const o = prev[shortId];
+      if (!o || o[field] === undefined) return prev;
+      const retained = { ...o };
+      delete retained[field];
+      if (retained.paused === undefined && !retained.acceptance_criteria) {
+        const next = { ...prev };
+        delete next[shortId];
+        return next;
+      }
+      return { ...prev, [shortId]: retained };
+    });
+  }, []);
 
   /** Pause/resume (#1747 lever): the paused badge flips optimistically;
    * failure rolls it back and renders at page level (the drag lane's
@@ -883,21 +906,20 @@ export function BoardPage() {
       try {
         await (action === "pause" ? boardApi.pauseTask(task.short_id) : boardApi.resumeTask(task.short_id));
         await queryClient.invalidateQueries({ queryKey: ["board"] });
+        // The invalidated read has landed the server's row — retire
+        // this write's optimism so later authoritative changes render.
+        clearCardOverride(task.short_id, "paused");
         setPageNotice(
           action === "pause"
             ? `${task.title}: paused — claim candidacy off; the in-flight worker halts at its turn's boundary.`
             : `${task.title}: resumed — a survived lease continues; a lapsed one re-enters the FIFO pool.`,
         );
       } catch (err) {
-        setCardOverrides((prev) => {
-          const next = { ...prev };
-          delete next[task.short_id];
-          return next;
-        });
+        clearCardOverride(task.short_id, "paused");
         setPageError(toBoardError(err));
       }
     },
-    [queryClient],
+    [clearCardOverride, queryClient],
   );
 
   /** Per-criterion check-off toggle (#1837 P2b's TWO-WAY wire form
@@ -916,17 +938,16 @@ export function BoardPage() {
       try {
         await boardApi.updateTask(task.short_id, { setCriteriaMet: { index, met } });
         await queryClient.invalidateQueries({ queryKey: ["board"] });
+        // The invalidated read has landed the server's row — retire
+        // this write's optimism so later authoritative changes render.
+        clearCardOverride(task.short_id, "acceptance_criteria");
         setPageNotice(`${task.title}: criterion ${index + 1} ${met ? "met" : "unmet"}.`);
       } catch (err) {
-        setCardOverrides((prev) => {
-          const next = { ...prev };
-          delete next[task.short_id];
-          return next;
-        });
+        clearCardOverride(task.short_id, "acceptance_criteria");
         setPageError(toBoardError(err));
       }
     },
-    [applyCardOverrides, queryClient],
+    [applyCardOverrides, clearCardOverride, queryClient],
   );
 
   // The state matrix, pinned by BoardPage.kebab.test.tsx:
