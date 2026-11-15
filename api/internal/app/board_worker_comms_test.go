@@ -38,6 +38,7 @@ import (
 	"go.uber.org/zap"
 
 	agentoc "github.com/lenaxia/llmsafespaces/pkg/agent/opencode"
+	"github.com/lenaxia/llmsafespaces/pkg/board"
 )
 
 // stubOpencode is the 1.18.x-shaped backend: V1 answers, V2 is gone.
@@ -303,7 +304,8 @@ func TestBoardWorkerComms_Messenger_HaltAndResume_RideV1Detached(t *testing.T) {
 	messenger := newBoardMessenger(scope.resolve, newBoardTestSender(adapter))
 
 	start := time.Now()
-	require.NoError(t, messenger(context.Background(), "ses_worker", "halt", wireShortID))
+	require.NoError(t, messenger(context.Background(), "ses_worker",
+		board.Directive{Kind: board.DirectiveHalt, TaskShortID: wireShortID, AuditID: "dir-halt-1"}))
 	assert.Less(t, time.Since(start), 500*time.Millisecond,
 		"a directive send is fire-and-forget — the pause request must not block on the worker's turn")
 
@@ -313,7 +315,8 @@ func TestBoardWorkerComms_Messenger_HaltAndResume_RideV1Detached(t *testing.T) {
 		return v1 >= 1
 	}, 5*time.Second, 20*time.Millisecond, "the halt directive must be delivered over V1")
 
-	require.NoError(t, messenger(context.Background(), "ses_worker", "resume", wireShortID))
+	require.NoError(t, messenger(context.Background(), "ses_worker",
+		board.Directive{Kind: board.DirectiveResume, TaskShortID: wireShortID, AuditID: "dir-resume-1"}))
 	require.Eventually(t, func() bool {
 		v1, _, _ := stub.counts()
 		return v1 >= 2
@@ -323,8 +326,10 @@ func TestBoardWorkerComms_Messenger_HaltAndResume_RideV1Detached(t *testing.T) {
 	assert.Equal(t, 2, v1, "both directives must land on V1 POST /session/:id/message")
 	assert.Equal(t, 0, v2, "no directive may touch the dead V2 route (#755)")
 	require.Len(t, texts, 2)
+	assert.Contains(t, texts[0], "lsp:agent-message-v1", "#2046: the directive carries the sentinel")
 	assert.Contains(t, texts[0], "BOARD PAUSE DIRECTIVE", "the halt text must carry the pause contract")
 	assert.Contains(t, texts[0], wireShortID)
+	assert.Contains(t, texts[1], "lsp:agent-message-v1", "#2046: the directive carries the sentinel")
 	assert.Contains(t, texts[1], "BOARD RESUME DIRECTIVE", "the resume text must carry the resume contract")
 	assert.Contains(t, texts[1], wireShortID)
 }
@@ -340,7 +345,8 @@ func TestBoardWorkerComms_Messenger_Deposed_RideV1Detached(t *testing.T) {
 	scope := &stubScope{}
 	messenger := newBoardMessenger(scope.resolve, newBoardTestSender(adapter))
 
-	require.NoError(t, messenger(context.Background(), "ses_worker", "deposed", wireShortID))
+	require.NoError(t, messenger(context.Background(), "ses_worker",
+		board.Directive{Kind: board.DirectiveDeposed, TaskShortID: wireShortID, AuditID: "dir-deposed-1"}))
 	require.Eventually(t, func() bool {
 		v1, _, _ := stub.counts()
 		return v1 >= 1

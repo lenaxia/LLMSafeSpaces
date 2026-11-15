@@ -310,12 +310,29 @@ type WorkerSpawner func(ctx context.Context, claim *Claim) (sessionID string, er
 // interrupt seam in production; no-op by default.
 type WorkerAborter func(ctx context.Context, taskID, assigneeSession string) error
 
-// WorkerMessenger delivers a pause/resume DIRECTIVE to an in-flight
-// worker's session (#1747 pause-must-pause): it lands at the current
-// turn's boundary (finish the thought, then stop) — NOT an abort. Rides
-// the orchestrator↔worker message machinery in production; no-op by
-// default.
-type WorkerMessenger func(ctx context.Context, sessionID, directive, taskShortID string) error
+// Directive is one structured worker directive (#2046): the kind (the
+// DirectiveHalt/DirectiveResume/DirectiveDeposed vocabulary), the task
+// it addresses, and the audit id that keys its delivery event. The
+// audit id is minted per delivery by the cascade — the same id rides
+// the sentinel in the composed message and the "directive" board_event,
+// making every delivered directive attributable end to end.
+type Directive struct {
+	Kind        string
+	TaskShortID string
+	AuditID     string
+}
+
+// WorkerMessenger delivers a pause/resume/deposed DIRECTIVE to a
+// worker's session (#1747 pause-must-pause, #2046 discipline): it lands
+// at the current turn's boundary (finish the thought, then stop) — NOT
+// an abort. Rides the orchestrator↔worker message machinery in
+// production; no-op by default. The return value is the DELIVERY
+// OUTCOME the cascade audits: nil = dispatched (detached delivery
+// accepted; a busy target queues server-side at its turn boundary), an
+// error = a failure observed inside the seam's fast-fail window (scope
+// miss, unresolvable session, dead-target 4xx) — best-effort only, the
+// caller WARNs and audits, never fails the pause/resume.
+type WorkerMessenger func(ctx context.Context, sessionID string, d Directive) error
 
 // BounceRedispatcher delivers the #1959 bounce re-dispatch turn to the
 // ORIGINAL implementer's EXISTING session (the owner ruling's

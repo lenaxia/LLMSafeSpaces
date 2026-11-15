@@ -15,19 +15,25 @@ package board_test
 import (
 	"context"
 	"fmt"
+	"sync"
 
 	"github.com/stretchr/testify/require"
 
 	"github.com/lenaxia/llmsafespaces/pkg/board"
 )
 
-// fakeMessenger records halt/resume directives (#1747 pause-must-pause).
+// fakeMessenger records halt/resume directives (#1747 pause-must-pause;
+// #2046 structured: kind + task + the audit id that keys the audit
+// event). Mutex-guarded: the cascades deliver with bounded concurrency.
 type fakeMessenger struct {
-	calls []string // "directive:session:task"
+	mu    sync.Mutex
+	calls []string // "directive:session:task:auditID"
 }
 
-func (f *fakeMessenger) Deliver(_ context.Context, sessionID, directive, taskShortID string) error {
-	f.calls = append(f.calls, directive+":"+sessionID+":"+taskShortID)
+func (f *fakeMessenger) Deliver(_ context.Context, sessionID string, d board.Directive) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.calls = append(f.calls, d.Kind+":"+sessionID+":"+d.TaskShortID+":"+d.AuditID)
 	return nil
 }
 

@@ -462,3 +462,84 @@ func TestLoopbackL2_BusyMessageDeliversAtBoundary(t *testing.T) {
 	assert.Equal(t, 2, assistantTurns, "the queued message was ANSWERED as its own turn")
 	assert.True(t, sawQueued, "the queued message must be persisted as the next user turn")
 }
+
+// TestLoopbackL2_DirectiveDeliversAtBoundaryWithParts is the #2046
+// directive e2e: a halt directive — the sentinel line
+// (lsp:agent-message-v1, mode board-directive) plus the pause prose,
+// the exact wire shape newBoardMessenger composes — posted to a BUSY
+// session must (a) deliver at the turn boundary (admit-and-schedule,
+// never a drop), and (b) persist WITH its text parts intact. (b) is
+// the live-binary half of the empty-parts incident evidence: the
+// normal admission path keeps the parts, narrowing the incident's
+// zero-parts rows to the wedged-admission window (#2048's
+// reproduction territory).
+func TestLoopbackL2_DirectiveDeliversAtBoundaryWithParts(t *testing.T) {
+	mock := &mockProvider{delay: 4 * time.Second}
+	client := startLoopbackL2(t, 14118, 14158, mock)
+	ctx, cancel := context.WithTimeout(context.Background(), 180*time.Second)
+	defer cancel()
+
+	id, err := client.SessionCreate(ctx, "directive-boundary")
+	require.NoError(t, err)
+	defer func() { _ = client.SessionDelete(context.Background(), id) }()
+
+	first := make(chan error, 1)
+	go func() {
+		_, err := client.SessionSend(context.Background(), id, "turn one: write a word", "", nil)
+		first <- err
+	}()
+	require.Eventually(t, func() bool {
+		busy, err := client.GetSessionStatuses(ctx)
+		return err == nil && busy[id] == "busy"
+	}, 15*time.Second, 200*time.Millisecond, "turn one must be running")
+
+	// The directive text — the byte shape board_worker_comms composes
+	// (sentinel line + pause prose), verbatim modulo ids.
+	directive := `<!-- lsp:agent-message-v1 {"mode":"board-directive","directive":"halt","taskId":"tsk-loopback","auditId":"dir-loop-1"} -->` + "\n" +
+		"BOARD PAUSE DIRECTIVE: your task tsk-loopback has been PAUSED by the owner. " +
+		"Finish your current thought, then STOP and wait."
+	msgDone := make(chan error, 1)
+	go func() {
+		_, err := client.SessionSend(context.Background(), id, directive, "", nil)
+		msgDone <- err
+	}()
+	time.Sleep(2 * time.Second) // the POST is in flight against the busy session
+
+	select {
+	case err := <-first:
+		require.NoError(t, err, "turn one must complete cleanly")
+	case <-time.After(60 * time.Second):
+		t.Fatal("turn one never completed")
+	}
+
+	select {
+	case err := <-msgDone:
+		require.NoError(t, err, "the directive POST must complete at the boundary — never a drop")
+	case <-time.After(120 * time.Second):
+		t.Fatal("directive POST never completed — the directive did NOT deliver at the turn boundary")
+	}
+
+	body, _, err := client.SessionMessagesRaw(ctx, id, 10, "")
+	require.NoError(t, err)
+	var msgs []struct {
+		Info struct {
+			Role string `json:"role"`
+		} `json:"info"`
+	}
+	require.NoError(t, json.Unmarshal(body, &msgs))
+	userTurns, assistantTurns := 0, 0
+	for _, m := range msgs {
+		switch m.Info.Role {
+		case "user":
+			userTurns++
+		case "assistant":
+			assistantTurns++
+		}
+	}
+	assert.Equal(t, 2, userTurns, "two user turns: the original + the boundary-delivered directive")
+	assert.Equal(t, 2, assistantTurns, "the directive was ANSWERED as its own turn")
+	assert.True(t, strings.Contains(string(body), "lsp:agent-message-v1"),
+		"the directive's sentinel must be persisted (parts intact — the anti-empty-parts pin)")
+	assert.True(t, strings.Contains(string(body), "BOARD PAUSE DIRECTIVE"),
+		"the directive's prose must be persisted with its parts")
+}

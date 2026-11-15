@@ -185,3 +185,27 @@ func TestCharterPrompt_PersonaCharterDropsImplementerTrailer(t *testing.T) {
 		t.Fatalf("persona-less charter keeps today's trailer:\n%s", worker)
 	}
 }
+
+// TestCharterPrompt_RendersDirectiveContract — #2046 R5: every charter
+// documents the halt/resume directive contract (what a directive means
+// for an in-flight charter: turn-boundary stop/continue, never an
+// abort, never a restart) — both the persona and worker trailers.
+func TestCharterPrompt_RendersDirectiveContract(t *testing.T) {
+	for name, c := range map[string]*board.Claim{
+		"worker":  {ShortID: "tsk-dddd0007", ClaimToken: "tk7"},
+		"persona": {ShortID: "tsk-dddd0008", ClaimToken: "tk8", Persona: &board.PersonaConfig{RoleID: "implementer"}},
+	} {
+		got := boardCharterPrompt(c)
+		for _, want := range []string{
+			"BOARD DIRECTIVES (halt/resume)",
+			"finish your current thought, then STOP",
+			"409 task_paused",
+			"BOARD RESUME DIRECTIVE",
+			"never an abort",
+		} {
+			if !strings.Contains(got, want) {
+				t.Fatalf("%s charter missing directive contract %q:\n%s", name, want, got)
+			}
+		}
+	}
+}

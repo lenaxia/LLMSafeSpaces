@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/google/uuid"
@@ -180,6 +181,52 @@ func (s *Service) commitPublishing(ctx context.Context, tx pgx.Tx, pending ...Ev
 		s.publishCommitted(evt)
 	}
 	return nil
+}
+
+// recordDirectiveEvent writes one directive-delivery audit row (#2046
+// R2): action "directive", id sentinel-keyed "directive:<task>:<auditID>"
+// — idempotent under replay like the nudge event, attributing every
+// halt/resume/deposed delivery to its task, session, and outcome.
+// Best-effort by contract: the pause/resume that triggered the delivery
+// has already committed; an audit-write failure WARNs and is otherwise
+// dropped (the flags stay authoritative — the event is the trail, never
+// a gate).
+func (s *Service) recordDirectiveEvent(ctx context.Context, projectID, taskID, session string, d Directive, outcome string, deliverErr error) {
+	if projectID == "" || taskID == "" {
+		slog.WarnContext(ctx, "board: directive audit skipped (unaddressable task)",
+			"directive", d.Kind, "task", d.TaskShortID, "session", session, "auditId", d.AuditID)
+		return
+	}
+	payload := map[string]any{
+		"task_id":   taskID,
+		"short_id":  d.TaskShortID,
+		"session":   session,
+		"directive": d.Kind,
+		"outcome":   outcome,
+		"audit_id":  d.AuditID,
+	}
+	if deliverErr != nil {
+		payload["error"] = deliverErr.Error()
+	}
+	tx, err := s.store.pool.Begin(ctx)
+	if err != nil {
+		slog.WarnContext(ctx, "board: directive audit event begin failed",
+			"directive", d.Kind, "task", d.TaskShortID, "error", err.Error())
+		return
+	}
+	defer func() { _ = tx.Rollback(ctx) }() //nolint:errcheck // best-effort audit: rollback only when the commit below did not land
+	evt, err := recordEventTx(ctx, tx, projectID,
+		"directive:"+taskID+":"+d.AuditID, "directive", "task", taskID,
+		Actor{Kind: ActorSystem, Surface: "engine"}, payload)
+	if err != nil {
+		slog.WarnContext(ctx, "board: directive audit event write failed",
+			"directive", d.Kind, "task", d.TaskShortID, "error", err.Error())
+		return
+	}
+	if err := s.commitPublishing(ctx, tx, evt); err != nil {
+		slog.WarnContext(ctx, "board: directive audit event commit failed",
+			"directive", d.Kind, "task", d.TaskShortID, "error", err.Error())
+	}
 }
 
 // replayOf is the caller-keyed replay probe for actions whose
