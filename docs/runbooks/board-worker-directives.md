@@ -36,10 +36,20 @@ BOARD PAUSE DIRECTIVE: your task tsk-… has been PAUSED by the owner. …
 
 ## Attribution (diagnosing an injection)
 
-Every directive delivery writes a `board_events` row (action `directive`, id `directive:<task>:<auditID>`) carrying task, session, directive kind, and delivery outcome (`dispatched` or `failed` + error). To attribute a user-role message found in a worker transcript:
+Every directive delivery writes a `board_events` row (action `directive`, id `directive:<task-UUID>:<auditID>`) carrying task, session, directive kind, and delivery outcome (`dispatched` or `failed` + error). To attribute a user-role message found in a worker transcript:
 
-1. Does it start with the sentinel? Parse `taskId` + `auditId`.
-2. Look up `board_events` for id `directive:<task id>:<auditId>` — its payload names the exact delivery.
+1. Does it start with the sentinel? Parse `taskId` + `auditId` — note the sentinel's `taskId` is the task **short id** (`tsk-…`), while the event **id** embeds the task **UUID**; do not assemble the event id from the sentinel's `taskId` verbatim (that lookup finds no row).
+2. Look the row up by the audit id (unique per delivery — it rides both the sentinel and the event payload):
+
+   ```sql
+   SELECT * FROM board_events
+   WHERE action = 'directive' AND payload->>'audit_id' = '<auditId>';
+   ```
+
+   Worked example — a transcript message opening with
+   `<!-- lsp:agent-message-v1 {"mode":"board-directive","directive":"halt","taskId":"tsk-directed-worker","auditId":"a1b2c3"} -->`
+   resolves via `payload->>'audit_id' = 'a1b2c3'` to the row whose payload names the task UUID, the session, and the delivery `outcome` for that exact send.
+
 3. No sentinel and no matching event? The message is not a board directive (candidate senders: `send_message` from a sibling agent — which carries its own `fromSession` sentinel — or a human chat message, which carries neither).
 
 Delivery failures WARN in the API log (`board: worker directive delivery failed …`) and surface in the event payload; the pause/resume itself never fails on an unreachable worker (the flags are authoritative; a lost directive self-heals at lease lapse).
