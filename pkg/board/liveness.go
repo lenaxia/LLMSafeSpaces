@@ -173,7 +173,23 @@ type NudgePayload struct {
 	NudgeID     string
 	TaskShortID string
 	TaskID      string
+	// Reason attributes the nudge to the ladder arm that armed it (""
+	// = the ordinary quiet path). The #2043 heartbeat-lapse arm stamps
+	// NudgeReasonHeartbeatLapse so the harness-side sentinel — and any
+	// bus projection of it — can say WHY the worker was asked, not just
+	// that it was asked (the arm's always-on observability, per the
+	// issue's "or the nudge payload carries it" arm).
+	Reason string
 }
+
+// NudgeReasonHeartbeatLapse is the sentinel arm that armed this nudge:
+// the worker-anchored progress clock is stale past
+// HeartbeatLapseThreshold, so observation evidence was overridden and
+// the quiet arms took the row. The worker's move is the same as any
+// nudge (respond first, then continue/advance/fail), but the
+// attribution distinguishes "you were quiet" from "you have not
+// evidenced progress in N minutes" in every surface the payload feeds.
+const NudgeReasonHeartbeatLapse = "heartbeat_lapse"
 
 // NudgeSender delivers one sentinel nudge. An error means delivery
 // could not be attempted (bounce/transport) — the engine then treats

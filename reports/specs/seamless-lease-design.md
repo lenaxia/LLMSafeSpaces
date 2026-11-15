@@ -230,3 +230,83 @@ The AI reviewer's CHANGES_REQUESTED round, folded in (worklog §9 carries the fu
   the mass-quiet incident class this design answers).
 - **The hub evicts**: send-marks TTL out at 2h (windows are 45m); the frame/cursor maps
   cap with oldest-quarter pruning; a degraded sweep increments a visible gauge.
+
+## #2043 amendment (2026-11-15, the FMD-Web incident remediation): the two clocks + the heartbeat-lapse arm
+
+The 2026-11-15 incident (#2040) exposed the ladder's original sin: the renewal write stamped
+`now()` into `tasks.last_progress_at` (reconciler's `ladderRenew` arm), so a row the platform kept
+renewing was indistinguishable from a row the worker kept progressing — each renewal deferred
+wedge/reclaim detection by a full lease window, indefinitely (renewal stamps 00:27/00:32/01:12 read
+as a working thread for hours). The fix splits one overloaded column into two clocks and builds an
+arm on the honest signal.
+
+### The two clocks (the definition)
+
+- **The renewal clock — `tasks.last_renewed_at`.** When the PLATFORM last extended the lease on
+  evidence. Writers: the ladder's `ladderRenew` arm ONLY (movement, post-nudge reaction, busy-gate,
+  heartbeat-response renewals — the write that used to lie). The suspension freeze (suspend.go) keeps
+  its deliberate no-clock discipline (it never touched `last_progress_at` either; its renewals are
+  evented with source `workspace_suspended` — extending it here changes no decision).
+- **The progress clock — `tasks.last_progress_at`.** When the WORKER last evidenced progress.
+  Writers: claim mints (`stage.go`, `engine.go`, `persona.go` — claim time is a legitimate anchor)
+  and heartbeat RESPONSES (`stage.go` — the worker-declared `observedProgressAt`, #1847-clamped
+  server-side). NOTHING else writes it; in particular the ladder renewal does not, ever (born-red
+  pinned: `TestPin_2043A_RenewalWritesRenewedClockNotProgress`).
+
+Backfill (migration 000055, conservative mid-deploy): `last_renewed_at` initializes from
+`last_progress_at` — in-flight rows carry today's semantics across the deploy; the arm first fires
+only after the threshold has genuinely elapsed with no worker progress. No behavior jump at the
+boundary. NULL progress rows stay NULL in the renewal clock.
+
+### The heartbeat-lapse arm
+
+When a lease-due row's PROGRESS clock is older than `HeartbeatLapseThreshold` (new
+`board.EngineConfig` knob beside `LeaseDuration`, validated the same way; default 90m = 2 lease
+windows: one nudge-measurement window + one response-grace window), the observation plane loses
+renewal authority for the row: `MovedSinceLastSweep`, `Busy`, and `EventsAfterNudge` are read as
+false — the row proceeds through the ordinary quiet arms (nudge → heartbeat-or-wedge). Frames
+without progress were exactly the incident's renewal-forever orbit, so evidence of ACTIVITY is no
+longer evidence of LIFE past the threshold. Deliberately preserved by the override's placement
+(after the response rung, before the evidence rungs):
+
+- **The heartbeat response still wins** (`hbAfterNudge` is checked before the override): a worker
+  that answers the sentinel renews — and its response's `observedProgressAt` write refreshes the
+  progress clock, so the arm is reset for free. The arm is STATELESS (recomputed from the row each
+  sweep): any worker-anchored progress write — heartbeat response or a fresh claim mint — resets it.
+- **Dead-evidence reclaim is preserved** (a provably-gone session still takes the fast wall-clock
+  path; the arm suppresses RENEWALS, not reclaims).
+- **The no-evidence floor is unchanged** (Nil source rows were already nudge → heartbeat-or-wedge;
+  the arm only hardens the observed rungs).
+- **Nil progress = lapsed-by-default** (no evidence of worker progress is no movement veto — the
+  honest direction; pinned).
+- **The arm touches no accounting**: attempts, `failure_count`, and `busy_renews` are untouched by
+  the arm itself — escalation belongs to the wedge verdict the arm feeds, and to #2044's orbit
+  budget.
+- **The suspension freeze outranks the arm** (freeze runs before the ladder): a suspended workspace
+  cannot answer, so its rows renew without progress evaluation — the 2026-11-13/14 class stays
+  closed.
+
+The lapse computation is SERVER-side in the victims query (`last_progress_at IS NULL OR
+last_progress_at < now() - threshold`) — one clock domain (Postgres `now()`), the same discipline as
+every other ladder comparison; never a cross-process wall-clock read.
+
+Observability (R3): the arm is always-on visible through (a) the new counter
+`board_ladder_heartbeat_lapse_total` — renewal evidence suppressed by a stale progress clock, the
+incident's counterfactual in one scrape — and (b) the nudge payload's `Reason` field
+(`heartbeat_lapse`), so the harness-side sentinel and any bus projection attribute WHY the worker
+was asked. Deliberately NOT a label on `board_lease_renewals_total`: a lapse suppression is the
+opposite of a renewal decision, and that counter's forensic value is its honesty (renewals with a
+movement/heartbeat source on sessions that emitted nothing is the #2040 signature) — the issue's
+"or the nudge payload carries it" alternative arm is the chosen shape. Board events are unchanged
+(nudges and wedges already audit).
+
+### Boundary with #2044 (the no-advance budget — stated per the issue)
+
+A heartbeat RESPONSE writes the worker-DECLARED `observedProgressAt` into the progress clock: a
+compliant-but-stuck worker could declare fresh progress every nudge episode and keep the lapse arm
+reset forever. That loop is #2044's jurisdiction — declared progress without stage advance does not
+reset ITS budget counter. This issue's arm trusts the progress clock exactly as far as
+`last_heartbeat_at` semantics already do (an ordinal arrival signal), no further; the two stories
+compose: the lapse arm bounds evidence-based renewal, #2044's budget bounds response-based renewal.
+Pins here (`TestPin_2043C_WorkerProgressResetsArm`) enforce the RESET, not the budget — mutating
+them to also bound declared-without-advance stamps belongs to #2044's born-red set.

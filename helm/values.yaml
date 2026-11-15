@@ -1970,6 +1970,15 @@ board:
   # pinned (15m burned live workers mid-verification on long tool
   # calls; heartbeats remain evidence-gated, #1685).
   leaseSeconds: 2700
+  # #2043 two-clock split: how stale (seconds) the worker-anchored
+  # progress clock (tasks.last_progress_at — claim mints and heartbeat
+  # responses are its only writers) may get on a lease-due row before
+  # the heartbeat-lapse arm fires: observation renewal evidence
+  # (movement/busy/post-nudge reaction) is overridden and the row takes
+  # the quiet arms (nudge → heartbeat-or-wedge). Default 90m = 2 lease
+  # windows (one nudge measurement + one response grace). Nil progress
+  # lapses immediately; any worker progress write resets the arm.
+  heartbeatLapseSeconds: 5400
   # 429 cooldown in seconds, applied to BOTH the task and the project's
   # worker slots (new claims into a throttled project pause).
   throttleBackoffSeconds: 300
