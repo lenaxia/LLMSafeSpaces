@@ -364,7 +364,8 @@ func helmTemplateErr(t *testing.T, valuesYAML string) error {
 	cmd := exec.Command("helm", "template", "test-release", chartDir(t), "-n", "test-ns",
 		"--kube-version", testKubeVersion, "-f", valuesPath,
 		"--set", "controller.agentdDelivery.image="+testAgentdPin,
-		"--set", "controller.opencodeDelivery.image="+testOpencodePin)
+		"--set", "controller.opencodeDelivery.image="+testOpencodePin,
+		"--set", "controller.piDelivery.image="+testPiPin)
 	var out bytes.Buffer
 	cmd.Stdout = &out
 	cmd.Stderr = &out

@@ -76,6 +76,8 @@ var installSetAllowlist = map[string]bool{
 	"controller.agentdDelivery.binarySHA256Amd64": true, "controller.agentdDelivery.binarySHA256Arm64": true,
 	"controller.opencodeDelivery.image":             true,
 	"controller.opencodeDelivery.binarySHA256Amd64": true, "controller.opencodeDelivery.binarySHA256Arm64": true,
+	"controller.piDelivery.image":             true,
+	"controller.piDelivery.binarySHA256Amd64": true, "controller.piDelivery.binarySHA256Arm64": true,
 	"controller.inferenceRelay.router.image.repository": true, "controller.inferenceRelay.router.image.tag": true,
 }
 
@@ -676,6 +678,9 @@ var goldenInstallInventory = []string{
 	`--set "controller.opencodeDelivery.image=${{ env.OPENCODE_REF }}" \`,
 	`--set "controller.opencodeDelivery.binarySHA256Amd64=${{ env.OPENCODE_BINARY_SHA }}" \`,
 	`--set "controller.opencodeDelivery.binarySHA256Arm64=${{ env.OPENCODE_BINARY_SHA }}" \`,
+	`--set "controller.piDelivery.image=${{ env.PI_REF }}" \`,
+	`--set "controller.piDelivery.binarySHA256Amd64=${{ env.PI_BINARY_SHA }}" \`,
+	`--set "controller.piDelivery.binarySHA256Arm64=${{ env.PI_BINARY_SHA }}" \`,
 	"--set controller.inferenceRelay.router.image.repository=llmsafespaces/relay-router \\",
 	`--set "controller.inferenceRelay.router.image.tag=$IMAGE_TAG" \`,
 	"--wait --timeout 10m",
@@ -998,8 +1003,8 @@ func TestPostureGate_BootstrapReusesNightlySequence(t *testing.T) {
 	} {
 		require.Contains(t, joined, literal, "the nightly bootstrap must contribute %q", literal)
 	}
-	// r17 finding 3: the $GITHUB_ENV runtime channel — exactly the four
-	// legitimate delivery-pin writes, exact-pinned; any other write to
+	// r17 finding 3: the $GITHUB_ENV runtime channel — exactly the six
+	// legitimate delivery-pin writes (agentd + opencode + pi), exact-pinned; any other write to
 	// the runner env file is drift (an accidental NS/IMAGE_TAG overwrite
 	// re-scopes or word-splits downstream steps).
 	raw := mustRead(t, postureGateWorkflow)
@@ -1008,12 +1013,14 @@ func TestPostureGate_BootstrapReusesNightlySequence(t *testing.T) {
 		`echo "AGENTD_BINARY_SHA=$BINARY_SHA" >> "$GITHUB_ENV"`,
 		`echo "OPENCODE_REF=$OPENCODE_REF" >> "$GITHUB_ENV"`,
 		`echo "OPENCODE_BINARY_SHA=$OPENCODE_BINARY_SHA" >> "$GITHUB_ENV"`,
+		`echo "PI_REF=$PI_REF" >> "$GITHUB_ENV"`,
+		`echo "PI_BINARY_SHA=$PI_BINARY_SHA" >> "$GITHUB_ENV"`,
 	} {
 		require.Contains(t, raw, write,
 			"the legitimate GITHUB_ENV write must be exactly this line: %q", write)
 	}
-	require.Equal(t, 4, strings.Count(raw, ">> \"$GITHUB_ENV\""),
-		"exactly the four delivery-pin GITHUB_ENV writes may exist — any other runner-env write is drift (the r8 env-exact-map class, one tier down)")
+	require.Equal(t, 6, strings.Count(raw, ">> \"$GITHUB_ENV\""),
+		"exactly the six delivery-pin GITHUB_ENV writes may exist — any other runner-env write is drift (the r8 env-exact-map class, one tier down)")
 	// r19 finding 3: the count must cover EVERY redirect spelling — a
 	// single-`>` truncate write evaded the exact-string count.
 	// r19 finding 1 + r20 finding 1: the CHANNEL is the pinned surface —
@@ -1021,8 +1028,8 @@ func TestPostureGate_BootstrapReusesNightlySequence(t *testing.T) {
 	// spelling (unquoted, tee -a, indirection `ENVF="$GITHUB_ENV"`,
 	// single->) — a fifth mention of the channel is drift by
 	// definition; verified false-positive-free on pristine.
-	require.Equal(t, 4, strings.Count(raw, "GITHUB_ENV"),
-		"exactly four GITHUB_ENV occurrences may exist in the whole workflow — the channel is the pinned surface, not one spelling of it (any fifth write or indirection is drift)")
+	require.Equal(t, 6, strings.Count(raw, "GITHUB_ENV"),
+		"exactly six GITHUB_ENV occurrences may exist in the whole workflow — the channel is the pinned surface, not one spelling of it (any seventh write or indirection is drift)")
 }
 
 // Pin (f): a failed cold install IS a red gate — the assertions carry

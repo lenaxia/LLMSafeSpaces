@@ -19,6 +19,8 @@ package app
 
 import (
 	"context"
+	"log/slog"
+	"strings"
 
 	"github.com/lenaxia/llmsafespaces/pkg/board"
 	"github.com/lenaxia/llmsafespaces/pkg/types"
@@ -122,4 +124,61 @@ func seedBuiltinReviewerRole(ctx context.Context, store boardRoleStore) error {
 		IsDefault:   false,
 	}, configJSON)
 	return err
+}
+
+// seedBuiltinBoardRoles seeds the shipped stage-persona vocabulary
+// (2026-11-13 owner ask): the six board.BuiltinBoardRoles —
+// implementer/reviewer pairs for coding, data analysis, and writing —
+// so a board author can reference stagePersonas roles before authoring
+// any of their own. The names carry the stage-intent convention
+// ("implementer: coding" / "reviewer: coding" …); the naming is the
+// ONLY stage signal — deliberately NO stage enforcement exists (the
+// owner's explicit non-goal: any role may sit in any stage).
+//
+// Idempotent PER ROLE: one platform-scope list, then a create only for
+// slugs the list lacks (re-starts and re-seeds never duplicate, and an
+// owner-edited platform namesake is left untouched). Like the reviewer
+// seed, the list is platform scope only — org-scoped namesakes never
+// suppress a platform seed. Best-effort at the caller (app.go): a
+// transient DB outage warns and retries at the next boot.
+func seedBuiltinBoardRoles(ctx context.Context, store boardRoleStore) error {
+	roles, err := store.ListAgentRoles(ctx, "platform", "")
+	if err != nil {
+		return err
+	}
+	present := make(map[string]bool, len(roles))
+	for _, r := range roles {
+		if r != nil {
+			present[r.Slug] = true
+		}
+	}
+	seeded := make([]string, 0, len(board.BuiltinBoardRoles()))
+	for _, def := range board.BuiltinBoardRoles() {
+		if present[def.Slug] {
+			continue // already present — this role's seed is a no-op
+		}
+		system := def.SystemPrompt
+		configJSON, err := types.MarshalRoleConfig(&types.RoleConfig{
+			Version: types.RoleConfigVersion,
+			System:  &system,
+		})
+		if err != nil {
+			return err
+		}
+		if _, err := store.CreateAgentRole(ctx, &types.AgentRole{
+			Scope:       "platform",
+			Name:        def.Name,
+			Slug:        def.Slug,
+			Description: def.Description,
+			IsDefault:   false,
+		}, configJSON); err != nil {
+			return err
+		}
+		seeded = append(seeded, def.Slug)
+	}
+	if len(seeded) > 0 {
+		slog.InfoContext(ctx, "board: built-in stage-persona roles seeded",
+			"slugs", strings.Join(seeded, ", "))
+	}
+	return nil
 }

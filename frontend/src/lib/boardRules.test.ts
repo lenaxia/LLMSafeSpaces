@@ -10,6 +10,7 @@ import {
   doneReadiness,
   suggestBoardItems,
   describeBoardError,
+  sortDoneNewestFirst,
   BOARD_STAGES,
   MAIN_STAGES,
   SIDE_STAGES,
@@ -255,5 +256,58 @@ describe("describeBoardError", () => {
 
   it("falls back to the exception message", () => {
     expect(describeBoardError({ message: "network down" }).message).toBe("network down");
+  });
+});
+
+// ─── Done column ordering (owner ask 2026-11-13) ─────────────────────────────
+
+describe("sortDoneNewestFirst (owner ask 2026-11-13)", () => {
+  const done = (n: number, enteredAt: string, updatedAt = enteredAt) => ({
+    short_id: `tsk-done${String(n).padStart(4, "0")}`,
+    stage_entered_at: enteredAt,
+    updated_at: updatedAt,
+  });
+
+  it("orders by stage_entered_at desc — newest-done first", () => {
+    const out = sortDoneNewestFirst([
+      done(1, "2026-10-01T00:00:00Z"),
+      done(2, "2026-10-13T00:00:00Z"),
+      done(3, "2026-10-07T00:00:00Z"),
+    ]);
+    expect(out.map((t) => t.short_id)).toEqual(["tsk-done0002", "tsk-done0003", "tsk-done0001"]);
+  });
+
+  it("degrades to updated_at when stage_entered_at is absent or unparseable", () => {
+    const out = sortDoneNewestFirst([
+      { short_id: "tsk-a", stage_entered_at: "", updated_at: "2026-10-02T00:00:00Z" },
+      { short_id: "tsk-b", stage_entered_at: "not-a-date", updated_at: "2026-10-09T00:00:00Z" },
+      done(1, "2026-10-05T00:00:00Z"),
+    ]);
+    // b (10-09, via updated_at) > done1 (10-05) > a (10-02).
+    expect(out.map((t) => t.short_id)).toEqual(["tsk-b", "tsk-done0001", "tsk-a"]);
+  });
+
+  it("timestamp-less rows fall to the deterministic short_id tiebreak (asc), after the clocked", () => {
+    const out = sortDoneNewestFirst([
+      { short_id: "tsk-zeta", stage_entered_at: "", updated_at: "" },
+      done(1, "2026-10-01T00:00:00Z"),
+      { short_id: "tsk-alpha", stage_entered_at: "", updated_at: "" },
+    ]);
+    expect(out.map((t) => t.short_id)).toEqual(["tsk-done0001", "tsk-alpha", "tsk-zeta"]);
+  });
+
+  it("equal clocks tiebreak by short_id asc", () => {
+    const out = sortDoneNewestFirst([
+      done(2, "2026-10-01T00:00:00Z"),
+      done(1, "2026-10-01T00:00:00Z"),
+    ]);
+    expect(out.map((t) => t.short_id)).toEqual(["tsk-done0001", "tsk-done0002"]);
+  });
+
+  it("does not mutate the input array", () => {
+    const input = [done(1, "2026-10-01T00:00:00Z"), done(2, "2026-10-02T00:00:00Z")];
+    const snapshot = [...input];
+    sortDoneNewestFirst(input);
+    expect(input).toEqual(snapshot);
   });
 });

@@ -59,6 +59,12 @@ func overlayEnvKeys() []string {
 		"LLMSAFESPACES_AGENTD_BINARY",
 		"LLMSAFESPACES_AGENTD_SHA256_AMD64",
 		"LLMSAFESPACES_AGENTD_SHA256_ARM64",
+		// The pi overlay contract keys (pi_overlay_test.go rides the same
+		// subprocess isolation).
+		"PI_IMAGE_VOLUME",
+		"LLMSAFESPACES_PI_BINARY",
+		"LLMSAFESPACES_PI_SHA256_AMD64",
+		"LLMSAFESPACES_PI_SHA256_ARM64",
 		"LLMSAFESPACES_CONTROL_SOCKET_ADDR",
 		// US-70.1: these tests exercise the overlay spawn path, not the
 		// spawn-env pull. Without filtering, an ambient workspace-pod
