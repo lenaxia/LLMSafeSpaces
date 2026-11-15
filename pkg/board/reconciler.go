@@ -260,19 +260,6 @@ func (r *Reconciler) advanceWatermark(ctx context.Context, cutoff, sweepHigh tim
 // forever nor lock the salvage lever out of the zombie row).
 const boardBusyRenewCap = 3
 
-// boardOpaqueRenewCap bounds the SECOND weak channel's authority
-// (#2042): consecutive opaque-ONLY renewals (management-frame deltas —
-// settles, reseeds, lease-state transitions, input materializations,
-// unknown types) in one claim epoch. The 2026-11-15 incident rode
-// synthesized settle events renewing halted workers' leases forever;
-// worker-activity movement, heartbeat responses and reactions reset the
-// counter at the renew write's CASE (consecutive semantics, the same
-// discipline as busy_renews above). Legitimate workers never rely on
-// opaque movement, so they never approach the cap; a source latched to
-// opaque-true-forever falls to the quiet arms (nudge, verdict) at the
-// cap instead of holding its slot.
-const boardOpaqueRenewCap = 3
-
 // rc1Reclaims reclaims every lapsed in_progress row: guarded UPDATE
 // (stage predicate re-checked at write time; SKIP LOCKED lets concurrent
 // sweeps divide the work), attempts untouched (the increment belongs to
@@ -288,7 +275,7 @@ func (s *Service) rc1Reclaims(ctx context.Context) (int, error) {
 	rows, err := tx.Query(ctx, `
 		SELECT t.id, t.project_id, COALESCE(t.lease_expires_at::text, 'null'), t.failure_count,
 			COALESCE(t.assignee_session,''), COALESCE(t.nudge_id,''), COALESCE(t.short_id,''),
-			t.nudged_at, t.last_heartbeat_at, t.busy_renews, t.opaque_renews
+			t.nudged_at, t.last_heartbeat_at, t.busy_renews
 		FROM tasks t
 		WHERE t.stage='in_progress' AND NOT t.pending_input
 		  AND (t.lease_expires_at IS NULL OR t.lease_expires_at < now())
@@ -304,13 +291,12 @@ func (s *Service) rc1Reclaims(ctx context.Context) (int, error) {
 		nudgedAt             *time.Time
 		lastHeartbeat        *time.Time
 		busyRenews           int32
-		opaqueRenews         int32
 	}
 	var victims []victim
 	for rows.Next() {
 		var v victim
 		if err := rows.Scan(&v.id, &v.project, &v.episode, &v.failures, &v.assignee, &v.nudgeID, &v.shortID,
-			&v.nudgedAt, &v.lastHeartbeat, &v.busyRenews, &v.opaqueRenews); err != nil {
+			&v.nudgedAt, &v.lastHeartbeat, &v.busyRenews); err != nil {
 			rows.Close()
 			return 0, err
 		}
@@ -364,11 +350,6 @@ func (s *Service) rc1Reclaims(ctx context.Context) (int, error) {
 	// the renew write increments their counter; every other renewal
 	// zeroes it (consecutive semantics).
 	busyOnlyRenew := make(map[string]bool, len(victims))
-	// opaqueOnlyRenew marks victims whose renewal evidence was opaque
-	// ALONE (a management-frame delta — bounded by boardOpaqueRenewCap);
-	// the renew write increments their counter, every other renewal
-	// zeroes it (consecutive semantics, same discipline as busy).
-	opaqueOnlyRenew := make(map[string]bool, len(victims))
 	type outboundNudge struct {
 		v  victim
 		id string
@@ -447,20 +428,17 @@ func (s *Service) rc1Reclaims(ctx context.Context) (int, error) {
 				renewSource[v.id] = RenewSourceReaction
 			}
 			continue
-		case o.MovedOpaque && v.opaqueRenews < boardOpaqueRenewCap:
-			// RUNG — opaque movement within its cap: a management-frame
-			// delta (a settle, a reseed publication, an input
-			// materialization) is bounded renewal authority (#2042):
-			// it renews, counts, and at boardOpaqueRenewCap consecutive
-			// opaque-only renewals STOPS renewing — the row falls
-			// through to the quiet arms below as if unmoved. Any
-			// stronger arm (worker movement, reaction, heartbeat, busy)
-			// resets the counter at the renew write's CASE. This is the
-			// busy-cap discipline applied to the second weak channel.
-			decisions[v.id] = ladderRenew
-			opaqueOnlyRenew[v.id] = true
-			renewSource[v.id] = RenewSourceOpaque
-			continue
+		// Opaque movement (management-frame deltas — settles, reseeds,
+		// lease-state transitions, input materializations, unknown
+		// types) carries ZERO renewal authority (#2042 round-1 fix): a
+		// settle is never worker evidence, so it renews nothing and
+		// arms nothing — the row falls straight through to the quiet
+		// arms below. The reviewer's first-settle shape is the pin:
+		// quiet + first settle + sweep → nudge, not renewal. (The
+		// capped-authority intermediate was rejected: it preserved the
+		// incident for ~3 lease windows per epoch and its counter
+		// mutually re-armed with the busy cap — the exact orbit this
+		// lane closes.) MovedOpaque remains on the seam for telemetry.
 		case !o.Exists:
 			decisions[v.id] = ladderReclaim // dead-evidence: the fast wall-clock path below
 			reclaimReason[v.id] = ReclaimReasonDeadEvidence
@@ -548,10 +526,9 @@ func (s *Service) rc1Reclaims(ctx context.Context) (int, error) {
 			if _, err := tx.Exec(ctx, `
 				UPDATE tasks SET lease_expires_at=now()+make_interval(secs=>$2::float8),
 					last_progress_at=now(), nudge_id=NULL, nudged_at=NULL, updated_at=now(),
-					busy_renews=CASE WHEN $3::bool THEN busy_renews+1 ELSE 0 END,
-					opaque_renews=CASE WHEN $4::bool THEN opaque_renews+1 ELSE 0 END
+					busy_renews=CASE WHEN $3::bool THEN busy_renews+1 ELSE 0 END
 				WHERE id=$1 AND stage='in_progress'`,
-				v.id, s.cfg.LeaseDuration.Seconds(), busyOnlyRenew[v.id], opaqueOnlyRenew[v.id]); err != nil {
+				v.id, s.cfg.LeaseDuration.Seconds(), busyOnlyRenew[v.id]); err != nil {
 				return 0, err
 			}
 			leaseRenewalsBySource.WithLabelValues(renewSource[v.id]).Inc()
@@ -618,7 +595,7 @@ func (s *Service) rc1Reclaims(ctx context.Context) (int, error) {
 				UPDATE tasks SET stage='failed', stage_entered_at=now(),
 					pending_origin='escalated', pending_input=false,
 					nudge_id=NULL, nudged_at=NULL, last_heartbeat_at=NULL,
-					busy_renews=0, opaque_renews=0,
+					busy_renews=0,
 					claim_token=NULL, lease_expires_at=NULL, assignee_session=NULL, implementer_session=NULL,
 					claim_incremented_attempts=false, claim_persona=NULL,
 					last_attempt_failed=true, failure_count=failure_count+1, last_failure_at=now()

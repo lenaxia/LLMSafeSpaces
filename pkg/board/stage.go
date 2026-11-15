@@ -772,7 +772,7 @@ func (s *Service) Heartbeat(ctx context.Context, actor Actor, taskID, shortIDOrI
 	err = s.q().QueryRow(ctx, `
 		UPDATE tasks SET last_heartbeat_at=now(),
 			last_progress_at=$2, lease_expires_at=now()+make_interval(secs=>$3::float8),
-			nudge_id=NULL, nudged_at=NULL, busy_renews=0, opaque_renews=0, updated_at=now()
+			nudge_id=NULL, nudged_at=NULL, busy_renews=0, updated_at=now()
 		WHERE id=$1 AND stage IN ('in_progress','in_review') AND claim_token=$4
 		  AND NOT pending_input AND nudge_id IS NOT NULL
 		RETURNING lease_expires_at`,

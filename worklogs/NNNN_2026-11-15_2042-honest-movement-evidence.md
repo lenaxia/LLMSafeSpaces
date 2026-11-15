@@ -98,6 +98,53 @@ directions: wrongful-nudge is cheap, wrongful-renewal is the incident).
 - Residual (handed to review): the mutation check on the cap (arm disabled ⇒
   2042-A red) is recorded below; the SendWindow classification verdict below.
 
+## Round-1 adversarial review (verdict: request-changes) — findings and resolutions
+
+The reviewer caught a real design error in the first push, plus three wiring
+gaps and one record gap. All five findings accepted; the resolution is a
+DESIGN CHANGE, not a patch:
+
+- **F1 (ac1-first-settle-renews)** — the issue's AC1 pins "quiet + first
+  settle + sweep → nudge, not renewal", but the shipped engine renewed on
+  opaque movement up to a cap: the AC's literal scenario held the slot ~3
+  lease windows per epoch. **Resolution: opaque movement now carries ZERO
+  renewal authority** (the reviewer's second option; delegated design call).
+  A settle is never worker evidence, so it renews nothing — the capped
+  intermediate was structurally weaker AND (per F2) mutually re-arming.
+  `boardOpaqueRenewCap`, the `opaque_renews` column and migration 000055 are
+  REMOVED (dead code under zero authority); `MovedOpaque` stays on the seam
+  as telemetry. AC1 is now literally implemented and pinned (2042-A).
+- **F2 (weak-channel-mutual-re-arm)** — busy-only renewals zeroed
+  opaque_renews while opaque-only zeroed busy_renews: a stale-latched busy
+  gate + continuous settles renewed unboundedly. **Evaporated structurally**
+  by F1's fix (no opaque counter, no opaque renewals); the busy cap's own
+  consecutive semantics are unchanged from main.
+- **F3 (mint-sites-skip-opaque-reset)** — four claim-mint sites
+  (bounceTx/exitPendingReclaim/personaClaimSQL/review re-entry) leaked
+  opaque_renews across epochs. **Evaporates with the column's removal.**
+- **F4 (cap-mutation-check-missing)** — the worklog promised a cap mutation
+  and didn't record one (the verdict rewrite dropped it — sloppy). **With
+  the cap removed, the equivalent load-bearing mutation ran on the final
+  tree**: `workerActivityStampsEvidence` mutated to `return true`
+  (allowlist disabled) → **3/3 pins red**
+  (`TestLeaseLivenessHub_ManagementEventsAreNotWorkerMovement`,
+  `TestIntegrationLeaseLiveness_ManagementFramesDoNotRenew`,
+  `TestIntegrationLeaseLiveness_OrdinalLegIsWorkerActivityOnly`);
+  restored → green. Command: the three-pin `-run` filter above, mutant
+  armed via the one-line `return true` early-return.
+- **F5 (depose-guard-opaque-divergence-doc, advisory)** — `deposeShowsLife`'s
+  mirror-the-ladder comment is stale for the opaque class. **Fixed**: a
+  comment stating the deliberate exclusion (mirroring would recreate the
+  salvage lockout).
+
+**AC amendments recorded on #2042** (owner-delegated decisions, 2026-11-15):
+AC1 satisfied literally; R2 superseded — the strict bound on opaque
+authority is ZERO (the cap's residual value — tolerance for misclassified
+future activity types — buys a 3-window slot hold at the price of the
+mutual-re-arm class; one wrongful nudge a healthy worker answers is the
+cheap direction); AC6's cap mutation is moot (no cap) and replaced by the
+recorded allowlist mutation above.
+
 ## Verdicts
 
 - **Flake classification (the honest one):** across four full-suite runs the

@@ -29,7 +29,7 @@ const (
 var (
 	leaseRenewalsBySource = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: LeaseRenewalsMetricName,
-		Help: "Seamless-lease renewal decisions by rung source (movement/heartbeat_response/post_nudge_reaction/busy_gate/opaque_movement). A movement-class renewal on a session with no worker activity is the evidence-poisoning signature (#2040).",
+		Help: "Seamless-lease renewal decisions by rung source (movement/heartbeat_response/post_nudge_reaction/busy_gate). Opaque (management-frame) movement has ZERO renewal authority (#2042) — it arms quiet arms, never renewals; a movement-class renewal on a session with no worker activity is the evidence-poisoning signature (#2040).",
 	}, []string{"source"})
 
 	ladderNudges = promauto.NewCounter(prometheus.CounterOpts{

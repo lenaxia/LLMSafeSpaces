@@ -78,8 +78,8 @@ type AssigneeLivenessSource interface {
 
 type Observation struct {
     MovedSinceLastSweep bool          // renewal evidence (worker activity only — #2040)
-    MovedOpaque         bool          // management-frame delta: BOUNDED renewal authority
-                                      // (boardOpaqueRenewCap consecutive, then quiet arms)
+    MovedOpaque         bool          // management-frame delta: ZERO renewal authority
+                                      // (telemetry; quiet arms on first evidence; #2042)
     Exists              bool          // false = dead-evidence → fast reclaim
     EventsAfterNudge    bool          // ordinal; valid only when NudgeMarkKnown
     NudgeMarkKnown      bool          // THIS source holds the sentinel's mark —
