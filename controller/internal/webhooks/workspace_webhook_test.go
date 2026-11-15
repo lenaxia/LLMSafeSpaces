@@ -1023,3 +1023,71 @@ func TestParseCPUMillis(t *testing.T) {
 		}
 	}
 }
+
+// --- S5: spec.harness immutability (pi-scoping §6) --------------------------
+
+// newHarnessValidator is the standard validator fixture for the harness
+// immutability tests.
+func newHarnessValidator(t *testing.T) *WorkspaceValidator {
+	t.Helper()
+	return &WorkspaceValidator{
+		Decoder:                admission.NewDecoder(newScheme(t)),
+		AllowedImageRegistries: []string{"ghcr.io/"},
+		MaxStorageGi:           1024,
+	}
+}
+
+// TestS5Workspace_HarnessImmutableOnUpdate: switching the harness in
+// place is denied — sessions, config, and PVC artifacts are
+// harness-specific; switching requires recreating the Workspace. The
+// empty value normalizes to opencode on BOTH sides (old="" and
+// new="opencode" are the same harness — no false denial).
+func TestS5Workspace_HarnessImmutableOnUpdate(t *testing.T) {
+	v := newHarnessValidator(t)
+
+	cases := []struct {
+		name       string
+		old, new   v1.HarnessType
+		wantDenied bool
+	}{
+		{"pi to opencode", v1.HarnessPi, v1.HarnessOpencode, true},
+		{"opencode to pi", v1.HarnessOpencode, v1.HarnessPi, true},
+		{"unset to pi", "", v1.HarnessPi, true},
+		{"pi to unset", v1.HarnessPi, "", true},
+		{"pi unchanged", v1.HarnessPi, v1.HarnessPi, false},
+		{"opencode unchanged", v1.HarnessOpencode, v1.HarnessOpencode, false},
+		{"unset to opencode (same effective harness)", "", v1.HarnessOpencode, false},
+		{"opencode to unset (same effective harness)", v1.HarnessOpencode, "", false},
+		{"unset unchanged", "", "", false},
+	}
+	for _, tc := range cases {
+		oldWs := minimalValidWorkspace()
+		oldWs.Spec.Harness = tc.old
+		newWs := oldWs.DeepCopy()
+		newWs.Spec.Harness = tc.new
+
+		resp := v.Handle(context.Background(), newWorkspaceUpdateRequest(t, oldWs, newWs))
+		assert.Equal(t, tc.wantDenied, !resp.Allowed, "%s: allowed=%v", tc.name, resp.Allowed)
+		if tc.wantDenied {
+			require.NotNil(t, resp.Result)
+			assert.Contains(t, resp.Result.Message, "spec.harness is immutable",
+				"%s: the denial must name the field and the remedy", tc.name)
+			assert.Contains(t, resp.Result.Message, "recreate",
+				"%s: the denial must state switching requires recreate", tc.name)
+		}
+	}
+}
+
+// TestS5Workspace_HarnessSettableOnCreate: CREATE has no old object to
+// compare — the CRD enum + default constrain the value at admission;
+// both harnesses must be creatable (the coexistence acceptance).
+func TestS5Workspace_HarnessSettableOnCreate(t *testing.T) {
+	v := newHarnessValidator(t)
+
+	for _, h := range []v1.HarnessType{"", v1.HarnessOpencode, v1.HarnessPi} {
+		ws := minimalValidWorkspace()
+		ws.Spec.Harness = h
+		resp := v.Handle(context.Background(), newWorkspaceCreateRequest(t, ws))
+		assert.True(t, resp.Allowed, "harness=%q must be creatable: %v", h, resp.Result)
+	}
+}
