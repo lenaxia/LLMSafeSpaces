@@ -84,4 +84,7 @@ promise.
 Outcome-first: the `epic.outcome` names the result aimed at, the stories
 name its checkable parts. Two-to-five stories is the sweet spot — an epic
 needing ten is usually two epics, and a one-story epic is
-`shape-single-story.md` wearing ceremony.
+`shape-single-story.md` wearing ceremony. An epic opening on an
+under-specified ask opens with a prelim story (`shape-prelim-story.md`)
+— the design deliverable that gates the implementation stories and
+patches their charters from its findings.

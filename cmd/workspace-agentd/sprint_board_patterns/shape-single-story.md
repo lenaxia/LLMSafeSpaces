@@ -46,6 +46,8 @@ The lifecycle is `lifecycle-happy-path.md` verbatim: claim → work → push →
 - The deliverable needs a prerequisite first (data must exist before the
   report) — that is a dependency edge, i.e. a plan
   (`shape-epic-plan.md`).
+- The ask is complex or under-specified and the design itself is work —
+  a prelim story gating the plan (`shape-prelim-story.md`).
 - The work is genuinely N parallel similar units (40 descriptions) — still
   ONE story (`batch-content-ops-story.md`): the batch is the artifact.
 - The work is exploratory with no checkable done — not a story at all; ask
