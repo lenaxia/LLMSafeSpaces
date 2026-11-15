@@ -63,13 +63,16 @@ directions: wrongful-nudge is cheap, wrongful-renewal is the incident).
   shape: a settle does not renew and stamps `MovedOpaque`; PART_END renews.
 - `TestIntegrationLeaseLiveness_OrdinalLegIsWorkerActivityOnly` — post-sentinel
   settle is NOT a reaction; a worker part is.
-- Engine pins 2042-A/B/C (`opaque_renews_2042_integration_test.go`):
-  A — opaque-within-cap renews and counts (1); B — parked at cap, the lapse
-  arms a sentinel instead of renewing, and a silent follow-up lapse lands the
-  wedge verdict (the orbit closes); C — worker movement resets the counter.
-  Two authoring errors caught and fixed in-session (an inverted count assert;
-  the ordinal-unknown shape — the fake must carry `NudgeMarkKnown` to model a
-  hub that holds the mark, otherwise the engine honestly re-nudges instead of
+- Engine pins — the shipped file is `settle_no_authority_2042_integration_test.go`
+  (the round-1 `opaque_renews_2042_integration_test.go` asserted the REJECTED
+  capped design and was replaced in round-1): A — first settle arms the
+  sentinel, never a renewal (the AC1 shape); B — the settle-only orbit closes
+  at the first silent window; C — worker movement still renews; D (round 2,
+  AC5) — telemetry increment deltas on the StampWriteFailures accessor
+  pattern, including `opaque_movement is not a renewal source`. Two authoring
+  errors caught and fixed in-session (an inverted count assert; the
+  ordinal-unknown shape — the fake must carry `NudgeMarkKnown` to model a hub
+  that holds the mark, otherwise the engine honestly re-nudges instead of
   wedging).
 
 ## Honest process notes (things the lane got wrong first)
@@ -204,6 +207,8 @@ record-layer completeness, zero engine changes:
 `api/internal/app/board_busy_source.go`, `pkg/board/liveness.go`,
 `pkg/board/reconciler.go`, `pkg/board/engine.go`, `pkg/board/stage.go`,
 `pkg/board/rearm.go`, `pkg/board/lease_events.go`, `pkg/board/ladder_metrics.go` (new),
-`pkg/board/opaque_renews_2042_integration_test.go` (new),
-`api/migrations/000055_opaque_renews.{up,down}.sql` (new) + `helm/migrations/` mirror,
+`pkg/board/settle_no_authority_2042_integration_test.go` (new),
+[REMOVED in round-1: `pkg/board/opaque_renews_2042_integration_test.go` and the
+`api/migrations/000055_opaque_renews.{up,down}.sql` + `helm/migrations/` mirror —
+artifacts of the rejected capped intermediate],
 `reports/specs/seamless-lease-design.md`, `CHANGELOG.md` (Unreleased).

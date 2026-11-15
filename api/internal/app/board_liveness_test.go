@@ -686,7 +686,7 @@ func TestLeaseLivenessHub_ManagementEventsAreNotWorkerMovement(t *testing.T) {
 	assert.False(t, errWorker, "error runs are evidence-neutral for movement")
 
 	// Unknown future types are opaque (never invisible, never worker
-// evidence — their only cost is one wrongful nudge a healthy worker answers).
+	// evidence — their only cost is one wrongful nudge a healthy worker answers).
 	hub.ObserveFrame("ws", &abiv1.Event{Type: abiv1.EventType_EVENT_TYPE_SESSION_UPDATED, InternalSessionId: "ses_settle"})
 	hub.mu.Lock()
 	unknownOpaque := hub.framesOpaque["ses_settle"]

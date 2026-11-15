@@ -74,6 +74,11 @@ func (s *BoardSuite) TestPin_2042B_SettleOnlyOrbitCloses() {
 
 	// The hub holds the sentinel's mark; the only post-sentinel frame
 	// was opaque — production truth after the #2042 allowlist.
+	// The terminal verdict is the ladder's slot-freeing action — its
+	// always-on counter is the incident's enforcement signature, so the
+	// increment is pinned alongside the verdict (AC5: a deleted Inc()
+	// must go red).
+	wedgesBefore := testutil.ToFloat64(board.LadderWedgesCounter())
 	lives.set(c.Task.AssigneeSession, board.AssigneeObservation{
 		Observed: true, Exists: true, MovedOpaque: true,
 		NudgeMarkKnown: true, EventsAfterNudge: false,
@@ -85,6 +90,8 @@ func (s *BoardSuite) TestPin_2042B_SettleOnlyOrbitCloses() {
 	s.Equal(board.StageFailed, row.Stage, "settle-true-forever cannot hold the lease — the orbit closes on the first silent window")
 	s.True(rowIsMarkedFailed(s, task.ID))
 	s.Equal(1, s.countEvents("wedge"))
+	s.Equal(wedgesBefore+1, testutil.ToFloat64(board.LadderWedgesCounter()),
+		"the wedge verdict increments board_ladder_wedges_total")
 }
 
 // PIN 2042-C: the healthy path is unchanged — worker movement renews
