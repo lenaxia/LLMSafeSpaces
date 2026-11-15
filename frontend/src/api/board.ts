@@ -194,9 +194,20 @@ export interface BoardTaskInput {
   acceptanceCriteria?: BoardAcceptanceCriterion[];
   /** Prerequisite task short ids — edges added in the same write (#1747). */
   dependsOn?: string[];
-  /** Check off criterion at this 0-based index (one-way on the engine;
-   * toggles send the full replacement array instead). */
-  setCriteriaMet?: number;
+  /** Check off the criterion at this 0-based index. The bare number is
+   * the legacy ONE-WAY check-off form; the {index, met} object is the
+   * #1837 P2b two-way wire form (the reviewer's Done preparation and
+   * the card kebab's per-criterion toggle walk flags BOTH ways). */
+  setCriteriaMet?: number | { index: number; met: boolean };
+}
+
+/** Activate's 200 wrapper (hurl-pinned): the updated epic plus the
+ * engine's initial ready set (the backlog rows activation starts
+ * feeding). Pause/archive/unarchive return the BARE epic — only
+ * activate wraps. */
+export interface BoardEpicActivateResponse {
+  epic: BoardEpic;
+  initial_ready_set?: string[] | null;
 }
 
 /** #1747: the delete result — snapshot-backed audit; orphaned dependents
@@ -337,8 +348,8 @@ export const boardApi = {
     api.get<BoardEpic>(`/me/epics/${encodeURIComponent(idOrShort)}`),
   updateEpic: (idOrShort: string, input: BoardEpicInput): Promise<BoardEpic> =>
     api.patch<BoardEpic>(`/me/epics/${encodeURIComponent(idOrShort)}`, { ...input, requestId: newBoardRequestId() }),
-  activateEpic: (idOrShort: string): Promise<BoardEpic> =>
-    api.post<BoardEpic>(`/me/epics/${encodeURIComponent(idOrShort)}/activate`),
+  activateEpic: (idOrShort: string): Promise<BoardEpicActivateResponse> =>
+    api.post<BoardEpicActivateResponse>(`/me/epics/${encodeURIComponent(idOrShort)}/activate`),
   pauseEpic: (idOrShort: string): Promise<BoardEpic> =>
     api.post<BoardEpic>(`/me/epics/${encodeURIComponent(idOrShort)}/pause`),
   archiveEpic: (idOrShort: string): Promise<BoardEpic> =>
@@ -375,6 +386,10 @@ export const boardApi = {
     api.post<BoardTask>(`/me/tasks/${encodeURIComponent(idOrShort)}/pause`, { requestId: newBoardRequestId() }),
   resumeTask: (idOrShort: string): Promise<BoardTask> =>
     api.post<BoardTask>(`/me/tasks/${encodeURIComponent(idOrShort)}/resume`, { requestId: newBoardRequestId() }),
+  /** #1832 WS3: the attempts-exhaustion re-pool — a failed/escalated
+   * row returns to backlog with attempts reset (claimable immediately). */
+  rearmTask: (idOrShort: string): Promise<BoardTask> =>
+    api.post<BoardTask>(`/me/tasks/${encodeURIComponent(idOrShort)}/rearm`, { requestId: newBoardRequestId() }),
   pauseProject: (idOrShort: string): Promise<BoardProject> =>
     api.post<BoardProject>(`/me/projects/${encodeURIComponent(idOrShort)}/pause`, { requestId: newBoardRequestId() }),
   resumeProject: (idOrShort: string): Promise<BoardProject> =>
