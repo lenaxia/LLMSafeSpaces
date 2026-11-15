@@ -27,7 +27,7 @@ implementation charters from the findings.
   persona resolution + dispatch carve-outs designed, not a parallel ladder.
 - Config plumbing: config.go keys/struct/validate/validatePersonaRoleRefs (:48, :196, :337,
   :670, :785-853); key-CHECK growth pattern migrations 000042→000049.
-- Persona seeding: builtin_roles.go + board_role_directory.go:89/144 + app.go:1678-1698 —
+- Persona seeding: builtin_roles.go + board_role_directory.go:101/144 + app.go:1678-1698 —
   the wrapup-reviewer seeded role is a sibling of the built-in reviewer.
 - Charter: boardCharterPrompt (api/internal/app/board_spawner.go:47-108) needs NO wrap-up
   branch — the wrap-up charter is the minted story description (frozen on the row).
@@ -47,6 +47,21 @@ implementation charters from the findings.
 - D7 cap = 3 consecutive closes; ack is a manager verb that resets + re-drains.
 - Open questions (non-blocking, defaults pinned): cap value, ack-resets-to-zero,
   node-cap exemption for engine mints.
+
+## Review trail (PR #2057)
+
+- Round 0 (head 7c037361): CHANGES_REQUESTED — one blocker (the PASS close path re-ran
+  the mint seam, whose enabled branch list has no completion path → empty-delta mint
+  loop to the cap; the epic could never complete) + advisory anchor drift. Fixed on
+  8b2e0bdd5: §2 note (the disabled branch is the seam's ONLY completion path), §4 direct
+  guarded completion UPDATE in the verdict transaction, cap does not gate PASS (a PASS
+  is the loop's terminus), §10 born-red pins, most anchors corrected.
+- Round 1 (head 8b2e0bdd5): blocker verified FIXED; new one-line gap (the r1 fix's
+  wrapup_epic_complete event missing from §8's vocabulary + the high-level Events row)
+  + residual anchors. Fixed on e56e1f6fe: the full six-event vocabulary in both docs;
+  criteriaAllMet store.go:487 re-applied (an earlier edit reported success without
+  persisting), epicCompletionCheck range tails 449-463/452-463, the worklog/high-level
+  :101 repeats.
 
 ## Follow-on
 
