@@ -105,6 +105,15 @@ func main() {
 		os.Exit(runSuperviseOpencodeCommand(os.Args[2:]))
 	}
 
+	// pi second harness S2 (scoping §1.2-§1.4): the RPC-mode supervisor
+	// driver — JSONL pipes + the §1.4 process-model policy, replacing
+	// the opencodeServeCmd spawn for pi workspaces. Self-contained
+	// plumbing (D1); harness SELECTION between this and the branch
+	// above is S5's controller plumbing, never this dispatch.
+	if len(os.Args) > 1 && os.Args[1] == "supervise-pi" {
+		os.Exit(runSupervisePiCommand(os.Args[2:]))
+	}
+
 	// Design 0051 US-2: native-sidecar mode. The pod splits into the
 	// sidecar (this branch: policy, credentials, muxes) and a
 	// supervise-opencode PID 1 in the workspace container. Dispatch

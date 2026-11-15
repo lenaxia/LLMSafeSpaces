@@ -1,0 +1,45 @@
+{
+  "$schema": "https://pi.dev/schemas/models.schema.json",
+  "providers": {
+    "acme": {
+      "baseUrl": "https://api.acme.test/v1",
+      "api": "openai-completions",
+      "apiKey": "sk-acme",
+      "models": [
+        {
+          "id": "acme-large",
+          "name": "Acme Large",
+          "contextWindow": 200000,
+          "maxTokens": 32000
+        },
+        {
+          "id": "acme-vision",
+          "name": "Acme Vision",
+          "input": [
+            "text",
+            "image"
+          ]
+        }
+      ]
+    },
+    "opencode-relay": {
+      "baseUrl": "https://relay.example.test/v1",
+      "api": "openai-completions",
+      "apiKey": "!cat /sandbox-runtime/rt/relay-token",
+      "models": [
+        {
+          "id": "glm-5-air-free",
+          "name": "GLM-5 Air Free",
+          "contextWindow": 128000,
+          "maxTokens": 64000
+        },
+        {
+          "id": "glm-5-free",
+          "name": "GLM-5 Free",
+          "contextWindow": 200000,
+          "maxTokens": 100000
+        }
+      ]
+    }
+  }
+}
