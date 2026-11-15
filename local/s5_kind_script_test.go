@@ -132,8 +132,9 @@ func TestS5Gvisor_DelegationCarriesClusterEnv(t *testing.T) {
 func TestS7SecondHarnessLegs_Pinned(t *testing.T) {
 	src := mustRead(t, s5Script)
 	for _, marker := range []string{
-		"fail S7.1 ", "pass S7.1a", "pass S7.1b", "pass S7.1c",
+		"fail S7.1 ", "pass S7.1a", "pass S7.1b", "pass S7.1c", "pass S7.1d",
 		"pass S7.2a", "pass S7.2b", "pass S7.2c", "pass S7.2d",
+		"fail S7.3 ", "pass S7.3 ",
 	} {
 		if !strings.Contains(src, marker) {
 			t.Fatalf("S7 leg marker %q missing from the script", marker)
@@ -144,12 +145,13 @@ func TestS7SecondHarnessLegs_Pinned(t *testing.T) {
 	if !strings.Contains(src, "harness: pi") {
 		t.Fatal("S7.1 must apply a spec.harness=pi workspace")
 	}
-	// Sidecar topology is controller-gated and pi requires it: exactly
-	// one enable, and a restore upgrade afterwards so the weekly
+	// Sidecar topology is controller-gated and pi requires it: S7.1
+	// enables it and S7.3's tamper upgrade re-asserts it (exactly two),
+	// and a restore upgrade afterwards (no sidecar flag) so the weekly
 	// cadence (and reruns) start from the documented S5 topology.
 	enables := strings.Count(src, "--set controller.agentdSidecar.enabled=true")
-	if enables != 1 {
-		t.Fatalf("agentdSidecar.enabled=true must appear exactly once (S7.1), got %d", enables)
+	if enables != 2 {
+		t.Fatalf("agentdSidecar.enabled=true must appear exactly twice (S7.1 enable + S7.3 tamper), got %d", enables)
 	}
 	s7Start := strings.Index(src, "--- S7.1")
 	restore := strings.Index(src, "S7 restore upgrade")

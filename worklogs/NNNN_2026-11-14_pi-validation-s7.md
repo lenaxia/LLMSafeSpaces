@@ -72,14 +72,23 @@ rulings indexed in design 0073 §3:
 
 ### 3. e2e: the second harness drives the pod (S7 legs in s5-overlay-validation.sh)
 
-- **S7.1a-c**: helm sidecar-enable upgrade → `spec.harness=pi` workspace →
+- **S7.1a-d**: helm sidecar-enable upgrade → `spec.harness=pi` workspace →
   Active; PID1 = overlay agentd `supervise-pi`; `PiVerified=True`; sidecar
-  init carries `AGENTD_HARNESS=pi`. Chart restored to the S5 topology after.
-- **S7.2a-d**: bridge Basic-auth (`agentd.AuthUsername`="opencode" / OPENCODE_SERVER_PASSWORD read
-  from PID1 environ): session create → 201 (REAL pinned-binary child from
-  /pi); `get_state` round-trip (success + sessionId); PVC session file at
-  `/workspace/pi-sessions/`; list + DELETE = unlink. Plus a per-child RSS
-  step-summary reading (Ruling A cost evidence, weekly cadence).
+  init carries `AGENTD_HARNESS=pi`; pi tree at `/pi` (positive counterpart
+  of the reworked S5.2d per-harness negative — the S1-era tri-overlay
+  mount-all-three shape died with S5's harness dimension, and the script's
+  stale assertions are corrected in this story).
+- **S7.2a-d**: bridge Basic-auth (`agentd.AuthUsername`="opencode" /
+  OPENCODE_SERVER_PASSWORD read from PID1 environ): session create → 201
+  (REAL pinned-binary child from /pi); `get_state` round-trip (data payload:
+  sessionId + sessionFile path under /workspace/pi-sessions/); the
+  zero-message file-deferral asserted honestly (pi writes the session file
+  at the first conversation entry — `_hasConversation`); list/read/unlink
+  proven via a materialized session file; DELETE = unlink. Plus a per-child
+  RSS step-summary reading (Ruling A cost evidence, weekly cadence).
+- **S7.3**: the pi verify-failure tamper leg (relocated from S5.4b — a
+  harness=pi workspace needs the sidecar chart): wrong pi pin → exit 85 →
+  PiVerified=False. Chart restored to the S5 topology at the end.
 - Structural pins added in `local/s5_kind_script_test.go`
   (TestS7SecondHarnessLegs_Pinned: leg inventory, sidecar enable/restore
   pairing, bridge-surface pins).

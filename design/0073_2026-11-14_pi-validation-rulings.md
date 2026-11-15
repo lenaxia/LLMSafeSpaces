@@ -98,20 +98,36 @@ Evidence index: `design/evidence/pi-validation/` (one file per U-item, sources c
 @ `95f2c7f2f` (2026-11-13), all legs PASS:
 
 - S5.1/1b/1c missing-pin render refusals (all three overlays)
-- S5.2a-e tri-overlay launch→ready (PID1 = overlay agentd; opencode serving;
-  pi tree at `/pi` + `PiVerified=True`; redact wrapper)
+- S5.2a-e launch→ready on the pinned overlays (PID1 = overlay agentd;
+  opencode serving; redact wrapper; per-harness selection since S5 — the
+  opencode pod mounts NO `/pi` and carries no `PiVerified` condition)
 - S5.3/S5.4/S5.4b verify-failure surfacing (exit 81 / 83 / **85** distinct)
 - S5.4c pi pins ConfigMap survives registry outage + controller restart
 - **S5.5 cold-pull resume 17 s ≤ 120 s budget** (agentd+opencode+pi evicted; the ~59 MB pi overlay pulls inside the same resume budget the S5.5 precedent set — the size concern from scoping §2.3 item 5 is closed with margin)
 - S5.6 gVisor (runsc): workspace Active, both image volumes serve under gVisor
 
-**S7 additions (this story, `local/s5-overlay-validation.sh`):** S7.1a-c
-(`spec.harness=pi` workspace → Active; PID1 `supervise-pi`; `PiVerified=True`;
-sidecar init `AGENTD_HARNESS=pi`) and S7.2a-d (bridge Basic-auth session
-create → real pinned-binary child; `get_state` round-trip; PVC session file;
-list + DELETE unlink) + the per-child RSS step-summary reading. The
-workflow_dispatch run URL for THIS head is recorded in the worklog and the PR
-description at review time (the weekly cadence re-proves it).
+**S7 additions (this story, `local/s5-overlay-validation.sh`):**
+
+- **S7.1a-d** — `spec.harness=pi` workspace on the sidecar topology →
+  Active; PID1 = overlay agentd `supervise-pi`; `PiVerified=True`; sidecar
+  init `AGENTD_HARNESS=pi`; the pi tree mounted at `/pi` (the positive
+  counterpart of S5.2d's per-harness negative).
+- **S7.2a-d** — bridge Basic-auth (`agentd.AuthUsername`/"opencode" +
+  the workspace password): session create → 201 (REAL pinned-binary
+  child); `get_state` round-trip answering `sessionId` + the PVC
+  `sessionFile` path; the zero-message deferral asserted honestly (pi
+  creates the session file at the first conversation entry —
+  `session-manager.ts` `_hasConversation` — so a fresh session is
+  correctly NOT on disk yet) with the list/read/unlink surface proven
+  via a materialized session file; DELETE unlinks (gone-class). Plus
+  the per-child RSS step-summary reading.
+- **S7.3** — the pi verify-failure leg (the S5.4b relocation): wrong
+  pi pin on a `harness=pi` workspace → exit **85** → `PiVerified=False`
+  (codes disjoint from 81/82/83/84); needs the sidecar chart, hence its
+  home in S7.
+
+The workflow_dispatch run URL for THIS head is recorded in the worklog
+and the PR description at review time (the weekly cadence re-proves it).
 
 ---
 
