@@ -98,4 +98,4 @@ r2's blocking finding ruled RESOLVED (born-RED pin verified), but the reviewer p
 
 ## Blockers
 
-None. PR iterating with AI reviewer — never self-merge.
+None — round-5 record corrections landed (counts reconciled to the tree-verified 38; this line matches the Status). Never self-merge — the orchestrator merges.
