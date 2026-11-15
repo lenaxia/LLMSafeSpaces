@@ -69,6 +69,7 @@ type versionSchemeValues struct {
 		Image            versionSchemeComponent `yaml:"image"`
 		AgentdDelivery   versionSchemeDelivery  `yaml:"agentdDelivery"`
 		OpencodeDelivery versionSchemeDelivery  `yaml:"opencodeDelivery"`
+		PiDelivery       versionSchemeDelivery  `yaml:"piDelivery"`
 		InferenceRelay   struct {
 			Router struct {
 				Image versionSchemeComponent `yaml:"image"`
@@ -147,6 +148,10 @@ func RunVersionSchemeCheck(root string) []string {
 		{"controller", "opencodeDelivery", "image"},
 		{"controller", "opencodeDelivery", "binarySHA256Amd64"},
 		{"controller", "opencodeDelivery", "binarySHA256Arm64"},
+		{"controller", "piDelivery"},
+		{"controller", "piDelivery", "image"},
+		{"controller", "piDelivery", "binarySHA256Amd64"},
+		{"controller", "piDelivery", "binarySHA256Arm64"},
 		{"runtimeEnvironments", "base", "image"},
 		{"runtimeEnvironments", "base", "image", "tag"},
 		{"runtimeEnvironments", "base", "image", "digest"},
@@ -294,6 +299,9 @@ func checkDeliveryPinDigests(valuesPath string, values versionSchemeValues) []st
 		{"controller.agentdDelivery.binarySHA256Arm64", bareDigest(values.Controller.AgentdDelivery.BinarySHA256Arm64)},
 		{"controller.opencodeDelivery.binarySHA256Amd64", bareDigest(values.Controller.OpencodeDelivery.BinarySHA256Amd64)},
 		{"controller.opencodeDelivery.binarySHA256Arm64", bareDigest(values.Controller.OpencodeDelivery.BinarySHA256Arm64)},
+		{"controller.piDelivery.image", imageRefDigest(values.Controller.PiDelivery.Image)},
+		{"controller.piDelivery.binarySHA256Amd64", bareDigest(values.Controller.PiDelivery.BinarySHA256Amd64)},
+		{"controller.piDelivery.binarySHA256Arm64", bareDigest(values.Controller.PiDelivery.BinarySHA256Arm64)},
 	}
 
 	var fails []string
@@ -314,6 +322,23 @@ func checkDeliveryPinDigests(valuesPath string, values versionSchemeValues) []st
 		fails = append(fails, fmt.Sprintf(
 			"version scheme: controller.agentdDelivery.image and controller.opencodeDelivery.image carry the same digest sha256:%s — they are separate artifacts by design (design 0053 §5: independent rollback and cadence)",
 			agentd))
+	}
+	// The pi overlay joins the same separation contract (design 0053
+	// §5.4): pairwise-distinct digests across all three overlays.
+	pi := imageRefDigest(values.Controller.PiDelivery.Image)
+	overlays := []struct{ path, digest string }{
+		{"controller.agentdDelivery.image", agentd},
+		{"controller.opencodeDelivery.image", opencode},
+		{"controller.piDelivery.image", pi},
+	}
+	for i := 0; i < len(overlays); i++ {
+		for j := i + 1; j < len(overlays); j++ {
+			if overlays[i].digest != "" && overlays[i].digest == overlays[j].digest {
+				fails = append(fails, fmt.Sprintf(
+					"version scheme: %s and %s carry the same digest sha256:%s — they are separate artifacts by design (design 0053 §5/§5.4: independent rollback and cadence)",
+					overlays[i].path, overlays[j].path, overlays[i].digest))
+			}
+		}
 	}
 	return fails
 }

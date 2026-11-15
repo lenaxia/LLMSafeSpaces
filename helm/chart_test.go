@@ -67,6 +67,7 @@ const testKubeVersion = "1.35.0"
 const (
 	testAgentdPin   = "ghcr.io/lenaxia/llmsafespaces/agentd@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
 	testOpencodePin = "ghcr.io/lenaxia/llmsafespaces/opencode@sha256:fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210"
+	testPiPin       = "ghcr.io/lenaxia/llmsafespaces/pi@sha256:9999999999999999999999999999999999999999999999999999999999999999"
 )
 
 func helmTemplate(t *testing.T, valuesYAML string) []map[string]any {
@@ -84,6 +85,9 @@ func helmTemplate(t *testing.T, valuesYAML string) []map[string]any {
 	}
 	if !strings.Contains(valuesYAML, "opencodeDelivery") {
 		extraSets = append(extraSets, "--set", "controller.opencodeDelivery.image="+testOpencodePin)
+	}
+	if !strings.Contains(valuesYAML, "piDelivery") {
+		extraSets = append(extraSets, "--set", "controller.piDelivery.image="+testPiPin)
 	}
 
 	args := []string{"template", "test-release", chartDir(t), "-n", "test-ns",
