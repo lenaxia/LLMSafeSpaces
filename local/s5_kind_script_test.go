@@ -124,3 +124,52 @@ func TestS5Gvisor_DelegationCarriesClusterEnv(t *testing.T) {
 		t.Fatalf("the runtimeclass invocation is the CTX consumer — it must carry the env (record: %s)", recorded)
 	}
 }
+
+// S7 structural pins (the second-harness e2e legs): the leg inventory,
+// the sidecar-enable/restore pairing, and the bridge surfaces the legs
+// drive. The kind run itself is the behavior proof; these pins keep the
+// glue from rotting silently between weekly runs.
+func TestS7SecondHarnessLegs_Pinned(t *testing.T) {
+	src := mustRead(t, s5Script)
+	for _, marker := range []string{
+		"fail S7.1 ", "pass S7.1a", "pass S7.1b", "pass S7.1c", "pass S7.1d",
+		"pass S7.2a", "pass S7.2b", "pass S7.2c", "pass S7.2d",
+		"fail S7.3 ", "pass S7.3 ",
+	} {
+		if !strings.Contains(src, marker) {
+			t.Fatalf("S7 leg marker %q missing from the script", marker)
+		}
+	}
+	// The pi workspace manifest must select the pi harness explicitly —
+	// the whole leg is meaningless against the default.
+	if !strings.Contains(src, "harness: pi") {
+		t.Fatal("S7.1 must apply a spec.harness=pi workspace")
+	}
+	// Sidecar topology is controller-gated and pi requires it: S7.1
+	// enables it and S7.3's tamper upgrade re-asserts it (exactly two),
+	// and a restore upgrade afterwards (no sidecar flag) so the weekly
+	// cadence (and reruns) start from the documented S5 topology.
+	enables := strings.Count(src, "--set controller.agentdSidecar.enabled=true")
+	if enables != 2 {
+		t.Fatalf("agentdSidecar.enabled=true must appear exactly twice (S7.1 enable + S7.3 tamper), got %d", enables)
+	}
+	s7Start := strings.Index(src, "--- S7.1")
+	restore := strings.Index(src, "S7 restore upgrade")
+	if s7Start < 0 || restore < 0 || restore < s7Start {
+		t.Fatal("S7.1 must be followed by the chart-restore upgrade (sidecar off)")
+	}
+	// The bridge legs must drive the documented bridge surface with the
+	// workspace Basic auth (username agentd.AuthUsername = "opencode",
+	// shared by both harnesses) — not some side channel.
+	for _, pin := range []string{
+		`-u "opencode:$S7_PASS" -X POST`,
+		`/v1/pi/sessions/$S7_SID"`,
+		`/v1/pi/sessions/$S7_SID/rpc`,
+		`-X DELETE`,
+		`/v1/pi/sessions"`,
+	} {
+		if !strings.Contains(src, pin) {
+			t.Fatalf("S7.2 must drive the bridge surface pin %q", pin)
+		}
+	}
+}

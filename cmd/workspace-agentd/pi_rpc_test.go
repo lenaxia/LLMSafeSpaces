@@ -228,9 +228,10 @@ func TestPiChildShutdownLadderSIGKILL(t *testing.T) {
 }
 
 func TestPiChildCmdArgv(t *testing.T) {
-	// The spawn contract (scoping §2.3 item 4): --mode rpc, optional
-	// --no-session/--offline, --session-dir, --session-id, and
-	// PI_CODING_AGENT_DIR in the environment.
+	// The spawn contract (scoping §2.3 item 4 + the S7 U-6 ruling):
+	// --mode rpc, --no-approve (trust pinned headlessly — the PVC cwd is
+	// user-controlled), optional --no-session/--offline, --session-dir,
+	// --session-id, and PI_CODING_AGENT_DIR in the environment.
 	fixture := t.TempDir()
 	cfg := piFakeBaseConfig(t, fixture)
 	cfg.SessionID = "sess-42"
@@ -240,6 +241,7 @@ func TestPiChildCmdArgv(t *testing.T) {
 	require.Equal(t, cfg.Binary, cmd.Args[0])
 	argv := strings.Join(cmd.Args, " ")
 	require.Contains(t, argv, "--mode rpc")
+	require.Contains(t, argv, "--no-approve")
 	require.Contains(t, argv, "--no-session")
 	require.Contains(t, argv, "--offline")
 	require.Contains(t, argv, "--session-dir "+cfg.SessionDir)

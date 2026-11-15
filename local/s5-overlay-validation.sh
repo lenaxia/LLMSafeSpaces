@@ -21,8 +21,8 @@
 #       on the Workspace (surfaced, not crash-looped silently).
 #   S5.4 Opencode verify failure — wrong opencode pin → exit 83 →
 #       OpencodeVerificationFailed condition + event.
-#   S5.4b Pi verify failure — wrong pi pin → exit 85 →
-#       PiVerificationFailed condition (codes disjoint from 81/82/83/84).
+#   S5.4b (moved to S7.3) pi verify failure — wrong pi pin → exit 85
+#       on a harness=pi workspace (codes disjoint from 81/82/83/84).
 #   S5.4c Pi pins ConfigMap — llmsafespaces-pi-pins caches the resolved
 #       pins per digest and survives a controller pod restart.
 #   S5.5 Resume-path pull cost — suspend, evict BOTH overlay images from
@@ -317,20 +317,23 @@ if wait_phase "$WS_MAIN" Active 420; then
   else
     fail S5.2b "opencode not reachable on :4096"
   fi
-  # The pi overlay tree mounts read-only at /pi with the binary at the
-  # tree root (upstream layout) — tri-overlay render made real.
+  # Per-harness overlay selection (S5): an OPENCODE workspace wires
+  # agentd+opencode and NEVER the pi overlay — the S1-era tri-overlay
+  # pod shape ("all three on every pod") died with the harness
+  # dimension. Negative proof here; the positive pi-tree/PiVerified
+  # proof lives on the pi-harness workspace (S7.1d/S7.1b).
   PI_TREE=$(kubectl -n "$NS" exec "$POD" -c workspace -- \
-    sh -c 'test -x /pi/pi && test -f /pi/package.json && echo tree-ok' 2>/dev/null || true)
-  if [ "$PI_TREE" = "tree-ok" ]; then
-    pass S5.2d "pi tree mounted at /pi (binary + adjacent package.json present)"
+    sh -c 'test -e /pi 2>/dev/null && echo pi-present || echo pi-absent' 2>/dev/null || true)
+  if [ "$PI_TREE" = "pi-absent" ]; then
+    pass S5.2d "per-harness selection: no /pi mount on the opencode-harness pod"
   else
-    fail S5.2d "pi tree not mounted/malformed at /pi: ${PI_TREE:-absent}"
+    fail S5.2d "opencode-harness pod must NOT mount the pi overlay (got: $PI_TREE)"
   fi
   PI_COND=$(kubectl -n "$NS" get workspace "$WS_MAIN" -o jsonpath='{range .status.conditions[*]}{.type}={.status} {end}' 2>/dev/null || true)
-  if echo "$PI_COND" | grep -q "PiVerified=True"; then
-    pass S5.2e "PiVerified=True condition set (supervisor verified the pi binary)"
+  if echo "$PI_COND" | grep -q "PiVerified"; then
+    fail S5.2e "PiVerified condition must not exist on an opencode workspace: $PI_COND"
   else
-    fail S5.2e "PiVerified=True never set: ${PI_COND:-none}"
+    pass S5.2e "no PiVerified condition on the opencode workspace (pi verify is pi-harness-only)"
   fi
   # S2's deferred cluster e2e: the supervisor-written redact wrapper.
   REDACT_OUT=$(kubectl -n "$NS" exec "$POD" -c workspace -- \
@@ -418,52 +421,13 @@ else
 fi
 kubectl -n "$NS" delete workspace "$WS_BAD_OC" --wait=false >/dev/null 2>&1 || true
 
-# --- S5.4b: pi verify failure → condition + event -----------------------------
-
-WS_BAD_PI="ws-s5-bad-pi"
-BAD_PI_SHA=$(printf '0%.0s' {1..64})
-log "S5.4b: upgrading chart with a WRONG pi break-glass pin"
-helm upgrade --install "$RELEASE" helm -n "$NS" \
-  "${HELM_LEAN_ARGS[@]}" \
-  --set "controller.agentdDelivery.image=${AGENTD_REF}" \
-  --set "controller.agentdDelivery.binarySHA256Amd64=${AGENTD_SHA}" \
-  --set "controller.agentdDelivery.binarySHA256Arm64=${AGENTD_SHA}" \
-  --set "controller.opencodeDelivery.image=${OPENCODE_REF}" \
-  --set "controller.opencodeDelivery.binarySHA256Amd64=${OPENCODE_SHA}" \
-  --set "controller.opencodeDelivery.binarySHA256Arm64=${OPENCODE_SHA}" \
-  --set "controller.piDelivery.image=${PI_REF}" \
-  --set "controller.piDelivery.binarySHA256Amd64=${BAD_PI_SHA}" \
-  --set "controller.piDelivery.binarySHA256Arm64=${BAD_PI_SHA}" \
-  >/dev/null 2>&1 || log "S5.4b: tamper upgrade reported an error (continuing — the check polls conditions)"
-kubectl -n "$NS" rollout status deployment/"${RELEASE}-llmsafespaces-controller" --timeout=300s >/dev/null 2>&1 \
-  || log "S5.4b: controller rollout wait timed out (the check polls conditions)"
-
-apply_workspace "$WS_BAD_PI"
-PI_COND=""
-for i in $(seq 1 120); do
-  PI_COND=$(kubectl -n "$NS" get workspace "$WS_BAD_PI" -o jsonpath='{range .status.conditions[*]}{.type}={.status} {end}' 2>/dev/null || true)
-  echo "$PI_COND" | grep -q "PiVerified=False" && break
-  sleep 2
-done
-if echo "$PI_COND" | grep -q "PiVerified=False"; then
-  # STRICT: the exit code must be 85 — a condition without the right
-  # code (or an unreadable one) is a regression, not a pass. The pod may
-  # be in CrashLoopBackOff (lastState) or between restarts (state).
-  PI_EXIT=$(kubectl -n "$NS" get pods -l llmsafespaces.dev/workspace="$WS_BAD_PI" \
-    -o jsonpath='{.items[0].status.containerStatuses[0].lastState.terminated.exitCode}' 2>/dev/null || true)
-  if [ -z "$PI_EXIT" ]; then
-    PI_EXIT=$(kubectl -n "$NS" get pods -l llmsafespaces.dev/workspace="$WS_BAD_PI" \
-      -o jsonpath='{.items[0].status.containerStatuses[0].state.terminated.exitCode}' 2>/dev/null || true)
-  fi
-  if [ "$PI_EXIT" = "85" ]; then
-    pass S5.4b "wrong pi pin → exit 85 → PiVerified=False condition (disjoint from 81/82/83/84)"
-  else
-    fail S5.4b "PiVerified=False but the exit code is ${PI_EXIT:-unreadable} — must be exactly 85"
-  fi
-else
-  fail S5.4b "wrong pi pin never surfaced the condition: ${PI_COND:-none}"
-fi
-kubectl -n "$NS" delete workspace "$WS_BAD_PI" --wait=false >/dev/null 2>&1 || true
+# --- S5.4b: pi verify failure → moved to S7.3 ---------------------------------
+# The pi verify-failure leg (wrong pi pin → exit 85 → PiVerified=False)
+# needs a harness=pi workspace, which the validator refuses without the
+# sidecar topology — and the sidecar is enabled for S7 only. The leg
+# therefore runs as S7.3 (tamper + restore under the sidecar chart,
+# same assertions); the exit-code disjointness (85 vs 81/82/83/84) is
+# additionally pinned in pi_overlay_test.go.
 
 # --- S5.4c: registry-outage cache fallback + persistence ---------------------
 #
@@ -651,4 +615,198 @@ EOF
   else
     fail S5.6 "runsc installation failed on the kind node (environment — re-run on a gvisor-capable runner)"
   fi
+fi
+
+# --- S7.1: second-harness launch→ready (spec.harness=pi, sidecar) -------------
+#
+# The S5.2 capstone proved the TRI-OVERLAY pod (pi tree mounted +
+# verified in an opencode-harness workspace). S7 proves the second
+# harness itself end-to-end: a spec.harness=pi workspace boots to
+# Active with supervise-pi as the main container's PID 1 (sidecar
+# topology — validateWorkspaceHarness refuses pi without it), the
+# supervisor verifies the pi binary (PiVerified), and the harness-port
+# bridge answers. Requires agentdSidecar.enabled (design 0051 chart
+# flag; the controller-level gate the validator checks).
+log "S7.1: enabling sidecar topology + creating the pi-harness workspace"
+helm upgrade --install "$RELEASE" helm -n "$NS" \
+  "${HELM_LEAN_ARGS[@]}" "${HELM_PIN_ARGS[@]}" \
+  --set controller.agentdSidecar.enabled=true \
+  >/dev/null 2>&1 || log "S7.1: sidecar-enable upgrade reported an error (continuing)"
+if kubectl -n "$NS" rollout status deployment/"${RELEASE}-llmsafespaces-controller" --timeout=300s >/dev/null 2>&1 \
+  && wait_webhook_ready; then
+  WS_PI="ws-s7-pi"
+  if apply_workspace "$WS_PI" "  harness: pi" && wait_phase "$WS_PI" Active 600; then
+    PI_POD=$(pod_of "$WS_PI")
+    # PID1 must be the overlay agentd running the pi supervisor subcommand.
+    S7_CMDLINE=$(kubectl -n "$NS" exec "$PI_POD" -c workspace -- cat /proc/1/cmdline 2>/dev/null | tr '\0' ' ' || true)
+    if echo "$S7_CMDLINE" | grep -q "workspace-agentd supervise-pi"; then
+      pass S7.1a "pi workspace Active; PID1 is the overlay agentd supervise-pi: $S7_CMDLINE"
+    else
+      fail S7.1a "pi workspace Active but PID1 is not supervise-pi: ${S7_CMDLINE:-<unreadable>}"
+    fi
+    S7_PIVFY=$(kubectl -n "$NS" get workspace "$WS_PI" -o jsonpath='{range .status.conditions[*]}{.type}={.status} {end}' 2>/dev/null || true)
+    if echo "$S7_PIVFY" | grep -q "PiVerified=True"; then
+      pass S7.1b "PiVerified=True on the pi-harness workspace"
+    else
+      fail S7.1b "PiVerified=True never set on the pi workspace: ${S7_PIVFY:-none}"
+    fi
+    # Per-harness positive proof (the S5.2d counterpart, on the harness
+    # that actually wires the pi overlay): the upstream-layout tree at /pi.
+    S7_TREE=$(kubectl -n "$NS" exec "$PI_POD" -c workspace -- \
+      sh -c 'test -x /pi/pi && test -f /pi/package.json && echo tree-ok' 2>/dev/null || true)
+    if [ "$S7_TREE" = "tree-ok" ]; then
+      pass S7.1d "pi tree mounted at /pi on the pi-harness pod (binary + adjacent package.json)"
+    else
+      fail S7.1d "pi tree not mounted/malformed at /pi: ${S7_TREE:-absent}"
+    fi
+    # The sidecar init container carries AGENTD_HARNESS=pi (S5 wiring).
+    S7_HARNESS_ENV=$(kubectl -n "$NS" get pod "$PI_POD" -o jsonpath='{range .spec.initContainers[*]}{.name}={.env[?(@.name=="AGENTD_HARNESS")].value} {end}' 2>/dev/null || true)
+    if echo "$S7_HARNESS_ENV" | grep -q "=pi"; then
+      pass S7.1c "native sidecar init container carries AGENTD_HARNESS=pi (${S7_HARNESS_ENV})"
+    else
+      fail S7.1c "AGENTD_HARNESS=pi not found on the sidecar init: ${S7_HARNESS_ENV:-none}"
+    fi
+
+    # --- S7.2: bridge RPC round-trip (real pinned-binary child) --------------
+    # Drive the same surface the API server's PodTransport drives:
+    # Basic-auth session create on the harness port (spawns a REAL pi
+    # child from the verified /pi tree), one get_state round-trip, the
+    # persisted session file on the PVC, list, then delete (unlink).
+    S7_PASS=$(kubectl -n "$NS" exec "$PI_POD" -c workspace -- \
+      sh -c 'tr "\0" "\n" < /proc/1/environ | sed -n "s/^OPENCODE_SERVER_PASSWORD=//p" | head -1' 2>/dev/null || true)
+    if [ -n "$S7_PASS" ]; then
+      S7_SID="s7e2esess"
+      S7_CREATE=$(kubectl -n "$NS" exec "$PI_POD" -c workspace -- \
+        curl -s -o /tmp/s7c.json -w '%{http_code}' -u "opencode:$S7_PASS" -X POST \
+        "http://127.0.0.1:4096/v1/pi/sessions/$S7_SID" 2>/dev/null || echo 000)
+      if [ "$S7_CREATE" = "201" ]; then
+        pass S7.2a "bridge session create → 201 (pinned pi child spawned from /pi)"
+      else
+        fail S7.2a "bridge session create failed (http $S7_CREATE)"
+      fi
+      S7_STATE=$(kubectl -n "$NS" exec "$PI_POD" -c workspace -- \
+        curl -s -u "opencode:$S7_PASS" -X POST -H 'Content-Type: application/json' \
+        -d '{"id":"g1","type":"get_state"}' \
+        "http://127.0.0.1:4096/v1/pi/sessions/$S7_SID/rpc" 2>/dev/null || true)
+      # The bridge returns the command's DATA payload verbatim (no response
+      # envelope); model is "unknown" offline — the round-trip + the PVC
+      # sessionFile path are the assertions.
+      if echo "$S7_STATE" | grep -q '"sessionId":"'"$S7_SID"'"' \
+        && echo "$S7_STATE" | grep -q '"sessionFile":"/workspace/pi-sessions/'; then
+        pass S7.2b "bridge RPC round-trip: get_state answered for $S7_SID with sessionFile under /workspace/pi-sessions (pinned child speaks RPC through the bridge)"
+      else
+        fail S7.2b "get_state round-trip failed: ${S7_STATE:-<empty>}"
+      fi
+      # Persistence semantics (validated U-1..U-9 adjacent, pi
+      # session-manager _hasConversation): the session FILE is created
+      # lazily at the first user/assistant message — a freshly created
+      # zero-message session reports its sessionFile path but writes
+      # nothing yet. Assert exactly that (the path contract + the
+      # deferred write), then materialize a session file in pi's naming
+      # to prove the bridge's list/read/unlink surface on the real PVC.
+      S7_DIR_OK=$(kubectl -n "$NS" exec "$PI_POD" -c workspace -- \
+        sh -c 'test -d /workspace/pi-sessions && echo dir-ok' 2>/dev/null || true)
+      S7_FILE=$(kubectl -n "$NS" exec "$PI_POD" -c workspace -- \
+        sh -c "ls /workspace/pi-sessions/ 2>/dev/null | grep $S7_SID || true" 2>/dev/null || true)
+      if [ "$S7_DIR_OK" = "dir-ok" ] && [ -z "$S7_FILE" ]; then
+        pass S7.2c "PVC session dir present; zero-message session correctly not yet on disk (pi defers the file to first conversation entry)"
+      else
+        fail S7.2c "session dir/file state unexpected: dir=${S7_DIR_OK:-missing} file=${S7_FILE:-none}"
+      fi
+      # §1.4 cost evidence: the spawned child's RSS (the recorded budget
+      # is ~79 MiB per active session; this reads the real pod's child).
+      S7_RSS=$(kubectl -n "$NS" exec "$PI_POD" -c workspace -- \
+        sh -c 'for p in /proc/[0-9]*; do c=$(tr "\0" " " < $p/cmdline 2>/dev/null); case "$c" in *"/pi/pi --mode rpc"*) grep VmRSS $p/status | awk "{print \$2}";; esac; done' 2>/dev/null | tr '\n' ' ' || true)
+      {
+        echo "### S7.2 pi child RSS (per-session policy)"
+        echo "- get_state-answering child VmRSS: ${S7_RSS:-unreadable} kB (recorded budget ~79 MiB)"
+      } >> "$STEP_SUMMARY"
+      # List/read/unlink surface with a materialized session file (pi's
+      # naming: <timestamp>_<id>.jsonl; one header line is a valid scan
+      # shape). Then DELETE must unlink it and the list must drop it.
+      S7_FID="s7filetest"
+      kubectl -n "$NS" exec "$PI_POD" -c workspace -- \
+        sh -c 'echo "{\"type\":\"session\",\"id\":\"s7filetest\",\"version\":3}" > /workspace/pi-sessions/2026-01-01T00-00-00-000Z_s7filetest.jsonl' >/dev/null 2>&1 || true
+      S7_LIST=$(kubectl -n "$NS" exec "$PI_POD" -c workspace -- \
+        curl -s -u "opencode:$S7_PASS" "http://127.0.0.1:4096/v1/pi/sessions" 2>/dev/null || true)
+      S7_FILEGET=$(kubectl -n "$NS" exec "$PI_POD" -c workspace -- \
+        curl -s -u "opencode:$S7_PASS" "http://127.0.0.1:4096/v1/pi/sessions/$S7_FID/file" 2>/dev/null || true)
+      S7_DEL=$(kubectl -n "$NS" exec "$PI_POD" -c workspace -- \
+        curl -s -o /dev/null -w '%{http_code}' -u "opencode:$S7_PASS" -X DELETE \
+        "http://127.0.0.1:4096/v1/pi/sessions/$S7_FID" 2>/dev/null || echo 000)
+      S7_FILE2=$(kubectl -n "$NS" exec "$PI_POD" -c workspace -- \
+        sh -c "ls /workspace/pi-sessions/ 2>/dev/null | grep $S7_FID || true" 2>/dev/null || true)
+      if echo "$S7_LIST" | grep -q "\"id\":\"$S7_FID\"" && echo "$S7_FILEGET" | grep -q '"type":"session"' \
+        && [ "$S7_DEL" = "200" ] && [ -z "$S7_FILE2" ]; then
+        pass S7.2d "bridge list serves the session-dir scan; /file streams the JSONL; DELETE unlinks (gone-class)"
+      else
+        fail S7.2d "list/read/delete round-trip: list=${S7_LIST:-none} get=${S7_FILEGET:-none} del=$S7_DEL after=${S7_FILE2:-gone}"
+      fi
+    else
+      fail S7.2 "OPENCODE_SERVER_PASSWORD unreadable from PID1 — bridge legs cannot run"
+    fi
+    kubectl -n "$NS" delete workspace "$WS_PI" --wait=false >/dev/null 2>&1 || true
+
+    # --- S7.3: pi verify failure under the pi harness (the S5.4b leg,
+    # relocated): wrong pi pin -> the harness=pi supervisor exits 85 ->
+    # PiVerified=False, exit code disjoint from agentd's 81/82 and
+    # opencode's 83/84. Needs the sidecar chart (S7.1's state) because a
+    # pi workspace without the sidecar is refused at admission.
+    WS_BAD_PI="ws-s7-bad-pi"
+    BAD_PI_SHA=$(printf '0%.0s' {1..64})
+    log "S7.3: upgrading chart with a WRONG pi break-glass pin (sidecar still enabled)"
+    helm upgrade --install "$RELEASE" helm -n "$NS" \
+      "${HELM_LEAN_ARGS[@]}" \
+      --set "controller.agentdDelivery.image=${AGENTD_REF}" \
+      --set "controller.agentdDelivery.binarySHA256Amd64=${AGENTD_SHA}" \
+      --set "controller.agentdDelivery.binarySHA256Arm64=${AGENTD_SHA}" \
+      --set "controller.opencodeDelivery.image=${OPENCODE_REF}" \
+      --set "controller.opencodeDelivery.binarySHA256Amd64=${OPENCODE_SHA}" \
+      --set "controller.opencodeDelivery.binarySHA256Arm64=${OPENCODE_SHA}" \
+      --set "controller.piDelivery.image=${PI_REF}" \
+      --set "controller.piDelivery.binarySHA256Amd64=${BAD_PI_SHA}" \
+      --set "controller.piDelivery.binarySHA256Arm64=${BAD_PI_SHA}" \
+      --set controller.agentdSidecar.enabled=true \
+      >/dev/null 2>&1 || log "S7.3: tamper upgrade reported an error (continuing — the check polls conditions)"
+    kubectl -n "$NS" rollout status deployment/"${RELEASE}-llmsafespaces-controller" --timeout=300s >/dev/null 2>&1 \
+      || log "S7.3: controller rollout wait timed out (the check polls conditions)"
+    if wait_webhook_ready && apply_workspace "$WS_BAD_PI" "  harness: pi"; then
+      S73_COND=""
+      for i in $(seq 1 120); do
+        S73_COND=$(kubectl -n "$NS" get workspace "$WS_BAD_PI" -o jsonpath='{range .status.conditions[*]}{.type}={.status} {end}' 2>/dev/null || true)
+        echo "$S73_COND" | grep -q "PiVerified=False" && break
+        sleep 2
+      done
+      if echo "$S73_COND" | grep -q "PiVerified=False"; then
+        # STRICT: exit code must be exactly 85 (codes disjoint per overlay).
+        S73_EXIT=$(kubectl -n "$NS" get pods -l llmsafespaces.dev/workspace="$WS_BAD_PI" \
+          -o jsonpath='{.items[0].status.containerStatuses[0].lastState.terminated.exitCode}' 2>/dev/null || true)
+        if [ -z "$S73_EXIT" ]; then
+          S73_EXIT=$(kubectl -n "$NS" get pods -l llmsafespaces.dev/workspace="$WS_BAD_PI" \
+            -o jsonpath='{.items[0].status.containerStatuses[0].state.terminated.exitCode}' 2>/dev/null || true)
+        fi
+        if [ "$S73_EXIT" = "85" ]; then
+          pass S7.3 "wrong pi pin on a harness=pi workspace → exit 85 → PiVerified=False (disjoint from 81/82/83/84)"
+        else
+          fail S7.3 "PiVerified=False but the exit code is ${S73_EXIT:-unreadable} — must be exactly 85"
+        fi
+      else
+        fail S7.3 "wrong pi pin never surfaced PiVerified=False: ${S73_COND:-none}"
+      fi
+      kubectl -n "$NS" delete workspace "$WS_BAD_PI" --wait=false >/dev/null 2>&1 || true
+    else
+      fail S7.3 "webhook/apply for the bad-pi workspace did not succeed"
+    fi
+
+    # Restore the pre-S7 chart (sidecar off — the S5 topology) so the
+    # weekly cadence and any rerun start from the documented state.
+    helm upgrade --install "$RELEASE" helm -n "$NS" \
+      "${HELM_LEAN_ARGS[@]}" "${HELM_PIN_ARGS[@]}" >/dev/null 2>&1 \
+      || log "S7 restore upgrade reported an error (continuing)"
+  else
+    fail S7.1 "pi-harness workspace apply kept failing or never reached Active"
+    kubectl -n "$NS" describe pod -l llmsafespaces.dev/workspace="$WS_PI" 2>&1 | tail -30 || true
+  fi
+else
+  fail S7.1 "controller did not roll onto agentdSidecar.enabled — S7 legs cannot run"
 fi
