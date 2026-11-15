@@ -264,6 +264,11 @@ const boardBusyRenewCap = 3
 // (stage predicate re-checked at write time; SKIP LOCKED lets concurrent
 // sweeps divide the work), attempts untouched (the increment belongs to
 // the next claim), deterministic episode event ids.
+//
+// The suspension freeze (suspend.go) runs BEFORE the ladder: a victim
+// whose project targets a SUSPENDED workspace is renewed in place (no
+// observation, no nudge, no attempt increment) — the 2026-11-13/14
+// incident's structural fix. Everything else is today's ladder.
 func (s *Service) rc1Reclaims(ctx context.Context) (int, error) {
 	tx, err := s.store.pool.Begin(ctx)
 	if err != nil {
@@ -275,8 +280,10 @@ func (s *Service) rc1Reclaims(ctx context.Context) (int, error) {
 	rows, err := tx.Query(ctx, `
 		SELECT t.id, t.project_id, COALESCE(t.lease_expires_at::text, 'null'), t.failure_count,
 			COALESCE(t.assignee_session,''), COALESCE(t.nudge_id,''), COALESCE(t.short_id,''),
-			t.nudged_at, t.last_heartbeat_at, t.busy_renews
+			t.nudged_at, t.last_heartbeat_at, t.busy_renews,
+			COALESCE(p.target_workspace_id::text, '')
 		FROM tasks t
+		LEFT JOIN projects p ON p.id = t.project_id
 		WHERE t.stage='in_progress' AND NOT t.pending_input
 		  AND (t.lease_expires_at IS NULL OR t.lease_expires_at < now())
 		FOR UPDATE OF t SKIP LOCKED`)
@@ -291,18 +298,66 @@ func (s *Service) rc1Reclaims(ctx context.Context) (int, error) {
 		nudgedAt             *time.Time
 		lastHeartbeat        *time.Time
 		busyRenews           int32
+		ws                   string
 	}
 	var victims []victim
 	for rows.Next() {
 		var v victim
 		if err := rows.Scan(&v.id, &v.project, &v.episode, &v.failures, &v.assignee, &v.nudgeID, &v.shortID,
-			&v.nudgedAt, &v.lastHeartbeat, &v.busyRenews); err != nil {
+			&v.nudgedAt, &v.lastHeartbeat, &v.busyRenews, &v.ws); err != nil {
 			rows.Close()
 			return 0, err
 		}
 		victims = append(victims, v)
 	}
 	rows.Close()
+
+	// --- the suspension freeze (suspend.go, FIRST) ----------------------
+	// One snapshot for the whole pass; POSITIVE evidence only (a
+	// workspace the source cannot see is NOT suspended — the honest
+	// lapse path keeps running for it). Frozen victims never reach the
+	// ladder: no observation consult, no sentinel, no verdict — the
+	// row is renewed and leaves the victim set until the suspension
+	// outlasts the next window (≈2 writes/day/row).
+	applied := 0
+	frozen := s.suspendSnapshot(ctx)
+	type ladderDecision uint8
+	const (
+		ladderReclaim ladderDecision = iota // wall-clock fallback (today's path)
+		ladderRenew                         // observed movement / post-sentinel reaction / heartbeat response
+		ladderNudge                         // quiet: send the sentinel, measure next expiry
+		ladderWedge                         // sentinel positioned, nothing after it: failed
+	)
+	// freezeOut carries the freeze's S4 renewal decisions — emitted
+	// strictly POST-COMMIT with the ladder's leaseOut (the sink never
+	// projects a decision the transaction rolled back).
+	var freezeOut []LeaseEvent
+	if len(frozen) > 0 {
+		for i := len(victims) - 1; i >= 0; i-- {
+			if !frozen[victims[i].ws] {
+				continue
+			}
+			v := victims[i]
+			tag, err := tx.Exec(ctx, freezeLeaseSQL, v.id, s.cfg.LeaseDuration.Seconds(), StageInProgress)
+			if err != nil {
+				return 0, err
+			}
+			if tag.RowsAffected() == 0 {
+				// The stage guard lost the race (the row moved between
+				// the locked scan and this write — possible only via a
+				// superseding writer on a replica's stale lock): no
+				// phantom renewal, no event (the sibling arms'
+				// converged-by-them discipline).
+				continue
+			}
+			freezeOut = append(freezeOut, LeaseEvent{
+				Kind: LeaseEventRenewed, TaskID: v.id, TaskShortID: v.shortID, ProjectID: v.project,
+				Assignee: v.assignee, Source: RenewSourceSuspended, FailureCount: v.failures,
+			})
+			applied++
+			victims = append(victims[:i], victims[i+1:]...)
+		}
+	}
 
 	// --- the seamless-lease ladder (000050) ------------------------------
 	// Observe FIRST; the wall-clock reclaim below is the fallback for
@@ -320,13 +375,6 @@ func (s *Service) rc1Reclaims(ctx context.Context) (int, error) {
 		}
 	}
 	observations := lives.ObserveAssignees(ctx, SessionObservations{Refs: refs})
-	type ladderDecision uint8
-	const (
-		ladderReclaim ladderDecision = iota // wall-clock fallback (today's path)
-		ladderRenew                         // observed movement / post-sentinel reaction / heartbeat response
-		ladderNudge                         // quiet: send the sentinel, measure next expiry
-		ladderWedge                         // sentinel positioned, nothing after it: failed
-	)
 	// boardBusyRenewCap bounds the busy-gate's deferral (review round
 	// 1's blocking finding): a source latched busy-true forever (dead
 	// pod + stalled recreation keeps the gate's truth stale) must not
@@ -504,7 +552,6 @@ func (s *Service) rc1Reclaims(ctx context.Context) (int, error) {
 	}
 
 	sys := Actor{Kind: ActorSystem, Surface: SurfaceReconciler}
-	applied := 0
 	// leaseOut collects the S4 observation-plane decisions (design
 	// 0072): emitted strictly POST-COMMIT so the sink never projects a
 	// decision the transaction rolled back.
@@ -671,7 +718,7 @@ func (s *Service) rc1Reclaims(ctx context.Context) (int, error) {
 	// durable; report them to the observation plane. The sink bounds
 	// its own work (the app adapter's publish carries a timeout) — a
 	// slow bus must never stall the next phase of the sweep.
-	for _, ev := range leaseOut {
+	for _, ev := range append(freezeOut, leaseOut...) {
 		s.emitLease(ctx, ev)
 	}
 	return applied, nil
@@ -713,10 +760,18 @@ func (s *Service) rc1PersonaClaims(ctx context.Context) (personaReclaim, error) 
 	sys := Actor{Kind: ActorSystem, Surface: SurfaceReconciler}
 
 	// --- (a) lapse pass ---------------------------------------------------
+	// The suspension freeze applies to persona claims exactly as to
+	// worker claims (suspend.go): a reviewer whose workspace is
+	// suspended is renewed in place — no #1813 accounting, no attempt
+	// burn — and the re-arm pass below skips the workspace (a fresh
+	// reviewer spawn would auto-RESUME the workspace through the
+	// activator).
+	frozen := s.suspendSnapshot(ctx)
 	rows, err := s.q().Query(ctx, `
 		SELECT t.id, t.project_id, COALESCE(t.lease_expires_at::text, 'null'), t.failure_count,
-			COALESCE(t.short_id,''), COALESCE(t.assignee_session,'')
+			COALESCE(t.short_id,''), COALESCE(t.assignee_session,''), COALESCE(p.target_workspace_id::text,'')
 		FROM tasks t
+		LEFT JOIN projects p ON p.id = t.project_id
 		WHERE t.stage='in_review' AND t.lease_expires_at IS NOT NULL AND t.lease_expires_at < now()`)
 	if err != nil {
 		return out, err
@@ -725,11 +780,12 @@ func (s *Service) rc1PersonaClaims(ctx context.Context) (personaReclaim, error) 
 		id, project, episode string
 		failures             int32
 		shortID, assignee    string
+		ws                   string
 	}
 	var lapses []lapseVictim
 	for rows.Next() {
 		var v lapseVictim
-		if err := rows.Scan(&v.id, &v.project, &v.episode, &v.failures, &v.shortID, &v.assignee); err != nil {
+		if err := rows.Scan(&v.id, &v.project, &v.episode, &v.failures, &v.shortID, &v.assignee, &v.ws); err != nil {
 			rows.Close()
 			return out, err
 		}
@@ -738,6 +794,37 @@ func (s *Service) rc1PersonaClaims(ctx context.Context) (personaReclaim, error) 
 	rows.Close()
 
 	for _, v := range lapses {
+		if frozen[v.ws] {
+			// FREEZE: the reviewer's workspace is suspended — renew the
+			// persona lease in place, keep the claim, no accounting. The
+			// ordinary lapse/ladder runs when the workspace resumes.
+			tx, err := s.store.pool.Begin(ctx)
+			if err != nil {
+				return out, err
+			}
+			// The stage guard is the phantom-event belt (the sibling
+			// arms' discipline): the lapse SELECT ran UNLOCKED, so a
+			// concurrent stage move between scan and write yields 0
+			// rows — converged by them, no renewal, no event.
+			tag, err := tx.Exec(ctx, freezeLeaseSQL, v.id, s.cfg.LeaseDuration.Seconds(), StageInReview)
+			if err != nil {
+				_ = tx.Rollback(ctx)
+				return out, err
+			}
+			if tag.RowsAffected() == 0 {
+				_ = tx.Rollback(ctx)
+				continue // raced a concurrent writer: converged by them
+			}
+			if err := tx.Commit(ctx); err != nil {
+				return out, err
+			}
+			s.emitLease(ctx, LeaseEvent{
+				Kind: LeaseEventRenewed, TaskID: v.id, TaskShortID: v.shortID, ProjectID: v.project,
+				Assignee: v.assignee, Source: RenewSourceSuspended, FailureCount: v.failures,
+			})
+			out.applied++
+			continue
+		}
 		var persona *PersonaConfig
 		if p := s.projectFor(ctx, v.project); p != nil {
 			persona = s.stagePersona(ctx, p, StageInReview)
@@ -855,11 +942,12 @@ func (s *Service) rc1PersonaClaims(ctx context.Context) (personaReclaim, error) 
 	type rearmCandidate struct {
 		id, project string
 		failures    int32
+		ws          string
 	}
 	var candidates []rearmCandidate
 	for rows.Next() {
 		var v rearmCandidate
-		if err := rows.Scan(&v.id, &v.project, &v.failures); err != nil {
+		if err := rows.Scan(&v.id, &v.project, &v.failures, &v.ws); err != nil {
 			rows.Close()
 			return out, err
 		}
@@ -868,6 +956,14 @@ func (s *Service) rc1PersonaClaims(ctx context.Context) (personaReclaim, error) 
 	rows.Close()
 
 	for _, v := range candidates {
+		// Suspension freeze (suspend.go): a suspended workspace's rows
+		// wait for resume — no re-arm mint (the fresh reviewer's spawn
+		// would auto-RESUME the workspace through the activator), and
+		// no escalation write either (the whole pass is inert for the
+		// workspace; on resume the ordinary machinery converges).
+		if frozen[v.ws] {
+			continue
+		}
 		p := s.projectFor(ctx, v.project)
 		if p == nil {
 			continue
@@ -981,6 +1077,20 @@ func (s *Service) dispatchDrive(ctx context.Context) (int, error) {
 		workspaces = append(workspaces, ws)
 	}
 	rows.Close()
+
+	// Suspension freeze (suspend.go): a suspended workspace is not
+	// driven — the claim choke point would refuse anyway (quiet
+	// no-grant), and skipping here avoids the per-sweep transaction
+	// churn. The workspace re-enters the drive the scan after resume.
+	if frozen := s.suspendSnapshot(ctx); len(frozen) > 0 && len(workspaces) > 0 {
+		driven := workspaces[:0]
+		for _, ws := range workspaces {
+			if !frozen[ws] {
+				driven = append(driven, ws)
+			}
+		}
+		workspaces = driven
+	}
 
 	const maxClaimsPerSweep = 64
 	granted := 0
