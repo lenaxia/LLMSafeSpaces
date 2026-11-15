@@ -501,7 +501,7 @@ Multi-tenant isolation rests on layered controls in a **shared namespace** (no p
 
 Org-specific quota overrides and billing-tier→quota mapping are deferred to Epic 43. See `design/stories/epic-51-tenant-isolation/README.md`.
 
-### Prompt-path wedge: admission canary + session-aware supervised restart (#2040)
+### Prompt-path wedge: admission canary + session-aware supervised restart (#2045)
 
 **Symptom:** message POSTs (`POST /session/:id/message`) for ONE session time out on the client while everything else looks green — `/global/health` answers fast, TCP dial succeeds, opencode 401s are quick. This is the wedge class the supervisor's health model structurally cannot see: the per-session prompt pipeline is dead (e.g. `SessionRunState.ensureRunning → SessionPrompt.run` failing with "No user message found in stream") but the HTTP server itself is alive. The Nov 13-15 2026 incident persisted for hours until a manual restart.
 

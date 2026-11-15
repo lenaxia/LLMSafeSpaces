@@ -106,11 +106,10 @@ func (f *fakeOpencodeServe) url() string { return f.srv.URL }
 
 // quickClient is the OpenCodeClient with a test-shrunk whole-request
 // timeout (the production shape: main.go's 5s http.Client fires before
-// the 30s resume ctx — both are the timeout class).
+// the 30s resume ctx — both are the timeout class). Callers own the
+// agentAddrAtomic save/restore.
 func quickClient(base string) *OpenCodeClient {
-	orig := agentAddrAtomic.Load()
 	agentAddrAtomic.Store(base)
-	_ = orig
 	return &OpenCodeClient{password: "pw", client: &http.Client{Timeout: 150 * time.Millisecond}}
 }
 
