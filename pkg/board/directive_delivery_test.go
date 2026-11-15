@@ -33,14 +33,23 @@ type directiveCall struct {
 
 // recordingDirectiveMessenger records structured directives; err, when
 // set, is returned for every delivery (the unreachable-worker path).
+// onCall, when set, fires at delivery time (the hook that cancels the
+// caller's context mid-cascade — the client-disconnect shape).
 // Mutex-guarded: cascades deliver with bounded concurrency.
 type recordingDirectiveMessenger struct {
-	mu    sync.Mutex
-	calls []directiveCall
-	err   error
+	mu     sync.Mutex
+	calls  []directiveCall
+	err    error
+	onCall func()
 }
 
 func (f *recordingDirectiveMessenger) Deliver(_ context.Context, sessionID string, d board.Directive) error {
+	f.mu.Lock()
+	hook := f.onCall
+	f.mu.Unlock()
+	if hook != nil {
+		hook()
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.calls = append(f.calls, directiveCall{session: sessionID, d: d})
@@ -274,4 +283,46 @@ func (s *BoardSuite) TestKill_2046_DirectiveEventIdempotent() {
 	s.Require().NoError(err)
 	require.Len(s.T(), msg.calls, 1, "already-paused short-circuits (no re-delivery)")
 	require.Len(s.T(), s.directiveEvents(t1.ID), 1)
+}
+
+// KILL-TEST 2046-f (audit survives a cancelled caller): the client
+// disconnects the instant the pause commits — the delivery survives
+// (context.WithoutCancel in the messenger seam) and the AUDIT ROW must
+// survive too (review r1 finding: the audit write rode the cancelable
+// request ctx and was silently lost exactly when the requester left).
+// The hook cancels the request ctx AT messenger time — after the pause
+// commit, before recordDirectiveEvent — the production shape.
+func (s *BoardSuite) TestKill_2046_AuditSurvivesCancelledCtx() {
+	ws := s.seedWorkspace()
+	p := s.seedProject(ws, 4)
+	e := s.seedEpic(p, board.EpicActive)
+	t1 := s.seedTask(e, "gone-client", nil, false)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	msg := &recordingDirectiveMessenger{onCall: cancel}
+	s.svc = board.NewService(s.pool, s.cfg,
+		board.WithWorkerSpawner(s.spawner.Spawn),
+		board.WithWorkerAborter(s.aborter.Abort),
+		board.WithWorkerMessenger(msg.Deliver),
+	)
+
+	c := s.claimOrFail(ws)
+	s.Require().Equal(t1.ID, c.TaskID)
+
+	_, err := s.svc.PauseTask(ctx, s.owner(), t1.ID, "", "")
+	// The ctx dies mid-call: the pause itself committed (the flag is
+	// set); the trailing reads may fail with context canceled — that is
+	// the production shape (the client is gone).
+	_ = err
+
+	require.Len(s.T(), msg.calls, 1, "the delivery fired (and cancelled the caller's ctx)")
+	events := s.directiveEvents(t1.ID)
+	require.Len(s.T(), events, 1,
+		"the audit row for the dispatched directive MUST land even though the caller's ctx was cancelled at delivery time")
+	var pl map[string]any
+	s.Require().NoError(json.Unmarshal(events[0].Payload, &pl))
+	s.Equal("dispatched", pl["outcome"], "the messenger returned nil — the audit records the dispatch")
+
+	// The flag committed regardless (the authority): the row is paused.
+	s.True(s.reloadTask(t1.ID).Paused, "the pause flag committed before the disconnect")
 }

@@ -191,6 +191,13 @@ func (s *Service) commitPublishing(ctx context.Context, tx pgx.Tx, pending ...Ev
 // has already committed; an audit-write failure WARNs and is otherwise
 // dropped (the flags stay authoritative — the event is the trail, never
 // a gate).
+//
+// The audit write runs DETACHED from the caller's request ctx (review
+// r1 finding 2): the client may disconnect the instant the pause
+// commits — the delivery itself survives (context.WithoutCancel in the
+// messenger seam) and the audit row must survive with it, or the row
+// for a genuinely dispatched directive is lost exactly when the
+// requester is gone. Bounded so a wedged write cannot leak the goroutine.
 func (s *Service) recordDirectiveEvent(ctx context.Context, projectID, taskID, session string, d Directive, outcome string, deliverErr error) {
 	if projectID == "" || taskID == "" {
 		slog.WarnContext(ctx, "board: directive audit skipped (unaddressable task)",
@@ -208,23 +215,25 @@ func (s *Service) recordDirectiveEvent(ctx context.Context, projectID, taskID, s
 	if deliverErr != nil {
 		payload["error"] = deliverErr.Error()
 	}
-	tx, err := s.store.pool.Begin(ctx)
+	actx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+	defer cancel()
+	tx, err := s.store.pool.Begin(actx)
 	if err != nil {
-		slog.WarnContext(ctx, "board: directive audit event begin failed",
+		slog.WarnContext(actx, "board: directive audit event begin failed",
 			"directive", d.Kind, "task", d.TaskShortID, "error", err.Error())
 		return
 	}
-	defer func() { _ = tx.Rollback(ctx) }() //nolint:errcheck // best-effort audit: rollback only when the commit below did not land
-	evt, err := recordEventTx(ctx, tx, projectID,
+	defer func() { _ = tx.Rollback(actx) }() //nolint:errcheck // best-effort audit: rollback only when the commit below did not land
+	evt, err := recordEventTx(actx, tx, projectID,
 		"directive:"+taskID+":"+d.AuditID, "directive", "task", taskID,
 		Actor{Kind: ActorSystem, Surface: "engine"}, payload)
 	if err != nil {
-		slog.WarnContext(ctx, "board: directive audit event write failed",
+		slog.WarnContext(actx, "board: directive audit event write failed",
 			"directive", d.Kind, "task", d.TaskShortID, "error", err.Error())
 		return
 	}
-	if err := s.commitPublishing(ctx, tx, evt); err != nil {
-		slog.WarnContext(ctx, "board: directive audit event commit failed",
+	if err := s.commitPublishing(actx, tx, evt); err != nil {
+		slog.WarnContext(actx, "board: directive audit event commit failed",
 			"directive", d.Kind, "task", d.TaskShortID, "error", err.Error())
 	}
 }

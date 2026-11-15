@@ -37,6 +37,11 @@ Made board HALT/RESUME/DEPOSED directives first-class: sentinel-marked with a ty
 - **Finding: the deposed delivery's audit references a task whose assignee was already cleared.** False alarm: the event keys on task id (not the assignee) and the payload records the captured pre-write session — attribution is exact.
 - **Finding: two full-suite runs failed once (suspend kill test, three app wiring tests).** Validated as self-inflicted: I ran both suites concurrently against one Postgres — the failures were cross-suite TRUNCATE contention and a PG deadlock, not code. Both suites pass run solo (board `-race` full suite green, app suite green) and the suspend test passes on pristine main too.
 
+## Adversarial review rounds (github-actions reviewer, rounds 1+2 — CHANGES_REQUESTED, same head)
+
+1. `runbook-attribution-id-mismatch` (docs-truth) — REAL: the sentinel carries the task SHORT id while the event id embeds the UUID; the runbook's literal recipe assembled the event id from the sentinel's `taskId` and found no row — the exact mis-attribution the runbook exists to prevent. Fixed: the lookup now keys on `payload->>'audit_id'` (unique per delivery; rides both the sentinel and the event payload), with a worked example and an explicit short-vs-UUID warning.
+2. `directive-audit-cancelled-ctx-lost` (robustness) — REAL: the audit write rode the cancelable request ctx; a client disconnect after the pause commit silently dropped the row for a genuinely dispatched directive (the delivery itself survives via WithoutCancel — the audit now must too). Fixed red-first: `TestKill_2046_AuditSurvivesCancelledCtx` born red (0 rows), then green — `recordDirectiveEvent` runs on `context.WithoutCancel(ctx)` bounded at 10s, and the rollback rides the same detached ctx.
+
 ## Tests (TDD)
 
 - Born-red: `board.Directive` undefined at both seams (compile-red), then the sentinel `mode` assertion caught the unstamped payload before any manual check.
