@@ -22,6 +22,7 @@ vi.mock("../../providers/SessionActivityProvider", () => ({
   useIsSessionAborted: () => false,
   useClearPendingUnread: () => () => {},
   useIsSessionBusy: () => false,
+  useAnySessionBusy: () => false,
   useIsSessionUnread: () => false,
   useWorkspaceBusyCount: () => 0,
     useWorkspaceHung: () => false,

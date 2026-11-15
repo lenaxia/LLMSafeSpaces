@@ -7,7 +7,7 @@ import { useConfirmDialog } from "../../hooks/useConfirmDialog";
 import { orgsApi } from "../../api/orgs";
 import { ApiClientError } from "../../api/client";
 import { useAuth } from "../../providers/AuthProvider";
-import { useSessionStatus, useWorkspaceBusyCount, useSessionPendingActions, useWorkspaceHung, useIsSessionAborted } from "../../providers/SessionActivityProvider";
+import { useAnySessionBusy, useSessionStatus, useWorkspaceBusyCount, useSessionPendingActions, useWorkspaceHung, useIsSessionAborted } from "../../providers/SessionActivityProvider";
 import type { SessionDisplayStatus } from "../../providers/SessionActivityProvider";
 import { RenameWorkspaceDialog } from "../workspace/RenameWorkspaceDialog";
 import { NewWorkspaceSplitButton } from "../workspace/NewWorkspaceSplitButton";
@@ -1301,6 +1301,11 @@ function WorkersGroup({
   contextBySessionId,
   pendingIndicatorIds,
 }: WorkersGroupProps) {
+  // Aggregate activity for the group header: the spinner lights iff at
+  // least one worker row is busy (useAnySessionBusy — an aggregation
+  // over the SAME session-activity busy map the rows read, not a
+  // second source of truth).
+  const anyWorkerBusy = useAnySessionBusy(nodes.map((n) => n.session.id));
   return (
     <>
       <div className="group flex items-center rounded-md transition-colors hover:bg-accent/50" data-testid="workers-group">
@@ -1317,6 +1322,11 @@ function WorkersGroup({
           )}
           <Bot className="h-3 w-3 flex-shrink-0" aria-hidden="true" />
           <span className="flex-1 truncate text-muted-foreground/80">Workers</span>
+          {anyWorkerBusy && (
+            <span className="workers-activity flex-shrink-0" data-testid="workers-group-spinner">
+              <BusyIndicator size="sm" />
+            </span>
+          )}
           <span className="flex-shrink-0 text-xs text-muted-foreground/60">{nodes.length}</span>
         </button>
       </div>
