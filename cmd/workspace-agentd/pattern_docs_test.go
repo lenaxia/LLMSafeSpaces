@@ -257,6 +257,13 @@ func TestPatternDocs_ContentPins_BoardCatalog(t *testing.T) {
 		"dependsOn",          // the dependency edge, in the payload
 		"dryRun",             // the plan-approval moment
 		"verification move",  // reviewer-checkable: the how-to-check named
+		// Shapes (§D, cont.) — the prelim story (tsk-primal-vignette-covers,
+		// owner direction 2026-11-15): requirements before filing, design
+		// gated + patched, story-updating from findings.
+		"prelim story",                   // the pattern's name
+		"not its substitute",             // filing is the design conversation's output
+		"board_update_story",             // the patch-from-findings move
+		"REPLACES the full criteria set", // the replace-semantics lesson, restated
 	} {
 		assert.Contains(t, full, want, "board catalog: canonical fragment %q must stay", want)
 	}

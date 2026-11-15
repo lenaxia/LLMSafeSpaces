@@ -206,7 +206,8 @@ var boardCreateStoryTool = mcp.NewTool("board_create_story",
 		"done when its criteria are ALL met, drift_review flag (pending_input) when unmet — the park "+
 		"is a FLAG on the row's real stage (000050), never a costume column). depends_on adds "+
 		"prerequisite edges in the same write (#1747). Worked story patterns (six use-case charters, "+
-		"lifecycles, plan shapes, the shared process discipline) live at "+
+		"lifecycles, plan shapes incl. the optional prelim story that gates implementation stories and "+
+		"patches them from its findings, the shared process discipline) live at "+
 		"/sandbox-runtime/docs/sprint-board-patterns/ — grep '^Description:' there for the catalog."),
 	mcp.WithString("epic_id", mcp.Required(), mcp.Description("Epic short id, phrase form (epc-meek-gondola-waits; legacy epc-XXXXXXXX still resolves, deprecated)")),
 	mcp.WithString("title", mcp.Required(), mcp.Description("Story title")),
@@ -460,7 +461,8 @@ var boardImportPlanTool = mcp.NewTool("board_import_plan",
 		"dry_run=true validates WITHOUT writing — the render "+
 		"(graph, warnings, initial ready set) is the user's plan-approval moment. Stories address each other "+
 		"by payload key; edges live within the workspace. Worked story patterns (an epic+plan with a "+
-		"dependency edge among them) live at /sandbox-runtime/docs/sprint-board-patterns/ — "+
+		"dependency edge among them — and the optional prelim story that gates implementation stories "+
+		"and patches them from its findings) live at /sandbox-runtime/docs/sprint-board-patterns/ — "+
 		"grep '^Description:' there for the catalog."),
 	mcp.WithString("project_id", mcp.Required(), mcp.Description("Project short id, phrase form (prj-amber-lantern-ambles; legacy prj-XXXXXXXX still resolves, deprecated)")),
 	mcp.WithString("epic_title", mcp.Required(), mcp.Description("The created epic's title")),
