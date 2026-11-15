@@ -106,10 +106,11 @@ change to the fallback. Pinned by TestPiChildCmdArgv; docs updated.
 - Suites: `cmd/workspace-agentd` (TestPiChildCmdArgv + pi suites),
   `local` (S5 script + new S7 structural pins) — green.
 - bash -n on the e2e script; structural test validates leg inventory.
-- Kind e2e (workflow_dispatch on this branch head): see PR description +
-  design 0073 §4 for the run URL and the S7 leg results (baseline stack run
-  43373000078 @ 95f2c7f2f: all S5 legs green, cold-pull resume 17 s ≤ 120 s
-  budget, gVisor leg PASS).
+- Kind e2e GREEN on this head: run 43657434802 @ 5074b6ca3 — all 22 legs
+  PASS (S5.1-S5.6 + S7.1a-d + S7.2a-d + S7.3; cold-pull resume 16 s ≤
+  120 s; gVisor PASS; pi tamper exit 85). Intermediate run 43655331453
+  @ 446c4bd4e triaged four script-side staleness findings (fixed in
+  5074b6ca3). Baseline stack run 43373000078 @ 95f2c7f2f for comparison.
 
 ## Files touched
 

@@ -126,8 +126,16 @@ Evidence index: `design/evidence/pi-validation/` (one file per U-item, sources c
   (codes disjoint from 81/82/83/84); needs the sidecar chart, hence its
   home in S7.
 
-The workflow_dispatch run URL for THIS head is recorded in the worklog
-and the PR description at review time (the weekly cadence re-proves it).
+**This head's run (all 22 legs PASS):**
+[`43657434802`](https://github.com/lenaxia/LLMSafeSpaces/actions/runs/43657434802)
+@ `5074b6ca3` (2026-11-15) — S5.1-S5.6 baseline legs green (cold-pull
+resume **16 s** ≤ 120 s; gVisor PASS; per-harness negatives) AND S7.1a-d +
+S7.2a-d + S7.3 green: the `harness=pi` workspace reached Active with
+`supervise-pi` as PID1 and `PiVerified=True`, the bridge spawned the real
+pinned-binary child and answered `get_state` through it, the PVC session-dir
+contract held, the gone-class DELETE unlinked, and the wrong-pi tamper leg
+exited **85** with `PiVerified=False`. The per-child RSS reading lands in
+the run's step summary (weekly cadence re-proves all of it).
 
 ---
 
