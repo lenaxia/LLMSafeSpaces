@@ -87,9 +87,16 @@ Body, in order (all anchors verified):
 1. `SELECT … FOR UPDATE OF e` the epic row (status, wrap_up_review, wrapup_task_id,
    wrapup_count, wrapup_ack_pending) — the serialization point for concurrent drains (D1).
    Absent row → no-op (deleted epic).
-2. `status <> 'active'` → no-op (today's `e.status='active'` guard, store.go:459).
+2. `status <> 'active'` → no-op (today's `e.status='active'` guard, store.go:455-457).
 3. `wrap_up_review = false` → run today's statement VERBATIM (store.go:452-464 body;
    extract to `epicCompletionCheckPlain`) and return. [D9 regression pin lives here]
+   **The disabled branch is the seam's ONLY completion path.** An enabled epic NEVER
+   completes through the drain seam — completion of an enabled epic happens exactly
+   once, in the PASS verdict transaction (§4), under the same row lock discipline. This
+   is what keeps PASS a terminus rather than a fresh mint: after the settle SQL clears
+   `wrapup_task_id`, a seam re-run on a drained enabled epic would walk to step 7/8
+   (ack-wait or an empty-delta mint) — so the verdict path MUST NOT re-run the seam;
+   it completes directly (§4).
 4. Enabled: drain check over story rows only:
 
 ```sql
@@ -126,13 +133,13 @@ without the owner-facing guards:
    fail-closed, never a role-less spawn (the applyPersonaRole degradation discipline,
    persona.go:218-248).
 2. Phrase id: `mintUnique(ctx, txQ{tx}, "tasks", PrefixTask, taskMintOwnerScope, ownerUserID)`
-   (ids.go — the shared phrase space; wrap-up rows are tasks).
+   (store.go:378 — the shared phrase space; wrap-up rows are tasks).
 3. INSERT the row — `stage='in_review'`, `kind='wrapup'`, `tags='{wrapup}'`,
    `title = "Epic wrap-up review: "+epic.Title` (+ `" (delta N+1)"` when `wrapup_count>0`),
    `description = RenderWrapUpCharter(…)` (§5), engine-seeded `acceptance_criteria` (§5),
    `epic_name`/`project_name` denormalized per the create path.
 4. Persona claim in the same tx: `personaClaimMintTx(ctx, tx, taskID, StageInReview,
-   persona.Label())` (persona.go:276) + `personaClaimEventTx(...)` (persona.go:297) — the
+   persona.Label())` (persona.go:276) + `personaClaimEventTx(...)` (persona.go:294) — the
    stage.go:225-233 entry-mint pattern, origin `"wrapup-mint"`. `claim_persona` stamps the
    wrap-up reviewer's label; `attempts` untouched (the personaClaimSQL discipline).
 5. `UPDATE epics SET wrapup_task_id=$2 WHERE id=$1 AND wrapup_task_id IS NULL` — 0 rows =
@@ -193,10 +200,28 @@ WHERE id=$3 AND wrapup_task_id=$2
 
 then: `writeTransition(done, evidence=ReportURL)`; `recordEventTx("wrapup_verdict",
 payload{verdict, report_url, gap_refs, notes, window:{from,to}, story_count})`; on PASS —
-`wrapUpAwareEpicCompletion` re-run (step 4 finds drained, step 5 finds no in-flight row →
-the plain branch completes the epic ONLY if every story row is done — gaps filed after a
-pass verdict hold it open through the ordinary predicate, the honest shape); on GAPS —
-nothing further (the non-done gap rows hold the epic by the drain predicate alone).
+**direct completion, never a seam re-run** (§2 step 3's note): the verdict transaction
+holds the epic's logical turn (the settle SQL just consumed the in-flight pointer), so the
+PASS branch executes the explicit guarded completion against the enabled-epic drain
+predicate in the SAME transaction:
+
+```sql
+UPDATE epics SET status='completed'
+WHERE id=$epic AND status='active' AND wrap_up_review
+  AND wrapup_task_id IS NULL AND NOT wrapup_ack_pending
+  AND EXISTS(SELECT 1 FROM tasks t WHERE t.epic_id=epics.id AND t.kind='story' AND t.stage='done')
+  AND NOT EXISTS(SELECT 1 FROM tasks t WHERE t.epic_id=epics.id
+                 AND t.kind='story' AND t.stage<>'done')
+```
+
+(0 rows = a story reopened under the verdict — the epic stays open by the ordinary
+predicate; the gaps-filed-late shape, the honest outcome. A deterministic
+`"wrapup:epic_complete:"+epicID` event rides the same tx.) The cap does NOT gate PASS
+completion: the cap bounds the MINT loop (a pedantic gap-filer), and a PASS is the loop's
+terminus — the reviewer approved the aggregate, so the ledger stops mattering (reset on
+ack; completion makes it moot). On GAPS — nothing further (the non-done gap rows hold
+the epic by the drain predicate alone). Late gaps after a PASS hold the epic open
+through the same predicate if anything reopens before completion commits.
 `unblockDependents` is NOT needed (wrap-up rows enter no dependency edges — they're born
 edge-free and #1747's guard makes them edge-refusable: `insertDependencyTx` rejects
 `kind='wrapup'` endpoints — one-line guard [wrapup-engine]).
@@ -311,7 +336,7 @@ test, names pinned like the builtin pairs):
 > stories, deduplicated; never merge, never push."
 
 Seeding: `seedBuiltinWrapUpReviewerRole` in api/internal/app/board_role_directory.go
-(beside `seedBuiltinReviewerRole` :89 — idempotent platform-scope seed, slug check) +
+(beside `seedBuiltinReviewerRole` :101 — idempotent platform-scope seed, slug check) +
 wired in app.go's startup block (:1678-1698, beside the existing seeds).
 
 **Persona resolution.** `func (s *Service) wrapUpReviewerForProject(ctx, p *Project)
@@ -419,6 +444,13 @@ wrapup-gap-recursion:
   no 4th mint; ack resets + re-mints; verdict replay (deterministic id) converges;
   claim-token guard (wrong/absent token refuses); manager raw-done on wrap-up row leaves
   the pointer set → ack clears it.
+- PASS IS A TERMINUS (born-red, the §2/§4 contract): PASS at/below cap completes the
+  epic — NO fresh mint, NO ack-wait (a seam re-run would mint an empty-delta wrap-up;
+  pin that the verdict path completes directly and never re-runs the seam); PASS at
+  exactly the cap ALSO completes (cap bounds the mint loop, not the terminus); a story
+  reopened under the PASS verdict (0-row completion) leaves the epic open with no
+  mint (the drain seam re-arms on its own schedule); ack-wait arms ONLY on drain-mint
+  paths, never from a verdict.
 
 All integration tests ride the existing suite runners (`pkg/board` + api handler suites,
 `-race`, `-timeout` per rule 0).
