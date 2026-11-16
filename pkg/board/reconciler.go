@@ -372,6 +372,17 @@ func (s *Service) rc1Reclaims(ctx context.Context) (int, error) {
 	}
 	rows.Close()
 
+	// The sweep's own entry count (#2061/#2065 R6): every row the
+	// lease-due scan discovered this pass is a ladder entry the
+	// backstop owns — including rows the turn-end event path
+	// pre-marked (they arrive here one cycle after trigger=event
+	// stamps them, by design). Counted at the scan, before the freeze
+	// arm renews the suspended subset away: the discovery IS the
+	// entry, whatever arm then processes it. The pair with
+	// trigger=event makes the event path's share of ladder entries
+	// visible per scrape (the adoption signal).
+	dueMarksByTrigger.WithLabelValues(DueMarkTriggerSweepLapse).Add(float64(len(victims)))
+
 	// --- the suspension freeze (suspend.go, FIRST) ----------------------
 	// One snapshot for the whole pass; POSITIVE evidence only (a
 	// workspace the source cannot see is NOT suspended — the honest
