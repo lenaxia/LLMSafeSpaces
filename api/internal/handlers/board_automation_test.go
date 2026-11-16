@@ -429,3 +429,32 @@ func TestBoardAutomation_ManagerBeltRemoved(t *testing.T) {
 	require.Equal(t, http.StatusCreated, w.Code, "an omitted sessionId proceeds — attribution-only identity")
 	assert.Equal(t, 1, mgr.calls["create_task"])
 }
+
+// TestBoardAutomation_EpicWrapUpReviewBinds (epic wrap-up review, review
+// round 2 — the manager-surface twin of TestBoardREST_EpicWrapUpReviewBinds):
+// the pod automation manager's epic create/update bodies bind the
+// wrapUpReview flag — the agentd board_create_epic/board_update_epic
+// tools ride exactly these handlers, so a json-tag regression here would
+// strand the flag for every in-workspace manager client.
+func TestBoardAutomation_EpicWrapUpReviewBinds(t *testing.T) {
+	t.Run("create binds", func(t *testing.T) {
+		mgr := newFakeBoardManager()
+		r := newBoardAutomationRouterWithManager(t, newFakeBoardService(), mgr)
+		w := doBoard(t, r, http.MethodPost, "/internal/v1/automation/board/projects/prj-aaaa1111/epics",
+			`{"workspaceID":"ws-1","sessionId":"ses_author1","title":"E","outcome":"o","wrapUpReview":true}`)
+		require.Equal(t, http.StatusCreated, w.Code, w.Body.String())
+		require.NotNil(t, mgr.lastEpicInput)
+		require.NotNil(t, mgr.lastEpicInput.WrapUpReview, "the manager body binds the flag")
+		assert.True(t, *mgr.lastEpicInput.WrapUpReview)
+	})
+	t.Run("update binds false", func(t *testing.T) {
+		mgr := newFakeBoardManager()
+		r := newBoardAutomationRouterWithManager(t, newFakeBoardService(), mgr)
+		w := doBoard(t, r, http.MethodPatch, "/internal/v1/automation/board/epics/epc-bbbb2222",
+			`{"workspaceID":"ws-1","sessionId":"ses_author1","title":"E","outcome":"o","wrapUpReview":false}`)
+		require.Equal(t, http.StatusOK, w.Code, w.Body.String())
+		require.NotNil(t, mgr.lastEpicInput)
+		require.NotNil(t, mgr.lastEpicInput.WrapUpReview)
+		assert.False(t, *mgr.lastEpicInput.WrapUpReview)
+	})
+}

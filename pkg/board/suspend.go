@@ -105,8 +105,9 @@ func (s *Service) workspaceSuspended(ctx context.Context, workspaceID string) bo
 // freezeLeaseSQL is the freeze arm's write: renewal by one full window,
 // the nudge slot cleared (a sentinel positioned pre-suspend must not
 // anchor a post-resume wedge verdict against a session that never saw
-// it), busy_renews reset (the suspension is an epoch break for
-// busy-only evidence). last_progress_at is deliberately untouched —
+// it), busy_renews + no_advance_renews reset (the suspension is an
+// epoch break for busy-only evidence and for the presence budget —
+// the worker could not respond while frozen). last_progress_at is deliberately untouched —
 // suspension is not progress, and claiming so would poison the
 // progress watermark. No transition row, no audit event, no overlay:
 // the renewal discipline of ladderRenew (renewals never flood the
@@ -116,5 +117,5 @@ func (s *Service) workspaceSuspended(ctx context.Context, workspaceID string) bo
 // looks like a stuck board again (the 2026-11-14 class).
 const freezeLeaseSQL = `
 	UPDATE tasks SET lease_expires_at=now()+make_interval(secs=>$2::float8),
-		nudge_id=NULL, nudged_at=NULL, busy_renews=0, updated_at=now()
+		nudge_id=NULL, nudged_at=NULL, busy_renews=0, no_advance_renews=0, updated_at=now()
 	WHERE id=$1 AND stage=$3`

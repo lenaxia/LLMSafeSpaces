@@ -186,8 +186,9 @@ func (m *MockDatabaseService) ListSessionIndex(ctx context.Context, workspaceID 
 	return args.Get(0).([]types.SessionListItem), args.Error(1)
 }
 
-func (m *MockDatabaseService) InsertSessionAlert(ctx context.Context, workspaceID, sessionID, alert string, oldestBusySeconds int) error {
-	return m.Called(ctx, workspaceID, sessionID, alert, oldestBusySeconds).Error(0)
+func (m *MockDatabaseService) InsertSessionAlert(ctx context.Context, workspaceID, sessionID, alert string, oldestBusySeconds int, facts map[string]string) error {
+	args := m.Called(ctx, workspaceID, sessionID, alert, oldestBusySeconds, facts)
+	return args.Error(0)
 }
 
 func (m *MockDatabaseService) ListSessionAlerts(ctx context.Context, workspaceID string, limit int) ([]types.SessionAlert, error) {
@@ -200,6 +201,11 @@ func (m *MockDatabaseService) ListSessionAlerts(ctx context.Context, workspaceID
 
 func (m *MockDatabaseService) ResolveSessionAlerts(ctx context.Context, workspaceID string) (int64, error) {
 	args := m.Called(ctx, workspaceID)
+	return args.Get(0).(int64), args.Error(1)
+}
+
+func (m *MockDatabaseService) ResolveSessionAlertsForSession(ctx context.Context, workspaceID, sessionID string) (int64, error) {
+	args := m.Called(ctx, workspaceID, sessionID)
 	return args.Get(0).(int64), args.Error(1)
 }
 

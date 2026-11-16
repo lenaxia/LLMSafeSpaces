@@ -36,12 +36,14 @@ const eligibleProjectsSQL = `
 	  AND EXISTS (SELECT 1 FROM tasks t3 JOIN epics e3 ON e3.id = t3.epic_id
 	              WHERE t3.project_id = p.id AND e3.status = 'active'
 	                AND e3.deficit < e3.quantum
+	                AND t3.kind = 'story'
 	                AND t3.stage = 'backlog' AND NOT t3.is_blocked AND NOT t3.paused
 																	                AND NOT t3.pending_input
 	                AND (t3.cooldown_until IS NULL OR t3.cooldown_until < now()))
 	ORDER BY (SELECT min(e.vft) FROM epics e WHERE e.project_id = p.id AND e.status = 'active'
 	          AND e.deficit < e.quantum
 	          AND EXISTS (SELECT 1 FROM tasks t4 WHERE t4.epic_id = e.id
+	                      AND t4.kind = 'story'
 	                      AND t4.stage = 'backlog' AND NOT t4.is_blocked AND NOT t4.paused
 																							                      AND NOT t4.pending_input
 	                      AND (t4.cooldown_until IS NULL OR t4.cooldown_until < now()))), p.id
@@ -52,15 +54,17 @@ const eligibleProjectsSQL = `
 // CLAIM ORDER LIVES HERE — THE ONE PLACE (#1747 final ruling): claim
 // order is deterministic FIFO (creation order) over the ready set, the
 // ONLY ordering rule. No priority field, no position field, no ordering
-// tool exists; a future ordering lever changes this ORDER BY alone.
-// The DRR predicates (deficit < quantum; the project's min-vft
-// selection above) are engine-internal EPIC fairness, not an ordering
-// lever. Paused rows (task-level) never qualify; the epic must be
-// active and the project unpaused.
+// tool exists; a future ordering lever changes this ORDER BY alone. The
+// DRR predicates (deficit < quantum; the project's min-vft selection
+// above) are engine-internal EPIC fairness, not an ordering lever.
+// Paused rows (task-level) never qualify; the epic must be active and
+// the project unpaused. kind='story' only (§7): wrap-up rows are
+// engine-driven claims, NEVER served to worker spawns.
 const candidateSQL = `
 	SELECT t.id, t.attempts FROM tasks t
 	JOIN epics e ON e.id = t.epic_id AND e.status = 'active'
 	WHERE t.project_id = $1::uuid
+	  AND t.kind = 'story'
 	  AND t.stage = 'backlog' AND NOT t.is_blocked AND NOT t.paused
 	  AND NOT t.pending_input
 	  AND (t.cooldown_until IS NULL OR t.cooldown_until < now())
@@ -133,6 +137,12 @@ func (s *Service) TaskStart(ctx context.Context, actor Actor, taskID, shortIDOrI
 	t, err := s.store.resolveTask(ctx, s.q(), "", pick(taskID, shortIDOrID))
 	if err != nil {
 		return nil, err
+	}
+	// §7 carve-out: wrap-up rows are engine-driven claims (the reviewer
+	// persona's mint + the reconciler's re-claim pass own their whole
+	// lifecycle) — a manual worker dispatch on one is never legal.
+	if t.Kind == TaskKindWrapup {
+		return nil, &GuardError{Code: GuardInput, Detail: "task_start refuses wrap-up rows — engine-driven review claims, never worker dispatches (epic wrap-up review §7)"}
 	}
 	p, err := s.store.resolveProject(ctx, s.q(), "", t.ProjectID)
 	if err != nil {
@@ -261,7 +271,7 @@ func (s *Service) TaskStart(ctx context.Context, actor Actor, taskID, shortIDOrI
 			-- the claim mint RESETS the lease-episode slots: a prior
 			-- episode's nudge/heartbeat evidence must never inherit into
 			-- the fresh claim (the review's stale-slot finding).
-			nudge_id=NULL, nudged_at=NULL, last_heartbeat_at=NULL, busy_renews=0
+			nudge_id=NULL, nudged_at=NULL, last_heartbeat_at=NULL, busy_renews=0, no_advance_renews=0
 		WHERE t.id=$1
 		RETURNING t.id, t.short_id, t.project_id, t.epic_id, t.claim_token::text,
 		          (SELECT p.target_workspace_id::text FROM projects p WHERE p.id = t.project_id),
@@ -430,7 +440,7 @@ func (s *Service) claimOnce(ctx context.Context, workerID, workspaceID string) (
 			-- the claim mint RESETS the lease-episode slots: a prior
 			-- episode's nudge/heartbeat evidence must never inherit into
 			-- the fresh claim (the review's stale-slot finding).
-			nudge_id=NULL, nudged_at=NULL, last_heartbeat_at=NULL, busy_renews=0
+			nudge_id=NULL, nudged_at=NULL, last_heartbeat_at=NULL, busy_renews=0, no_advance_renews=0
 		WHERE t.id=$1
 		RETURNING t.id, t.short_id, t.project_id, t.epic_id, t.claim_token::text,
 		          (SELECT p.target_workspace_id::text FROM projects p WHERE p.id = t.project_id),
@@ -495,6 +505,7 @@ func (s *Service) atQuotaCandidatesExist(ctx context.Context, workspaceID string
 			JOIN tasks t ON t.epic_id = e.id
 			WHERE p.target_workspace_id = $1::uuid AND p.status='active'
 			  AND e.status='active' AND e.deficit >= e.quantum
+			  AND t.kind='story'
 			  AND t.stage='backlog' AND NOT t.is_blocked
 			  AND (t.cooldown_until IS NULL OR t.cooldown_until < now()))`, workspaceID).Scan(&exists)
 	return exists, err
@@ -685,7 +696,16 @@ func (s *Service) spawnFor(ctx context.Context, taskID, token string) {
 		return
 	}
 	var persona *PersonaConfig
-	if t.Stage != StageInProgress {
+	if t.Kind == TaskKindWrapup {
+		// §7: a wrap-up row's claim is the WRAP-UP REVIEWER's — resolved
+		// before (and regardless of) the stage-persona branch. Unresolved
+		// → no spawn (nil return): the reconciler's in_review re-claim
+		// pass re-mints the claim once the role resolves again (D3).
+		persona = s.wrapUpReviewerForProject(ctx, p)
+		if persona == nil {
+			return
+		}
+	} else if t.Stage != StageInProgress {
 		// A non-worker stage spawns ONLY under a resolved persona.
 		persona = s.stagePersona(ctx, p, t.Stage)
 		if persona == nil {

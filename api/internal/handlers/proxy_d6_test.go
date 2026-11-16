@@ -204,8 +204,16 @@ func (m *mockSessionAlerts) RecordAlert(workspaceID, sessionID, alert string, ol
 	m.Called(workspaceID, sessionID, alert, oldestBusySeconds)
 }
 
+func (m *mockSessionAlerts) RecordTaskAlert(workspaceID, sessionID, alert string, oldestBusySeconds int, _ map[string]string) {
+	m.Called(workspaceID, sessionID, alert, oldestBusySeconds)
+}
+
 func (m *mockSessionAlerts) ResolveWorkspace(workspaceID string) {
 	m.Called(workspaceID)
+}
+
+func (m *mockSessionAlerts) ResolveSession(workspaceID, sessionID string) {
+	m.Called(workspaceID, sessionID)
 }
 
 func (m *mockSessionAlerts) ListByWorkspace(ctx context.Context, workspaceID string, limit int) ([]types.SessionAlert, error) {
@@ -393,7 +401,7 @@ func TestD6_E2E_DetectionToHistory(t *testing.T) {
 	db := &mocks.MockDatabaseService{}
 	var mu sync.Mutex
 	var inserted []types.SessionAlert
-	db.On("InsertSessionAlert", mock.Anything, "ws-1", "ses-x", "session_hung", mock.Anything).
+	db.On("InsertSessionAlert", mock.Anything, "ws-1", "ses-x", "session_hung", mock.Anything, mock.Anything).
 		Run(func(args mock.Arguments) {
 			mu.Lock()
 			inserted = append(inserted, types.SessionAlert{
@@ -494,7 +502,7 @@ func TestD6_E2E_PersistFailureStillAlerts(t *testing.T) {
 
 	env, broker := newD6Env(t, hungStatusz(int((busyAlertOlderThan + time.Hour).Seconds())))
 	db := &mocks.MockDatabaseService{}
-	db.On("InsertSessionAlert", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).
+	db.On("InsertSessionAlert", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).
 		Return(errors.New("db down")).Maybe()
 	log, logs := logger.NewObserved()
 	svc := sessionalerts.New(db, log)

@@ -62,6 +62,18 @@ type Epic struct {
 	Quantum           int       `json:"quantum"`
 	CreatedAt         time.Time `json:"created_at"`
 	UpdatedAt         time.Time `json:"updated_at"`
+	// The epic wrap-up review lifecycle (§1b — explicit columns, never
+	// derived). WrapUpReview is the on/off flag (default off); the rest
+	// is engine-owned state: LastWrappedAt the coverage watermark
+	// (advanced at close), WrapUpCount the consecutive-close ledger,
+	// WrapUpTaskID the in-flight wrap-up pointer (rendered on reads as
+	// the live wrap-up row's SHORT id — resolved at the read edge, never
+	// stored denormalized), WrapUpAckPending the human circuit-breaker.
+	WrapUpReview     bool       `json:"wrap_up_review,omitempty"`
+	LastWrappedAt    *time.Time `json:"last_wrapped_at,omitempty"`
+	WrapUpCount      int        `json:"wrapup_count,omitempty"`
+	WrapUpTaskID     *string    `json:"wrapup_task_id,omitempty"`
+	WrapUpAckPending bool       `json:"wrapup_ack_pending,omitempty"`
 	// Backpressure (derived, informational — see Project.Backpressure).
 	Backpressure string `json:"backpressure,omitempty"`
 	// Derived progress (never stored, ruling R2): Done over ALL tasks
@@ -80,12 +92,19 @@ type Task struct {
 	EpicID    string `json:"epic_id"`
 	ShortID   string `json:"short_id"`
 	// ShortIDDeprecated: see Project.ShortIDDeprecated (#1831 window).
-	ShortIDDeprecated bool    `json:"short_id_deprecated,omitempty"`
-	Title             string  `json:"title"`
-	Description       string  `json:"description"`
-	Stage             string  `json:"stage"`
-	PendingOrigin     *string `json:"pending_origin,omitempty"`
-	PendingInput      bool    `json:"pending_input"`
+	ShortIDDeprecated bool   `json:"short_id_deprecated,omitempty"`
+	Title             string `json:"title"`
+	Description       string `json:"description"`
+	Stage             string `json:"stage"`
+	// Kind is the engine-owned row class (§1b): 'story' (the default —
+	// every user-created row; omitted on the wire) or 'wrapup' (an
+	// engine-minted epic wrap-up review row: born in_review, claimed by
+	// the wrap-up reviewer persona, never served to worker spawns, never
+	// a dependency endpoint, excluded from the epic's own drain/completion
+	// math — no self-blocking paradox).
+	Kind          string  `json:"kind,omitempty"`
+	PendingOrigin *string `json:"pending_origin,omitempty"`
+	PendingInput  bool    `json:"pending_input"`
 	// NudgeID/NudgedAt are the LATEST lease-nudge sentinel (single
 	// nullable slot, overwritten per nudge — owner ruling: only the most
 	// recent nudge matters).
@@ -134,6 +153,20 @@ type Task struct {
 	// TTL: a lapsed claim never spins). Never stored: the answer is a
 	// property of NOW, sampled per read (busy.go's decorate pass).
 	AssigneeBusy bool `json:"assignee_busy,omitempty"`
+	// AssigneeQuietSeconds / AssigneeBusySeconds (#2047, net-new
+	// read-edge surface — owner decision 2026-11-15: the WIRE fields
+	// are camelCase, the heartbeat-response precedent
+	// leaseExpiresAt/lastProgressAt, not the row-shape snake_case):
+	// seconds since the assignee's last WORKER-activity stamp (the
+	// #2040 movement-allowlist index — post-#2042 its stamps are
+	// worker-activity-only, so a quiet stamp is a true quiet), and —
+	// while the derived-busy truth holds the row — how long that busy
+	// worker has been frame-silent (mid-tool-call silence is ALIVE,
+	// the 2026-10-29 ruling). nil = unknown (never observed in this
+	// process / not busy). Never stored: properties of NOW, sampled
+	// per read (quiet.go's decorate pass, beside the busy pass).
+	AssigneeQuietSeconds *int `json:"assigneeQuietSeconds,omitempty"`
+	AssigneeBusySeconds  *int `json:"assigneeBusySeconds,omitempty"`
 	// ImplementerSession is the #1959 bounce-consumer identity: the
 	// session that moved the row to in_review — the ORIGINAL worker the
 	// ruling's bounce re-dispatches. Captured at the forward exit

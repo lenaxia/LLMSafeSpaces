@@ -41,6 +41,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"sort"
 	"strings"
 )
 
@@ -50,6 +51,7 @@ const (
 	ConfigKeyAutoAssignReviewer = "autoAssignReviewer"
 	ConfigKeyDefaultWorkerSlots = "defaultWorkerSlots"
 	ConfigKeyStagePersonas      = "stagePersonas"
+	ConfigKeyWrapUpReviewer     = "wrapUpReviewer"
 )
 
 // ReviewColumn values: whether the review column shows at all and who
@@ -198,6 +200,17 @@ type BoardConfig struct {
 	AutoAssignReviewer bool                     `json:"autoAssignReviewer"`
 	DefaultWorkerSlots int                      `json:"defaultWorkerSlots"`
 	StagePersonas      map[string]PersonaConfig `json:"stagePersonas"`
+	// WrapUpReviewer is the epic wrap-up reviewer's role reference
+	// (id or slug; the default is the seeded wrapup-reviewer platform
+	// role — DefaultWrapUpReviewerPersona). Always present on the
+	// wire; empty means "default" (only reachable through storage
+	// drift — set-time validation never stores an empty reference).
+	// NOT a stage persona: it does not key off
+	// personaEligibleStages and renders no StagePersonasSet-style
+	// set-ness flag (a bare-string key with a non-empty default has
+	// no opt-out semantics to preserve — un-setting is key ABSENCE,
+	// the REPLACE discipline).
+	WrapUpReviewer string `json:"wrapUpReviewer"`
 	// StagePersonasSet reports whether an explicit stagePersonas key
 	// was set at ANY merged tier (even an empty {} — the opt-out).
 	// It governs the legacy-composition fallthrough: an explicit key
@@ -227,6 +240,15 @@ type BoardConfigOverride struct {
 	// tier). This is the composition lever: a project override {}
 	// disables an inherited reviewer persona however it was configured.
 	StagePersonas *map[string]PersonaConfig `json:"stagePersonas,omitempty"`
+	// WrapUpReviewer is the epic wrap-up reviewer's role reference
+	// (a bare string — id or slug — the canonical form; the {roleId}
+	// object decodes to it). Nil inherits exactly like ReviewColumn:
+	// the user default, then the code default (the seeded
+	// wrapup-reviewer persona). Set on BOTH tiers; validated against
+	// the RoleDirectory at set time — an unresolved ref refuses the
+	// whole write (validatePersonaRoleRefs). Deliberately NO
+	// per-epic tier exists (owner ruling 2026-11-15).
+	WrapUpReviewer *string `json:"wrapUpReviewer,omitempty"`
 }
 
 // ProjectBoardConfig renders one project's config surfaces in a single
@@ -288,13 +310,14 @@ func DefaultBoardConfig() BoardConfig {
 		AutoAssignReviewer: true,
 		DefaultWorkerSlots: DefaultBoardWorkerSlots,
 		StagePersonas:      map[string]PersonaConfig{},
+		WrapUpReviewer:     DefaultWrapUpReviewerPersona.RoleID,
 	}
 }
 
 // BoardConfigKeys lists the known config keys (grow the vocabulary =
 // add a key here, a struct field, and its validation).
 func BoardConfigKeys() []string {
-	return []string{ConfigKeyReviewColumn, ConfigKeyAutoAssignReviewer, ConfigKeyDefaultWorkerSlots, ConfigKeyStagePersonas}
+	return []string{ConfigKeyReviewColumn, ConfigKeyAutoAssignReviewer, ConfigKeyDefaultWorkerSlots, ConfigKeyStagePersonas, ConfigKeyWrapUpReviewer}
 }
 
 // MergeBoardConfig overlays a partial override onto a base at read
@@ -322,6 +345,9 @@ func MergeBoardConfig(base BoardConfig, o *BoardConfigOverride) BoardConfig {
 		}
 		out.StagePersonas = m
 		out.StagePersonasSet = true
+	}
+	if o.WrapUpReviewer != nil {
+		out.WrapUpReviewer = *o.WrapUpReviewer
 	}
 	return out
 }
@@ -369,8 +395,25 @@ func ValidateBoardConfigKey(key string, raw json.RawMessage) error {
 			return &GuardError{Code: GuardInput, Detail: fmt.Sprintf("%s: %s", key, err.Error())}
 		}
 		return nil
+	case ConfigKeyWrapUpReviewer:
+		// The role-reference codec, one contract per shape: the bare
+		// string is canonical, the {roleId} object decodes, and the
+		// legacy name/instructions shapes reject loud (the PersonaConfig
+		// discipline — wrapUpReviewer is a role reference, nothing
+		// else).
+		var p PersonaConfig
+		if err := json.Unmarshal(raw, &p); err != nil {
+			return &GuardError{Code: GuardInput, Detail: fmt.Sprintf("%s: %v", key, err)}
+		}
+		if strings.TrimSpace(p.RoleID) == "" {
+			return &GuardError{Code: GuardInput, Detail: fmt.Sprintf("%s requires a non-empty role reference (roleId — the id or slug of an available agent role)", key)}
+		}
+		if len(p.RoleID) > PersonaRoleIDMax {
+			return &GuardError{Code: GuardInput, Detail: fmt.Sprintf("%s role reference exceeds %d characters", key, PersonaRoleIDMax)}
+		}
+		return nil
 	default:
-		return &GuardError{Code: GuardInput, Detail: fmt.Sprintf("unknown config key %q (known: reviewColumn, autoAssignReviewer, defaultWorkerSlots, stagePersonas)", key)}
+		return &GuardError{Code: GuardInput, Detail: fmt.Sprintf("unknown config key %q (known: reviewColumn, autoAssignReviewer, defaultWorkerSlots, stagePersonas, wrapUpReviewer)", key)}
 	}
 }
 
@@ -444,6 +487,13 @@ func DecodeBoardConfigOverride(m map[string]json.RawMessage) (*BoardConfigOverri
 				return nil, &GuardError{Code: GuardInput, Detail: fmt.Sprintf("%s: %s", key, err.Error())}
 			}
 			out.StagePersonas = &m
+		case ConfigKeyWrapUpReviewer:
+			var p PersonaConfig
+			if err := json.Unmarshal(raw, &p); err != nil {
+				return nil, &GuardError{Code: GuardInput, Detail: fmt.Sprintf("%s: %v", key, err)}
+			}
+			v := p.RoleID
+			out.WrapUpReviewer = &v
 		}
 	}
 	return out, nil
@@ -473,6 +523,11 @@ func ValidateBoardConfigOverride(o *BoardConfigOverride) error {
 	}
 	if o.StagePersonas != nil {
 		if err := ValidateBoardConfigKey(ConfigKeyStagePersonas, mustMarshalJSON(*o.StagePersonas)); err != nil {
+			return err
+		}
+	}
+	if o.WrapUpReviewer != nil {
+		if err := ValidateBoardConfigKey(ConfigKeyWrapUpReviewer, mustMarshalJSON(*o.WrapUpReviewer)); err != nil {
 			return err
 		}
 	}
@@ -540,6 +595,9 @@ func (o *BoardConfigOverride) rows() []configRow {
 	}
 	if o.StagePersonas != nil {
 		out = append(out, configRow{Key: ConfigKeyStagePersonas, Value: mustMarshalJSON(*o.StagePersonas)})
+	}
+	if o.WrapUpReviewer != nil {
+		out = append(out, configRow{Key: ConfigKeyWrapUpReviewer, Value: mustMarshalJSON(*o.WrapUpReviewer)})
 	}
 	return out
 }
@@ -659,31 +717,50 @@ func (s *Service) rolesForUserErr(ctx context.Context, userID string) ([]AgentRo
 }
 
 // validatePersonaRoleRefs is the SET-path belt (board_set_config's
-// role validation): every persona's role reference must resolve
+// role validation): every role reference a payload carries — a
+// stagePersonas persona OR the wrapUpReviewer slot (D8) — must resolve
 // against the available set (id or slug). Error classes are kept
 // DISTINCT — the caller's remedy differs: a role-blind deployment
 // (no directory installed) refuses the payload (GuardInput: this
 // deployment can never honor a reference); a directory read failure
 // is a plain error (500-class: retry once the role service is
 // reachable — the payload may be perfectly valid); an unresolvable
-// reference is GuardInput (400: name a role the vocabulary carries).
+// reference is GuardInput (400: name a role the vocabulary carries)
+// and refuses the WHOLE write, never a partial landing.
 func (s *Service) validatePersonaRoleRefs(ctx context.Context, userID string, in *BoardConfigOverride) error {
-	if in == nil || in.StagePersonas == nil {
+	if in == nil {
 		return nil
 	}
-	var refs []string
-	for _, p := range *in.StagePersonas {
-		if p.RoleID != "" {
-			refs = append(refs, p.RoleID)
+	type keyedRef struct{ key, ref string }
+	var refs []keyedRef
+	if in.StagePersonas != nil {
+		for _, p := range *in.StagePersonas {
+			if p.RoleID != "" {
+				refs = append(refs, keyedRef{ConfigKeyStagePersonas, p.RoleID})
+			}
 		}
+	}
+	if in.WrapUpReviewer != nil && *in.WrapUpReviewer != "" {
+		refs = append(refs, keyedRef{ConfigKeyWrapUpReviewer, *in.WrapUpReviewer})
 	}
 	if len(refs) == 0 {
 		return nil
 	}
+	keySet := map[string]bool{}
+	refList := make([]string, 0, len(refs))
+	for _, kr := range refs {
+		keySet[kr.key] = true
+		refList = append(refList, kr.ref)
+	}
+	keys := make([]string, 0, len(keySet))
+	for k := range keySet {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
 	if s.roles == nil {
 		return &GuardError{Code: GuardInput, Detail: fmt.Sprintf(
-			"stagePersonas carries role references (%s) but this deployment has no agent-role directory — install the role service, then set stagePersonas",
-			strings.Join(refs, ", "))}
+			"%s carry role references (%s) but this deployment has no agent-role directory — install the role service, then set them",
+			strings.Join(keys, ", "), strings.Join(refList, ", "))}
 	}
 	roles, err := s.rolesForUserErr(ctx, userID)
 	if err != nil {
@@ -697,10 +774,10 @@ func (s *Service) validatePersonaRoleRefs(ctx context.Context, userID string, in
 	if known == "" {
 		known = "none are available to this owner"
 	}
-	for _, ref := range refs {
-		if ResolveAgentRoleRef(ref, roles) == nil {
+	for _, kr := range refs {
+		if ResolveAgentRoleRef(kr.ref, roles) == nil {
 			return &GuardError{Code: GuardInput, Detail: fmt.Sprintf(
-				"stagePersonas role reference %q does not match an available agent role (available: %s)", ref, known)}
+				"%s role reference %q does not match an available agent role (available: %s)", kr.key, kr.ref, known)}
 		}
 	}
 	return nil
@@ -797,6 +874,8 @@ func buildBoardConfigView(scope, projectID string, u, p *BoardConfigOverride) Bo
 			return o.DefaultWorkerSlots != nil
 		case ConfigKeyStagePersonas:
 			return o.StagePersonas != nil
+		case ConfigKeyWrapUpReviewer:
+			return o.WrapUpReviewer != nil
 		}
 		return false
 	}

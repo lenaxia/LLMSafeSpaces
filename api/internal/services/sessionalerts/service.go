@@ -56,7 +56,16 @@ type alertEvent struct {
 	sessionID         string
 	alert             string
 	oldestBusySeconds int
-	resolve           bool // set: resolve the workspace's live alerts instead of appending one
+	// facts (#2047) is the alert's persisted payload (task short id,
+	// project, lease state) — nil on fact-less alerts.
+	facts map[string]string
+	// resolveWorkspace: resolve the workspace's live alerts instead of
+	// appending one (the D6 session_hung flow).
+	resolveWorkspace bool
+	// resolveSession (#2047): resolve ONE session's live alerts —
+	// worker_silent is session-scoped (a resumed worker clears only
+	// their own row). Takes precedence over resolveWorkspace.
+	resolveSession bool
 }
 
 // New creates a SessionAlertsService.
@@ -92,19 +101,34 @@ func (s *Service) Stop() error {
 // RecordAlert is non-blocking: pushes to a bounded channel. A full
 // queue drops the oldest queued alert — durability here is best-effort.
 func (s *Service) RecordAlert(workspaceID, sessionID, alert string, oldestBusySeconds int) {
+	s.enqueue(alertEvent{workspaceID: workspaceID, sessionID: sessionID, alert: alert, oldestBusySeconds: oldestBusySeconds})
+}
+
+// RecordTaskAlert appends one alert carrying task facts in its
+// persisted payload (#2047 worker_silent: task short id, project,
+// lease state — a history read names WHICH slot was held). Same
+// non-blocking contract as RecordAlert.
+func (s *Service) RecordTaskAlert(workspaceID, sessionID, alert string, oldestBusySeconds int, facts map[string]string) {
+	s.enqueue(alertEvent{workspaceID: workspaceID, sessionID: sessionID, alert: alert, oldestBusySeconds: oldestBusySeconds, facts: facts})
+}
+
+// enqueue is the shared bounded-queue push (drop-oldest on full —
+// alerts are best-effort durability; the SSE path is the primary
+// surface).
+func (s *Service) enqueue(ev alertEvent) {
 	select {
-	case s.queue <- alertEvent{workspaceID: workspaceID, sessionID: sessionID, alert: alert, oldestBusySeconds: oldestBusySeconds}:
+	case s.queue <- ev:
 	default:
 		if s.logger != nil {
 			s.logger.Warn("session_alerts: channel full, dropping oldest alert",
-				"workspaceID", workspaceID, "sessionID", sessionID,
+				"workspaceID", ev.workspaceID, "sessionID", ev.sessionID,
 				"queueSize", len(s.queue))
 		}
 		select {
 		case <-s.queue:
 		default:
 		}
-		s.queue <- alertEvent{workspaceID: workspaceID, sessionID: sessionID, alert: alert, oldestBusySeconds: oldestBusySeconds}
+		s.queue <- ev
 	}
 }
 
@@ -115,19 +139,15 @@ func (s *Service) RecordAlert(workspaceID, sessionID, alert string, oldestBusySe
 // alert_resolved event is the primary surface; the persisted flag is
 // best-effort durability, same contract as RecordAlert.
 func (s *Service) ResolveWorkspace(workspaceID string) {
-	select {
-	case s.queue <- alertEvent{workspaceID: workspaceID, resolve: true}:
-	default:
-		if s.logger != nil {
-			s.logger.Warn("session_alerts: channel full, dropping oldest event (resolve)",
-				"workspaceID", workspaceID, "queueSize", len(s.queue))
-		}
-		select {
-		case <-s.queue:
-		default:
-		}
-		s.queue <- alertEvent{workspaceID: workspaceID, resolve: true}
-	}
+	s.enqueue(alertEvent{workspaceID: workspaceID, resolveWorkspace: true})
+}
+
+// ResolveSession is the session-scoped resolution (#2047): queues a
+// resolution for ONE session's live alerts — a resumed worker clears
+// their own worker_silent row, never a sibling silent worker's. Same
+// non-blocking contract.
+func (s *Service) ResolveSession(workspaceID, sessionID string) {
+	s.enqueue(alertEvent{workspaceID: workspaceID, sessionID: sessionID, resolveSession: true})
 }
 
 // ListByWorkspace returns persisted alerts newest-first, filtered to
@@ -178,7 +198,23 @@ func (s *Service) drain() {
 func (s *Service) flush(ev alertEvent) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	if ev.resolve {
+	if ev.resolveSession {
+		n, err := s.db.ResolveSessionAlertsForSession(ctx, ev.workspaceID, ev.sessionID)
+		if s.logger != nil {
+			if err != nil {
+				// The read-side heal in ListByWorkspace is the
+				// re-arm path: the orphan ages past
+				// UnresolvedStaleAfter and heals on next read.
+				s.logger.Error("session_alerts: session resolve failed (read-side heal will re-arm)",
+					err, "workspaceID", ev.workspaceID, "sessionID", ev.sessionID)
+			} else if n == 0 {
+				s.logger.Info("session_alerts: session resolve matched no rows (possible orphan already healed)",
+					"workspaceID", ev.workspaceID, "sessionID", ev.sessionID)
+			}
+		}
+		return
+	}
+	if ev.resolveWorkspace {
 		n, err := s.db.ResolveSessionAlerts(ctx, ev.workspaceID)
 		if s.logger != nil {
 			if err != nil {
@@ -194,7 +230,7 @@ func (s *Service) flush(ev alertEvent) {
 		}
 		return
 	}
-	if err := s.db.InsertSessionAlert(ctx, ev.workspaceID, ev.sessionID, ev.alert, ev.oldestBusySeconds); err != nil {
+	if err := s.db.InsertSessionAlert(ctx, ev.workspaceID, ev.sessionID, ev.alert, ev.oldestBusySeconds, ev.facts); err != nil {
 		if s.logger != nil {
 			s.logger.Error("session_alerts: insert failed", err,
 				"workspaceID", ev.workspaceID, "sessionID", ev.sessionID)

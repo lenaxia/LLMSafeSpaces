@@ -44,6 +44,16 @@ func (s *Service) DeleteTask(ctx context.Context, actor Actor, taskID, shortIDOr
 	out := &DeleteResult{ItemKind: "task", ID: t.ID, ShortID: t.ShortID}
 	ew := &eventWriter{svc: s, projectID: p.ID, requestID: requestID, action: "delete_task", itemKind: "task", itemID: t.ID, actor: actor}
 	_, dup, err := ew.run(ctx, func(tx pgx.Tx) (map[string]any, error) {
+		// §7: deleting the in-flight wrap-up row clears the epic's
+		// pointer in the SAME transaction (the FK's ON DELETE SET NULL
+		// is the physical floor; this is the audible service belt) —
+		// the next drain re-mints fresh.
+		if t.Kind == TaskKindWrapup {
+			if _, err := clearWrapUpPointerTx(ctx, tx, p.ID, t.ID, actor,
+				"wrapup:ptr_cleared:"+t.ID, "wrapup_pointer_cleared"); err != nil {
+				return nil, err
+			}
+		}
 		// Orphans + upstream BEFORE the edge cascade takes the rows.
 		orphans, upstream, err := edgesAround(ctx, tx, t.ID)
 		if err != nil {

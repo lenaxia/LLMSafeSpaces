@@ -51,8 +51,11 @@ func reviewEvidenceFallback(subject *Task) string {
 // just reached done, inside the caller's transaction. It returns the
 // post-commit publishable events for the settles plus the project ids
 // the settle touched (sibling projects of the subject — the dispatch
-// drive feed).
-func (s *Service) completeReviewTasks(ctx context.Context, tx pgx.Tx, subject *Task, evidence string, visited map[string]bool) ([]Event, []string, error) {
+// drive feed). n carries the caller's post-commit nudge: a wrap-up mint
+// on a settled row's epic writes its spawn there (the events append
+// regardless; the single-nudge spawn slot goes to the LAST mint — an
+// earlier mint's spawn converges through the reconciler's re-claim pass).
+func (s *Service) completeReviewTasks(ctx context.Context, tx pgx.Tx, subject *Task, evidence string, visited map[string]bool, n *nudge) ([]Event, []string, error) {
 	if visited == nil {
 		visited = map[string]bool{}
 	}
@@ -72,7 +75,7 @@ func (s *Service) completeReviewTasks(ctx context.Context, tx pgx.Tx, subject *T
 			continue
 		}
 		if criteriaAllMet(cand) {
-			evt, err := s.completeReviewTask(ctx, tx, cand, subject, evidence, sys)
+			evt, err := s.completeReviewTask(ctx, tx, cand, subject, evidence, sys, n)
 			if err != nil {
 				return out, pokes, err
 			}
@@ -83,7 +86,7 @@ func (s *Service) completeReviewTasks(ctx context.Context, tx pgx.Tx, subject *T
 				// Chained delegation: the completed review may anchor
 				// its own reviewers. The visited set + the done
 				// predicate bound the walk.
-				more, morePokes, err := s.completeReviewTasks(ctx, tx, cand, evidence, visited)
+				more, morePokes, err := s.completeReviewTasks(ctx, tx, cand, evidence, visited, n)
 				if err != nil {
 					return out, pokes, err
 				}
@@ -106,8 +109,10 @@ func (s *Service) completeReviewTasks(ctx context.Context, tx pgx.Tx, subject *T
 // completeReviewTask lands one eligible review task in done (guarded
 // UPDATE; a raced row converged by its own writer) with transition +
 // deterministic event, then the done-cascade effects (reverse-edge
-// unblock + epic completion). Returns nil when the guard lost the row.
-func (s *Service) completeReviewTask(ctx context.Context, tx pgx.Tx, cand, subject *Task, evidence string, sys Actor) (*Event, error) {
+// unblock + the wrap-up-aware epic completion). Returns nil when the
+// guard lost the row. n carries the caller's post-commit nudge for a
+// wrap-up mint's spawn.
+func (s *Service) completeReviewTask(ctx context.Context, tx pgx.Tx, cand, subject *Task, evidence string, sys Actor, n *nudge) (*Event, error) {
 	from := cand.Stage
 	tag, err := tx.Exec(ctx, `
 		UPDATE tasks SET stage='done', stage_entered_at=now(),
@@ -138,7 +143,7 @@ func (s *Service) completeReviewTask(ctx context.Context, tx pgx.Tx, cand, subje
 	if _, err := unblockDependents(ctx, txQ{tx}, cand.ID, true); err != nil {
 		return nil, err
 	}
-	if _, err := epicCompletionCheck(ctx, tx, cand.EpicID); err != nil {
+	if _, _, err := s.wrapUpAwareEpicCompletion(ctx, tx, cand.EpicID, n); err != nil {
 		return nil, err
 	}
 	slog.InfoContext(ctx, "board: review task completed with its subject",
