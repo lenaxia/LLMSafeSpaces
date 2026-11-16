@@ -67,6 +67,9 @@ describe("BoardPage — the 1x4 pipeline rail (owner direction 2026-11-15)", () 
     expect(rail.className).toContain("snap-x");
     expect(rail.className).toContain("snap-mandatory");
     expect(rail.className).toContain("overflow-x-auto");
+    // r1: the snapport insets to the content box (snap points land at
+    // the resting column origin, not the border box).
+    expect(rail.className).toContain("scroll-px-2");
     expect(rail.className).not.toContain("grid-cols-2");
     // The flow axis: MAIN_STAGES order is the DOM order.
     const cols = rail.querySelectorAll("[data-stage-col]");
@@ -162,6 +165,30 @@ describe("BoardPage — the 1x4 pipeline rail (owner direction 2026-11-15)", () 
       // #2021: focus is VISIBLE on the keyboard path.
       expect(col.className).toContain("focus-visible:outline-2");
     }
+  });
+
+  it("arrow keys inside an OPEN kebab menu drive the menu, not the rail (r1: the portal guard)", async () => {
+    renderBoard();
+    await screen.findByTestId("task-card-tsk-bbbb0002");
+
+    // Focus the in_progress column (the card's lane), open its kebab —
+    // the menu renders through a document.body portal, but its React
+    // keydowns still propagate through the column's tree.
+    column("in_progress").focus();
+    expect(document.activeElement).toBe(column("in_progress"));
+    fireEvent.click(screen.getByTestId("task-kebab-tsk-bbbb0002"));
+    const item = (await screen.findAllByRole("menuitem"))[0]!;
+
+    // ArrowRight on the open menu: the rail must NOT steal the key —
+    // focus stays put and the menu stays open for its own key handling.
+    fireEvent.keyDown(item, { key: "ArrowRight" });
+    expect(document.activeElement).toBe(column("in_progress"));
+    expect(screen.getAllByRole("menuitem").length).toBeGreaterThan(0);
+    // Sanity: the same key on the column itself (no menu in the event
+    // path) still navigates — the guard scopes to menu subtrees only.
+    fireEvent.click(screen.getByTestId("task-kebab-tsk-bbbb0002")); // close
+    fireEvent.keyDown(column("in_progress"), { key: "ArrowRight" });
+    await waitFor(() => expect(document.activeElement).toBe(column("in_review")));
   });
 
   // --- Empty-column width retention across the drain states ---

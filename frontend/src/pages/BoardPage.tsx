@@ -2071,13 +2071,17 @@ const STAGE_COL_WIDTH: Partial<Record<BoardStage, string>> = {
 /** The wrapper every column wears: snap-start makes each column a snap
  * point (the snap points ARE the navigation — swipe and arrow keys
  * land column-to-column); shrink-0 + the min-width floor keep the
- * column's width through every drain state; md:grow fills the row at
- * landscape/desktop so the fourth column never leaves a ragged edge
- * (grow only distributes free space — it cannot compress a shrink-0
- * column); the focus-visible ring is the #2021 keyboard-parity
- * affordance (arrow keys navigate columns, focus visible). */
+ * column's width through every drain state. The PORTRAIT floor is
+ * 4.5rem — deliberately BELOW the calc width at every real phone
+ * width (≥320px viewports), so it never disturbs the exact 95/5
+ * split; it only guards degenerate sub-phone narrowness. md:grow
+ * fills the row at landscape/desktop so the fourth column never
+ * leaves a ragged edge (grow only distributes free space — it cannot
+ * compress a shrink-0 column); the focus-visible ring is the #2021
+ * keyboard-parity affordance (arrow keys navigate columns, focus
+ * visible). */
 const STAGE_COL_BASE_CLASS =
-  "flex min-w-[6rem] shrink-0 snap-start flex-col rounded-md outline-none focus-visible:outline-2 focus-visible:outline-primary/60 focus-visible:-outline-offset-2 md:min-w-[7.5rem] md:grow";
+  "flex min-w-[4.5rem] shrink-0 snap-start flex-col rounded-md outline-none focus-visible:outline-2 focus-visible:outline-primary/60 focus-visible:-outline-offset-2 md:min-w-[7.5rem] md:grow";
 
 interface StageRailProps {
   /** The swimlane's short id — the rail's testid keeps the
@@ -2110,6 +2114,13 @@ function StageRail({ laneShortId, cellProps, onDropStage }: StageRailProps) {
   const handleColumnKeyDown = useCallback(
     (e: React.KeyboardEvent<HTMLDivElement>, index: number) => {
       if (e.key !== "ArrowRight" && e.key !== "ArrowLeft") return;
+      // Review r1 (robustness): the card kebab renders through a
+      // document.body portal, but its React keydowns still propagate
+      // through the column's React tree — an arrow key inside an OPEN
+      // menu must drive the menu (and land nowhere near the rail), so
+      // events originating in a [role="menu"] subtree are not ours.
+      const origin = e.target as Element | null;
+      if (origin?.closest?.('[role="menu"]')) return;
       e.preventDefault();
       const next = e.key === "ArrowRight" ? Math.min(index + 1, MAIN_STAGES.length - 1) : Math.max(index - 1, 0);
       if (next === index) return;
@@ -2119,7 +2130,15 @@ function StageRail({ laneShortId, cellProps, onDropStage }: StageRailProps) {
   );
   return (
     <div
-      className="flex snap-x snap-mandatory gap-2 overflow-x-auto p-2"
+      // scroll-px-2 (r1): CSS scroll-snap aligns snap areas to the
+      // SCROLLPORT (the border box), not the content box — without the
+      // matching scroll-padding, a snapped column lands flush with the
+      // rail's border, 8px left of its at-rest position (measured:
+      // settle at 112 for a content-offset-104 column). scroll-px-2
+      // insets the snapport to the content box so snap points land
+      // exactly where the resting column starts; scrollIntoView's
+      // inline:"start" obeys the same inset.
+      className="flex snap-x snap-mandatory gap-2 overflow-x-auto scroll-px-2 p-2"
       data-testid={`stage-grid-${laneShortId}`}
       data-stage-rail="true"
       role="region"

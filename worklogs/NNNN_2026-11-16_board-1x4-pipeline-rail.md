@@ -109,11 +109,16 @@ board.
 
 Commands and outcomes (all on the worktree head):
 - `npx vitest run src/pages` — 50 files / 497 tests passed.
-- `E2E_PORT=5199 npx playwright test tests/e2e/board.spec.ts` — 42
-  passed (includes the 5 new/rewritten rail tests and the untouched
-  Done cap/drawer tests, which run at the 1280×720 default viewport —
-  the desktop arm of the landscape regression pin).
-- `npx vitest run` (FULL suite) — 2726/2726 passed.
+- `E2E_PORT=5205 npx playwright test tests/e2e/board.spec.ts` — 46/46
+  passed, three consecutive full runs (the spec carries exactly 46
+  test declarations at this head: 42 inherited + 4 new rail tests;
+  the mobile test was rewritten in place). CORRECTION (r1): an
+  earlier draft of this entry claimed "42 passed" — the pre-change
+  count, a residue of the stash mishap below; and the first PR body
+  claimed 48 — a retry-inflated reporter line misread as the test
+  count. Both corrected to the declaration-counted, re-observed 46.
+- `npx vitest run` (FULL suite) — 2727/2727 passed at the final head
+  (2726 at the first commit + the r1 portal-guard regression test).
 - `npx tsc --noEmit` — clean. `npx eslint` on the touched files — 0
   errors (one pre-existing `rememberEpic` exhaustive-deps warning,
   present on origin/main, untouched). `make fmt-check` — clean.
@@ -148,6 +153,35 @@ e2e run on the real tree is what surfaced the snap-freeze and the
   exactly that, and changing card internals would violate the
   "card interactions unchanged" pin.
 
+## Review round r1 (CHANGES_REQUESTED → fixed)
+
+- **robustness (merge-gating)**: the rail's keydown hijacked arrow
+  keys from OPEN kebab menus — the menu renders through a
+  document.body portal but React keydowns still propagate through the
+  column's tree (the reviewer's probe teleported focus from
+  in_progress to in_review with the menu stranded open). Fixed with an
+  origin guard: events whose target lies inside a `[role="menu"]`
+  subtree are not the rail's. Regression test added (open kebab →
+  ArrowRight on a menu item → focus unchanged, menu open; the same key
+  on the column still navigates).
+- **docs-truth ×2**: the impossible e2e counts above — corrected.
+- Two further robustness fixes surfaced by my OWN re-runs while
+  validating r1:
+  - `scroll-px-2` on the rail: CSS scroll-snap aligns snap areas to
+    the SCROLLPORT (border box), not the content box — snapped columns
+    landed 8px left of their at-rest position (measured settle at 112
+    for a content-offset-104 column). The matching scroll-padding
+    insets the snapport; snap points now land at the resting origin.
+  - Portrait floor `min-w-[6rem]` engaged at real phone widths (a
+    ≥320px viewport's backlog column computes below 96px), eating the
+    designed 5% done peek down to ~0.9% — dropped to `min-w-[4.5rem]`
+    (below engagement at every real phone width; the md floors are
+    untouched). And StoryCard's title row now `flex-wrap`s: at ~91px
+    active columns the shrink-0 3-button cluster left the title ~10px
+    (the e2e long-title card's title was literally zero-width →
+    "hidden"); the cluster drops under the title when both cannot fit
+    (wide columns never trip it — flex-auto keeps the one-line row).
+
 ## Blockers
 
 None.
@@ -159,7 +193,10 @@ Reviewer rounds on the PR; nothing further planned in this lane.
 ## Files Modified
 
 - frontend/src/pages/BoardPage.tsx — StageRail + column width map; the
-  grid call-site replaced; `useRef` import.
+  grid call-site replaced; `useRef` import; r1: menu-origin keydown
+  guard, scroll-px-2, 4.5rem portrait floor.
+- frontend/src/components/board/StoryCard.tsx — r1: the title row
+  wraps the action cluster under the title at portrait rail widths.
 - frontend/src/pages/BoardPage.rail.test.tsx — new.
 - frontend/src/pages/BoardPage.declutter.test.tsx — grid pin updated.
 - frontend/tests/e2e/board.spec.ts — mobile rail pin + the new 1x4
