@@ -32,6 +32,9 @@ func (s *Service) GetTask(ctx context.Context, taskID, shortIDOrID string) (*Tas
 	// RC-C S2: badge honesty rides the same read edge — busy is
 	// re-derived per read under the lease TTL (busy.go).
 	s.decorateAssigneeBusy(ctx, t)
+	// #2047: …and the quiet/busy-seconds surface (quiet.go) — the
+	// GetTask wire's net-new fields, same re-derived-per-read posture.
+	s.decorateAssigneeQuiet(ctx, t)
 	return t, nil
 }
 
@@ -84,6 +87,9 @@ func (s *Service) ListTasks(ctx context.Context, projectID string, stage, failed
 	// RC-C S2: one batched busy question for the whole list (the
 	// board's primary feed — the badge poll).
 	s.decorateAssigneeBusy(ctx, scanned...)
+	// #2047: …and one batched quiet question (the feed's quiet/busy
+	// seconds ride the same single pass).
+	s.decorateAssigneeQuiet(ctx, scanned...)
 	for _, t := range scanned {
 		if proj == nil || proj.ID != t.ProjectID {
 			p, perr := s.store.resolveProject(ctx, s.q(), "", t.ProjectID)
@@ -413,6 +419,9 @@ func (s *Service) SearchTasks(ctx context.Context, userID, q string, filters Sea
 	// RC-C S2: …and the same read-edge busy pass (a search hit's badge
 	// tells the same truth a list row's does).
 	s.decorateAssigneeBusy(ctx, scanned...)
+	// #2047: …and the same quiet pass (a search hit's quiet/busy
+	// seconds tell the same truth a list row's do).
+	s.decorateAssigneeQuiet(ctx, scanned...)
 	for _, t := range scanned {
 		res.Results = append(res.Results, *t)
 	}

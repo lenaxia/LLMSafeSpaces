@@ -1658,6 +1658,12 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 			// today's wall-clock semantics).
 			boardLivenessHub := newBoardLivenessHub(boardPool)
 			proxyHandler.SetFrameObserver(boardLivenessHub.ObserveFrame)
+			// The #2047 silent-worker arm's board seam (the same
+			// one-function wiring style): the proxy-side evaluator
+			// gets a NARROW read lookup — in_progress assignee facts
+			// per workspace — never the board service. Rides the
+			// existing alert evaluation pass (no new polling loop).
+			proxyHandler.SetQuietBoardLookup(newQuietBoardLookup(boardPool, boardLivenessHub))
 			// The busy-gate leg (2026-10-29 live-fire: three workers
 			// died mid-`sleep`-poll — silent-but-busy is alive): the
 			// usagestream singleton's consult-maintained derived truth
@@ -1727,6 +1733,10 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 				// observed MID-TURN under a live lease; idle, unknown,
 				// and lapsed claims render claimed-but-quiet.
 				board.WithBusySource(boardLivenessHub),
+				// #2047: the read edge's quiet/busy-seconds seam — the
+				// SAME hub, same purity (the GetTask wire's net-new
+				// assigneeQuietSeconds/assigneeBusySeconds fields).
+				board.WithQuietSource(boardLivenessHub),
 				board.WithNudgeSender(newBoardNudger(boardScopeFor(boardPool), boardSender, boardLivenessHub, boardLeaseBus)),
 				// S4: the ladder's renew/wedge/reclaim decisions project
 				// onto the workspace streams post-commit (nil-receiver

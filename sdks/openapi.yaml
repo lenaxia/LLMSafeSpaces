@@ -13366,6 +13366,24 @@ components:
             idle, unknown, or past the lease without renewal (the busy
             TTL — a lapsed claim never reports busy). Read-edge
             derived per poll, never stored.
+        assigneeQuietSeconds:
+          type: integer
+          description: |
+            #2047 (net-new surface): seconds since the assignee's last
+            WORKER-activity stamp (message/part frames only — post-#2040
+            a quiet stamp is a TRUE quiet). Absent = unknown (this
+            process never observed the session — hub restart,
+            unindexed); unknown is never 0 and never evidence of
+            silence. Read-edge derived per poll, never stored.
+        assigneeBusySeconds:
+          type: integer
+          description: |
+            #2047: present only while the derived-busy truth holds the
+            assignee mid-turn on a live lease — the value is the quiet
+            clock at that moment (how long the busy worker has been
+            frame-silent; a streaming worker sits near 0, a mid-tool-
+            call worker grows — both ALIVE). Absent = not busy or
+            unknown (never 0). Read-edge derived per poll, never stored.
         implementer_session:
           type: string
           description: |

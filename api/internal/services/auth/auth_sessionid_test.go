@@ -153,13 +153,16 @@ func (m *mockDB) ListSessionIndex(context.Context, string) ([]types.SessionListI
 	return nil, nil
 }
 
-func (m *mockDB) InsertSessionAlert(context.Context, string, string, string, int) error {
+func (m *mockDB) InsertSessionAlert(context.Context, string, string, string, int, map[string]string) error {
 	return nil
 }
 func (m *mockDB) ListSessionAlerts(context.Context, string, int) ([]types.SessionAlert, error) {
 	return nil, nil
 }
 func (m *mockDB) ResolveSessionAlerts(context.Context, string) (int64, error) {
+	return 0, nil
+}
+func (m *mockDB) ResolveSessionAlertsForSession(context.Context, string, string) (int64, error) {
 	return 0, nil
 }
 func (m *mockDB) ResolveStaleSessionAlerts(context.Context, string, time.Time) (int64, error) {

@@ -117,6 +117,14 @@ type boardLivenessHub struct {
 	// synthesized settles stamped movement for silent sessions).
 	framesWorker map[string]uint64
 	framesOpaque map[string]uint64
+	// framesWorkerAt is the WORKER-class wall-clock companion
+	// (#2047): the ordinal stamps above are sequence numbers over one
+	// global counter — they order activity but cannot say how LONG ago
+	// it happened. This map stamps the wall time of each key's last
+	// worker-activity frame so QuietFor can answer "how long silent"
+	// (the worker_silent arm's evidence clock). Written under the same
+	// mutex, in the same stroke as framesWorker; pruned in lockstep.
+	framesWorkerAt map[string]time.Time
 	// nudges holds the send-mark per nudge id: the frame stamp at send
 	// and the session_index message_count snapshot at send.
 	nudges map[string]boardNudgeMark
@@ -161,11 +169,12 @@ type boardLiveCursor struct {
 
 func newBoardLivenessHub(pool *pgxpool.Pool) *boardLivenessHub {
 	return &boardLivenessHub{
-		pool:         pool,
-		framesWorker: map[string]uint64{},
-		framesOpaque: map[string]uint64{},
-		nudges:       map[string]boardNudgeMark{},
-		cursors:      map[string]boardLiveCursor{},
+		pool:           pool,
+		framesWorker:   map[string]uint64{},
+		framesOpaque:   map[string]uint64{},
+		framesWorkerAt: map[string]time.Time{},
+		nudges:         map[string]boardNudgeMark{},
+		cursors:        map[string]boardLiveCursor{},
 	}
 }
 
@@ -202,8 +211,10 @@ func (h *boardLivenessHub) ObserveFrame(_ string, evt *abiv1.Event) {
 	h.mu.Lock()
 	h.counter++
 	stamp := h.counter
+	now := time.Now()
 	var into map[string]uint64
-	if workerActivityStampsEvidence(evt) {
+	worker := workerActivityStampsEvidence(evt)
+	if worker {
 		into = h.framesWorker
 	} else {
 		into = h.framesOpaque
@@ -211,6 +222,9 @@ func (h *boardLivenessHub) ObserveFrame(_ string, evt *abiv1.Event) {
 	for _, key := range [...]string{evt.GetInternalSessionId(), evt.GetSessionId()} {
 		if key != "" {
 			into[key] = stamp
+			if worker {
+				h.framesWorkerAt[key] = now
+			}
 		}
 	}
 	h.mu.Unlock()
@@ -240,20 +254,29 @@ func (h *boardLivenessHub) pruneLocked() {
 		k string
 		v uint64
 	}
-	pruneUint := func(m map[string]uint64) {
+	pruneUint := func(m map[string]uint64) []string {
 		if len(m) <= boardLivenessMaxEntries {
-			return
+			return nil
 		}
 		entries := make([]kv, 0, len(m))
 		for k, v := range m {
 			entries = append(entries, kv{k, v})
 		}
 		sort.Slice(entries, func(i, j int) bool { return entries[i].v < entries[j].v })
+		var deleted []string
 		for _, e := range entries[:len(entries)/4] {
 			delete(m, e.k)
+			deleted = append(deleted, e.k)
 		}
+		return deleted
 	}
-	pruneUint(h.framesWorker)
+	// Lockstep: an ordinal stamp evicted from the worker index takes
+	// its wall-clock companion (#2047) with it — the quiet answer must
+	// never outlive its movement evidence, and eviction is the only
+	// path that removes one without the other.
+	for _, k := range pruneUint(h.framesWorker) {
+		delete(h.framesWorkerAt, k)
+	}
 	pruneUint(h.framesOpaque)
 	if len(h.cursors) > boardLivenessMaxEntries {
 		entries := make([]kv, 0, len(h.cursors))
