@@ -532,28 +532,40 @@ func mcpToolCatalog() []mcpTool {
 		},
 		{
 			Name:        "send_message",
-			Description: "Send a text message to another session in this workspace (IDs from session_list / session_metadata), fire-and-forget: the message is delivered and the target session's reply — if any — stays in THAT session; nothing returns to you. Read the target later with session_read if you need its response. Every delivered message carries your origin as a return address (visible to the recipient as \"message from session …\") so they know who to reply to — reply via send_message to that origin. The origin is metadata, not authentication: claiming another session's ID grants nothing (all sessions share one credential) — it exists so the receiving thread knows where to direct its response. The platform stamps your session ID automatically — you never supply it. Use to steer or follow up on sessions you created (create_session), to hand work to an idle session, or to answer a question another session's agent asked you in its transcript. Busy targets queue the message server-side and deliver it the moment their current turn ends (status says delivering_after_current_turn). Sending to your OWN current session schedules the message as your next turn after this one completes — a self follow-up, not mid-turn injection — and the result carries a loud warning field when destination==your own session (self-addressed sends are a common misfire; intentional self-notes may carry on). If the destination value you emit accidentally pastes duplicated JSON syntax after a valid target id (a known emission slip when a similar prior call is visible in context), the server recovers the leading id and delivers there, with a loud warning: pass clean single ids, copied whole from session_list / session_metadata. The message must be the complete intended content. If you notice your drafted text was replaced by a placeholder token or truncated, do NOT send — re-compose. Placeholder/TODO-class payloads (a known emission-corruption symptom) are rejected outright by the platform. The message must be self-contained either way: the target does not inherit this conversation's context. Delivery is not retried: if the workspace restarts while a message waits or before it lands, it is lost — re-send. Not for: questions you need answered in THIS thread (use the task tool, which blocks and returns the result), or starting a new session (create_session).",
-			// Ordered schema (#1849 emission findings): destination FIRST,
-			// message LAST. The 5 live send_message corruptions all opened
-			// with the long prose key and died resuming structural emission
-			// after it (Unterminated string / Expected '}'); platform tools
-			// (write: filePath→content, edit, bash) always emit long strings
-			// last and never corrupt across thousands of calls. The former
-			// session_id param is renamed destination (#1849 casing pass:
-			// one camelCase catalog) — chosen so ALPHABETICAL order is
-			// also correct (destination < message): even if this schema
-			// ever regressed to a Go map, the bulk-last shape survives.
-			// The snake_case spelling still resolves (one-release legacy
-			// alias). from_session_id is GONE: origin is platform-injected
-			// only (the plugin's lsp_injected_session stamp) — the agent
-			// is never responsible for supplying its own return address.
+			Description: "Send a text message to another session in this workspace (IDs from session_list / session_metadata), fire-and-forget: the message is delivered and the target session's reply — if any — stays in THAT session; nothing returns to you. Read the target later with session_read if you need its response. Every delivered message carries your origin as a return address (visible to the recipient as \"message from session …\") so they know who to reply to — reply via send_message to that origin. The origin is metadata, not authentication: claiming another session's ID grants nothing (all sessions share one credential) — it exists so the receiving thread knows where to direct its response. The platform stamps your session ID automatically — you never supply it. BODY SHAPE (#2030 emission hardening — follow this): LONG or structurally complex bodies (multi-paragraph prose, heavy quoting/escapes, code blocks, anything past a few sentences) go via messageFile — write the body with the write tool DIRECTLY under /exchange (the payload exchange dir; no subdirectories), then pass its path; the file's contents become the delivered message and the file is deleted after a successful send (a whitespace-only file is rejected; 256 KiB cap). A short file-path argument is the emission-safe shape; a long inline string is the known-fragile one. SHORT bodies stay first-class inline via message. Pass EXACTLY ONE of message or messageFile — both present refuses loudly, and precedence is exactly that refusal (no silent winner). The result carries message_source=messageFile and, only when the consumed file could not be deleted, a cleanup_warning. Use to steer or follow up on sessions you created (create_session), to hand work to an idle session, or to answer a question another session's agent asked you in its transcript. Busy targets queue the message server-side and deliver it the moment their current turn ends (status says delivering_after_current_turn). Sending to your OWN current session schedules the message as your next turn after this one completes — a self follow-up, not mid-turn injection — and the result carries a loud warning field when destination==your own session (self-addressed sends are a common misfire; intentional self-notes may carry on). If the destination value you emit accidentally pastes duplicated JSON syntax after a valid target id (a known emission slip when a similar prior call is visible in context), the server recovers the leading id and delivers there, with a loud warning: pass clean single ids, copied whole from session_list / session_metadata. The message (inline or from messageFile) must be the complete intended content. If you notice your drafted text was replaced by a placeholder token or truncated, do NOT send — re-compose. Placeholder/TODO-class payloads (a known emission-corruption symptom) are rejected outright by the platform, whichever body shape carried them. The message must be self-contained either way: the target does not inherit this conversation's context. Delivery is not retried: if the workspace restarts while a message waits or before it lands, it is lost — re-send. Not for: questions you need answered in THIS thread (use the task tool, which blocks and returns the result), or starting a new session (create_session).",
+			// Ordered schema (#1849 emission findings): discrete/short
+			// keys first (destination, messageFile — a file PATH is a
+			// short arg, the #2030b mitigation itself), message (the
+			// long freeform string) LAST. The 5 live send_message
+			// corruptions all opened with the long prose key and died
+			// resuming structural emission after it (Unterminated
+			// string / Expected '}'); platform tools (write:
+			// filePath→content, edit, bash) always emit long strings
+			// last and never corrupt across thousands of calls. The
+			// former session_id param is renamed destination (#1849
+			// casing pass) — chosen so ALPHABETICAL order was also
+			// correct (destination < message); messageFile outgrows
+			// that coincidence (message < messageFile alphabetically),
+			// so the explicit RawMessage order below is now
+			// LOAD-BEARING (a regression to Go-map marshaling would
+			// put the bulk message mid-object — the schema-order pin
+			// catches exactly that). The snake_case session_id still
+			// resolves (one-release legacy alias). from_session_id is
+			// GONE: origin is platform-injected only (the plugin's
+			// lsp_injected_session stamp) — the agent is never
+			// responsible for supplying its own return address.
+			// required is destination only: the body is exactly-one-of
+			// message|messageFile, enforced at dispatch (the
+			// hand-rolled layer has no schema validator; a oneOf here
+			// would be decorative).
 			InputSchema: json.RawMessage(`{
 			"type": "object",
 			"properties": {
 				"destination": {"type": "string", "description": "The target session — its 3-word phrase (from session_list / session_metadata; case-insensitive), an unambiguous title/slug alias, or (deprecated, one release) the full/hashed id"},
-				"message": {"type": "string", "description": "The message text — self-contained: the target does not inherit this conversation's context"}
+				"messageFile": {"type": "string", "description": "RECOMMENDED for long or structurally complex bodies — a workspace file path whose contents become the delivered message (the emission-safe shape: a short path argument instead of a long escaped-JSON string). Write the body with the write tool DIRECTLY under /exchange (no subdirectories; relative paths resolve against /exchange; 256 KiB cap; valid UTF-8); the file is deleted after a successful send. Mutually exclusive with message"},
+				"message": {"type": "string", "description": "The message text, inline — self-contained: the target does not inherit this conversation's context. FIRST-CLASS for short bodies; for LONG or structurally complex prose use messageFile instead"}
 			},
-			"required": ["destination", "message"]
+			"required": ["destination"]
 		}`),
 			Annotations: annot(false, false, false),
 			OutputSchema: json.RawMessage(`{
@@ -566,7 +578,9 @@ func mcpToolCatalog() []mcpTool {
 					"warning": {"type": "string"},
 					"session_id_deprecated": {"type": "string"},
 					"origin_deprecated": {"type": "string"},
-					"deprecation": {"type": "string"}
+					"deprecation": {"type": "string"},
+					"message_source": {"type": "string"},
+					"cleanup_warning": {"type": "string"}
 				},
 				"required": ["status", "session_id", "origin", "origin_mode"]
 			}`),
@@ -1261,31 +1275,7 @@ func callMCPTool(ctx context.Context, password, name string, args map[string]any
 		injected, _ := args["lsp_injected_session"].(string)
 		return mcpCreateSession(ctx, password, prompt, title, subscribe, injected)
 	case "send_message":
-		// destination is canonical; session_id is its one-release
-		// legacy alias, gated STRICTLY on destination's ABSENCE (the
-		// rename is not a case fold, so argStr's wrong-type case
-		// cannot reach the alias here): an explicitly-present
-		// destination — empty string or mistyped — is authoritative
-		// and refuses loudly, never falling through (the
-		// silent-precedence class the round-1 review killed for file
-		// params).
-		sessionID := argStr(args, "destination")
-		if _, present := args["destination"]; !present {
-			sessionID, _ = args["session_id"].(string)
-		}
-		message, _ := args["message"].(string)
-		// Origin (#1465/#1469, #1849 tightening): lsp_injected_session is
-		// the platform plugin's harness-attested injection — the ONLY
-		// source. The former from_session_id self-declared fallback is
-		// GONE from the schema and the seam: the agent is never
-		// responsible for supplying its own return address (it was also
-		// an emission-corruption surface). Injection OVERWRITES any
-		// model-supplied copy (unconditional, last-write-wins at the
-		// plugin); a degraded pod (plugin absent) refuses delivery with
-		// a report-the-platform error rather than accepting an
-		// unattested origin.
-		injected, _ := args["lsp_injected_session"].(string)
-		return mcpSendMessage(ctx, password, sessionID, message, injected)
+		return dispatchSendMessage(ctx, password, args)
 	case "subscribe_session":
 		// Idle-subscriptions v1 (§5) + the design 0072 topics alias.
 		// Caller identity is the plugin's lsp_injected_session stamp

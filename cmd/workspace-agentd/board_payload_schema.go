@@ -406,7 +406,7 @@ func validateBoardPayloadFile(op, path string) (string, error) {
 		return "", fmt.Errorf("unknown op %q — one of create_task, create_epic, update_task_patch, update_epic_patch, import_plan, set_config", op)
 	}
 	report := boardValidateReport{Op: op, Fields: []string{}, Findings: []boardPayloadFinding{}}
-	content, _, err := boardReadFileField("file", path, boardPayloadFileMaxBytes)
+	content, _, err := boardReadFileField("file", path, boardPayloadFileMaxBytes, boardFileNotFoundHint)
 	if err != nil {
 		report.Findings = append(report.Findings, boardPayloadFinding{
 			Path: "file", Rule: "file", Severity: "error",
