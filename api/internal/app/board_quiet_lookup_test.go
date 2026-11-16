@@ -41,12 +41,12 @@ func seedQuietLookupBoard(t *testing.T, pool *pgxpool.Pool) {
 		       ('`+qlWorkspaceB+`', 'ql-u1', 'ql-ws-other', 'ql-ns-other')
 		ON CONFLICT (id) DO NOTHING;
 		INSERT INTO projects (id, short_id, user_id, name, target_workspace_id)
-		VALUES ('`+qlProjectA+`', 'prj-ql-a', 'ql-u1', 'ql-p', '`+qlWorkspaceA+`'),
-		       ('`+qlProjectB+`', 'prj-ql-b', 'ql-u1', 'ql-p-other', '`+qlWorkspaceB+`')
+		VALUES ('`+qlProjectA+`', 'prj-quiet-look-a', 'ql-u1', 'ql-p', '`+qlWorkspaceA+`'),
+		       ('`+qlProjectB+`', 'prj-quiet-look-b', 'ql-u1', 'ql-p-other', '`+qlWorkspaceB+`')
 		ON CONFLICT (id) DO NOTHING;
 		INSERT INTO epics (id, short_id, project_id, title, project_name, status)
-		VALUES ('`+qlEpicA+`', 'epc-ql-a', '`+qlProjectA+`', 'E', 'ql-p', 'active'),
-		       ('`+qlEpicB+`', 'epc-ql-b', '`+qlProjectB+`', 'E', 'ql-p-other', 'active')
+		VALUES ('`+qlEpicA+`', 'epc-quiet-look-a', '`+qlProjectA+`', 'E', 'ql-p', 'active'),
+		       ('`+qlEpicB+`', 'epc-quiet-look-b', '`+qlProjectB+`', 'E', 'ql-p-other', 'active')
 		ON CONFLICT (id) DO NOTHING`)
 	require.NoError(t, err, "seed board FK chain")
 }
@@ -57,7 +57,7 @@ func seedQuietLookupBoard(t *testing.T, pool *pgxpool.Pool) {
 func TestIntegration_QuietLookup_InProgressAssignees(t *testing.T) {
 	pool := livenessPool(t)
 	ctx := context.Background()
-	_, err := pool.Exec(ctx, `DELETE FROM tasks WHERE short_id LIKE 'tsk-ql-%'`)
+	_, err := pool.Exec(ctx, `DELETE FROM tasks WHERE short_id LIKE 'tsk-quiet-look-%'`)
 	require.NoError(t, err)
 	seedQuietLookupBoard(t, pool)
 
@@ -67,27 +67,28 @@ func TestIntegration_QuietLookup_InProgressAssignees(t *testing.T) {
 
 	seed := `
 		INSERT INTO tasks (id, short_id, project_id, epic_id, title, project_name, epic_name,
-		                   stage, assignee_session, lease_expires_at, last_progress_at, pending_input)
-		VALUES
-		  -- the live-lease silent worker (the incident's shape)
-		  ('44444444-5555-6666-7777-888888888801', 'tsk-ql-live', '` + qlProjectA + `', '` + qlEpicA + `',
-		   'live', 'ql-p', 'E', 'in_progress', 'ses_ql_a',
-		   now() + interval '30 minutes', now() - interval '45 minutes', false),
-		  -- the lapsed-lease worker, unindexed (unknown quiet)
-		  ('44444444-5555-6666-7777-888888888802', 'tsk-ql-lapsed', '` + qlProjectA + `', '` + qlEpicA + `',
-		   'lapsed', 'ql-p', 'E', 'in_progress', 'ses_ql_b',
-		   now() - interval '5 minutes', now() - interval '45 minutes', false),
-		  -- pending_input: awaiting a HUMAN — excluded
-		  ('44444444-5555-6666-7777-888888888803', 'tsk-ql-pending', '` + qlProjectA + `', '` + qlEpicA + `',
-		   'pending', 'ql-p', 'E', 'in_progress', 'ses_ql_c',
-		   now() + interval '30 minutes', now() - interval '45 minutes', true),
-		  -- backlog: never a worker slot — excluded
-		  ('44444444-5555-6666-7777-888888888804', 'tsk-ql-backlog', '` + qlProjectA + `', '` + qlEpicA + `',
-		   'backlog', 'ql-p', 'E', 'backlog', 'ses_ql_d', NULL, NULL, false),
-		  -- ANOTHER workspace's project — excluded by scoping
-		  ('44444444-5555-6666-7777-888888888805', 'tsk-ql-other-ws', '` + qlProjectB + `', '` + qlEpicB + `',
-		   'other', 'ql-p-other', 'E', 'in_progress', 'ses_ql_e',
-		   now() + interval '30 minutes', now() - interval '45 minutes', false)`
+		                   stage, assignee_session, lease_expires_at, last_progress_at, pending_input, pending_origin)
+	VALUES
+	  -- the live-lease silent worker (the incident's shape)
+	  ('44444444-5555-6666-7777-888888888801', 'tsk-quiet-look-live', '` + qlProjectA + `', '` + qlEpicA + `',
+	   'live', 'ql-p', 'E', 'in_progress', 'ses_ql_a',
+	   now() + interval '30 minutes', now() - interval '45 minutes', false, NULL),
+	  -- the lapsed-lease worker, unindexed (unknown quiet)
+	  ('44444444-5555-6666-7777-888888888802', 'tsk-quiet-look-lapsed', '` + qlProjectA + `', '` + qlEpicA + `',
+	   'lapsed', 'ql-p', 'E', 'in_progress', 'ses_ql_b',
+	   now() - interval '5 minutes', now() - interval '45 minutes', false, NULL),
+	  -- pending_input: awaiting a HUMAN — excluded (origin per the
+	  -- 000052 paired-form check: the flag never travels alone)
+	  ('44444444-5555-6666-7777-888888888803', 'tsk-quiet-look-pending', '` + qlProjectA + `', '` + qlEpicA + `',
+	   'pending', 'ql-p', 'E', 'in_progress', 'ses_ql_c',
+	   now() + interval '30 minutes', now() - interval '45 minutes', true, 'escalated'),
+	  -- backlog: never a worker slot — excluded
+	  ('44444444-5555-6666-7777-888888888804', 'tsk-quiet-look-backlog', '` + qlProjectA + `', '` + qlEpicA + `',
+	   'backlog', 'ql-p', 'E', 'backlog', 'ses_ql_d', NULL, NULL, false, NULL),
+	  -- ANOTHER workspace's project — excluded by scoping
+	  ('44444444-5555-6666-7777-888888888805', 'tsk-quiet-look-other', '` + qlProjectB + `', '` + qlEpicB + `',
+	   'other', 'ql-p-other', 'E', 'in_progress', 'ses_ql_e',
+	   now() + interval '30 minutes', now() - interval '45 minutes', false, NULL)`
 	if _, err := pool.Exec(ctx, seed); err != nil {
 		t.Fatalf("seed tasks: %v", err)
 	}
@@ -112,15 +113,15 @@ func TestIntegration_QuietLookup_InProgressAssignees(t *testing.T) {
 		byShort[f.TaskShortID] = f
 	}
 
-	live := byShort["tsk-ql-live"]
+	live := byShort["tsk-quiet-look-live"]
 	require.Equal(t, "ses_ql_a", live.AssigneeSession)
 	assert.Equal(t, "live", live.LeaseState)
-	assert.Equal(t, "prj-ql-a", live.ProjectID)
+	assert.Equal(t, "prj-quiet-look-a", live.ProjectID)
 	require.NotNil(t, live.QuietSeconds, "the framed assignee's quiet is KNOWN")
 	assert.GreaterOrEqual(t, *live.QuietSeconds, 45*60)
 	assert.True(t, live.Busy, "the derived-busy truth composes into the fact")
 
-	lapsed := byShort["tsk-ql-lapsed"]
+	lapsed := byShort["tsk-quiet-look-lapsed"]
 	require.Equal(t, "ses_ql_b", lapsed.AssigneeSession)
 	assert.Equal(t, "lapsed", lapsed.LeaseState)
 	assert.Nil(t, lapsed.QuietSeconds, "the unindexed assignee's quiet is UNKNOWN (nil, never 0)")
@@ -128,8 +129,11 @@ func TestIntegration_QuietLookup_InProgressAssignees(t *testing.T) {
 
 	// The explicit-empty contract: a workspace whose projects hold no
 	// claimed in_progress rows yields a NON-nil empty set (the
-	// departure-delta signal).
-	otherFacts := lookup.InProgressAssignees(ctx, qlWorkspaceB)
+	// departure-delta signal). Queried on a THIRD workspace — B holds
+	// the scoping probe row, so the empty-contract workspace must
+	// genuinely hold nothing (the constraint-violating seed masked
+	// this contradiction until the seeds were repaired).
+	otherFacts := lookup.InProgressAssignees(ctx, "11111111-2222-3333-4444-555555555599")
 	require.NotNil(t, otherFacts)
 	assert.Empty(t, otherFacts)
 

@@ -8,6 +8,7 @@ import (
 	"expvar"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/lenaxia/llmsafespaces/api/internal/logger"
@@ -86,7 +87,7 @@ type boardTurnEndConsumer struct {
 	mu      sync.Mutex
 	epochs  map[string]uint64 // canonical session key → last dispatched epoch
 	evict   []string          // FIFO basis for the cap
-	dropped bool              // overflow latched for one warn (loud-once posture)
+	dropped atomic.Bool // overflow latched for one warn (loud-once posture); atomic — written by the fold goroutine, reset by the drain (review r1: the plain bool was a data race)
 }
 
 func newBoardTurnEndConsumer(sink boardTurnEndSink, logger *logger.Logger) *boardTurnEndConsumer {
@@ -156,8 +157,7 @@ func (c *boardTurnEndConsumer) ObserveFrame(workspaceID string, evt *abiv1.Event
 		// Overflow: drop (the sweep owns the row — R5's safe
 		// direction), count, and warn once until the queue drains.
 		boardDueMarksDropped.Add(1)
-		if !c.dropped {
-			c.dropped = true
+		if c.dropped.CompareAndSwap(false, true) {
 			if c.logger != nil {
 				c.logger.Warn("board turn-end consumer: dispatch queue overflow — events dropped (the sweep backstop owns the rows)", "workspace", workspaceID)
 			}
@@ -175,7 +175,7 @@ func (c *boardTurnEndConsumer) Run(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case e := <-c.ch:
-			c.dropped = false // queue has headroom again (loud-once reset)
+			c.dropped.Store(false) // queue has headroom again (loud-once reset; atomic — the fold goroutine may be racing a new overflow latch)
 			func() {
 				defer func() {
 					if r := recover(); r != nil {

@@ -140,6 +140,80 @@ func TestBoardTurnEndConsumer_QueueOverflowDropsNeverBlocks(t *testing.T) {
 	assert.Len(t, sink.dispatched(), 0)
 }
 
+// TestBoardTurnEndConsumer_OverflowWhileDraining — the review-r1 race
+// pin: overflow latching (the fold goroutine's CompareAndSwap) racing
+// the drain goroutine's loud-once reset (Store) — the plain-bool latch
+// was an unsynchronized cross-goroutine flag, reddened by -race only
+// in THIS interleaving (the drain goroutine alive while the queue
+// overflows). Conservation is the convergence assertion: every
+// observed event is either dispatched or counted dropped — nothing
+// lost, nothing duplicated.
+func TestBoardTurnEndConsumer_OverflowWhileDraining(t *testing.T) {
+	release := make(chan struct{})
+	// Sized for the FULL wave count so the send belt below never fires
+	// (a lost dispatch would break conservation — the collector drains
+	// continuously; the buffer only absorbs bursts between iterations).
+	dispatched := make(chan board.TurnEndDueMark, boardTurnEndQueueDepth+320)
+	sink := func(_ context.Context, e board.TurnEndDueMark) (bool, error) {
+		<-release // the FIRST dispatch holds the drain: the queue fills behind it
+		dispatched <- e
+		return true, nil
+	}
+	c := newBoardTurnEndConsumer(sink, nil)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go c.Run(ctx)
+
+	before := boardDueMarksDropped.Value()
+	// Epoch 1 occupies the drain (blocked in the sink); epochs 2..N
+	// fill the queue past capacity — overflow WHILE Run is live.
+	const firstWave = uint64(boardTurnEndQueueDepth + 2)
+	for epoch := uint64(1); epoch <= firstWave; epoch++ {
+		c.ObserveFrame(turnEndFrame("ws", "ses_a", "phrase-a", epoch, false))
+	}
+	dropsPhase1 := boardDueMarksDropped.Value() - before
+	require.GreaterOrEqual(t, dropsPhase1, int64(1),
+		"overflow dropped while the drain goroutine was live — counted, never blocked")
+
+	// Open the drain and feed a SECOND wave concurrently: Store(false)
+	// (per pickup) races CompareAndSwap (per overflow) — the exact
+	// interleaving the plain bool lost.
+	go func() {
+		for epoch := firstWave + 1; epoch <= firstWave+300; epoch++ {
+			c.ObserveFrame(turnEndFrame("ws", "ses_a", "phrase-a", epoch, false))
+		}
+	}()
+	close(release)
+
+	// Convergence by quiescence (bounded): collect dispatches until
+	// the channel is quiet, then assert conservation.
+	var got int64
+	quiet := time.NewTimer(2 * time.Second)
+	defer quiet.Stop()
+	for {
+		select {
+		case <-dispatched:
+			got++
+			quiet.Reset(2 * time.Second)
+		case <-quiet.C:
+			quiet.Reset(2 * time.Second)
+			// One more non-blocking sweep, then settle.
+			select {
+			case <-dispatched:
+				got++
+				continue
+			default:
+			}
+			goto settled
+		}
+	}
+settled:
+	totalObserved := int64(firstWave + 300)
+	totalDropped := boardDueMarksDropped.Value() - before
+	assert.Equal(t, totalObserved, got+totalDropped,
+		"conservation: every observed event dispatched or counted dropped (got=%d dropped=%d)", got, totalDropped)
+}
+
 func TestBoardTurnEndConsumer_RunContainsSinkPanic(t *testing.T) {
 	sink := func(context.Context, board.TurnEndDueMark) (bool, error) {
 		panic("sink exploded")

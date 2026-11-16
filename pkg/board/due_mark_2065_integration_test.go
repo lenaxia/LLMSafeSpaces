@@ -155,7 +155,7 @@ func (s *BoardSuite) TestPin_2065C_PendingInputAndPausedGuards() {
 		name string
 		sql  string
 	}{
-		{"pending_input", `UPDATE tasks SET pending_input=true WHERE id=$1`},
+		{"pending_input", `UPDATE tasks SET pending_input=true, pending_origin='worker' WHERE id=$1`},
 		{"paused", `UPDATE tasks SET paused=true WHERE id=$1`},
 	} {
 		s.Run(guard.name, func() {

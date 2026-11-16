@@ -79,20 +79,32 @@ the anti-#2040 emission-site rule — story-1 follow-up scope, not
 silently smuggled in here. Until it lands, pi pods ride the sweep
 backstop verbatim (epic R5 posture; recorded in the design doc Part 7).
 
-## §4 Verification (live Postgres 16, not skip-masked)
+## §4 Verification (live Postgres 16, not skip-masked — final tree, post review r1)
 
-- `go test -tags=integration -race -count=1 ./pkg/board/` — ok, 95s:
-  all 7 new pins (2065-A..G) green AND the full pre-existing
-  lease/ladder/persona/kill suites — the R5 byte-identical evidence.
-- `go test -race -count=1 ./api/internal/app/` — ok, 148s: the 5
-  consumer pins + the full app suite.
-- Born-red honesty note: the pins were developed red-first against the
-  unimplemented consumer (the guarded write's guards surfaced two real
-  test-shape defects before any implementation existed: the
-  pending_input origin constraint and the suite's 200ms lease
-  requiring the armLiveLease helper).
+- Round 0's findings, all fixed in r1: (1) the 2065-C seed ran a bare
+  `pending_input=true` UPDATE violating the 000052 paired-form check —
+  CI red on the pushed head; fixed to `pending_origin='worker'` (the
+  production writer's shape, reconciler.go:1354). (2) The consumer's
+  `dropped` loud-once latch was a plain bool raced between the fold
+  and drain goroutines — now `atomic.Bool` (CAS latch / Store reset) +
+  the OverflowWhileDraining pin. (3) Rule 5: the two known-red
+  live-DB tests in the WIRED package repaired (see §7). (4) The
+  evidence record now states the FINAL tree's runs, below.
+- `go test -tags=integration -race -count=1 ./pkg/board/` — ok, 64s,
+  on the final tree: all 7 new pins (2065-A..G) green AND the full
+  pre-existing lease/ladder/persona/kill suites — the R5
+  byte-identical evidence.
+- `go test -race -count=1 ./api/internal/app/` — ok, 50s, FULLY green
+  on the final tree: the 6 consumer pins + the entire app suite
+  INCLUDING the two repaired #2047 tests (previously red on any live
+  DB, skip-masked in CI).
 - `go build ./pkg/board/ ./api/internal/app/`, `go vet` (both tags),
-  `make fmt-check`, `make imports-check` — clean.
+  `make fmt-check`, `make imports-check` — clean on the final tree.
+- Born-red honesty note: the pins were developed red-first; the
+  guarded write's guards surfaced real test-shape defects before any
+  implementation existed, and round 0 caught that one fix (the
+  pending_origin guard) had not persisted into the pushed commit —
+  the record and the tree now agree.
 
 ## §5 Pins (the acceptance map)
 
@@ -100,12 +112,12 @@ backstop verbatim (epic R5 posture; recorded in the design doc Part 7).
 |---|---|
 | 2065-A | the incident shape, delta-pinned: live-lease row survives a sweep untouched (today's behavior) → ONE event dues it (`trigger=event` +1) → ONE sweep arms the nudge (`sweep_lapse` +1) — no wall-clock anywhere |
 | 2065-B | advance=yes: lease byte-identical, due-mark counter unmoved, `turn_advances` +1 |
-| 2065-C | pending_input / paused rows never due-marked |
+| 2065-C | pending_input (origin-paired, the production shape) / paused rows never due-marked |
 | 2065-D | armed nudge slot + already-due: the sweep owns the episode; duplicates never double-count |
 | 2065-E | user-session / foreign-workspace / unattributable events: silent no-ops |
 | 2065-F | row-side epoch guard: an event observed before the claim mint drops |
 | 2065-G | R5: silent stream — natural lapse processes exactly as today; only `sweep_lapse` moves |
-| app×5 | filter/identity/observation-stamp; watermark (dup/stale/foreign-session/advance); overflow drop never blocks; sink panic contained; composite zero-liveness |
+| app×6 | filter/identity/observation-stamp; watermark (dup/stale/foreign-session/advance); overflow drop never blocks; **overflow WHILE draining (the r1 race pin: CAS latch vs Store reset, conservation-asserted, `-race`)**; sink panic contained; composite zero-liveness |
 
 ## §6 Process
 
@@ -114,3 +126,27 @@ merged before push; no sleep-polling (the consumer pins signal via
 channel handoffs; the panic pin polls a bounded counter window).
 Adversarial review to APPROVED — never self-merge (the orchestrator
 merges). Closes #2065 and #2066 (folded) when merged.
+
+## §7 The rule-5 repairs (the wired package's known-reds, fixed)
+
+`TestIntegration_QuietLookup_InProgressAssignees` and
+`TestIntegrationQuietSource_ComposedTruthAndPurity` (#2047's PG pins)
+were red against any live DB, skip-masked in CI — three layered
+defects the mask hid:
+
+1. The lookup test's seeds violated the 000043 phrase-id checks
+   (`prj-ql-a` etc. — two segments, never a valid form) and the
+   000052 paired pending form (`pending_input=true` without
+   `pending_origin`). Repaired to valid 3-word phrases + the
+   origin-paired shape.
+2. The repaired seed then unmasked a self-contradiction: the
+   explicit-empty contract queried workspace B, whose own seed holds
+   the scoping-probe row. Now queried on a genuinely empty third
+   workspace.
+3. `TestIntegrationQuietSource` exposed a REAL production defect:
+   `AssigneeQuiet` omitted dead/absent rows from the answer map
+   entirely (`continue` before `out[row.ref]`), contradicting its own
+   comment ("unknown here, or provably gone: nil") and #2047's
+   membership contract — callers cannot distinguish "resolved to
+   silence" from "never asked". Fixed: present-with-nils
+   (`board_quiet_source.go`, one line + comment).
