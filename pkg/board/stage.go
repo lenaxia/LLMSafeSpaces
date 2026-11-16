@@ -335,6 +335,17 @@ func (s *Service) moveStageTx(ctx context.Context, tx pgx.Tx, actor Actor, taskI
 		if toStage == StageInProgress && cur.AssigneeSession != "" {
 			resulting, reclaimed, postNudge, err = s.exitPendingReclaim(ctx, tx, actor, cur)
 		} else {
+			// §7: a wrap-up row un-parked to backlog ABORTS the wrap-up
+			// cycle — the epic's in-flight pointer clears in the same
+			// transaction (both rearm exits converge: the pointer either
+			// survives to the reconciler's re-claim or clears to a fresh
+			// mint at the next drain).
+			if cur.Kind == TaskKindWrapup {
+				if _, err := clearWrapUpPointerTx(ctx, tx, cur.ProjectID, cur.ID, actor,
+					"wrapup:ptr_cleared:"+cur.ID, "wrapup_pointer_cleared"); err != nil {
+					return res, nudge{}, err
+				}
+			}
 			resulting, err = s.updateStageTx(ctx, tx, taskID, from, StageBacklog,
 				`claim_token=NULL, lease_expires_at=NULL, assignee_session=NULL, implementer_session=NULL, claim_persona=NULL,
 				 claim_incremented_attempts=false, attempts=0, failure_count=0, last_attempt_failed=false, last_failure_at=NULL`, evidenceURL, actor)
@@ -505,18 +516,19 @@ func (s *Service) doneGuard(t *Task, evidenceURL string) error {
 	return nil
 }
 
-// doneCascade: the reverse-edge unblock + the RC4 completion check +
-// the #1832 review settle (the subject's anchored review tasks complete
-// or park with the transition), all in the →done transaction. The
-// settle's nested events ride the post-commit nudge for publication.
+// doneCascade: the reverse-edge unblock + the wrap-up-aware completion
+// seam + the #1832 review settle (the subject's anchored review tasks
+// complete or park with the transition), all in the →done transaction.
+// The settle's nested events (and a minted wrap-up's spawn, when the
+// drain minted one) ride the post-commit nudge for publication.
 func (s *Service) doneCascade(ctx context.Context, tx pgx.Tx, t *Task, evidenceURL string, n *nudge) error {
 	if _, err := unblockDependents(ctx, txQ{tx}, t.ID, true); err != nil {
 		return err
 	}
-	if _, err := epicCompletionCheck(ctx, tx, t.EpicID); err != nil {
+	if _, _, err := s.wrapUpAwareEpicCompletion(ctx, tx, t.EpicID, n); err != nil {
 		return err
 	}
-	evts, pokes, err := s.completeReviewTasks(ctx, tx, t, evidenceURL, nil)
+	evts, pokes, err := s.completeReviewTasks(ctx, tx, t, evidenceURL, nil, n)
 	if err != nil {
 		return err
 	}

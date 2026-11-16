@@ -62,13 +62,19 @@ type VerdictInput struct {
 // Verdict is a persisted record (the ordered chain B2 surfaces in the
 // next claimant's charter envelope).
 type Verdict struct {
-	Verdict    VerdictKind      `json:"verdict"`
-	Findings   []VerdictFinding `json:"findings"`
-	Reviewer   string           `json:"reviewer"`
-	Timestamp  time.Time        `json:"timestamp"`
-	TaskStage  string           `json:"taskStage"`  // the stage the task was in when the verdict landed
-	Applied    bool             `json:"applied"`    // did the guarded transition succeed
-	Transition string           `json:"transition"` // "" | done | in_progress | refused:<code>
+	Verdict  VerdictKind      `json:"verdict"`
+	Findings []VerdictFinding `json:"findings"`
+	Reviewer string           `json:"reviewer"`
+	// EvidenceURL is persisted on the verdict record (the review_verdict
+	// event payload) so the wrap-up charter's §5 evidence fallback chain
+	// can recover it when a story's latest →done transition carries no
+	// evidence_url (the re-done shape: approved with evidence, later
+	// re-done on a transition that recorded none).
+	EvidenceURL string    `json:"evidenceUrl,omitempty"`
+	Timestamp   time.Time `json:"timestamp"`
+	TaskStage   string    `json:"taskStage"`  // the stage the task was in when the verdict landed
+	Applied     bool      `json:"applied"`    // did the guarded transition succeed
+	Transition  string    `json:"transition"` // "" | done | in_progress | refused:<code>
 }
 
 // ValidateVerdict checks the payload against the task's criteria:
@@ -145,7 +151,8 @@ func (s *Service) RecordVerdict(ctx context.Context, actor Actor, taskID, shortI
 		return nil, nil, &GuardError{Code: "validation", Detail: err.Error()}
 	}
 
-	v := Verdict{Verdict: in.Verdict, Findings: in.Findings, Reviewer: in.Reviewer, TaskStage: t.Stage}
+	v := Verdict{Verdict: in.Verdict, Findings: in.Findings, Reviewer: in.Reviewer,
+		EvidenceURL: in.EvidenceURL, TaskStage: t.Stage}
 	target := StageDone
 	if in.Verdict == VerdictFail {
 		target = StageInProgress
@@ -155,7 +162,8 @@ func (s *Service) RecordVerdict(ctx context.Context, actor Actor, taskID, shortI
 	buildOutcome := func(applied bool, transition, resultingStage string) map[string]any {
 		return map[string]any{
 			"verdict": v.Verdict, "reviewer": v.Reviewer, "findings": v.Findings,
-			"applied": applied, "transition": transition,
+			"evidenceUrl": v.EvidenceURL,
+			"applied":     applied, "transition": transition,
 			"taskStage": v.TaskStage, "resulting_stage": resultingStage,
 		}
 	}

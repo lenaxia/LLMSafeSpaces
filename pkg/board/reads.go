@@ -32,6 +32,9 @@ func (s *Service) GetTask(ctx context.Context, taskID, shortIDOrID string) (*Tas
 	// RC-C S2: badge honesty rides the same read edge — busy is
 	// re-derived per read under the lease TTL (busy.go).
 	s.decorateAssigneeBusy(ctx, t)
+	// #2047: …and the quiet/busy-seconds surface (quiet.go) — the
+	// GetTask wire's net-new fields, same re-derived-per-read posture.
+	s.decorateAssigneeQuiet(ctx, t)
 	return t, nil
 }
 
@@ -84,6 +87,9 @@ func (s *Service) ListTasks(ctx context.Context, projectID string, stage, failed
 	// RC-C S2: one batched busy question for the whole list (the
 	// board's primary feed — the badge poll).
 	s.decorateAssigneeBusy(ctx, scanned...)
+	// #2047: …and one batched quiet question (the feed's quiet/busy
+	// seconds ride the same single pass).
+	s.decorateAssigneeQuiet(ctx, scanned...)
 	for _, t := range scanned {
 		if proj == nil || proj.ID != t.ProjectID {
 			p, perr := s.store.resolveProject(ctx, s.q(), "", t.ProjectID)
@@ -109,6 +115,9 @@ func (s *Service) GetEpic(ctx context.Context, epicID, shortIDOrID string) (*Epi
 		return nil, err
 	}
 	s.decorateEpic(ctx, e)
+	// The in-flight wrap-up pointer renders as the live row's short id
+	// (§1b — join at read time, never stored denormalized).
+	s.decorateWrapUpTaskIDs(ctx, e)
 	return e, nil
 }
 
@@ -233,7 +242,9 @@ func (s *Service) ListProjects(ctx context.Context, userID string) ([]Project, e
 func (s *Service) ListEpics(ctx context.Context, projectID string) ([]Epic, error) {
 	rows, err := s.q().Query(ctx, `
 		SELECT e.id, e.project_id, e.short_id, e.title, e.outcome, e.status, e.project_name,
-		       e.tags, e.vft, e.deficit, e.quantum, e.created_at, e.updated_at,
+		       e.tags, e.vft, e.deficit, e.quantum,
+		       e.wrap_up_review, e.last_wrapped_at, e.wrapup_count, e.wrapup_task_id::text, e.wrapup_ack_pending,
+		       e.created_at, e.updated_at,
 		       COALESCE(c.done_count, 0), COALESCE(c.total_count, 0)
 		FROM epics e
 		LEFT JOIN (
@@ -252,7 +263,9 @@ func (s *Service) ListEpics(ctx context.Context, projectID string) ([]Epic, erro
 	for rows.Next() {
 		var e Epic
 		if err := rows.Scan(&e.ID, &e.ProjectID, &e.ShortID, &e.Title, &e.Outcome, &e.Status,
-			&e.ProjectName, &e.Tags, &e.VFT, &e.Deficit, &e.Quantum, &e.CreatedAt, &e.UpdatedAt,
+			&e.ProjectName, &e.Tags, &e.VFT, &e.Deficit, &e.Quantum,
+			&e.WrapUpReview, &e.LastWrappedAt, &e.WrapUpCount, &e.WrapUpTaskID, &e.WrapUpAckPending,
+			&e.CreatedAt, &e.UpdatedAt,
 			&e.ProgressDone, &e.ProgressTotal); err != nil {
 			return nil, err
 		}
@@ -260,7 +273,54 @@ func (s *Service) ListEpics(ctx context.Context, projectID string) ([]Epic, erro
 		e.ShortIDDeprecated = IsDeprecatedBoardID(e.ShortID)
 		out = append(out, e)
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	// One batched decorate pass for the whole list (the cross-epic
+	// dedupe rides the single call — one query per list, not per epic).
+	if len(out) > 0 {
+		ptrs := make([]*Epic, len(out))
+		for i := range out {
+			ptrs[i] = &out[i]
+		}
+		s.decorateWrapUpTaskIDs(ctx, ptrs...)
+	}
+	return out, nil
+}
+
+// decorateWrapUpTaskIDs renders each epic's in-flight wrap-up pointer as
+// the LIVE wrap-up row's short id (§1b: join at read time, never stored
+// denormalized — the stored column keeps the UUID identity). One bounded
+// query; a dangling pointer (raced delete between read and join) renders
+// the raw value.
+func (s *Service) decorateWrapUpTaskIDs(ctx context.Context, epics ...*Epic) {
+	byTask := map[string]*Epic{}
+	ids := make([]string, 0, len(epics))
+	for _, e := range epics {
+		if p := e.WrapUpTaskID; p != nil && *p != "" {
+			if _, dup := byTask[*p]; !dup {
+				ids = append(ids, *p)
+			}
+			byTask[*p] = e
+		}
+	}
+	if len(ids) == 0 {
+		return
+	}
+	rows, err := s.q().Query(ctx, `
+		SELECT id::text, short_id FROM tasks WHERE id = ANY($1::uuid[])`, ids)
+	if err != nil {
+		return // decoration is best-effort; the raw pointer still renders
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id, short string
+		if err := rows.Scan(&id, &short); err == nil {
+			if e, ok := byTask[id]; ok {
+				e.WrapUpTaskID = &short
+			}
+		}
+	}
 }
 
 // searchLimit bounds result and suggestion sets (a personal board's
@@ -355,6 +415,9 @@ func (s *Service) SearchTasks(ctx context.Context, userID, q string, filters Sea
 	// RC-C S2: …and the same read-edge busy pass (a search hit's badge
 	// tells the same truth a list row's does).
 	s.decorateAssigneeBusy(ctx, scanned...)
+	// #2047: …and the same quiet pass (a search hit's quiet/busy
+	// seconds tell the same truth a list row's do).
+	s.decorateAssigneeQuiet(ctx, scanned...)
 	for _, t := range scanned {
 		res.Results = append(res.Results, *t)
 	}

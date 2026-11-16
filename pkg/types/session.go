@@ -3,7 +3,10 @@
 
 package types
 
-import "time"
+import (
+	"encoding/json"
+	"time"
+)
 
 // HeaderSessionRefResolved is the #1816 resolved-id bridge header: the
 // session-ref middleware sets it (value = the canonical harness id)
@@ -139,6 +142,11 @@ type SessionAlert struct {
 	// condition as "session_hung with ResolvedAt == nil" instead of
 	// reconstructing it from busy snapshots client-side.
 	ResolvedAt *time.Time `json:"resolvedAt,omitempty"`
+	// Payload is the alert's persisted facts JSON (#2047): the
+	// worker_silent arm's task facts (task_short_id, project_id,
+	// lease_state) so a history read names WHICH slot was held, not
+	// just which session. nil on fact-less alerts (session_hung).
+	Payload json.RawMessage `json:"payload,omitempty"`
 }
 
 // EnsureSessionResponse is returned by POST /workspaces/:id/sessions/new.

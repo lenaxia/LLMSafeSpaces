@@ -1,7 +1,7 @@
 // Copyright (C) 2026 Michael Kao
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useQuery, useQueries, useMutation, useQueryClient } from "@tanstack/react-query";
 import * as Dialog from "@radix-ui/react-dialog";
 import { Button } from "../components/ui/Button";
@@ -20,7 +20,7 @@ import { DoneDrawer } from "../components/board/DoneDrawer";
 import { BoardDefaultsDialog, ProjectConfigTrigger } from "../components/board/BoardConfigPanels";
 import { EpicDrawer } from "../components/board/EpicDrawer";
 import { BoardHelpDrawer } from "../components/board/BoardHelpDrawer";
-import { Archive, HelpCircle, KanbanSquare, ChevronRight, ListFilter, Settings2 } from "lucide-react";
+import { Archive, HelpCircle, KanbanSquare, ChevronRight, ChevronsLeftRight, ChevronsRightLeft, ListFilter, Settings2 } from "lucide-react";
 import { useSearchParams } from "react-router-dom";
 import { cn } from "../lib/utils";
 import { boardApi, type BoardEpic, type BoardProject, type BoardTask, type BoardEventPayload } from "../api/board";
@@ -30,7 +30,10 @@ import { ApiClientError } from "../api/client";
 import {
   MAIN_STAGES,
   SIDE_STAGES,
+  STAGE_BACKLOG,
   STAGE_DONE,
+  STAGE_IN_PROGRESS,
+  STAGE_IN_REVIEW,
   STAGE_LABELS,
   isManagerDragAllowed,
   stageDragKey,
@@ -1208,41 +1211,44 @@ export function BoardPage() {
             </div>
           )}
         </div>
-        {/* Ruling 5: 4 columns cannot wrap cleanly at mobile widths —
-         * the standard responsive collapse: 2 columns on small
-         * screens, 4 from md up (cards keep min-w-0/break-words so
-         * long titles wrap INSIDE the card and buttons stay
-         * contained — see StoryCard). */}
-        <div className="grid grid-cols-2 gap-2 p-2 md:grid-cols-4" data-testid={`stage-grid-${project.short_id}`}>
-          {MAIN_STAGES.map((stage) => (
-            <StageCell
-              key={stage}
-              stage={stage}
-              projectTasks={projectTasks}
-              allProjectTasks={laneAllTasks}
-              workspaceId={project.target_workspace_id}
-              stageOf={stageOf}
-              optimistic={optimistic}
-              refusedShortId={refusedShortId}
-              draggingStage={draggingStage}
-              highlightEpicId={highlightEpicId}
-              onDrop={handleDrop(stage)}
-              onOpenCard={(t) => setTaskDialog({ mode: "edit", task: t })}
-              onCardDetails={(t) => setTaskDrawer(t)}
-              onCardDragStart={(t) => setDraggingStage(stageDragKey(t))}
-              onCardDragEnd={() => setDraggingStage(null)}
-              onCardStart={(t) => {
-                setStartingShortId(t.short_id);
-                startTaskMutation.mutate(t);
-              }}
-              storyKebabItems={buildStoryKebabItems}
-              decorateTask={applyCardOverrides}
-              startingShortId={startingShortId}
-              laneShortId={project.short_id}
-              onShowAllDone={() => setDoneDrawerProjectId(project.id)}
-            />
-          ))}
-        </div>
+        {/* Owner direction 2026-11-15: a board is a PIPELINE — pipeline
+         * state reads left-to-right, and the old 2x2 grid put
+         * in_review UNDER in_progress, destroying the flow axis. The
+         * 1x4 rail: one row, all four columns, scroll-snap per column
+         * (the snap points ARE the navigation; #2021 gives arrow keys
+         * + visible focus the same path). Geometry confirmation before
+         * the grid removal: nothing in the board depends on the 2x2
+         * geometry — drag/drop and the card interactions are
+         * event-target based (data-stage-drop closest() lookups, kebab
+         * stopPropagation), never grid-position based, and the column
+         * cells are DOM-independent siblings either way. */}
+        <StageRail
+          laneShortId={project.short_id}
+          onDropStage={handleDrop}
+          cellProps={{
+            projectTasks,
+            allProjectTasks: laneAllTasks,
+            workspaceId: project.target_workspace_id,
+            stageOf,
+            optimistic,
+            refusedShortId,
+            draggingStage,
+            highlightEpicId,
+            onOpenCard: (t) => setTaskDialog({ mode: "edit", task: t }),
+            onCardDetails: (t) => setTaskDrawer(t),
+            onCardDragStart: (t) => setDraggingStage(stageDragKey(t)),
+            onCardDragEnd: () => setDraggingStage(null),
+            onCardStart: (t) => {
+              setStartingShortId(t.short_id);
+              startTaskMutation.mutate(t);
+            },
+            storyKebabItems: buildStoryKebabItems,
+            decorateTask: applyCardOverrides,
+            startingShortId,
+            laneShortId: project.short_id,
+            onShowAllDone: () => setDoneDrawerProjectId(project.id),
+          }}
+        />
         {/* Side column: Failed (collapsible, §4.8; pending_input rows
          * stay in their real stage wearing the badge) */}
         <div className="border-t border-border px-2 py-1.5">
@@ -2029,6 +2035,365 @@ function DoneReadinessView({ task }: { task: BoardTask }) {
   );
 }
 
+/** Owner direction 2026-11-15 — the 1x4 pipeline rail's column
+ * geometry. PORTRAIT (the default view): the active trio — backlog,
+ * in_progress, in_review — shares 95% of the rail's width (29/36/30;
+ * in_progress runs widest: titles + assignee + lease chips are the
+ * densest column), so the done column's leading edge keeps the final
+ * 5% visible — the continuation affordance (carousel edge-peek: done
+ * is discoverable without dedicating real estate; most of the time it
+ * is terminal reference, hence the existing Done cap + drawer). The
+ * active trio cedes 0.375rem per column so the three gap-2 gutters
+ * (1.5rem) are funded without eating the peek. DONE renders as a
+ * FULL-WIDTH final page (100% + 0.75rem): with done at a share-width,
+ * its snap point — and even in_progress's — sits past the rail's
+ * maximum scroll (max scroll = last offset + doneWidth − railWidth),
+ * and mandatory snap FREEZES at the clamp instead of settling; the
+ * full page keeps every column's snap-start reachable, so swipe and
+ * arrow keys truly move column-to-column. The resting view is
+ * unchanged — done still peeks at 5%; its width only shows once you
+ * navigate to it. LANDSCAPE/DESKTOP doubles as the md+ rule: 24/28/
+ * 24/24 splits the full row — all four columns visible — over
+ * min-width floors that no longer overwhelm a real md-era rail (the
+ * board's left panel narrows the rail well below the viewport);
+ * narrower rails scroll, never squeeze the cards. Widths live on
+ * fixed-basis shrink-0 wrappers, never on content: EMPTY COLUMNS KEEP
+ * THEIR WIDTH (skeleton cells), so the layout cannot jump as stages
+ * drain. (failed never rides the rail — it is the §4.8 side column —
+ * hence the Partial.) */
+const STAGE_COL_WIDTH: Partial<Record<BoardStage, string>> = {
+  [STAGE_BACKLOG]: "w-[calc(29%-0.375rem)] md:w-[calc(24%-0.375rem)]",
+  [STAGE_IN_PROGRESS]: "w-[calc(36%-0.375rem)] md:min-w-[8rem] md:w-[calc(28%-0.375rem)]",
+  [STAGE_IN_REVIEW]: "w-[calc(30%-0.375rem)] md:w-[calc(24%-0.375rem)]",
+  [STAGE_DONE]: "w-[calc(100%+0.75rem)] md:w-[calc(24%-0.375rem)]",
+};
+
+/** Focus-column mode (owner direction 2026-11-15 fast-follow) —
+ * PORTRAIT ONLY: the focused column takes 70% of the rail's width
+ * (the column you're working gets the width), the compressed
+ * neighbors shrink to 10% stubs — enough for a tappable header (the
+ * compressed header is itself a transit affordance; the carousel
+ * feel). Landscape/desktop has NO focus mode: the chevrons are
+ * md:hidden and a matchMedia guard force-exits on the portrait→md
+ * crossing, so these classes never render at md+ widths. The
+ * compressed floor is 3rem (below the 4.5rem overview floor — a
+ * compressed column is a navigation stub, not a reading surface; its
+ * cards are hidden, only the header stays).
+ *
+ * DONE keeps its FULL-PAGE width in focus mode (the overview
+ * treatment) — the reachability invariant the rail already carries: a
+ * column's snap-start is only reachable when the widths from it to
+ * the end cover the rail (start_last ≤ maxScroll ⟺ w_last ≥ rail
+ * width). At 70/10/10/10 the content totals ~100% and every column
+ * past the first sits beyond max scroll — mandatory snap FREEZES at
+ * the clamp and the carousel dies (the same lesson that made done a
+ * full page in overview). Focused done IS the full page. The
+ * full-page, non-focused done renders as "periphery": cards visible,
+ * chevron still transits. */
+const STAGE_COL_FOCUS_WIDTH = {
+  focused: "w-[calc(70%-0.375rem)]",
+  focusedDone: "w-[calc(100%+0.75rem)]",
+  compressed: "w-[calc(10%-0.375rem)]",
+};
+
+/** One discrete transition per mode change: the width reflow animates
+ * over FOCUS_TRANSITION_MS; the explicit re-snap that follows it (the
+ * expanded column fully in view) is scheduled just past the transition
+ * so it targets the SETTLED geometry, never a moving snap area. */
+const FOCUS_TRANSITION_MS = 200;
+const FOCUS_RESNAP_DELAY_MS = FOCUS_TRANSITION_MS + 20;
+
+/** The wrapper every column wears: snap-start makes each column a snap
+ * point (the snap points ARE the navigation — swipe and arrow keys
+ * land column-to-column); shrink-0 + the min-width floor keep the
+ * column's width through every drain state. The PORTRAIT floor is
+ * 4.5rem — deliberately BELOW the calc width at every real phone
+ * width (≥320px viewports), so it never disturbs the exact 95/5
+ * split; it only guards degenerate sub-phone narrowness. md:grow
+ * fills the row at landscape/desktop so the fourth column never
+ * leaves a ragged edge (grow only distributes free space — it cannot
+ * compress a shrink-0 column); the focus-visible ring is the #2021
+ * keyboard-parity affordance (arrow keys navigate columns, focus
+ * visible). */
+const STAGE_COL_BASE_CLASS =
+  "flex min-w-[4.5rem] shrink-0 snap-start flex-col rounded-md outline-none transition-[width] duration-200 ease-out focus-visible:outline-2 focus-visible:outline-primary/60 focus-visible:-outline-offset-2 md:min-w-[7.5rem] md:grow";
+
+interface StageRailProps {
+  /** The swimlane's short id — the rail's testid keeps the
+   * stage-grid-<lane> name the e2e suite already pins. */
+  laneShortId: string;
+  /** Everything StageCell needs except the per-column stage and drop
+   * handler (both derive from the mapped stage). */
+  cellProps: Omit<StageCellProps, "stage" | "onDrop">;
+  /** Builds the per-column drop handler (the engine's arbiter surface
+   * — unchanged by the rail; drops are event-target based). */
+  onDropStage: (stage: BoardStage) => (e: React.DragEvent) => void;
+}
+
+/** StageRail — the 1x4 pipeline (owner direction 2026-11-15): all four
+ * through-flow columns on ONE row inside a horizontal scroll-snap
+ * container, left-to-right in MAIN_STAGES order. Keyboard parity per
+ * the #2021 a11y discipline: the columns are a roving-tabindex group —
+ * exactly one column is the rail's tab stop; ArrowLeft/ArrowRight move
+ * focus column-to-column and snap-scroll the target into view.
+ *
+ * Focus-column mode (owner direction 2026-11-15 fast-follow, portrait
+ * only): FOCUS FOLLOWS SNAP-SETTLED, NEVER LIVE SWIPE POSITION — no
+ * scroll event ever mutates geometry; the ONLY width-changing moments
+ * are the user-initiated mode actions (chevron/Enter/Escape/pinch) and
+ * the snap-settled transit (the native scrollend fires once scrolling
+ * has fully stopped, so an in-flight gesture can never meet a reflow —
+ * the frozen-geometry pin). Every mode change animates as ONE discrete
+ * width transition, then explicitly re-snaps past the transition so
+ * the expanded column is fully in view. OVERVIEW IS THE DEFAULT AND
+ * THE BOARD: every mount starts in overview, focus is component state
+ * only — never persisted, never restored. */
+function StageRail({ laneShortId, cellProps, onDropStage }: StageRailProps) {
+  const [activeIndex, setActiveIndex] = useState(0);
+  // null = overview (the default on every mount); a number = focus
+  // mode on MAIN_STAGES[index].
+  const [focusedIndex, setFocusedIndex] = useState<number | null>(null);
+  const [modeNotice, setModeNotice] = useState("");
+  const colRefs = useRef<Array<HTMLDivElement | null>>([]);
+  const railRef = useRef<HTMLDivElement | null>(null);
+  // The scrollend listener and the pinch handlers read live state
+  // without re-subscribing — the ref mirrors focusedIndex.
+  const focusedRef = useRef<number | null>(null);
+  focusedRef.current = focusedIndex;
+  const resnapTimer = useRef<number | undefined>(undefined);
+  const pinchStartDist = useRef<number | null>(null);
+
+  useEffect(() => () => window.clearTimeout(resnapTimer.current), []);
+
+  const scrollColumnToStart = useCallback((index: number) => {
+    colRefs.current[index]?.scrollIntoView({ behavior: "smooth", inline: "start", block: "nearest" });
+  }, []);
+
+  /** Enter focus on a column — or TRANSIT to it when focus mode is
+   * already active (the same state write; both are one user action).
+   * Discrete states, one transition: the width classes change here,
+   * and the explicit re-snap is scheduled just past the transition so
+   * it targets the settled geometry. */
+  const applyFocus = useCallback(
+    (index: number) => {
+      setFocusedIndex(index);
+      setActiveIndex(index);
+      setModeNotice(`Focused ${STAGE_LABELS[MAIN_STAGES[index]!]} column`);
+      colRefs.current[index]?.focus({ preventScroll: true });
+      window.clearTimeout(resnapTimer.current);
+      resnapTimer.current = window.setTimeout(() => scrollColumnToStart(index), FOCUS_RESNAP_DELAY_MS);
+    },
+    [scrollColumnToStart],
+  );
+
+  /** Exit to overview. The overview RE-CENTERS on the column just
+   * left — the re-snap targets it under the restored overview
+   * geometry (no jump to position zero). */
+  const exitFocus = useCallback(() => {
+    const last = focusedRef.current;
+    if (last === null) return;
+    setFocusedIndex(null);
+    setModeNotice(`Overview — ${STAGE_LABELS[MAIN_STAGES[last]!]} column centered`);
+    window.clearTimeout(resnapTimer.current);
+    resnapTimer.current = window.setTimeout(() => scrollColumnToStart(last), FOCUS_RESNAP_DELAY_MS);
+  }, [scrollColumnToStart]);
+
+  const focusColumn = useCallback(
+    (index: number) => {
+      setActiveIndex(index);
+      const el = colRefs.current[index];
+      if (el) {
+        el.focus({ preventScroll: true });
+        el.scrollIntoView({ behavior: "smooth", inline: "start", block: "nearest" });
+      }
+      // Arrows in focus mode TRANSIT the lens to the adjacent column
+      // (the carousel feel); in overview they only move the roving
+      // stop. Swiping never changes mode — these are key transits.
+      if (focusedRef.current !== null && focusedRef.current !== index) applyFocus(index);
+    },
+    [applyFocus],
+  );
+
+  // Snap-settled transit: the native scrollend (fired only once
+  // scrolling — gesture AND snap animation — has fully stopped) is
+  // the one scroll-derived moment allowed to move focus. The settled
+  // column is the one whose start sits nearest the snapport origin.
+  // Settling back on the already-focused column is a no-op.
+  useEffect(() => {
+    const rail = railRef.current;
+    if (!rail) return;
+    const onScrollEnd = () => {
+      const focused = focusedRef.current;
+      if (focused === null) return;
+      const padLeft = parseFloat(getComputedStyle(rail).paddingLeft) || 0;
+      const snapportStart = rail.scrollLeft + padLeft;
+      let best = focused;
+      let bestDist = Infinity;
+      colRefs.current.forEach((el, i) => {
+        if (!el) return;
+        // Content offsets (offsetLeft is layout-stable — unlike rects,
+        // it never moves under a scroll).
+        const start = el.offsetLeft - rail.offsetLeft;
+        const dist = Math.abs(start - snapportStart);
+        if (dist < bestDist) {
+          bestDist = dist;
+          best = i;
+        }
+      });
+      if (best !== focused) applyFocus(best);
+    };
+    rail.addEventListener("scrollend", onScrollEnd);
+    return () => rail.removeEventListener("scrollend", onScrollEnd);
+  }, [applyFocus]);
+
+  // Landscape/desktop has NO focus mode: crossing to md+ while the
+  // lens is open force-exits to overview (the chevrons are md:hidden —
+  // there is no way BACK into focus from md+).
+  useEffect(() => {
+    const mq = window.matchMedia?.("(min-width: 768px)");
+    if (!mq || typeof mq.addEventListener !== "function") return;
+    const onChange = () => {
+      if (mq.matches && focusedRef.current !== null) exitFocus();
+    };
+    mq.addEventListener("change", onChange);
+    return () => mq.removeEventListener("change", onChange);
+  }, [exitFocus]);
+
+  /** Pinch-out exits focus (zoom-out muscle memory): two touches whose
+   * spread grows by >25% mid-gesture — once per gesture. */
+  const pinchSpread = (e: React.TouchEvent) =>
+    Math.hypot(e.touches[0]!.clientX - e.touches[1]!.clientX, e.touches[0]!.clientY - e.touches[1]!.clientY);
+
+  const handleColumnKeyDown = useCallback(
+    (e: React.KeyboardEvent<HTMLDivElement>, index: number) => {
+      // Overlays own their keys (r1): menus and dialogs render through
+      // portals but their React keydowns still propagate through the
+      // column's tree — Escape inside one must reach the overlay, not
+      // exit the lens.
+      const origin = e.target as Element | null;
+      const inOverlay = origin?.closest?.('[role="menu"], [role="dialog"]');
+      if (e.key === "Escape") {
+        if (!inOverlay && focusedRef.current !== null) exitFocus();
+        return;
+      }
+      // Enter on the column itself (never on a card or button inside
+      // it) enters focus on the active column — arrows + Enter.
+      if (e.key === "Enter" && e.target === e.currentTarget && focusedRef.current === null) {
+        e.preventDefault();
+        applyFocus(index);
+        return;
+      }
+      if (e.key !== "ArrowRight" && e.key !== "ArrowLeft") return;
+      if (origin?.closest?.('[role="menu"]')) return;
+      e.preventDefault();
+      const next = e.key === "ArrowRight" ? Math.min(index + 1, MAIN_STAGES.length - 1) : Math.max(index - 1, 0);
+      if (next === index) return;
+      focusColumn(next);
+    },
+    [applyFocus, exitFocus, focusColumn],
+  );
+
+  const columnMode = (index: number): "overview" | "focused" | "compressed" | "periphery" => {
+    if (focusedIndex === null) return "overview";
+    if (index === focusedIndex) return "focused";
+    // The non-focused done column keeps its full page (reachability)
+    // — periphery: full geometry, cards visible, chevron transits.
+    return MAIN_STAGES[index] === STAGE_DONE ? "periphery" : "compressed";
+  };
+
+  return (
+    <div
+      // scroll-px-2 (r1): CSS scroll-snap aligns snap areas to the
+      // SCROLLPORT (the border box), not the content box — without the
+      // matching scroll-padding, a snapped column lands flush with the
+      // rail's border, 8px left of its at-rest position (measured:
+      // settle at 112 for a content-offset-104 column). scroll-px-2
+      // insets the snapport to the content box so snap points land
+      // exactly where the resting column starts; scrollIntoView's
+      // inline:"start" obeys the same inset.
+      className="flex snap-x snap-mandatory gap-2 overflow-x-auto scroll-px-2 p-2"
+      data-testid={`stage-grid-${laneShortId}`}
+      data-stage-rail="true"
+      data-mode={focusedIndex === null ? "overview" : "focus"}
+      role="region"
+      aria-label="Pipeline stages — use the left and right arrow keys to move between columns; Enter focuses a column; Escape returns to overview"
+      ref={railRef}
+      onTouchStart={(e) => {
+        if (focusedRef.current === null || e.touches.length !== 2) return;
+        pinchStartDist.current = pinchSpread(e);
+      }}
+      onTouchMove={(e) => {
+        if (pinchStartDist.current === null || e.touches.length !== 2) return;
+        if (pinchSpread(e) > pinchStartDist.current * 1.25) {
+          pinchStartDist.current = null;
+          exitFocus();
+        }
+      }}
+      onTouchEnd={() => {
+        pinchStartDist.current = null;
+      }}
+      onTouchCancel={() => {
+        pinchStartDist.current = null;
+      }}
+    >
+      {/* Mode changes announced to screen readers (#2021 a11y
+       * discipline): a polite live region carrying the lens state.
+       * sr-only is absolutely positioned — it never participates in
+       * the flex row. */}
+      <span data-testid={`rail-mode-notice-${laneShortId}`} role="status" aria-live="polite" className="sr-only">
+        {modeNotice}
+      </span>
+      {MAIN_STAGES.map((stage, index) => {
+        const colMode = columnMode(index);
+        return (
+          <div
+            key={stage}
+            ref={(el) => {
+              colRefs.current[index] = el;
+            }}
+            tabIndex={index === activeIndex ? 0 : -1}
+            role="group"
+            aria-label={`${STAGE_LABELS[stage]} column`}
+            data-testid={`stage-col-${stage}`}
+            data-stage-col={stage}
+            data-col-state={colMode}
+            onKeyDown={(e) => handleColumnKeyDown(e, index)}
+            className={cn(
+              STAGE_COL_BASE_CLASS,
+              focusedIndex === null
+                ? STAGE_COL_WIDTH[stage]
+                : index === focusedIndex
+                  ? stage === STAGE_DONE
+                    ? STAGE_COL_FOCUS_WIDTH.focusedDone
+                    : STAGE_COL_FOCUS_WIDTH.focused
+                  : stage === STAGE_DONE
+                    ? STAGE_COL_WIDTH[STAGE_DONE]
+                    : STAGE_COL_FOCUS_WIDTH.compressed,
+              // The compressed floor replaces the 4.5rem overview floor
+              // (cn is tailwind-merge): a compressed column is a stub.
+              focusedIndex !== null && index !== focusedIndex && stage !== STAGE_DONE && "min-w-[3rem]",
+            )}
+          >
+            <StageCell
+              stage={stage}
+              onDrop={onDropStage(stage)}
+              {...cellProps}
+              colMode={colMode}
+              onFocusToggle={
+                focusedIndex === null
+                  ? () => applyFocus(index)
+                  : index === focusedIndex
+                    ? exitFocus
+                    : () => applyFocus(index)
+              }
+            />
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 interface StageCellProps {
   stage: BoardStage;
   projectTasks: BoardTask[];
@@ -2066,6 +2431,17 @@ interface StageCellProps {
   /** Owner ask 2026-11-13: opens the Done drawer for this lane (the
    * Done column's overflow surface). Invoked only by the done branch. */
   onShowAllDone?: () => void;
+  /** Focus-column mode (owner direction 2026-11-15 fast-follow,
+   * PORTRAIT only): the column's lens state. undefined = no affordance
+   * (the side columns and any non-rail caller); "overview" renders the
+   * expand chevron, "focused" the collapsing one, "compressed" the
+   * stub (cards hidden, header + chevron remain the transit tap), and
+   * "periphery" the non-focused done's full page (reachability keeps
+   * it wide; cards visible, chevron still transits). */
+  colMode?: "overview" | "focused" | "compressed" | "periphery";
+  /** The one-action mode lever: chevron tap in every state, plus the
+   * compressed header's tap-to-transit. */
+  onFocusToggle?: () => void;
 }
 
 function StageCell({
@@ -2089,8 +2465,15 @@ function StageCell({
   startingShortId,
   laneShortId,
   onShowAllDone,
+  colMode,
+  onFocusToggle,
 }: StageCellProps) {
   const [dragOver, setDragOver] = useState(false);
+  // Focus-column mode: a compressed neighbor is a navigation stub —
+  // its header row itself transits (the bigger tap target on a thin
+  // column); the focused column's header never toggles (only its
+  // chevron does — cards keep their click targets).
+  const compressed = colMode === "compressed";
   const cards = projectTasks.filter((t) => stageOf(t) === stage);
   // Owner ask 2026-11-13 — the Done column's render set: NEWEST-DONE
   // first (the server list arrives created_at-asc, reads.go; the
@@ -2133,31 +2516,64 @@ function StageCell({
       )}
       aria-label={`${STAGE_LABELS[stage]} column`}
     >
-      <div className="flex items-center justify-between px-0.5">
-        <span className={cn("text-[10px] font-medium uppercase tracking-wide text-muted-foreground", draggingStage !== null && !landsHere && "line-through opacity-60")}>
+      <div
+        data-stage-header={stage}
+        className={cn("flex items-center justify-between gap-1 px-0.5", compressed && "cursor-pointer")}
+        onClick={compressed ? onFocusToggle : undefined}
+      >
+        <span className={cn("truncate text-[10px] font-medium uppercase tracking-wide text-muted-foreground", draggingStage !== null && !landsHere && "line-through opacity-60")}>
           {STAGE_LABELS[stage]}
         </span>
-        <span className="text-[10px] text-muted-foreground">{cards.length}</span>
+        <span className="shrink-0 text-[10px] text-muted-foreground">{cards.length}</span>
+        {/* The focus affordance (fast-follow): a visible expand chevron
+         * in the header — discoverable, never a hidden gesture. Portrait
+         * only (md:hidden): landscape/desktop shows all four columns,
+         * there is nothing to expand. aria-expanded names the lens state
+         * of THIS column (#2021). */}
+        {colMode != null && (
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              onFocusToggle?.();
+            }}
+            aria-expanded={colMode === "focused"}
+            aria-label={colMode === "focused" ? `Exit focus — return to overview from the ${STAGE_LABELS[stage]} column` : `Focus the ${STAGE_LABELS[stage]} column`}
+            title={colMode === "focused" ? "Exit to overview" : "Focus this column"}
+            data-testid={`col-focus-toggle-${stage}`}
+            className="shrink-0 rounded p-0.5 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-2 focus-visible:outline-primary/60 md:hidden"
+          >
+            {colMode === "focused" ? (
+              <ChevronsRightLeft className="h-3.5 w-3.5" aria-hidden />
+            ) : (
+              <ChevronsLeftRight className="h-3.5 w-3.5" aria-hidden />
+            )}
+          </button>
+        )}
       </div>
-      {visibleCards.map((t) => (
-        <StoryCard
-          key={t.short_id}
-          task={decorateTask(t)}
-          projectTasks={allProjectTasks}
-          workspaceId={workspaceId}
-          pending={optimistic[t.short_id] !== undefined}
-          refused={refusedShortId === t.short_id}
-          dimmed={highlightEpicId !== null && t.epic_id !== highlightEpicId}
-          highlighted={highlightEpicId !== null && t.epic_id === highlightEpicId}
-          starting={startingShortId === t.short_id}
-          onStart={onCardStart}
-          onOpen={onOpenCard}
-          onDetails={onCardDetails}
-          kebabItems={storyKebabItems(t)}
-          onDragStart={onCardDragStart}
-          onDragEnd={onCardDragEnd}
-        />
-      ))}
+      {/* Compressed neighbors hide their cards (a ~3rem stub cannot
+       * render a readable card; the header carries the column). The
+       * drop zone itself stays armed — drops still arbitrate. */}
+      <div className={cn("flex flex-col gap-1.5", compressed && "hidden")}>
+        {visibleCards.map((t) => (
+          <StoryCard
+            key={t.short_id}
+            task={decorateTask(t)}
+            projectTasks={allProjectTasks}
+            workspaceId={workspaceId}
+            pending={optimistic[t.short_id] !== undefined}
+            refused={refusedShortId === t.short_id}
+            dimmed={highlightEpicId !== null && t.epic_id !== highlightEpicId}
+            highlighted={highlightEpicId !== null && t.epic_id === highlightEpicId}
+            starting={startingShortId === t.short_id}
+            onStart={onCardStart}
+            onOpen={onOpenCard}
+            onDetails={onCardDetails}
+            kebabItems={storyKebabItems(t)}
+            onDragStart={onCardDragStart}
+            onDragEnd={onCardDragEnd}
+          />
+        ))}
       {/* Owner ask 2026-11-13: the Done column's collapsed affordance —
        * exactly N inline + this control; a native button (keyboard
        * reachable, aria-haspopup names the dialog it opens). The count
@@ -2176,6 +2592,7 @@ function StageCell({
         </button>
       )}
       {cards.length === 0 && <span className="px-1 text-[10px] text-muted-foreground/60">—</span>}
+      </div>
     </div>
   );
 }

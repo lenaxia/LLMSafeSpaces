@@ -34,8 +34,16 @@ func (h *ProxyHandler) onPhaseChange(workspace *v1.Workspace) {
 	// entry leaks for process lifetime — bounded, one entry per
 	// workspace). Seed calls (no prior) are no-ops — a restart
 	// re-seeds Active phases only.
-	if phase != phaseActive && hadPrior && string(prior) != string(phase) && h.busyAlerted(workspace.Name) {
-		h.resolveHungs(workspace.Name)
+	if phase != phaseActive && hadPrior && string(prior) != string(phase) {
+		if h.busyAlerted(workspace.Name) {
+			h.resolveHungs(workspace.Name)
+		}
+		// #2047 review r2: the silent arm's subjects die with the pod
+		// too — the gate above keys on the BUSY arm's map, so a
+		// pure-silent workspace would otherwise fire nothing (badge
+		// latched, row unresolved until the read-side heal, cooldown
+		// entry leaked). Same honest bounds as above.
+		h.resolveDepartedSilentWorkers(workspace.Name)
 	}
 
 	if h.userBroker != nil && workspace.Spec.Owner.UserID != "" {

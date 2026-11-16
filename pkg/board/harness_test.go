@@ -51,6 +51,15 @@ func (f *fakeSpawner) count() int {
 	return len(f.calls)
 }
 
+// callsSlice copies the spawn log for assertions.
+func (f *fakeSpawner) callsSlice() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make([]string, len(f.calls))
+	copy(out, f.calls)
+	return out
+}
+
 func (f *fakeSpawner) failWith(err error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
