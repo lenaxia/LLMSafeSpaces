@@ -31,6 +31,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -331,14 +332,33 @@ func TestMCPSendMessage_FileCleanupWarningWhenUndeletable(t *testing.T) {
 	f := newFakeAgent()
 	target := f.newSession("target")
 	caller := f.newSession("caller")
-	withAgentServer(t, f.handler(t))
 	root := withExchangeRoot(t)
 	bodyPath := filepath.Join(root, "stuck.md")
 	require.NoError(t, os.WriteFile(bodyPath, []byte("body whose file outlives the send"), 0o600))
-	// Strip the parent dir's write bit: the unlink fails EACCES while
-	// the read (already done) succeeded.
-	require.NoError(t, os.Chmod(root, 0o500))
-	t.Cleanup(func() { _ = os.Chmod(root, 0o700) })
+	// Root-proof refusal (review r1; the package precedent at
+	// board_exchange_dir_test.go:114-125): between resolveMessageFile's
+	// read and the post-success consume, swap the consumed file for a
+	// NON-EMPTY directory, so os.Remove refuses ENOTEMPTY for EVERY
+	// uid. (A chmod-0500 parent would not stop a root runner —
+	// CAP_DAC_OVERRIDE — and the pin would false-fail the suite on
+	// root CI.) The swap rides mcpSendMessage's FIRST synchronous wire
+	// call (the resolve/exists/statuses probes all precede its return —
+	// only the delivery POST is detached, and the consume follows the
+	// return, so first-request timing is deterministic; later requests
+	// no-op — the swap is idempotent).
+	swapped := false
+	var swapOnce sync.Mutex
+	base := f.handler(t)
+	withAgentServer(t, func(w http.ResponseWriter, r *http.Request) {
+		swapOnce.Lock()
+		if !swapped {
+			swapped = true
+			_ = os.Remove(bodyPath)
+			_ = os.MkdirAll(filepath.Join(bodyPath, "child"), 0o755)
+		}
+		swapOnce.Unlock()
+		base(w, r)
+	})
 
 	out, err := callMCPTool(context.Background(), mcpTestPassword, "send_message", map[string]any{
 		"destination":          target,

@@ -108,7 +108,11 @@ send path deliver it for every harness. THREE legs, one pin
 - (d) edges: missing-file hint, oversize cap, nested-path flat
   contract, non-UTF-8, whitespace-only body, placeholder-class body
   (file survives), file-survives-failed-send, cleanup_warning on the
-  undeletable file (parent dir 0500), wrong-typed/empty messageFile.
+  undeletable file (review r1: the mid-POST NON-EMPTY-DIRECTORY swap —
+  board_exchange_dir_test.go:114-125's root-proof refusal — replacing
+  the uid-dependent chmod-0500 parent, which a root runner's
+  CAP_DAC_OVERRIDE would sail through and false-fail the pin),
+  wrong-typed/empty messageFile.
 - (e) `TestMCPSendMessage_HarnessParity` (above).
 - Updated: `TestMCPSendMessage_SchemaInjectedOnly_MessageLast` —
   property set {destination, messageFile, message}, required
@@ -129,6 +133,17 @@ send path deliver it for every harness. THREE legs, one pin
 ## Process
 
 Worktree `/workspace/send-message-file` off origin/main (71cb54f80);
-branch `feat/send-message-file`. AI reviewer rounds per pr-review.yml
-until APPROVED; orchestrator merges; `make fmt-check` before push;
-origin/main merged before pushing.
+branch `feat/send-message-file`; origin/main merged mid-flight (the
+#2043/#2030c/#2063 entries; CHANGELOG conflict resolved keeps-both,
+post-merge send_message + strict-board-args suites coexist green —
+send_message is not a board tool). AI reviewer rounds per pr-review.yml
+until APPROVED; orchestrator merges; `make fmt-check` before push.
+
+Review r1 (head add8b0a01, CHANGES_REQUESTED): ONE finding — the
+cleanup_warning pin's chmod-0500 parent is uid-dependent (a root
+runner's CAP_DAC_OVERRIDE sails through; false suite-fail on root CI).
+Remediated verbatim per the reviewer's pointer: the board precedent's
+root-proof refusal (NON-EMPTY-DIRECTORY swap mid-POST,
+board_exchange_dir_test.go:114-125) — ENOTEMPTY for every uid. The
+reviewer's summary upheld everything else (admission, shared reader,
+round-trip, schema order, harness parity).
