@@ -3,8 +3,8 @@
 
 //go:build integration
 
-// migration_000056_populated_test.go — the populated-database migration
-// pin for the #2047 alert payload: 000056 adds session_alerts.payload
+// migration_000057_populated_test.go — the populated-database migration
+// pin for the #2047 alert payload: 000057 adds session_alerts.payload
 // (JSONB, nullable — the worker_silent arm's task facts) and the
 // session-scoped resolution partial index. CI's round-trip gates run
 // on EMPTY schemas; this pin holds on a throwaway database parked at
@@ -24,13 +24,13 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
-func TestMigration000056_PayloadAndSessionResolveUpAndDown(t *testing.T) {
+func TestMigration000057_PayloadAndSessionResolveUpAndDown(t *testing.T) {
 	dsn := scratchDB(t)
 	m := migrateAt(t, dsn)
 
 	// Park at 000055 (the pre-#2047 world: fact-less alerts only).
-	if err := m.Migrate(55); err != nil {
-		t.Fatalf("park at 55: %v", err)
+	if err := m.Migrate(56); err != nil {
+		t.Fatalf("park at 56: %v", err)
 	}
 	ctx := context.Background()
 	pool, err := pgx.Connect(ctx, dsn)
@@ -53,8 +53,8 @@ func TestMigration000056_PayloadAndSessionResolveUpAndDown(t *testing.T) {
 	}
 
 	// UP.
-	if err := m.Migrate(56); err != nil {
-		t.Fatalf("up to 56: %v", err)
+	if err := m.Migrate(57); err != nil {
+		t.Fatalf("up to 57: %v", err)
 	}
 
 	// Existing rows keep NULL payload — the conservative mid-deploy
@@ -104,8 +104,8 @@ func TestMigration000056_PayloadAndSessionResolveUpAndDown(t *testing.T) {
 	assert.Equal(t, 1, liveB, "the sibling silent worker's alert is untouched")
 
 	// DOWN: the column and index drop; the fact-less shape survives.
-	if err := m.Migrate(55); err != nil {
-		t.Fatalf("down to 55: %v", err)
+	if err := m.Migrate(56); err != nil {
+		t.Fatalf("down to 56: %v", err)
 	}
 	var cols int
 	if err := pool.QueryRow(ctx,
