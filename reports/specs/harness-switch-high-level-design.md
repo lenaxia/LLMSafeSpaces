@@ -67,9 +67,12 @@ existing long-op (202 + spec-write, controller-as-single-status-writer) API conv
            already harness-aware) → status.harness=pi written at build → Creating→Active
       │
   switch window (spec write → status flip):
-      router serves status.harness (old) — mis-routed calls fail LOUD (wrong-harness
-      bridge, 404-class; resolution failure pre-PodIP — LL §3),
-      never silent-wrong; claim gate: on the gate's observed view, no new
+      router serves status.harness (old) on a STATUS-SET switch — mis-routed calls fail
+      LOUD (wrong-harness bridge, 404-class; resolution failure pre-PodIP — LL §3),
+      TTL-bounded, never silent-wrong. PRE-BACKFILL first switch (status=""): the spec
+      fallback serves the NEW harness against the old live pod from TTL expiry until
+      buildPod writes status — reconcile+drain-bounded, not TTL-bounded (D8/LL §3);
+      claim gate: on the gate's observed view, no new
       claims/spawns/review-mints into the workspace (the suspend-gate shape,
       keyed on spec≠status instead of phase; the multi-replica informer-lag
       residual is documented in LL §1a step 5 — one bounded grant, rearm exit)
@@ -159,7 +162,7 @@ existing long-op (202 + spec-write, controller-as-single-status-writer) API conv
   cost — exactly one convergent same-harness recreation (status=""+marker is indistinguishable
   from drift; the controller cannot know a status="" pod's true harness). In both cases the
   sweep's cost —
-  re-claims with salvage pointers — is the only residue, and it is honest work, not damage).
+  re-claims with salvage pointers — is the only residue, and it is honest work, not damage.
   After deletion the switch is committed; there is no in-flight cancel (mid-recreation
   cancellation would add a third pod state for no product value). A failed new-harness build
   (e.g. pi overlay verify) lands the workspace in Failed with the verify condition — from which

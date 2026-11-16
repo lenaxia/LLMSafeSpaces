@@ -249,8 +249,11 @@ drain, which a busy-session defer can stretch toward the 60m force (`session_dra
 NOT by the TTL. New calls in that window fail loud 404-class against the old pod's shim-free
 surface (never wrong-data); in-flight turns still finish — their streams predate the flip and
 the drain is watching them, so the drain's politeness covers in-flight turns, not new calls,
-for this class. This window also exists on the abort path's §2a benign recreation (same
-status="" shape). Pin: `TestHarnessRouter_PreBackfillFallbackWindow`
+for this class. The abort path's §2a benign recreation does NOT carry this fallback window:
+post-abort spec.harness is restored to the value the live pod was built for (webhook 7a
+immutability — §2a's own premise), so the spec fallback routes CORRECTLY there; its windows
+are the ≤60s stale-cache residue of the aborted switch and the standard pre-PodIP
+resolution-failure window of the recreation itself. Pin: `TestHarnessRouter_PreBackfillFallbackWindow`
 (pkg/agent/harnessrouter_test.go — a status="" object resolves spec after TTL, and the
 mis-route fails 404-class, never wrong-store).
 

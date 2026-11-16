@@ -138,5 +138,23 @@ charters embed REFINED ACCEPTANCE CRITERIA as binding prose for the orchestrator
     stale cache routes correctly!) until buildPod writes status — reconcile+drain-bounded
     (defer can stretch toward the 60m force), not TTL-bounded; new calls fail loud 404-class
     while in-flight turns still finish (streams predate the flip; the drain watches them).
-    Fixed at HL D8, HL lifecycle, LL §3 (new paragraph + `TestHarnessRouter_PreBackfillFallbackWindow`
-    pin), Router test-map row, and OW (d2) proactively (same claim class).
+    Fixed at HL D8 and LL §3 (new paragraph + `TestHarnessRouter_PreBackfillFallbackWindow`
+    pin), Router test-map row, and OW (d2) proactively (same claim class). CORRECTION (r5,
+    reviewer-caught): the r4 diff did NOT touch the HL lifecycle block despite this entry's
+    original claim — qualified in r5 below.
+
+- **r5** (`6ac4d6b58`): both r4 fixes verified FIXED; two new findings in the r4 blast radius:
+  - `routing-lifecycle-status-claim` — the HL lifecycle diagram (the most-quoted artifact)
+    still said "router serves status.harness (old)" unqualified, and this worklog's r4 entry
+    falsely claimed the lifecycle had been fixed (the r4 diff never touched it — an editing
+    miss, now owned here). Fixed: the lifecycle switch-window block splits STATUS-SET
+    (TTL-bounded loud) from PRE-BACKFILL (spec fallback serves the NEW harness against the
+    old pod from TTL expiry, reconcile+drain-bounded — pointing at D8/LL §3); r4 entry
+    corrected above.
+  - `abort-path-fallback-window` — the r4 §3 sentence wrongly extended the fallback
+    mis-route window to the abort path's benign recreation; post-abort spec is restored to
+    the value the pod was built for (webhook 7a — §2a's own premise), so the spec fallback
+    routes CORRECTLY there. The abort path's windows are the ≤60s stale-cache residue and
+    the standard pre-PodIP resolution failure. Fixed: sentence replaced with the honest
+    statement (would otherwise invite a never-passing red-test — the r2 class).
+  - Nit: the r4 D10 edit's stray closing parenthesis removed.
