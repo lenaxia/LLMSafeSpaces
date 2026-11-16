@@ -1379,7 +1379,7 @@ func registerInternalAutomationRoutes(router *gin.Engine, cfg RouterConfig) {
 		b.PUT("/config", h.BoardSetConfig)                    // board_set_config: tier-selected REPLACE write (manager set)
 		b.POST("/tasks/heartbeat", h.BoardHeartbeat)
 		b.POST("/tasks/throttle", h.BoardReportThrottle)
-		b.POST("/tasks/verdict", h.BoardRecordVerdict) // #1947: the spawned reviewer persona's verdict channel (token-guarded)
+		b.POST("/tasks/verdict", h.BoardRecordVerdict)              // #1947: the spawned reviewer persona's verdict channel (token-guarded)
 		b.POST("/tasks/wrapup-verdict", h.BoardRecordWrapUpVerdict) // epic wrap-up review: the reviewer persona's close (engine-owned schema, token-guarded)
 		b.POST("/tasks/move-stage", h.BoardMoveStage)
 		b.POST("/tasks/set-criteria-met", h.BoardSetCriteriaMet)      // #1946: the reviewer-persona claim's scoped criteria-flags write (claim-token-guarded; persona-provenance-guarded at the engine)

@@ -155,13 +155,13 @@ var boardAckEpicWrapUpTool = mcp.NewTool("board_ack_epic_wrapup",
 	mcp.WithString("request_id", mcp.Description("Idempotency key (one per logical operation)")),
 )
 
-var boardRecordVerdictTool = mcp.NewTool("board_record_verdict",	mcp.WithDescription("Record a structured review verdict on a story (the REST wire term is 'task') and "+
-		"apply its transition through the guarded stage machine (#1832 item 5 — the forge-agnostic "+
-		"verdict core; forge adapters map "+
-		"INTO it, never re-implement it). approve → done STILL passes the Done guard (ALL criteria met + "+
-		"evidence_url); a refused transition is a RECORDED outcome (applied=false, transition=\"refused:"+
-		"<code>\"), not an error. fail → in_progress rides the bounce: fresh claim minted, attempts "+
-		"UNCHANGED (a bounce is an iteration inside the verdict chain, never a failure-ledger entry)."),
+var boardRecordVerdictTool = mcp.NewTool("board_record_verdict", mcp.WithDescription("Record a structured review verdict on a story (the REST wire term is 'task') and "+
+	"apply its transition through the guarded stage machine (#1832 item 5 — the forge-agnostic "+
+	"verdict core; forge adapters map "+
+	"INTO it, never re-implement it). approve → done STILL passes the Done guard (ALL criteria met + "+
+	"evidence_url); a refused transition is a RECORDED outcome (applied=false, transition=\"refused:"+
+	"<code>\"), not an error. fail → in_progress rides the bounce: fresh claim minted, attempts "+
+	"UNCHANGED (a bounce is an iteration inside the verdict chain, never a failure-ledger entry)."),
 	mcp.WithString("story_id", mcp.Required(), mcp.Description("Story short id (tsk-XXXXXXXX)")),
 	mcp.WithString("verdict", mcp.Required(), mcp.Description("approve or fail")),
 	mcp.WithString("reviewer", mcp.Required(), mcp.Description("Reviewer identity (the record's author)")),

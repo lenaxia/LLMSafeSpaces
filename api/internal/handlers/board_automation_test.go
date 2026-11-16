@@ -43,7 +43,7 @@ type fakeBoardService struct {
 	verdictErr    error               // #1947: the verdict channel's guard-class arm
 	lastVerdict   *board.VerdictInput // #1947: the handler's payload pass-through
 	lastRequestID string
-	setCritErr error // #1946: the criteria-met grant's guard-class arm
+	setCritErr    error // #1946: the criteria-met grant's guard-class arm
 
 	// The wrap-up close's worker-surface arms.
 	lastWrapUpVerdict *board.WrapUpVerdictInput
@@ -156,7 +156,7 @@ func newBoardAutomationRouterWithManager(t *testing.T, svc *fakeBoardService, mg
 	b.PUT("/config", h.BoardSetConfig) // board_set_config: tier-selected REPLACE write
 	b.POST("/tasks/heartbeat", h.BoardHeartbeat)
 	b.POST("/tasks/throttle", h.BoardReportThrottle)
-	b.POST("/tasks/verdict", h.BoardRecordVerdict) // #1947: the spawned reviewer's verdict channel
+	b.POST("/tasks/verdict", h.BoardRecordVerdict)              // #1947: the spawned reviewer's verdict channel
 	b.POST("/tasks/wrapup-verdict", h.BoardRecordWrapUpVerdict) // epic wrap-up review: the reviewer persona's close
 	b.POST("/tasks/move-stage", h.BoardMoveStage)
 	b.POST("/tasks/set-criteria-met", h.BoardSetCriteriaMet)      // #1946 reviewer-persona scoped grant
