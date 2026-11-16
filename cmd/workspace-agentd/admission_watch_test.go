@@ -607,6 +607,7 @@ func TestWedgeRestartFunc_Attribution_MarkerMetricRestartLog(t *testing.T) {
 	restartLog := newAgentRestartLog()
 	w := freshWatch()
 	installWedgeFire(t, w, proc, newSessionStatusTracker(), restartLog)
+	logs := withObservedGlobalLog(t)
 
 	now := time.Now()
 	w.now = func() time.Time { return now }
@@ -625,10 +626,32 @@ func TestWedgeRestartFunc_Attribution_MarkerMetricRestartLog(t *testing.T) {
 
 	snap := restartLog.snapshot()
 	require.NotNil(t, snap.LastAgentRestart)
+	assert.Contains(t, snap.LastAgentRestart.Reason, "prompt_path_wedge",
+		"the restart-log reason carries the wedge class")
 	assert.Contains(t, snap.LastAgentRestart.Reason, "ses_x",
-		"the restart-log reason carries every offending session id")
-	assert.Contains(t, snap.LastAgentRestart.Reason, "ses_y",
-		"the multi-wedge fire names all current suspects")
+		"the restart-log reason carries an offending session id (every fire names ses_x)")
+
+	// The multi-wedge attribution, ORDER-INDEPENDENT (the deflake):
+	// record() dispatches each fire as its own goroutine, so the three
+	// restart-log records can land in ANY order and "last" is not
+	// deterministically the T+64 fire — pinning Contains(ses_y) on
+	// LastAgentRestart raced the goroutine order (CI + local both hit
+	// it under load; passed or failed 30/30 by scheduling regime). The
+	// real pin: SOME fire's reason names BOTH current suspects. Every
+	// fire logs its reason BEFORE its restart decision, so once
+	// restartCount reaches 3 all three reasons are in the observed log.
+	multiWedge := false
+	for _, e := range logs.All() {
+		if e.Message != "prompt-path wedge: requesting session-aware opencode restart" {
+			continue
+		}
+		if r, ok := e.ContextMap()["reason"].(string); ok &&
+			strings.Contains(r, "ses_x") && strings.Contains(r, "ses_y") {
+			multiWedge = true
+		}
+	}
+	assert.True(t, multiWedge,
+		"the multi-wedge fire (T+34/T+64) names ALL current suspects — its reason carries both ses_x and ses_y")
 
 	assert.Equal(t, restartsBefore+3,
 		testutil.ToFloat64(pkgOpsMetrics.restartCounter("unknown", RestartReasonPromptPathWedge)))
