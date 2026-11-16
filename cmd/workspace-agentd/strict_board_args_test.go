@@ -176,6 +176,15 @@ func TestStrictBoardArgs_PlatformStampAndLegitParamsAdmitted(t *testing.T) {
 		assert.NoError(t, strictBoardArgsCheck("board_delete_story", "board_delete_story",
 			map[string]any{"storyId": "tsk-x"}))
 	})
+	t.Run("non-board tools stay tolerant under strict mode", func(t *testing.T) {
+		// The mode is scoped to board tools: a trigger_create carrying
+		// an extra field passes the strict layer untouched (the wire's
+		// own validation owns it) — pinned through the real handler.
+		out, isErr := strictCallTool(t, "trigger_list", map[string]any{"mauve": true})
+		require.False(t, isErr, "strict mode must not touch non-board tools, got: %s", out)
+		assert.NoError(t, strictBoardArgsCheck("trigger_list", "trigger_list",
+			map[string]any{"mauve": true}))
+	})
 }
 
 // TestStrictBoardArgs_NoValidCallRejected: the catalog sweep — for
