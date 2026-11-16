@@ -95,6 +95,12 @@ func (f *fakeAdapter) ValidateCredentials(_ []byte) (*CredentialCheckResult, err
 	return &CredentialCheckResult{State: CredentialStatePresent}, nil
 }
 
+// #2030a: the registry construction seam requires the transcript-
+// hygiene contract — the shared test fake complies (identity-key
+// passthrough strip is the contract's pure core, agent-tested in
+// transcripthygiene_test.go).
+func (f *fakeAdapter) StripIdentityStamps(served []byte) []byte { return served }
+
 // Compile-time assertion: *fakeAdapter satisfies Adapter.
 var _ Adapter = (*fakeAdapter)(nil)
 
