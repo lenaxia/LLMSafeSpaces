@@ -40,8 +40,8 @@ type CreateWorkspaceRequest struct {
 	// 2026-11-16: bind-once; must be in the instance's enabled set).
 	// DEFAULT CHANGE (2026-11-16): omitted no longer means opencode
 	// implicitly - the workspace is created UNBOUND; bind it (first
-	// session or BindWorkspaceHarness) before first use. Existing
-	// workspaces were backfilled to explicit opencode.
+	// session or WorkspacesService.BindHarness) before first use.
+	// Existing workspaces were backfilled to explicit opencode.
 	Harness string `json:"harness,omitempty"`
 }
 

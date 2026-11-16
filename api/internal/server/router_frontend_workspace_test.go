@@ -668,3 +668,24 @@ func TestGetWorkspaceStatus_SessionsWithContextUsed_InJSON(t *testing.T) {
 	assert.Equal(t, int64(42000), result.Sessions[0].ContextUsed)
 	assert.Equal(t, int64(0), result.Sessions[1].ContextUsed)
 }
+
+// Review r2 (malformed first-session body): only the ABSENT body is
+// tolerated on POST /sessions/new — a malformed one (form-encoded
+// harness=pi, curl's default content type) must 400, never silently
+// bind opencode permanently under bind-once immutability. No mock
+// expectation is set: an unexpected EnsureSession call fails the test
+// (the handler must reject BEFORE the service).
+func TestEnsureSession_Route_MalformedHarnessBody(t *testing.T) {
+	router, svc := newRouterFixture(t)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/workspaces/ws-1/sessions/new",
+		strings.NewReader("harness=pi"))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Authorization", "Bearer token")
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	assert.Equal(t, http.StatusBadRequest, rec.Code,
+		"a form-encoded body is malformed for this JSON endpoint — loud 400, never a silent opencode bind")
+	svc.workspace.AssertNotCalled(t, "EnsureSession", mock.Anything, mock.Anything, mock.Anything, mock.Anything)
+}

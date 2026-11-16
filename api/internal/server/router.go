@@ -1530,6 +1530,26 @@ func sessionRefMiddleware(services interfaces.Services) gin.HandlerFunc {
 	return middleware.SessionRefResolution(nil)
 }
 
+// parseSessionsNewHarnessBody reads the optional sessions/new body (the
+// picker's harness submit). Only the ABSENT body is fine (io.EOF from the
+// empty read — the legacy frontend sends no body at all). A MALFORMED body
+// (form-encoded harness=pi via curl's default content type, typo'd JSON)
+// must NOT be silently dropped: under bind-once immutability a swallowed
+// harness choice binds opencode permanently (review r1 F2) — the helper
+// writes the loud 400 and reports !ok.
+func parseSessionsNewHarnessBody(c *gin.Context) (harness string, ok bool) {
+	var body struct {
+		Harness string `json:"harness"`
+	}
+	if c.Request.Body != nil {
+		if err := c.ShouldBindJSON(&body); err != nil && !errors.Is(err, io.EOF) {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "request body must be JSON with an optional harness field"})
+			return "", false
+		}
+	}
+	return body.Harness, true
+}
+
 func registerWorkspaceRoutes(rg *gin.RouterGroup, idGroup *gin.RouterGroup, services interfaces.Services, proxyHandler *handlers.ProxyHandler, cfg RouterConfig, refMW gin.HandlerFunc) {
 	wsSvc := services.GetWorkspace()
 	authSvc := services.GetAuth()
@@ -1796,23 +1816,19 @@ func registerWorkspaceRoutes(rg *gin.RouterGroup, idGroup *gin.RouterGroup, serv
 		// non-interactive default for a still-unbound workspace) is
 		// used; a mismatched harness on a bound workspace 409s in the
 		// service.
-		var body struct {
-			Harness string `json:"harness"`
+		// parseSessionsNewHarnessBody reads the optional sessions/new body
+		// (the picker's harness submit). Only the ABSENT body is fine
+		// (io.EOF from the empty read — the legacy frontend sends no body
+		// at all). A MALFORMED body (form-encoded harness=pi via curl's
+		// default content type, typo'd JSON) must NOT be silently dropped:
+		// under bind-once immutability a swallowed harness choice binds
+		// opencode permanently (review r1 F2) — the helper writes the loud
+		// 400 and reports !ok.
+		harness, ok := parseSessionsNewHarnessBody(c)
+		if !ok {
+			return
 		}
-		if c.Request.Body != nil {
-			// Only the ABSENT body is fine (io.EOF from the empty
-			// read — the legacy frontend sends no body at all). A
-			// MALFORMED body (form-encoded harness=pi via curl's
-			// default content type, typo'd JSON) must NOT be silently
-			// dropped: under bind-once immutability a swallowed
-			// harness choice binds opencode permanently (review r1
-			// F2) — it is a loud 400 instead.
-			if err := c.ShouldBindJSON(&body); err != nil && !errors.Is(err, io.EOF) {
-				c.JSON(http.StatusBadRequest, gin.H{"error": "request body must be JSON with an optional harness field"})
-				return
-			}
-		}
-		resp, err := wsSvc.EnsureSession(c.Request.Context(), userID, c.Param("id"), body.Harness)
+		resp, err := wsSvc.EnsureSession(c.Request.Context(), userID, c.Param("id"), harness)
 		if err != nil {
 			respondWithError(c, err)
 			return

@@ -681,10 +681,11 @@ func (v *WorkspaceValidator) Handle(ctx context.Context, req admission.Request) 
 		}
 		oldHarness := old.Spec.Harness
 		newHarness := ws.Spec.Harness
-		if oldHarness == newHarness {
+		switch oldHarness {
+		case newHarness:
 			// No change (both unbound, both the same bound value).
 			// Fall through.
-		} else if oldHarness == "" {
+		case "":
 			// A bind while unbound. The legacy discriminator: only a
 			// born-unbound workspace (marker present) may bind to a
 			// non-default harness; legacy marker-less objects may only
@@ -695,7 +696,7 @@ func (v *WorkspaceValidator) Handle(ctx context.Context, req admission.Request) 
 					v1.HarnessOpencode, newHarness, newHarness))
 			}
 			// Born-unbound bind, or the opencode backfill stamp: allow.
-		} else {
+		default:
 			return admission.Denied(fmt.Sprintf(
 				"spec.harness is immutable once bound for this workspace (was %q, attempted %q) — workspaces do not switch harnesses; recreate the Workspace on %q to use it",
 				oldHarness, newHarness, newHarness))
