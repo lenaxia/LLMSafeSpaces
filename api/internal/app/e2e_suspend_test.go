@@ -223,13 +223,16 @@ func (d *recordingDB) CheckResourceOwnership(context.Context, string, string, st
 func (d *recordingDB) ListSessionIndex(context.Context, string) ([]types.SessionListItem, error) {
 	return nil, nil
 }
-func (d *recordingDB) InsertSessionAlert(context.Context, string, string, string, int) error {
+func (d *recordingDB) InsertSessionAlert(context.Context, string, string, string, int, map[string]string) error {
 	return nil
 }
 func (d *recordingDB) ListSessionAlerts(context.Context, string, int) ([]types.SessionAlert, error) {
 	return nil, nil
 }
 func (d *recordingDB) ResolveSessionAlerts(context.Context, string) (int64, error) {
+	return 0, nil
+}
+func (d *recordingDB) ResolveSessionAlertsForSession(context.Context, string, string) (int64, error) {
 	return 0, nil
 }
 func (d *recordingDB) ResolveStaleSessionAlerts(context.Context, string, time.Time) (int64, error) {

@@ -1838,16 +1838,18 @@ func TestMCPSendMessage_ResendNeverDoubleSentinels(t *testing.T) {
 	assert.True(t, strings.HasSuffix(delivered, "\nforwarded payload"))
 }
 
-// The model-facing schema advertises exactly session_id + message
-// (#1849 tightening): from_session_id is GONE (origin is
-// platform-injected; the agent never supplies its own return address)
-// and lsp_injected_session (the platform plugin's harness-attested
-// key) must stay invisible — an advertised attestation key invites
-// spoofing the mode label. Message must be the LAST property on the
-// wire: the 5 live send_message corruptions all died resuming
-// structural emission after the long prose string (Unterminated
+// The model-facing schema advertises exactly destination + messageFile
+// + message (#1849 tightening, #2030b body shapes): from_session_id is
+// GONE (origin is platform-injected; the agent never supplies its own
+// return address) and lsp_injected_session (the platform plugin's
+// harness-attested key) must stay invisible — an advertised attestation
+// key invites spoofing the mode label. Message must be the LAST
+// property on the wire: the 5 live send_message corruptions all died
+// resuming structural emission after the long prose string (Unterminated
 // string / Expected '}'); write/edit-style long-string-last
-// ordering never corrupts.
+// ordering never corrupts. messageFile (a short PATH argument — the
+// #2030b emission-safe body transport) is discrete and sits before
+// message.
 func TestMCPSendMessage_SchemaInjectedOnly_MessageLast(t *testing.T) {
 	req := mcpRequest{JSONRPC: "2.0", ID: 1, Method: "tools/list"}
 	body, _ := json.Marshal(req)
@@ -1893,8 +1895,8 @@ func TestMCPSendMessage_SchemaInjectedOnly_MessageLast(t *testing.T) {
 	var propsRaw json.RawMessage
 	require.NoError(t, dec.Decode(&propsRaw), "decode the properties object")
 	require.NoError(t, json.Unmarshal(propsRaw, &schema.Properties))
-	assert.ElementsMatch(t, []string{"destination", "message"}, mcpSchemaKeys(schema.Properties),
-		"no from_session_id — origin is injected, never model-supplied")
+	assert.ElementsMatch(t, []string{"destination", "messageFile", "message"}, mcpSchemaKeys(schema.Properties),
+		"no from_session_id — origin is injected, never model-supplied; messageFile joins as the #2030b emission-safe body transport")
 	// `required` is a sibling of `properties` — decode it separately.
 	ridx := bytes.Index(seg, []byte(`"required"`))
 	require.GreaterOrEqual(t, ridx, 0)
@@ -1905,12 +1907,13 @@ func TestMCPSendMessage_SchemaInjectedOnly_MessageLast(t *testing.T) {
 	require.GreaterOrEqual(t, end, 0)
 	var required []string
 	require.NoError(t, json.Unmarshal(rest[:end+1], &required))
-	assert.ElementsMatch(t, []string{"destination", "message"}, required,
-		"both fields required")
+	assert.ElementsMatch(t, []string{"destination"}, required,
+		"destination only — the body is exactly-one-of message|messageFile, enforced at dispatch")
 	// Wire ORDER (this is why the schema is ordered RawMessage, not a
-	// Go map): message last, session_id first.
-	assert.Equal(t, []string{"destination", "message"}, propertyOrder(propsRaw),
-		"destination first, message LAST — long-string-last ordering (and alphabetically safe: destination < message)")
+	// Go map): message last; messageFile (a short PATH argument — the
+	// #2030b mitigation) sits with the discrete keys before it.
+	assert.Equal(t, []string{"destination", "messageFile", "message"}, propertyOrder(propsRaw),
+		"destination first, messageFile mid (a short path arg), message LAST — long-string-last ordering (the alphabetical-coincidence note is superseded: message < messageFile, so the explicit order is load-bearing)")
 }
 
 // --- catalog-wide emission-shape invariant (#1849) ------------------------

@@ -441,7 +441,7 @@ func (h *BoardHandler) CreateEpic(c *gin.Context) {
 		return
 	}
 	e, err := h.board.CreateEpic(c.Request.Context(), h.boardActor(c), c.Param("id"), "",
-		board.EpicInput{Title: req.Title, Outcome: req.Outcome, Tags: req.Tags},
+		board.EpicInput{Title: req.Title, Outcome: req.Outcome, Tags: req.Tags, WrapUpReview: req.WrapUpReview},
 		req.RequestID)
 	if err != nil {
 		renderBoardError(c, err)
@@ -451,10 +451,12 @@ func (h *BoardHandler) CreateEpic(c *gin.Context) {
 }
 
 type boardEpicRequest struct {
-	Title     string   `json:"title"`
-	Outcome   string   `json:"outcome"`
-	Tags      []string `json:"tags"`
-	RequestID string   `json:"requestId"`
+	Title   string   `json:"title"`
+	Outcome string   `json:"outcome"`
+	Tags    []string `json:"tags"`
+	// WrapUpReview is the epic wrap-up review on/off flag (nil = keep).
+	WrapUpReview *bool  `json:"wrapUpReview,omitempty"`
+	RequestID    string `json:"requestId"`
 }
 
 // GetEpic resolves an epic with its DERIVED progress (ruling R2 —
@@ -472,7 +474,7 @@ func (h *BoardHandler) UpdateEpic(c *gin.Context) {
 		return
 	}
 	e, err := h.board.UpdateEpic(c.Request.Context(), h.boardActor(c), "", c.Param("id"),
-		board.EpicInput{Title: req.Title, Outcome: req.Outcome, Tags: req.Tags},
+		board.EpicInput{Title: req.Title, Outcome: req.Outcome, Tags: req.Tags, WrapUpReview: req.WrapUpReview},
 		req.RequestID)
 	if err != nil {
 		renderBoardError(c, err)

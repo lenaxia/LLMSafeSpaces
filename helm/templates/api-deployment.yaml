@@ -156,6 +156,12 @@ spec:
               value: {{ dig "attemptsCap" 3 .Values.board | quote }}
             - name: LLMSAFESPACES_BOARD_LEASESECONDS
               value: {{ dig "leaseSeconds" 2700 .Values.board | quote }}
+            # #2043 two-clock split: the worker-anchored progress clock's
+            # staleness bound — past it, observation evidence cannot renew.
+            - name: LLMSAFESPACES_BOARD_HEARTBEATLAPSESECONDS
+              value: {{ dig "heartbeatLapseSeconds" 5400 .Values.board | quote }}
+            - name: LLMSAFESPACES_BOARD_NOADVANCEHEARTBEATCAP
+              value: {{ dig "noAdvanceHeartbeatCap" 3 .Values.board | quote }}
             - name: LLMSAFESPACES_BOARD_THROTTLEBACKOFFSECONDS
               value: {{ dig "throttleBackoffSeconds" 300 .Values.board | quote }}
             # #1813: failed-attempt auto-return-to-ready base backoff.

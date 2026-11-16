@@ -229,10 +229,15 @@ func (r *Reconciler) readWatermark(ctx context.Context) (time.Time, error) {
 }
 
 // maxEventAt reads the current max event timestamp (the sweep's
-// high-water capture point).
+// high-water capture point). An EMPTY board_events max()s to NULL —
+// coalesced to the origin watermark (to_timestamp(0), the same seed
+// readWatermark mints for a fresh scope): an empty event history is
+// "watermark at zero", never a failed capture (#2063 — the NULL scan
+// aborted the whole sweep before any phase ran).
 func (r *Reconciler) maxEventAt(ctx context.Context) (time.Time, error) {
 	var t time.Time
-	err := r.svc.q().QueryRow(ctx, `SELECT max(created_at) FROM board_events`).Scan(&t)
+	err := r.svc.q().QueryRow(ctx,
+		`SELECT COALESCE(max(created_at), to_timestamp(0)) FROM board_events`).Scan(&t)
 	return t, err
 }
 
@@ -260,6 +265,35 @@ func (r *Reconciler) advanceWatermark(ctx context.Context, cutoff, sweepHigh tim
 // forever nor lock the salvage lever out of the zombie row).
 const boardBusyRenewCap = 3
 
+// noAdvanceAtCap renders the #2044 heartbeat-orbit budget's state for
+// one victim: atCap=true when the row's consecutive motionless
+// heartbeat responses reached the configured cap AND the server-side
+// forward-motion detector says the epoch never advanced (the declared
+// watermark never crossed the claim mint — computed in the victims
+// query, one clock domain). The belt: a row whose progress clock HAS
+// crossed the mint never demotes, whatever the counter says (unreachable
+// through the write discipline — motion resets the count — it guards
+// drifted or hand-edited states; a mover is never wedged by the budget).
+// The returned evidence prose names the budget facts the wedge event
+// carries (empty when not at cap).
+func noAdvanceAtCap(cap, noAdvance int, noEpochMotion bool) (atCap bool, evidence string) {
+	if noAdvance < cap || !noEpochMotion {
+		return false, ""
+	}
+	return true, fmt.Sprintf(
+		"%d heartbeats without advancement (cap %d): presence-only renewal exhausted — every renewal arm demoted for this lapse, the heartbeat's own frames are presence, not reaction",
+		noAdvance, cap)
+}
+
+// setWedgeEvidence records a wedge verdict's evidence prose UNLESS the
+// #2044 budget already wrote its own: a wedge that closed a heartbeat
+// orbit names its budget facts, not the generic default.
+func setWedgeEvidence(m map[string]string, id, prose string) {
+	if m[id] == "" {
+		m[id] = prose
+	}
+}
+
 // rc1Reclaims reclaims every lapsed in_progress row: guarded UPDATE
 // (stage predicate re-checked at write time; SKIP LOCKED lets concurrent
 // sweeps divide the work), attempts untouched (the increment belongs to
@@ -281,12 +315,18 @@ func (s *Service) rc1Reclaims(ctx context.Context) (int, error) {
 		SELECT t.id, t.project_id, COALESCE(t.lease_expires_at::text, 'null'), t.failure_count,
 			COALESCE(t.assignee_session,''), COALESCE(t.nudge_id,''), COALESCE(t.short_id,''),
 			t.nudged_at, t.last_heartbeat_at, t.busy_renews,
+			t.last_progress_at,
+			(t.last_progress_at IS NULL
+				OR t.last_progress_at < now() - make_interval(secs=>$1::float8)),
+			t.no_advance_renews,
+			(t.last_progress_at IS NULL OR t.last_progress_at <= t.stage_entered_at),
 			COALESCE(p.target_workspace_id::text, '')
 		FROM tasks t
 		LEFT JOIN projects p ON p.id = t.project_id
 		WHERE t.stage='in_progress' AND NOT t.pending_input
 		  AND (t.lease_expires_at IS NULL OR t.lease_expires_at < now())
-		FOR UPDATE OF t SKIP LOCKED`)
+		FOR UPDATE OF t SKIP LOCKED`,
+		s.cfg.HeartbeatLapseThreshold.Seconds())
 	if err != nil {
 		return 0, err
 	}
@@ -299,12 +339,32 @@ func (s *Service) rc1Reclaims(ctx context.Context) (int, error) {
 		lastHeartbeat        *time.Time
 		busyRenews           int32
 		ws                   string
+		// lastProgress is the worker-anchored progress clock
+		// (last_progress_at) at scan time; progressLapsed is the
+		// heartbeat-lapse arm's input, computed SERVER-SIDE in the
+		// same now() clock domain as every other ladder comparison —
+		// nil progress is lapsed-by-default (#2043: no evidence of
+		// worker progress is no movement veto).
+		lastProgress   *time.Time
+		progressLapsed bool
+		// #2044 (the heartbeat-orbit budget): noAdvance is the row's
+		// consecutive motionless-heartbeat-response count; noEpochMotion
+		// is the server-side forward-motion detector in ONE clock
+		// domain — the progress clock has NOT crossed the claim mint
+		// (stage_entered_at, written by every claim-path mint in the
+		// same statement as the mint's last_progress_at=now(), so the
+		// claim itself never reads as motion). Nil progress is
+		// motionless by default. (The raw mint timestamp stays in SQL —
+		// the sweep never needs it in Go.)
+		noAdvance     int
+		noEpochMotion bool
 	}
 	var victims []victim
 	for rows.Next() {
 		var v victim
 		if err := rows.Scan(&v.id, &v.project, &v.episode, &v.failures, &v.assignee, &v.nudgeID, &v.shortID,
-			&v.nudgedAt, &v.lastHeartbeat, &v.busyRenews, &v.ws); err != nil {
+			&v.nudgedAt, &v.lastHeartbeat, &v.busyRenews, &v.lastProgress, &v.progressLapsed,
+			&v.noAdvance, &v.noEpochMotion, &v.ws); err != nil {
 			rows.Close()
 			return 0, err
 		}
@@ -398,6 +458,13 @@ func (s *Service) rc1Reclaims(ctx context.Context) (int, error) {
 	// the renew write increments their counter; every other renewal
 	// zeroes it (consecutive semantics).
 	busyOnlyRenew := make(map[string]bool, len(victims))
+	// hbNoMotionRenew marks victims renewed by the ladder's heartbeat
+	// arm whose progress clock never crossed the claim mint (#2044):
+	// the renew write counts them against the no-advance budget; every
+	// OTHER renewal source zeroes it (movement/busy/reaction imply
+	// worker activity — activity between heartbeat cycles is the
+	// healthy shape the budget must never bound).
+	hbNoMotionRenew := make(map[string]bool, len(victims))
 	type outboundNudge struct {
 		v  victim
 		id string
@@ -410,21 +477,93 @@ func (s *Service) rc1Reclaims(ctx context.Context) (int, error) {
 		ladderNudges.Inc()
 		return id
 	}
+	// nudgeReasonFor attributes a sentinel to the ladder arm that armed
+	// it (#2043 R3): a lapsed row's nudge says WHY (heartbeat_lapse) —
+	// the ordinary quiet path stays unattributed ("").
+	nudgeReasonFor := func(v victim) string {
+		if v.progressLapsed {
+			return NudgeReasonHeartbeatLapse
+		}
+		return ""
+	}
 	for _, v := range victims {
 		decisions[v.id] = ladderReclaim
 		if v.assignee == "" {
 			reclaimReason[v.id] = ReclaimReasonNoAssignee
 			continue // no identity to observe or nudge: the honest wall-clock path
 		}
+		// The heartbeat-orbit budget at cap (#2044, the third #2040
+		// orbit channel): K consecutive motionless heartbeat responses
+		// (the handler's response arm counts them; motion — a declared
+		// watermark past the claim mint — resets the count at every
+		// write site) exhaust presence-only renewal. At cap EVERY
+		// renewal arm is demoted for this lapse: the worker's
+		// board_heartbeat is itself a tool call, so it emits
+		// worker-activity PART frames (#2042's allowlist) that set
+		// MovedSinceLastSweep and EventsAfterNudge alike — presence,
+		// not reaction. hbAfterNudge skips (folded into its predicate
+		// below) and the row proceeds to the ordinary quiet arms; a
+		// live sentinel with no credited activity lands the wedge
+		// verdict through the existing path. The belt on the demotion:
+		// a row whose progress clock HAS crossed the mint never demotes
+		// (unreachable through the write discipline — motion resets
+		// the counter — it guards drifted or hand-edited states; a
+		// mover is never wedged by the budget).
+		noAdvAtCap, noAdvEvidence := noAdvanceAtCap(s.cfg.NoAdvanceHeartbeatCap, v.noAdvance, v.noEpochMotion)
+		if noAdvAtCap {
+			wedgeEvidence[v.id] = noAdvEvidence
+		}
 		// The heartbeat RESPONSE — OR'd in at EVERY rung (item 6
 		// amendment): a board_heartbeat arriving after the sentinel is
 		// the strong ALIVE signal, whatever the observation seam says.
 		// Both timestamps are server-clock row writes — the comparison
-		// is ordinal in one clock domain, never cross-process.
-		hbAfterNudge := v.nudgeID != "" && v.nudgedAt != nil && v.lastHeartbeat != nil &&
+		// is ordinal in one clock domain, never cross-process. At the
+		// no-advance cap the arm is SKIPPED (the budget's decline: the
+		// response already happened and was counted; the row falls
+		// through as if the heartbeat had not answered).
+		hbAfterNudge := !noAdvAtCap && v.nudgeID != "" && v.nudgedAt != nil && v.lastHeartbeat != nil &&
 			v.lastHeartbeat.After(*v.nudgedAt)
 		o, ok := observations[v.assignee]
 		observed := ok && o.Observed
+		// The heartbeat-lapse arm (#2043, the 2026-11-15 incident's
+		// remediation): the progress clock is the WORKER-anchored truth
+		// (claim mints and heartbeat responses write it — the renewal
+		// write stopped touching it in the same fix), so a progress
+		// stamp stale past HeartbeatLapseThreshold (nil = lapsed by
+		// default) means NO worker progress has been evidenced for the
+		// whole threshold window — and observation evidence (movement
+		// frames, busy, post-nudge reactions) CANNOT renew the row:
+		// frames without progress were exactly the incident's
+		// renewal-forever orbit. The evidence is zeroed HERE, before
+		// the renewal rungs consult it, so the ladder falls through to
+		// its ordinary quiet arms (nudge → heartbeat-or-wedge) with
+		// dead-evidence reclaim and the no-evidence floor preserved.
+		// The response channel still wins: hbAfterNudge was checked
+		// ABOVE this override, and a genuine heartbeat response also
+		// refreshes last_progress_at — the arm is stateless, reset for
+		// free by any worker-anchored write.
+		if v.progressLapsed && (o.MovedSinceLastSweep || o.EventsAfterNudge || o.Busy) {
+			// The suppression is the arm's always-on signature
+			// (board_ladder_heartbeat_lapse_total): would-be renewal
+			// evidence denied by a stale progress clock — countable in
+			// one scrape, the #2040 incident's counterfactual.
+			ladderHeartbeatLapse.Inc()
+			o.MovedSinceLastSweep = false
+			o.EventsAfterNudge = false
+			o.Busy = false
+		}
+		// The budget's own demotion (#2044): at cap the same three
+		// observation facts read false for THIS lapse — they are the
+		// heartbeat's own PART frames (presence), or evidence the
+		// budget already discounted across K motionless responses. No
+		// counter here: the cycles were counted at the response write
+		// (board_heartbeat_noadvance_cycles_total); the wedge verdict
+		// below carries the facts in its evidence prose + payload.
+		if noAdvAtCap {
+			o.MovedSinceLastSweep = false
+			o.EventsAfterNudge = false
+			o.Busy = false
+		}
 		// The busy-gate's engine-side bound: past boardBusyRenewCap
 		// consecutive busy-only renewals, Busy evidence is EXHAUSTED
 		// for this claim epoch — honored as false so the quiet arms
@@ -436,6 +575,10 @@ func (s *Service) rc1Reclaims(ctx context.Context) (int, error) {
 		case hbAfterNudge:
 			decisions[v.id] = ladderRenew // the worker answered the nudge on the response channel
 			renewSource[v.id] = RenewSourceHeartbeat
+			// The belt arm counts like the handler's response arm
+			// (#2044): a renewal with no epoch motion is a budget
+			// cycle; motion resets it.
+			hbNoMotionRenew[v.id] = v.noEpochMotion
 			continue
 		case !observed:
 			// RUNG 3 — no-evidence (Nil source, degraded adapter,
@@ -453,7 +596,7 @@ func (s *Service) rc1Reclaims(ctx context.Context) (int, error) {
 				continue
 			}
 			decisions[v.id] = ladderWedge
-			wedgeEvidence[v.id] = "no response to the sentinel (no post-nudge heartbeat; no observation available)"
+			setWedgeEvidence(wedgeEvidence, v.id, "no response to the sentinel (no post-nudge heartbeat; no observation available)")
 			continue
 		case o.MovedSinceLastSweep, o.EventsAfterNudge, busyHonored:
 			// Alive by delta, by reaction to the sentinel — or MID-TURN
@@ -507,7 +650,7 @@ func (s *Service) rc1Reclaims(ctx context.Context) (int, error) {
 			send(v)
 		case !o.EventsAfterNudge:
 			decisions[v.id] = ladderWedge // sentinel positioned, zero events after it
-			wedgeEvidence[v.id] = "no session events after the sentinel"
+			setWedgeEvidence(wedgeEvidence, v.id, "no session events after the sentinel")
 		default:
 			decisions[v.id] = ladderRenew // reaction arrived between the arms
 			renewSource[v.id] = RenewSourceReaction
@@ -534,7 +677,15 @@ func (s *Service) rc1Reclaims(ctx context.Context) (int, error) {
 				sem <- struct{}{}
 				defer func() { <-sem }()
 				results[i] = s.nudger(ctx, assignee, p)
-			}(i, pn.v.assignee, NudgePayload{NudgeID: pn.id, TaskID: pn.v.id, TaskShortID: pn.v.shortID})
+			}(i, pn.v.assignee, NudgePayload{
+				NudgeID: pn.id, TaskID: pn.v.id, TaskShortID: pn.v.shortID,
+				// The lapse arm's attribution rides the payload (#2043
+				// R3): a sentinel armed on a stale progress clock says
+				// so, so the harness-side sentinel and any bus
+				// projection distinguish "you were quiet" from "you
+				// have not evidenced progress in N minutes".
+				Reason: nudgeReasonFor(pn.v),
+			})
 		}
 		wg.Wait()
 		for i, pn := range outbound {
@@ -570,12 +721,25 @@ func (s *Service) rc1Reclaims(ctx context.Context) (int, error) {
 			// the trail), NO overlay. busy_renews carries the
 			// consecutive busy-ONLY count (the cap's input): +1 when
 			// Busy alone renewed, 0 when stronger evidence did.
+			// no_advance_renews carries the heartbeat-orbit budget the
+			// same way (#2044): +1 only when the ladder's heartbeat arm
+			// renewed a row whose progress never crossed the mint, 0
+			// for every activity-backed renewal.
+			//
+			// #2043 two-clock split: the renewal stamps last_renewed_at
+			// (the RENEWAL clock) and NEVER last_progress_at — a
+			// platform extension of the lease is not worker progress,
+			// and conflating them was the 2026-11-15 incident (each
+			// renewal deferred wedge detection by a full lease window,
+			// indefinitely). last_progress_at stays worker-anchored:
+			// claim mints and heartbeat responses are its only writers.
 			if _, err := tx.Exec(ctx, `
 				UPDATE tasks SET lease_expires_at=now()+make_interval(secs=>$2::float8),
-					last_progress_at=now(), nudge_id=NULL, nudged_at=NULL, updated_at=now(),
-					busy_renews=CASE WHEN $3::bool THEN busy_renews+1 ELSE 0 END
+					last_renewed_at=now(), nudge_id=NULL, nudged_at=NULL, updated_at=now(),
+					busy_renews=CASE WHEN $3::bool THEN busy_renews+1 ELSE 0 END,
+					no_advance_renews=CASE WHEN $4::bool THEN no_advance_renews+1 ELSE 0 END
 				WHERE id=$1 AND stage='in_progress'`,
-				v.id, s.cfg.LeaseDuration.Seconds(), busyOnlyRenew[v.id]); err != nil {
+				v.id, s.cfg.LeaseDuration.Seconds(), busyOnlyRenew[v.id], hbNoMotionRenew[v.id]); err != nil {
 				return 0, err
 			}
 			leaseRenewalsBySource.WithLabelValues(renewSource[v.id]).Inc()
@@ -641,9 +805,9 @@ func (s *Service) rc1Reclaims(ctx context.Context) (int, error) {
 			tag, err := tx.Exec(ctx, `
 				UPDATE tasks SET stage='failed', stage_entered_at=now(),
 					pending_origin='escalated', pending_input=false,
-					nudge_id=NULL, nudged_at=NULL, last_heartbeat_at=NULL,
-					busy_renews=0,
-					claim_token=NULL, lease_expires_at=NULL, assignee_session=NULL, implementer_session=NULL,
+				nudge_id=NULL, nudged_at=NULL, last_heartbeat_at=NULL,
+				busy_renews=0, no_advance_renews=0,
+				claim_token=NULL, lease_expires_at=NULL, assignee_session=NULL, implementer_session=NULL,
 					claim_incremented_attempts=false, claim_persona=NULL,
 					last_attempt_failed=true, failure_count=failure_count+1, last_failure_at=now()
 				WHERE id=$1 AND stage='in_progress'`, v.id)
@@ -660,7 +824,12 @@ func (s *Service) rc1Reclaims(ctx context.Context) (int, error) {
 			evt, err := recordEventTx(ctx, tx, v.project, "reconciler:wedge:"+v.id+":"+v.nudgeID, "wedge",
 				"task", v.id, sys,
 				map[string]any{"task_id": v.id, "nudge_id": v.nudgeID, "verdict": "wedge",
-					"evidence": wedgeEvidence[v.id]})
+					"evidence": wedgeEvidence[v.id],
+					// #2044 budget facts: the wedge that closed a
+					// heartbeat orbit carries its cycle count + configured
+					// cap (the salvage-pointer prose downstream renders
+					// them; non-budget wedges carry the zeroed row).
+					"no_advance_renews": v.noAdvance, "no_advance_cap": s.cfg.NoAdvanceHeartbeatCap})
 			if err != nil {
 				return 0, err
 			}
@@ -769,7 +938,7 @@ func (s *Service) rc1PersonaClaims(ctx context.Context) (personaReclaim, error) 
 	frozen := s.suspendSnapshot(ctx)
 	rows, err := s.q().Query(ctx, `
 		SELECT t.id, t.project_id, COALESCE(t.lease_expires_at::text, 'null'), t.failure_count,
-			COALESCE(t.short_id,''), COALESCE(t.assignee_session,''), COALESCE(p.target_workspace_id::text,'')
+			COALESCE(t.short_id,''), COALESCE(t.assignee_session,''), COALESCE(p.target_workspace_id::text,''), t.kind
 		FROM tasks t
 		LEFT JOIN projects p ON p.id = t.project_id
 		WHERE t.stage='in_review' AND t.lease_expires_at IS NOT NULL AND t.lease_expires_at < now()`)
@@ -781,11 +950,12 @@ func (s *Service) rc1PersonaClaims(ctx context.Context) (personaReclaim, error) 
 		failures             int32
 		shortID, assignee    string
 		ws                   string
+		kind                 string
 	}
 	var lapses []lapseVictim
 	for rows.Next() {
 		var v lapseVictim
-		if err := rows.Scan(&v.id, &v.project, &v.episode, &v.failures, &v.shortID, &v.assignee, &v.ws); err != nil {
+		if err := rows.Scan(&v.id, &v.project, &v.episode, &v.failures, &v.shortID, &v.assignee, &v.ws, &v.kind); err != nil {
 			rows.Close()
 			return out, err
 		}
@@ -827,7 +997,14 @@ func (s *Service) rc1PersonaClaims(ctx context.Context) (personaReclaim, error) 
 		}
 		var persona *PersonaConfig
 		if p := s.projectFor(ctx, v.project); p != nil {
-			persona = s.stagePersona(ctx, p, StageInReview)
+			// §7: a wrap-up row's claim resolves the WRAP-UP reviewer
+			// persona (never the in_review stage persona — the wrap-up
+			// claim is engine-minted, independent of stagePersonas).
+			if v.kind == TaskKindWrapup {
+				persona = s.wrapUpReviewerForProject(ctx, p)
+			} else {
+				persona = s.stagePersona(ctx, p, StageInReview)
+			}
 		}
 		tx, err := s.store.pool.Begin(ctx)
 		if err != nil {
@@ -943,11 +1120,12 @@ func (s *Service) rc1PersonaClaims(ctx context.Context) (personaReclaim, error) 
 		id, project string
 		failures    int32
 		ws          string
+		kind        string
 	}
 	var candidates []rearmCandidate
 	for rows.Next() {
 		var v rearmCandidate
-		if err := rows.Scan(&v.id, &v.project, &v.failures, &v.ws); err != nil {
+		if err := rows.Scan(&v.id, &v.project, &v.failures, &v.ws, &v.kind); err != nil {
 			rows.Close()
 			return out, err
 		}
@@ -968,7 +1146,16 @@ func (s *Service) rc1PersonaClaims(ctx context.Context) (personaReclaim, error) 
 		if p == nil {
 			continue
 		}
+		// §7: per-row persona resolution — a wrap-up row re-claims under
+		// the WRAP-UP reviewer persona (the frozen charter description
+		// rides the row; a lapsed/dead reviewer converges HERE with a
+		// fresh claim + spawn of the SAME window). Escalation at the
+		// attempts cap applies unchanged (failed/escalated — rearm's
+		// wrap-up branch returns the row to in_review).
 		persona := s.stagePersona(ctx, p, StageInReview)
+		if v.kind == TaskKindWrapup {
+			persona = s.wrapUpReviewerForProject(ctx, p)
+		}
 		if persona == nil {
 			continue
 		}
@@ -1059,11 +1246,12 @@ func (s *Service) dispatchDrive(ctx context.Context) (int, error) {
 		  AND (p.slot_cooldown_until IS NULL OR p.slot_cooldown_until < now())
 		  AND (SELECT count(*) FROM tasks t2
 		       WHERE t2.project_id=p.id AND t2.stage='in_progress') < p.worker_slots
-		  AND EXISTS (SELECT 1 FROM tasks t3 JOIN epics e3 ON e3.id=t3.epic_id
-		              WHERE t3.project_id=p.id AND e3.status='active'
-		                AND t3.stage='backlog'
-		                AND NOT t3.is_blocked
-		                AND (t3.cooldown_until IS NULL OR t3.cooldown_until < now()))`)
+	  AND EXISTS (SELECT 1 FROM tasks t3 JOIN epics e3 ON e3.id=t3.epic_id
+	              WHERE t3.project_id=p.id AND e3.status='active'
+	                AND t3.kind='story'
+	                AND t3.stage='backlog'
+	                AND NOT t3.is_blocked
+	                AND (t3.cooldown_until IS NULL OR t3.cooldown_until < now()))`)
 	if err != nil {
 		return 0, err
 	}
@@ -1297,6 +1485,7 @@ func (s *Service) rc2Drift(ctx context.Context, cutoff time.Time) (done, review,
 					return done, review, reentry, err
 				}
 				if tag.RowsAffected() > 0 {
+					var wrapNudge nudge
 					if err := writeTransition(ctx, txQ{tx}, t.ID, StageInReview, StageDone, pr.URL, sys); err != nil {
 						_ = tx.Rollback(ctx)
 						return done, review, reentry, err
@@ -1305,14 +1494,14 @@ func (s *Service) rc2Drift(ctx context.Context, cutoff time.Time) (done, review,
 						_ = tx.Rollback(ctx)
 						return done, review, reentry, err
 					}
-					if _, err := epicCompletionCheck(ctx, tx, t.EpicID); err != nil {
+					if _, _, err := s.wrapUpAwareEpicCompletion(ctx, tx, t.EpicID, &wrapNudge); err != nil {
 						_ = tx.Rollback(ctx)
 						return done, review, reentry, err
 					}
 					// The #1832 review settle rides the drift-done path
 					// too (a drift-completed subject completes/parks its
 					// anchored review tasks in the same transaction).
-					settleEvts, settlePokes, err := s.completeReviewTasks(ctx, tx, t, pr.URL, nil)
+					settleEvts, settlePokes, err := s.completeReviewTasks(ctx, tx, t, pr.URL, nil, &wrapNudge)
 					if err != nil {
 						_ = tx.Rollback(ctx)
 						return done, review, reentry, err
@@ -1327,6 +1516,9 @@ func (s *Service) rc2Drift(ctx context.Context, cutoff time.Time) (done, review,
 					if err := s.commitPublishing(ctx, tx, append([]Event{evt}, settleEvts...)...); err != nil {
 						return done, review, reentry, err
 					}
+					// A wrap-up minted by the drift-done drain rides its
+					// spawn post-commit (the nudge carries it).
+					wrapNudge.fire(ctx, s)
 					for _, pid := range settlePokes {
 						s.pokeDrive(pid) // sibling projects of the subject (review r1, finding 5)
 					}
@@ -1392,7 +1584,7 @@ func (s *Service) rc2Drift(ctx context.Context, cutoff time.Time) (done, review,
 						-- tasks_pending_input_set, review round 2 finding 4)
 						-- and reset the episode evidence slots.
 						pending_input=false, pending_origin=NULL,
-						nudge_id=NULL, nudged_at=NULL, last_heartbeat_at=NULL, busy_renews=0
+						nudge_id=NULL, nudged_at=NULL, last_heartbeat_at=NULL, busy_renews=0, no_advance_renews=0
 					WHERE id=$1 AND stage='in_review'`,
 					t.ID, newToken, s.cfg.LeaseDuration.Seconds())
 				if err != nil {
@@ -1514,7 +1706,8 @@ func (s *Service) rc4Net(ctx context.Context, cutoff time.Time) (int, error) {
 		if err != nil {
 			return n, err
 		}
-		flipped, err := epicCompletionCheck(ctx, tx, r.id)
+		var wrapNudge nudge
+		flipped, _, err := s.wrapUpAwareEpicCompletion(ctx, tx, r.id, &wrapNudge)
 		if err != nil {
 			_ = tx.Rollback(ctx)
 			return n, err
@@ -1535,6 +1728,10 @@ func (s *Service) rc4Net(ctx context.Context, cutoff time.Time) (int, error) {
 				return n, err
 			}
 		}
+		// A wrap-up minted by the net's drain rides its spawn
+		// post-commit (the reconciler's own re-claim pass is the
+		// backstop if the spawn seam is absent here).
+		wrapNudge.fire(ctx, s)
 	}
 	return n, nil
 }

@@ -171,15 +171,15 @@ func boardManagerTools() []mcpTool {
 		{
 			Name:        "board_get_config",
 			Annotations: annot(true, false, false),
-			Description: "Read the Sprint Board's configuration — the effective merged view with SOURCE annotations (per key: code_default | user_default | project_override) and per-stage persona provenance (project_override | user_default | default_reviewer | none_explicit | none, the persona included). Personas are ROLE REFERENCES ONLY (owner ruling 2026-10-29): each stagePersonas entry renders as {stage: role-ref} — the bare id/slug of the referenced platform agent role (the spawned worker's model/tools/system-prompt come from it; the platform seeds a built-in reviewer role carrying the default reviewer's verdict-channel charter as its system prompt, PLUS built-in stage-persona pairs selectable without authoring custom roles: implementer-coding/reviewer-coding, implementer-data-analysis/reviewer-data-analysis, implementer-writing/reviewer-writing — the \"implementer:\" names mean in_progress, the \"reviewer:\" names mean in_review, intent only, never enforced). No projectId → the user tier (board-wide defaults: reviewColumn, autoAssignReviewer, defaultWorkerSlots, stagePersonas); a projectId → that project's view (its raw override map plus the merged row). The same truth the board UI's config panels render. READ: open to any in-workspace session (the #1747 §5 manager-grant repeal); no claim token, no gate.",
+			Description: "Read the Sprint Board's configuration — the effective merged view with SOURCE annotations (per key: code_default | user_default | project_override) and per-stage persona provenance (project_override | user_default | default_reviewer | none_explicit | none, the persona included). Personas are ROLE REFERENCES ONLY (owner ruling 2026-10-29): each stagePersonas entry renders as {stage: role-ref} — the bare id/slug of the referenced platform agent role (the spawned worker's model/tools/system-prompt come from it; the platform seeds a built-in reviewer role carrying the default reviewer's verdict-channel charter as its system prompt, PLUS built-in stage-persona pairs selectable without authoring custom roles: implementer-coding/reviewer-coding, implementer-data-analysis/reviewer-data-analysis, implementer-writing/reviewer-writing — the \"implementer:\" names mean in_progress, the \"reviewer:\" names mean in_review, intent only, never enforced). The wrapUpReviewer key (epic wrap-up review) is the wrap-up reviewer's role reference on both tiers — a bare role id/slug validated at set time like stagePersonas, defaulting to the seeded wrapup-reviewer platform role (the holistic aggregate-diff judgment charter as its system prompt); NO per-epic reviewer override exists (the epic's own wrapUpReview flag is the only per-epic control). No projectId → the user tier (board-wide defaults: reviewColumn, autoAssignReviewer, defaultWorkerSlots, stagePersonas, wrapUpReviewer); a projectId → that project's view (its raw override map plus the merged row). The same truth the board UI's config panels render. READ: open to any in-workspace session (the #1747 §5 manager-grant repeal); no claim token, no gate.",
 			InputSchema: map[string]any{"type": "object", "properties": map[string]any{
 				"projectId": map[string]any{"type": "string", "description": "Optional project short id (prj-… or UUID) — omit for the user tier's board-wide defaults"},
 			}},
 		},
 		{
 			Name:        "board_set_config",
-			Description: "REPLACE-write one tier of the Sprint Board's configuration. tier=user sets the board-wide defaults ({reviewColumn?, autoAssignReviewer?, defaultWorkerSlots?, stagePersonas?}); tier=project sets ONE project's override map (projectId required; defaultWorkerSlots refuses — a user-level key). stagePersonas values are ROLE REFERENCES ONLY (owner ruling 2026-10-29): a bare role id/slug string (\"in_review\": \"reviewer\" — canonical) or {roleId} — the platform validates each reference against the available agent-role set (a mismatch refuses); name/instructions shapes reject (the board defines no behavior of its own — roles do). Absent keys revert to inheritance, exactly the REST contract: an explicit stagePersonas map OWNS every stage it does not list ({} = the no-personas opt-out, suppressing even the built-in auto-reviewer); a map without an in_review entry suppresses the default reviewer — add its persona back if that is not intended. PAYLOAD IS FILE-ONLY (design 0070 cutover): write the config JSON with the write tool under /exchange, DIRECTLY — the payload exchange dir (the only tree both you and the platform can write; relative paths resolve against it; NO subdirectories: nested files cannot auto-delete and are refused), check it with board_validate_file (op set_config), then submit configFile — the file is DELETED after a successful set. The response is board_get_config's source-annotated view of the written tier. Open to any in-workspace session (the manager-grant gate is repealed, ruling 2026-10-27, tsk-copper-refectory-generates).",
-			InputSchema: json.RawMessage(`{"properties":{"tier":{"description":"Which tier this set writes","enum":["user","project"],"type":"string"},"projectId":{"description":"REQUIRED for tier=project (refused for tier=user) — the project short id whose override map is written","type":"string"},"configFile":{"description":"REQUIRED — workspace file holding the config override JSON {reviewColumn?, autoAssignReviewer?, defaultWorkerSlots?, stagePersonas?} (relative paths resolve against /exchange — the payload exchange dir; write payload files DIRECTLY there, NO subdirectories; tier/projectId ride the tool call, not the file)","type":"string"}},"required":["tier","configFile"],"type":"object"}`),
+			Description: "REPLACE-write one tier of the Sprint Board's configuration. tier=user sets the board-wide defaults ({reviewColumn?, autoAssignReviewer?, defaultWorkerSlots?, stagePersonas?, wrapUpReviewer?}); tier=project sets ONE project's override map (projectId required; defaultWorkerSlots refuses — a user-level key). stagePersonas values are ROLE REFERENCES ONLY (owner ruling 2026-10-29): a bare role id/slug string (\"in_review\": \"reviewer\" — canonical) or {roleId} — the platform validates each reference against the available agent-role set (a mismatch refuses); name/instructions shapes reject (the board defines no behavior of its own — roles do). wrapUpReviewer takes the same role-reference shapes (bare id/slug canonical, or {roleId}) and validates the same way — an unresolved ref refuses the whole write; absent inherits the seeded wrapup-reviewer default; NO per-epic tier exists. Absent keys revert to inheritance, exactly the REST contract: an explicit stagePersonas map OWNS every stage it does not list ({} = the no-personas opt-out, suppressing even the built-in auto-reviewer); a map without an in_review entry suppresses the default reviewer — add its persona back if that is not intended. PAYLOAD IS FILE-ONLY (design 0070 cutover): write the config JSON with the write tool under /exchange, DIRECTLY — the payload exchange dir (the only tree both you and the platform can write; relative paths resolve against it; NO subdirectories: nested files cannot auto-delete and are refused), check it with board_validate_file (op set_config), then submit configFile — the file is DELETED after a successful set. The response is board_get_config's source-annotated view of the written tier. Open to any in-workspace session (the manager-grant gate is repealed, ruling 2026-10-27, tsk-copper-refectory-generates).",
+			InputSchema: json.RawMessage(`{"properties":{"tier":{"description":"Which tier this set writes","enum":["user","project"],"type":"string"},"projectId":{"description":"REQUIRED for tier=project (refused for tier=user) — the project short id whose override map is written","type":"string"},"configFile":{"description":"REQUIRED — workspace file holding the config override JSON {reviewColumn?, autoAssignReviewer?, defaultWorkerSlots?, stagePersonas?, wrapUpReviewer?} (relative paths resolve against /exchange — the payload exchange dir; write payload files DIRECTLY there, NO subdirectories; tier/projectId ride the tool call, not the file)","type":"string"}},"required":["tier","configFile"],"type":"object"}`),
 		},
 		{
 			// Task Board MANAGER tools (#1747, design 0067 §4.3c as
@@ -532,28 +532,40 @@ func mcpToolCatalog() []mcpTool {
 		},
 		{
 			Name:        "send_message",
-			Description: "Send a text message to another session in this workspace (IDs from session_list / session_metadata), fire-and-forget: the message is delivered and the target session's reply — if any — stays in THAT session; nothing returns to you. Read the target later with session_read if you need its response. Every delivered message carries your origin as a return address (visible to the recipient as \"message from session …\") so they know who to reply to — reply via send_message to that origin. The origin is metadata, not authentication: claiming another session's ID grants nothing (all sessions share one credential) — it exists so the receiving thread knows where to direct its response. The platform stamps your session ID automatically — you never supply it. Use to steer or follow up on sessions you created (create_session), to hand work to an idle session, or to answer a question another session's agent asked you in its transcript. Busy targets queue the message server-side and deliver it the moment their current turn ends (status says delivering_after_current_turn). Sending to your OWN current session schedules the message as your next turn after this one completes — a self follow-up, not mid-turn injection — and the result carries a loud warning field when destination==your own session (self-addressed sends are a common misfire; intentional self-notes may carry on). If the destination value you emit accidentally pastes duplicated JSON syntax after a valid target id (a known emission slip when a similar prior call is visible in context), the server recovers the leading id and delivers there, with a loud warning: pass clean single ids, copied whole from session_list / session_metadata. The message must be the complete intended content. If you notice your drafted text was replaced by a placeholder token or truncated, do NOT send — re-compose. Placeholder/TODO-class payloads (a known emission-corruption symptom) are rejected outright by the platform. The message must be self-contained either way: the target does not inherit this conversation's context. Delivery is not retried: if the workspace restarts while a message waits or before it lands, it is lost — re-send. Not for: questions you need answered in THIS thread (use the task tool, which blocks and returns the result), or starting a new session (create_session).",
-			// Ordered schema (#1849 emission findings): destination FIRST,
-			// message LAST. The 5 live send_message corruptions all opened
-			// with the long prose key and died resuming structural emission
-			// after it (Unterminated string / Expected '}'); platform tools
-			// (write: filePath→content, edit, bash) always emit long strings
-			// last and never corrupt across thousands of calls. The former
-			// session_id param is renamed destination (#1849 casing pass:
-			// one camelCase catalog) — chosen so ALPHABETICAL order is
-			// also correct (destination < message): even if this schema
-			// ever regressed to a Go map, the bulk-last shape survives.
-			// The snake_case spelling still resolves (one-release legacy
-			// alias). from_session_id is GONE: origin is platform-injected
-			// only (the plugin's lsp_injected_session stamp) — the agent
-			// is never responsible for supplying its own return address.
+			Description: "Send a text message to another session in this workspace (IDs from session_list / session_metadata), fire-and-forget: the message is delivered and the target session's reply — if any — stays in THAT session; nothing returns to you. Read the target later with session_read if you need its response. Every delivered message carries your origin as a return address (visible to the recipient as \"message from session …\") so they know who to reply to — reply via send_message to that origin. The origin is metadata, not authentication: claiming another session's ID grants nothing (all sessions share one credential) — it exists so the receiving thread knows where to direct its response. The platform stamps your session ID automatically — you never supply it. BODY SHAPE (#2030 emission hardening — follow this): LONG or structurally complex bodies (multi-paragraph prose, heavy quoting/escapes, code blocks, anything past a few sentences) go via messageFile — write the body with the write tool DIRECTLY under /exchange (the payload exchange dir; no subdirectories), then pass its path; the file's contents become the delivered message and the file is deleted after a successful send (a whitespace-only file is rejected; 256 KiB cap). A short file-path argument is the emission-safe shape; a long inline string is the known-fragile one. SHORT bodies stay first-class inline via message. Pass EXACTLY ONE of message or messageFile — both present refuses loudly, and precedence is exactly that refusal (no silent winner). The result carries message_source=messageFile and, only when the consumed file could not be deleted, a cleanup_warning. Use to steer or follow up on sessions you created (create_session), to hand work to an idle session, or to answer a question another session's agent asked you in its transcript. Busy targets queue the message server-side and deliver it the moment their current turn ends (status says delivering_after_current_turn). Sending to your OWN current session schedules the message as your next turn after this one completes — a self follow-up, not mid-turn injection — and the result carries a loud warning field when destination==your own session (self-addressed sends are a common misfire; intentional self-notes may carry on). If the destination value you emit accidentally pastes duplicated JSON syntax after a valid target id (a known emission slip when a similar prior call is visible in context), the server recovers the leading id and delivers there, with a loud warning: pass clean single ids, copied whole from session_list / session_metadata. The message (inline or from messageFile) must be the complete intended content. If you notice your drafted text was replaced by a placeholder token or truncated, do NOT send — re-compose. Placeholder/TODO-class payloads (a known emission-corruption symptom) are rejected outright by the platform, whichever body shape carried them. The message must be self-contained either way: the target does not inherit this conversation's context. Delivery is not retried: if the workspace restarts while a message waits or before it lands, it is lost — re-send. Not for: questions you need answered in THIS thread (use the task tool, which blocks and returns the result), or starting a new session (create_session).",
+			// Ordered schema (#1849 emission findings): discrete/short
+			// keys first (destination, messageFile — a file PATH is a
+			// short arg, the #2030b mitigation itself), message (the
+			// long freeform string) LAST. The 5 live send_message
+			// corruptions all opened with the long prose key and died
+			// resuming structural emission after it (Unterminated
+			// string / Expected '}'); platform tools (write:
+			// filePath→content, edit, bash) always emit long strings
+			// last and never corrupt across thousands of calls. The
+			// former session_id param is renamed destination (#1849
+			// casing pass) — chosen so ALPHABETICAL order was also
+			// correct (destination < message); messageFile outgrows
+			// that coincidence (message < messageFile alphabetically),
+			// so the explicit RawMessage order below is now
+			// LOAD-BEARING (a regression to Go-map marshaling would
+			// put the bulk message mid-object — the schema-order pin
+			// catches exactly that). The snake_case session_id still
+			// resolves (one-release legacy alias). from_session_id is
+			// GONE: origin is platform-injected only (the plugin's
+			// lsp_injected_session stamp) — the agent is never
+			// responsible for supplying its own return address.
+			// required is destination only: the body is exactly-one-of
+			// message|messageFile, enforced at dispatch (the
+			// hand-rolled layer has no schema validator; a oneOf here
+			// would be decorative).
 			InputSchema: json.RawMessage(`{
 			"type": "object",
 			"properties": {
 				"destination": {"type": "string", "description": "The target session — its 3-word phrase (from session_list / session_metadata; case-insensitive), an unambiguous title/slug alias, or (deprecated, one release) the full/hashed id"},
-				"message": {"type": "string", "description": "The message text — self-contained: the target does not inherit this conversation's context"}
+				"messageFile": {"type": "string", "description": "RECOMMENDED for long or structurally complex bodies — a workspace file path whose contents become the delivered message (the emission-safe shape: a short path argument instead of a long escaped-JSON string). Write the body with the write tool DIRECTLY under /exchange (no subdirectories; relative paths resolve against /exchange; 256 KiB cap; valid UTF-8); the file is deleted after a successful send. Mutually exclusive with message"},
+				"message": {"type": "string", "description": "The message text, inline — self-contained: the target does not inherit this conversation's context. FIRST-CLASS for short bodies; for LONG or structurally complex prose use messageFile instead"}
 			},
-			"required": ["destination", "message"]
+			"required": ["destination"]
 		}`),
 			Annotations: annot(false, false, false),
 			OutputSchema: json.RawMessage(`{
@@ -566,7 +578,9 @@ func mcpToolCatalog() []mcpTool {
 					"warning": {"type": "string"},
 					"session_id_deprecated": {"type": "string"},
 					"origin_deprecated": {"type": "string"},
-					"deprecation": {"type": "string"}
+					"deprecation": {"type": "string"},
+					"message_source": {"type": "string"},
+					"cleanup_warning": {"type": "string"}
 				},
 				"required": ["status", "session_id", "origin", "origin_mode"]
 			}`),
@@ -851,7 +865,13 @@ func mcpToolCatalog() []mcpTool {
 		},
 	}...)
 	appendSessionBulkTools(&tools)
-	return tools
+
+	// #2030c: with AGENTD_STRICT_BOARD_ARGS=1, every board tool's
+	// InputSchema gains additionalProperties:false (the schema-side
+	// half of strict mode — the catalog teaches the closed vocabulary;
+	// strictBoardArgsCheck enforces it at dispatch). Flag unset (the
+	// default): the catalog is returned byte-identical.
+	return strictBoardToolSchemas(tools)
 }
 
 // appendSessionBulkTools splices the #1836 session bulk pair —
@@ -1047,6 +1067,26 @@ func mcpHandler(password string) http.HandlerFunc {
 			toolName, aliasNotice := boardStoryToolCanonical(params.Name)
 			toolArgs, legacyKeyNote := normalizeBoardStoryArgs(toolName, params.Arguments)
 			storyNote := boardStoryDeprecationNote(aliasNotice, legacyKeyNote)
+			// #2030c strict board args (AGENTD_STRICT_BOARD_ARGS=1,
+			// default OFF): unknown argument fields and emitted identity
+			// stamps on board tools reject LOUDLY, before dispatch —
+			// teaching errors whose recovery path (re-emit without the
+			// field) is the self-correction the live instance already
+			// observes. The check is a no-op with the flag unset.
+			if serr := strictBoardArgsCheck(params.Name, toolName, toolArgs); serr != nil {
+				res := map[string]any{
+					"content": []map[string]any{
+						{"type": "text", "text": fmt.Sprintf("Error: %v", serr)},
+					},
+					"isError": true,
+				}
+				if note := firstNonEmpty(sessionArgsDeprecationNote(params.Arguments), storyNote); note != "" {
+					res["content"] = append(res["content"].([]map[string]any),
+						map[string]any{"type": "text", "text": note})
+				}
+				writeMCPResult(w, req.ID, res)
+				return
+			}
 			result, err := callMCPTool(r.Context(), password, toolName, toolArgs)
 			if err != nil {
 				res := map[string]any{
@@ -1167,6 +1207,14 @@ func argSlice(args map[string]any, key string) ([]any, bool) {
 }
 
 func callMCPTool(ctx context.Context, password, name string, args map[string]any) (string, error) {
+	// #2061/#2064 story 1: the board turn-end advance observation —
+	// stamped at the dispatch choke point for advance-class board tools
+	// (record_progress | stage move | verdict), keyed on the
+	// harness-attested lsp_injected_session ONLY. Observation at
+	// ARRIVAL, outcome untouched; best-effort by construction (the
+	// ledger never blocks or fails the call). Both harness legs share
+	// this surface — the stamp is harness-agnostic.
+	boardAdvanceLedgerInst().observeToolCall(name, args)
 	switch name {
 	case "session_list":
 		// #1735: archived sessions are opt-in on the listing — the
@@ -1227,31 +1275,7 @@ func callMCPTool(ctx context.Context, password, name string, args map[string]any
 		injected, _ := args["lsp_injected_session"].(string)
 		return mcpCreateSession(ctx, password, prompt, title, subscribe, injected)
 	case "send_message":
-		// destination is canonical; session_id is its one-release
-		// legacy alias, gated STRICTLY on destination's ABSENCE (the
-		// rename is not a case fold, so argStr's wrong-type case
-		// cannot reach the alias here): an explicitly-present
-		// destination — empty string or mistyped — is authoritative
-		// and refuses loudly, never falling through (the
-		// silent-precedence class the round-1 review killed for file
-		// params).
-		sessionID := argStr(args, "destination")
-		if _, present := args["destination"]; !present {
-			sessionID, _ = args["session_id"].(string)
-		}
-		message, _ := args["message"].(string)
-		// Origin (#1465/#1469, #1849 tightening): lsp_injected_session is
-		// the platform plugin's harness-attested injection — the ONLY
-		// source. The former from_session_id self-declared fallback is
-		// GONE from the schema and the seam: the agent is never
-		// responsible for supplying its own return address (it was also
-		// an emission-corruption surface). Injection OVERWRITES any
-		// model-supplied copy (unconditional, last-write-wins at the
-		// plugin); a degraded pod (plugin absent) refuses delivery with
-		// a report-the-platform error rather than accepting an
-		// unattested origin.
-		injected, _ := args["lsp_injected_session"].(string)
-		return mcpSendMessage(ctx, password, sessionID, message, injected)
+		return dispatchSendMessage(ctx, password, args)
 	case "subscribe_session":
 		// Idle-subscriptions v1 (§5) + the design 0072 topics alias.
 		// Caller identity is the plugin's lsp_injected_session stamp

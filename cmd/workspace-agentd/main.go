@@ -716,6 +716,12 @@ func runShutdown(adminSrv, userSrv *http.Server, bgCancel context.CancelFunc, bg
 		proc.stop()
 	}
 
+	// #2061/#2064 story 1: release the board turn-end advance ledger's
+	// shared-tail append handle before the #1808 flush below syncs the
+	// volume (nil-safe: constructing-if-never-used opens and closes
+	// harmlessly; post-close stamps degrade to memory by design).
+	boardAdvanceLedgerInst().close()
+
 	// #1808 H1 belt: flush dirty pages (user tooling's buffered writes
 	// included) as the last act of agentd's shutdown — while the volume
 	// is still mounted and this process still controls the window. This

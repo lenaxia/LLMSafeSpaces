@@ -311,6 +311,8 @@ type Config struct {
 	//   LLMSAFESPACES_BOARD_ENABLED             ("true" | unset; default true — the engine dark-runs harmlessly with zero projects)
 	//   LLMSAFESPACES_BOARD_ATTEMPTSCAP         (default 3 — the (N+1)th claim attempt escalates to pending_input)
 	//   LLMSAFESPACES_BOARD_LEASESECONDS        (default 2700 — the death-detector window, 000050: movement renews, quiet gets the nudge ladder; wall-clock only bounds the provably-gone case)
+	//   LLMSAFESPACES_BOARD_HEARTBEATLAPSESECONDS (default 5400 — #2043 two-clock split: the worker-anchored progress clock's staleness bound; past it, observation evidence cannot renew — the row takes the quiet arms; nil progress lapses immediately)
+	//   LLMSAFESPACES_BOARD_NOADVANCEHEARTBEATCAP (default 3 — #2044 heartbeat-orbit budget: K presence-only heartbeat responses before the wedge verdict owns the row)
 	//   LLMSAFESPACES_BOARD_THROTTLEBACKOFFSECONDS
 	//   LLMSAFESPACES_BOARD_FAILUREBACKOFFSECONDS  (default 60 — #1813 failed-attempt backoff base) (default 300 — 429 cooldown on the task AND the project's slots)
 	//   LLMSAFESPACES_BOARD_DRRQUANTUM          (default 1 — deficit-round-robin round allowance)
@@ -324,17 +326,27 @@ type Config struct {
 	//   LLMSAFESPACES_BOARD_LEASEEVENTBUS_ADDR  (default unset — design 0072 S4: the nudge ladder's event publisher; unset keeps the v1 point-to-point leg verbatim. Arm WITH the controller's --workspace-eventbus-addr, same Redis)
 	//   LLMSAFESPACES_BOARD_LEASEEVENTBUS_PASSWORD (the secretKeyRef spelling; a URL addr's own credentials win)
 	Board struct {
-		Enabled                bool `mapstructure:"enabled"`
-		AttemptsCap            int  `mapstructure:"attemptsCap"`
-		LeaseSeconds           int  `mapstructure:"leaseSeconds"`
-		ThrottleBackoffSeconds int  `mapstructure:"throttleBackoffSeconds"`
-		FailureBackoffSeconds  int  `mapstructure:"failureBackoffSeconds"`
-		DRRQuantum             int  `mapstructure:"drrQuantum"`
-		SweepSeconds           int  `mapstructure:"sweepSeconds"`
-		UserClaimCap           int  `mapstructure:"userClaimCap"`
-		GlobalClaimCap         int  `mapstructure:"globalClaimCap"`
-		MaxEdgesPerNode        int  `mapstructure:"maxEdgesPerNode"`
-		MaxNodesPerEpic        int  `mapstructure:"maxNodesPerEpic"`
+		Enabled      bool `mapstructure:"enabled"`
+		AttemptsCap  int  `mapstructure:"attemptsCap"`
+		LeaseSeconds int  `mapstructure:"leaseSeconds"`
+		// #2043 two-clock split: the worker-anchored progress clock's
+		// staleness bound (HeartbeatLapseThreshold on the board engine
+		// config). <=0 falls back to the engine default (90m).
+		HeartbeatLapseSeconds int `mapstructure:"heartbeatLapseSeconds"`
+		// #2044 heartbeat-orbit budget: K consecutive heartbeat
+		// responses whose declared watermark never crossed the claim
+		// mint before presence-only renewal declines and the wedge
+		// verdict owns the row (NoAdvanceHeartbeatCap on the board
+		// engine config). <=0 falls back to the engine default (3).
+		NoAdvanceHeartbeatCap  int `mapstructure:"noAdvanceHeartbeatCap"`
+		ThrottleBackoffSeconds int `mapstructure:"throttleBackoffSeconds"`
+		FailureBackoffSeconds  int `mapstructure:"failureBackoffSeconds"`
+		DRRQuantum             int `mapstructure:"drrQuantum"`
+		SweepSeconds           int `mapstructure:"sweepSeconds"`
+		UserClaimCap           int `mapstructure:"userClaimCap"`
+		GlobalClaimCap         int `mapstructure:"globalClaimCap"`
+		MaxEdgesPerNode        int `mapstructure:"maxEdgesPerNode"`
+		MaxNodesPerEpic        int `mapstructure:"maxNodesPerEpic"`
 		// #1966 worker retention: hard cap on worker sessions per
 		// workspace (oldest hard-deleted past it) and the grace floor
 		// (never delete a worker session updated more recently than
@@ -496,6 +508,10 @@ func Load(path string) (*Config, error) {
 	v.SetDefault("board.enabled", true)
 	v.SetDefault("board.attemptsCap", 3)
 	v.SetDefault("board.leaseSeconds", 2700)
+	// #2043: the progress clock's staleness bound — 2 lease windows
+	// (one nudge-measurement window + one response-grace window).
+	v.SetDefault("board.heartbeatLapseSeconds", 5400)
+	v.SetDefault("board.noAdvanceHeartbeatCap", 3)
 	v.SetDefault("board.throttleBackoffSeconds", 300)
 	// #1813: failed-attempt auto-return-to-ready BASE backoff (doubling
 	// per consecutive failure, capped at 1h engine-side).
@@ -941,6 +957,12 @@ func applyBoardEnvOverrides(config *Config) {
 	}
 	if n, ok := envInt("LLMSAFESPACES_BOARD_LEASESECONDS"); ok {
 		config.Board.LeaseSeconds = n
+	}
+	if n, ok := envInt("LLMSAFESPACES_BOARD_HEARTBEATLAPSESECONDS"); ok {
+		config.Board.HeartbeatLapseSeconds = n
+	}
+	if n, ok := envInt("LLMSAFESPACES_BOARD_NOADVANCEHEARTBEATCAP"); ok {
+		config.Board.NoAdvanceHeartbeatCap = n
 	}
 	if n, ok := envInt("LLMSAFESPACES_BOARD_THROTTLEBACKOFFSECONDS"); ok {
 		config.Board.ThrottleBackoffSeconds = n

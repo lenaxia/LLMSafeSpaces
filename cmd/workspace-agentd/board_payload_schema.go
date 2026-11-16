@@ -231,7 +231,8 @@ const boardPayloadSchemaSetConfig = `{
 		"autoAssignReviewer": {"type": "boolean"},
 		"defaultWorkerSlots": {"type": "integer", "minimum": 1},
 		"stagePersonas": {"type": "object",
-			"additionalProperties": {"oneOf": [{"$ref": "#/$defs/persona"}, {"$ref": "#/$defs/personaRoleRef"}]}}
+			"additionalProperties": {"oneOf": [{"$ref": "#/$defs/persona"}, {"$ref": "#/$defs/personaRoleRef"}]}},
+		"wrapUpReviewer": {"oneOf": [{"$ref": "#/$defs/personaRoleRef"}, {"$ref": "#/$defs/persona"}]}
 	}
 }`
 
@@ -405,7 +406,7 @@ func validateBoardPayloadFile(op, path string) (string, error) {
 		return "", fmt.Errorf("unknown op %q — one of create_task, create_epic, update_task_patch, update_epic_patch, import_plan, set_config", op)
 	}
 	report := boardValidateReport{Op: op, Fields: []string{}, Findings: []boardPayloadFinding{}}
-	content, _, err := boardReadFileField("file", path, boardPayloadFileMaxBytes)
+	content, _, err := boardReadFileField("file", path, boardPayloadFileMaxBytes, boardFileNotFoundHint)
 	if err != nil {
 		report.Findings = append(report.Findings, boardPayloadFinding{
 			Path: "file", Rule: "file", Severity: "error",
@@ -695,6 +696,34 @@ func boardSemanticFindings(op string, payload map[string]any) []boardPayloadFind
 						Path: "stagePersonas." + stage, Rule: "persona-role-ref", Severity: "error",
 						Problem:  "the persona object carries no non-empty roleId — a persona IS a role reference (owner ruling 2026-10-29, role-only); the board defines no behavior of its own",
 						Fix:      "set roleId to an available agent role (see GET /api/v1/auth/me/agent-roles)",
+						Expected: "roleId (non-empty)",
+					})
+				}
+			}
+		}
+		// The wrapUpReviewer slot rides the SAME role-reference rule
+		// (epic wrap-up review §6/D8 — a persona IS a role reference,
+		// one contract per shape): the trim-aware non-empty check the
+		// stagePersonas loop enforces per stage, applied to the single
+		// bare key. Identical admission to the platform decoder on
+		// both shapes.
+		if v, ok := payload["wrapUpReviewer"]; ok {
+			if s, ok := v.(string); ok {
+				if strings.TrimSpace(s) == "" {
+					out = append(out, boardPayloadFinding{
+						Path: "wrapUpReviewer", Rule: "persona-role-ref", Severity: "error",
+						Problem:  "the bare-string role reference is empty after trimming — wrapUpReviewer IS a role reference (owner ruling 2026-10-29, role-only)",
+						Fix:      "set the value to an available agent role's id or slug (see GET /api/v1/auth/me/agent-roles); omit the key to inherit the seeded wrapup-reviewer default",
+						Expected: "non-empty role reference",
+					})
+				}
+			} else if p, ok := v.(map[string]any); ok {
+				roleID, _ := p["roleId"].(string)
+				if strings.TrimSpace(roleID) == "" {
+					out = append(out, boardPayloadFinding{
+						Path: "wrapUpReviewer", Rule: "persona-role-ref", Severity: "error",
+						Problem:  "the wrapUpReviewer object carries no non-empty roleId — wrapUpReviewer IS a role reference (owner ruling 2026-10-29, role-only); the board defines no behavior of its own",
+						Fix:      "set roleId to an available agent role (see GET /api/v1/auth/me/agent-roles); omit the key to inherit the seeded wrapup-reviewer default",
 						Expected: "roleId (non-empty)",
 					})
 				}

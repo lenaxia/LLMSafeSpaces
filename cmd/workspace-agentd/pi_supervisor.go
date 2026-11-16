@@ -114,6 +114,12 @@ func runSupervisePiCommand(_ []string) int {
 		return 1
 	}
 
+	// #2061/#2064 story 1: the pi leg's board turn-end emission — the
+	// pump's harness-attested settle fold drives the observer (the
+	// shared-emitter machinery journals the event for claim-holders;
+	// pi_board_turnend.go). Installed before the loops start.
+	sup.agg.setTurnEndObserver(piBoardTurnEndObserver)
+
 	// PID 1 duties, same as supervise-opencode (#904/#908): reparent
 	// orphans to this process and run the reap loop, or crashed
 	// harness grandchildren accumulate as <defunct> forever (the

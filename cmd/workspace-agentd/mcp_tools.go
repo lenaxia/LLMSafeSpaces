@@ -1875,7 +1875,11 @@ func mcpSendMessage(ctx context.Context, password, sessionID, message, injectedS
 	}
 	message = strings.TrimSpace(message)
 	if message == "" {
-		return "", fmt.Errorf("message is required")
+		// #2030b: the body may arrive inline (message) or via a
+		// consumed file (messageFile) — this is the ONE emptiness
+		// gate for both sources (a whitespace-only file is not a
+		// message either).
+		return "", fmt.Errorf("message is required — pass the body inline (message) or via messageFile (a workspace file holding it; whitespace-only is not a message)")
 	}
 	// #1814: placeholder-class auto-reject. The mid-write emission
 	// corruption mode replaces the drafted body with a literal

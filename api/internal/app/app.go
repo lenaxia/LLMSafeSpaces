@@ -1610,12 +1610,19 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 			log.Error("board engine disabled: pgxpool construction failed", boardErr)
 		} else {
 			engineCfg := board.EngineConfig{
-				AttemptsCap:     cfg.Board.AttemptsCap,
-				LeaseDuration:   time.Duration(cfg.Board.LeaseSeconds) * time.Second,
-				ThrottleBackoff: time.Duration(cfg.Board.ThrottleBackoffSeconds) * time.Second,
-				FailureBackoff:  time.Duration(cfg.Board.FailureBackoffSeconds) * time.Second,
-				DRRQuantum:      cfg.Board.DRRQuantum,
-				SweepInterval:   time.Duration(cfg.Board.SweepSeconds) * time.Second,
+				AttemptsCap:   cfg.Board.AttemptsCap,
+				LeaseDuration: time.Duration(cfg.Board.LeaseSeconds) * time.Second,
+				// #2043 two-clock split: the progress clock's staleness
+				// bound; <=0 falls back to the engine's 90m default.
+				HeartbeatLapseThreshold: time.Duration(cfg.Board.HeartbeatLapseSeconds) * time.Second,
+				// #2044 heartbeat-orbit budget: K presence-only
+				// heartbeat responses before the wedge verdict; <=0
+				// falls back to the engine's default (3).
+				NoAdvanceHeartbeatCap: cfg.Board.NoAdvanceHeartbeatCap,
+				ThrottleBackoff:       time.Duration(cfg.Board.ThrottleBackoffSeconds) * time.Second,
+				FailureBackoff:        time.Duration(cfg.Board.FailureBackoffSeconds) * time.Second,
+				DRRQuantum:            cfg.Board.DRRQuantum,
+				SweepInterval:         time.Duration(cfg.Board.SweepSeconds) * time.Second,
 				// #1747 backpressure caps + DAG blast-radius bounds.
 				UserClaimCap:    cfg.Board.UserClaimCap,
 				GlobalClaimCap:  cfg.Board.GlobalClaimCap,
@@ -1651,6 +1658,12 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 			// today's wall-clock semantics).
 			boardLivenessHub := newBoardLivenessHub(boardPool)
 			proxyHandler.SetFrameObserver(boardLivenessHub.ObserveFrame)
+			// The #2047 silent-worker arm's board seam (the same
+			// one-function wiring style): the proxy-side evaluator
+			// gets a NARROW read lookup — in_progress assignee facts
+			// per workspace — never the board service. Rides the
+			// existing alert evaluation pass (no new polling loop).
+			proxyHandler.SetQuietBoardLookup(newQuietBoardLookup(boardPool, boardLivenessHub))
 			// The busy-gate leg (2026-10-29 live-fire: three workers
 			// died mid-`sleep`-poll — silent-but-busy is alive): the
 			// usagestream singleton's consult-maintained derived truth
@@ -1689,6 +1702,18 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 				} else {
 					log.Info("board: built-in reviewer agent role ensured (slug reviewer, verdict-channel charter as system prompt)")
 				}
+				// The built-in wrap-up reviewer (epic wrap-up review,
+				// design §6): the wrapUpReviewer config key's default —
+				// the judgment-half charter as its system prompt. Same
+				// best-effort posture and idempotency as the reviewer
+				// seed (platform-scope slug check; an unseeded role
+				// merely leaves wrap-up resolution degrading to nil
+				// with a warn until the next boot seeds it).
+				if err := seedBuiltinWrapUpReviewerRole(seedCtx, pgOrgStore); err != nil {
+					log.Warn("board: built-in wrap-up reviewer role seeding skipped", "error", err.Error())
+				} else {
+					log.Info("board: built-in wrap-up reviewer agent role ensured (slug wrapup-reviewer, judgment charter as system prompt)")
+				}
 				// The shipped stage-persona vocabulary (2026-11-13):
 				// implementer/reviewer pairs for coding, data analysis,
 				// and writing — selectable from stagePersonas without
@@ -1708,6 +1733,10 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 				// observed MID-TURN under a live lease; idle, unknown,
 				// and lapsed claims render claimed-but-quiet.
 				board.WithBusySource(boardLivenessHub),
+				// #2047: the read edge's quiet/busy-seconds seam — the
+				// SAME hub, same purity (the GetTask wire's net-new
+				// assigneeQuietSeconds/assigneeBusySeconds fields).
+				board.WithQuietSource(boardLivenessHub),
 				board.WithNudgeSender(newBoardNudger(boardScopeFor(boardPool), boardSender, boardLivenessHub, boardLeaseBus)),
 				// S4: the ladder's renew/wedge/reclaim decisions project
 				// onto the workspace streams post-commit (nil-receiver

@@ -24,6 +24,26 @@ const (
 	LadderNudgesMetricName = "board_ladder_nudges_total"
 	// LadderWedgesMetricName — ordinal wedge verdicts landed.
 	LadderWedgesMetricName = "board_ladder_wedges_total"
+	// LadderHeartbeatLapseMetricName — renewal evidence suppressed by
+	// the heartbeat-lapse arm (#2043). Deliberately NOT a label on
+	// LeaseRenewalsMetricName: a lapse suppression is the OPPOSITE of a
+	// renewal decision, and the renewals counter's forensic value is
+	// exactly its honesty ("renewals with a movement/heartbeat source
+	// on sessions that emitted nothing" is the #2040 signature) — a
+	// non-renewal label there would blur the scrape the incident made
+	// necessary. The issue's R3 offered "or the nudge payload carries
+	// it" as the alternative arm; this counter plus the payload reason
+	// NudgeReasonHeartbeatLapse are that arm, always-on.
+	LadderHeartbeatLapseMetricName = "board_ladder_heartbeat_lapse_total"
+	// HeartbeatNoAdvanceCyclesMetricName — motionless heartbeat
+	// responses counted against the no-advance budget (#2044): every
+	// response whose declared watermark did not cross the claim mint,
+	// renewing (below cap) or declined (at cap). The orbit's
+	// always-on signature — the counterfactual scrape for the
+	// keystone incident (a presence-only worker holding its slot for
+	// hours reads as a monotonically climbing count with zero stage
+	// advance anywhere else).
+	HeartbeatNoAdvanceCyclesMetricName = "board_heartbeat_noadvance_cycles_total"
 )
 
 var (
@@ -41,12 +61,27 @@ var (
 		Name: LadderWedgesMetricName,
 		Help: "Board ladder ordinal wedge verdicts (sentinel positioned, worker-activity silence after it).",
 	})
+
+	ladderHeartbeatLapse = promauto.NewCounter(prometheus.CounterOpts{
+		Name: LadderHeartbeatLapseMetricName,
+		Help: "Board ladder heartbeat-lapse arms fired (#2043): lease-due rows whose worker-anchored progress clock (last_progress_at) is stale past HeartbeatLapseThreshold (nil = lapsed by default) had their observation renewal evidence (movement/busy/post-nudge reaction) overridden into the quiet arms (nudge → heartbeat-or-wedge). The suppressed-renewal count is the two-clock split's always-on signature — the 2026-11-15 incident was invisible because renewal masqueraded as progress.",
+	})
+
+	heartbeatNoAdvanceCycles = promauto.NewCounter(prometheus.CounterOpts{
+		Name: HeartbeatNoAdvanceCyclesMetricName,
+		Help: "Motionless heartbeat responses counted against the no-advance budget (#2044): heartbeat answers whose declared watermark (observedProgressAt, stored into last_progress_at) never crossed the claim mint (stage_entered_at) — presence without advancement, renewing below NoAdvanceHeartbeatCap and declining at it. The heartbeat-orbit signature: climbing count + zero stage advance = a worker satisfying the nudge contract's letter with none of its substance.",
+	})
 )
 
 // LeaseRenewals exposes the renewal counter (by source) for tests and
 // dashboards — the StampWriteFailures accessor pattern: the counters are
 // package-private; this is the read handle the increment pins assert
 // deltas through (#2042 AC5).
-func LeaseRenewals() *prometheus.CounterVec   { return leaseRenewalsBySource }
-func LadderNudgesCounter() prometheus.Counter { return ladderNudges }
-func LadderWedgesCounter() prometheus.Counter { return ladderWedges }
+func LeaseRenewals() *prometheus.CounterVec           { return leaseRenewalsBySource }
+func LadderNudgesCounter() prometheus.Counter         { return ladderNudges }
+func LadderWedgesCounter() prometheus.Counter         { return ladderWedges }
+func LadderHeartbeatLapseCounter() prometheus.Counter { return ladderHeartbeatLapse }
+
+// HeartbeatNoAdvanceCyclesCounter exposes the no-advance budget's
+// cycle counter for tests and dashboards.
+func HeartbeatNoAdvanceCyclesCounter() prometheus.Counter { return heartbeatNoAdvanceCycles }

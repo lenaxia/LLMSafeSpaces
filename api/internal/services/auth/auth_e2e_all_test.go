@@ -344,13 +344,16 @@ func (m *apiKeyAwareDB) ListSessionIndex(context.Context, string) ([]types.Sessi
 	return nil, nil
 }
 
-func (m *apiKeyAwareDB) InsertSessionAlert(context.Context, string, string, string, int) error {
+func (m *apiKeyAwareDB) InsertSessionAlert(context.Context, string, string, string, int, map[string]string) error {
 	return nil
 }
 func (m *apiKeyAwareDB) ListSessionAlerts(context.Context, string, int) ([]types.SessionAlert, error) {
 	return nil, nil
 }
 func (m *apiKeyAwareDB) ResolveSessionAlerts(context.Context, string) (int64, error) {
+	return 0, nil
+}
+func (m *apiKeyAwareDB) ResolveSessionAlertsForSession(context.Context, string, string) (int64, error) {
 	return 0, nil
 }
 func (m *apiKeyAwareDB) ResolveStaleSessionAlerts(context.Context, string, time.Time) (int64, error) {

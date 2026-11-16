@@ -119,12 +119,17 @@ export function StoryCard({ task, projectTasks, pending, refused, dimmed, highli
       aria-label={task.title}
     >
       {/* Ruling 5: title row — the title flexes and WRAPS within the
-       * card (min-w-0 flex-1 break-words); the actions cluster is
+       * card (min-w-0 flex-auto break-words); the actions cluster is
        * shrink-0 so kebab/start/details stay inside the card's bounds
-       * at any column width. */}
-      <div className="flex items-start justify-between gap-1">
+       * at any column width. 1x4 rail r1: the row itself wraps at
+       * portrait rail widths — a ~90px active column cannot buy a
+       * readable title AND the 3-button cluster on one line (measured:
+       * ~10px of title), so the cluster drops to its own line under
+       * the title; wide columns never trip it (flex-auto's content
+       * basis keeps the one-line layout when both fit). */}
+      <div className="flex flex-wrap items-start justify-between gap-1">
         <p
-          className="mt-0.5 min-w-0 flex-1 break-words text-xs font-medium"
+          className="mt-0.5 min-w-0 flex-auto break-words text-xs font-medium"
           title={task.title}
           data-testid={`card-title-${task.short_id}`}
         >

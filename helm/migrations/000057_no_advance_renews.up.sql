@@ -1,0 +1,36 @@
+-- 000057_no_advance_renews — the heartbeat-orbit budget (issue #2044,
+-- parent #2040): the third orbit channel. #2043's two-clock split
+-- bounds EVIDENCE-based renewal (the heartbeat-lapse arm reads the
+-- worker-anchored progress clock); #2042 bounds opaque management
+-- frames; this column bounds RESPONSE-based renewal — the
+-- compliant-but-stuck worker that answers every sentinel with
+-- board_heartbeat seconds after it lands while declaring progress no
+-- newer than the claim mint (the live verified shape,
+-- tsk-polished-keystone-waits 2026-11-15: heartbeat 19s and 4s after
+-- successive sentinels, zero work for hours, attempts still 1).
+--
+-- no_advance_renews counts CONSECUTIVE heartbeat responses whose
+-- declared watermark never crossed the claim mint (last_progress_at >
+-- stage_entered_at, one Postgres clock domain) within one claim
+-- epoch: incremented by every motionless heartbeat-response renewal
+-- (the handler's response arm AND the ladder's heartbeat belt), reset
+-- to zero by motion (a declared watermark past the mint), by every
+-- non-heartbeat renewal (movement/busy/reaction — activity implies
+-- advance), and by every claim-path mint. At NoAdvanceHeartbeatCap
+-- (board engine config, default 3) presence-only renewal is
+-- exhausted: the K+1th motionless response declines (arrival recorded,
+-- sentinel kept armed, lease not extended) and the next lapse demotes
+-- every renewal arm for that lapse — the heartbeat's own tool call
+-- emits worker-activity PART frames (#2042's allowlist), which are
+-- PRESENCE, not reaction — so the row proceeds to the existing wedge
+-- verdict (StageFailed via the reconciler path).
+--
+-- Migration cohort note (issue #2043, 000055's header): the sibling
+-- landed FIRST and stayed single-purpose so this one rides its own
+-- migration number, same cohort discipline as 000053 (busy_renews).
+-- Numbered 000057 (not 000056): the wrapup lane's 000056_board_wrapup_config_key
+-- landed on main while this branch was in review — the number race repolint
+-- exists for, resolved by renumber (the merge ref briefly carried both and
+-- golang-migrate refused the duplicate version).
+
+ALTER TABLE tasks ADD COLUMN IF NOT EXISTS no_advance_renews integer NOT NULL DEFAULT 0;
