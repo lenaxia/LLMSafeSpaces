@@ -25,27 +25,21 @@ import (
 // TestMigrationSetNoDuplicateVersions — the embedded migration set must
 // open as a golang-migrate source: duplicate version numbers (the
 // 000055 collision class from #2071 review round 1) refuse here first,
-// at PR time, instead of at first boot on the merged tree.
+// at PR time, instead of at first boot on the merged tree. The iofs
+// source's Migrations registry refuses duplicate versions at Open —
+// this pin rides exactly that refusal; First() additionally proves the
+// set is non-empty and ordered.
 func TestMigrationSetNoDuplicateVersions(t *testing.T) {
 	src, err := iofs.New(migrations.FS, ".")
 	if err != nil {
 		t.Fatalf("the embedded migration set has a duplicate/garbled version (the #2071 review round 1 class — renumber to the next free version and mirror to helm/migrations): %v", err)
 	}
-	versions, err := src.List()
+	defer func() { _ = src.Close() }()
+	first, err := src.First()
 	if err != nil {
-		t.Fatalf("listing the embedded migration set's versions: %v", err)
+		t.Fatalf("the embedded migration set has no first version: %v", err)
 	}
-	if len(versions) == 0 {
-		t.Fatal("the embedded migration set is empty — embed.go lost the FS")
-	}
-	prev := -1
-	for _, v := range versions { // List() returns ascending versions
-		if v == prev {
-			t.Fatalf("duplicate migration version %d in the embedded set — renumber to the next free version in BOTH api/migrations and helm/migrations", v)
-		}
-		if v < prev {
-			t.Fatalf("migration versions out of order at %d (got %d after %d)", v, v, prev)
-		}
-		prev = v
+	if first != 1 {
+		t.Fatalf("first migration version = %d, want 1", first)
 	}
 }
