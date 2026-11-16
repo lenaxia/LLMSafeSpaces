@@ -111,6 +111,13 @@ type EngineConfig struct {
 	// MaxNodesPerEpic is the DAG blast-radius bound (#1747): tasks per
 	// epic (create + import_plan enforce it). Default 64.
 	MaxNodesPerEpic int
+	// WrapUpConsecutiveCap bounds consecutive wrap-up review closes per
+	// epic before a human ack is required (epic wrap-up review, §2 step
+	// 7): at a drain with wrapup_count >= cap and no pending ack the
+	// engine arms wrapup_ack_pending (loud event, no mint) — a pedantic
+	// reviewer cannot loop forever. The cap bounds the MINT loop only; a
+	// PASS verdict is the terminus and is never cap-gated. Default 3.
+	WrapUpConsecutiveCap int
 	// PressureSampleTTL bounds how long a pod's resource-pressure report
 	// stays authoritative without a refresh (#1747 round 3). Default 2m.
 	PressureSampleTTL time.Duration
@@ -132,6 +139,7 @@ func DefaultEngineConfig() EngineConfig {
 		GlobalClaimCap:          64,
 		MaxEdgesPerNode:         16,
 		MaxNodesPerEpic:         64,
+		WrapUpConsecutiveCap:    3,
 		PressureSampleTTL:       2 * time.Minute,
 	}
 }

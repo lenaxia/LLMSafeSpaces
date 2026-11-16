@@ -13130,6 +13130,24 @@ components:
           type: boolean
           example: false
           description: false = no-progress ("—") — a story-less or all-done epic, never 0/0
+        wrap_up_review:
+          type: boolean
+          description: "Epic wrap-up review on/off flag (default off): a drained epic with this on mints a wrap-up review story and defers epic completion until it closes."
+        last_wrapped_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: "The coverage watermark — advanced to the closing wrap-up row's mint time at every wrap-up close; null before the first close."
+        wrapup_count:
+          type: integer
+          description: "Consecutive wrap-up closes (the recursion-cap ledger; resets by the human ack verb)."
+        wrapup_task_id:
+          type: string
+          nullable: true
+          description: "The in-flight wrap-up review's short id (rendered at read time from the live pointer; absent when nothing flies)."
+        wrapup_ack_pending:
+          type: boolean
+          description: "The human circuit-breaker — at the consecutive cap a drain arms this instead of minting; ack clears it and re-runs the drain."
         content_echo_diff:
           type: array
           items:
@@ -13177,6 +13195,10 @@ components:
           type: string
           enum: [backlog, in_progress, in_review, done, failed]
           description: "000050: the stored stages — pending_input is a FLAG riding the real stage (pending_input + pending_origin on the row), never a stored stage; failed is the failure terminus (attempts exhaustion + the lease wedge verdict)."
+        kind:
+          type: string
+          enum: [story, wrapup]
+          description: "The engine-owned row class: 'story' (the default — every user-created row; omitted on the wire) or 'wrapup' (an engine-minted epic wrap-up review row: born in_review, claimed by the wrap-up reviewer persona, never served to worker spawns, never a dependency endpoint, excluded from the epic's own drain/completion math)."
         pending_input:
           type: boolean
           description: "000050: the awaiting-input flag — true while the row waits on its owner (origin below); the row keeps its real stage."
@@ -13645,6 +13667,9 @@ components:
           type: array
           items:
             type: string
+        wrapUpReview:
+          type: boolean
+          description: Epic wrap-up review on/off flag (default off) — a drained epic with this on mints a wrap-up review story and defers completion until it closes
         requestId:
           $ref: "#/components/schemas/BoardRequestId"
     BoardEpicUpdateRequest:
@@ -13659,6 +13684,9 @@ components:
           items:
             type: string
           description: REPLACES the set when provided — send the full set
+        wrapUpReview:
+          type: boolean
+          description: Epic wrap-up review on/off flag — absent leaves it unchanged (PATCH semantics)
         requestId:
           $ref: "#/components/schemas/BoardRequestId"
     BoardTaskCreateRequest:

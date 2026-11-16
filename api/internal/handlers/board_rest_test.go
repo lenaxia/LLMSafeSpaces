@@ -68,6 +68,11 @@ type fakeBoardManager struct {
 	lastCreateProjectInput *board.ProjectInput
 	lastPressureSample     *board.PressureSample
 
+	// Epic wrap-up flag arm: the create/update epic input capture (the
+	// wrapUpReview json binding pins — a tag regression in any of the
+	// four request structs would silently drop the on/off flag).
+	lastEpicInput *board.EpicInput
+
 	// #1832 item 6 seam arms: the config write captures.
 	lastGlobalConfigSet  *board.BoardConfigOverride
 	lastProjectConfigSet *board.BoardConfigOverride
@@ -279,6 +284,7 @@ func (f *fakeBoardManager) GetEpic(_ context.Context, _, _ string) (*board.Epic,
 func (f *fakeBoardManager) CreateEpic(_ context.Context, actor board.Actor, _, idOrShort string, in board.EpicInput, requestID string) (*board.Epic, error) {
 	f.call("create_epic")
 	f.lastActor, f.lastRequestID = actor, requestID
+	f.lastEpicInput = &in
 	_ = idOrShort
 	if err := f.errFor["create_epic"]; err != nil {
 		return nil, err
@@ -289,6 +295,7 @@ func (f *fakeBoardManager) CreateEpic(_ context.Context, actor board.Actor, _, i
 func (f *fakeBoardManager) UpdateEpic(_ context.Context, actor board.Actor, _, idOrShort string, in board.EpicInput, requestID string) (*board.Epic, error) {
 	f.call("update_epic")
 	f.lastActor, f.lastRequestID = actor, requestID
+	f.lastEpicInput = &in
 	_ = idOrShort
 	if err := f.errFor["update_epic"]; err != nil {
 		return nil, err
@@ -813,6 +820,45 @@ func TestBoardREST_ImportPlanBindsUnifiedPlanDoc(t *testing.T) {
 		assert.Equal(t, "Legacy", svc.lastPlan.EpicTitle)
 		assert.Nil(t, svc.lastPlan.Epic)
 		assert.Empty(t, svc.lastPlan.EpicID)
+	})
+}
+
+// TestBoardREST_EpicWrapUpReviewBinds (epic wrap-up review, review
+// round 2): the REST epic create/update request bodies bind the
+// wrapUpReview flag — the only user-facing way to enable the feature.
+// A json-tag regression would silently drop the flag (clients set it,
+// the bind eats it, the epic never mints); the pins assert the BOUND
+// EpicInput carries what the wire sent, including nil-for-omitted (the
+// PATCH semantics: absent = unchanged).
+func TestBoardREST_EpicWrapUpReviewBinds(t *testing.T) {
+	t.Run("create binds true", func(t *testing.T) {
+		svc := newFakeBoardManager()
+		r := newBoardRESTRouter(t, svc)
+		w := doBoardREST(t, r, http.MethodPost, "/api/v1/me/projects/prj-aaaa1111/epics",
+			`{"title":"E","outcome":"o","wrapUpReview":true}`)
+		require.Equal(t, http.StatusCreated, w.Code, w.Body.String())
+		require.NotNil(t, svc.lastEpicInput)
+		require.NotNil(t, svc.lastEpicInput.WrapUpReview, "the flag binds (a tag regression would drop it silently)")
+		assert.True(t, *svc.lastEpicInput.WrapUpReview)
+	})
+	t.Run("update binds false", func(t *testing.T) {
+		svc := newFakeBoardManager()
+		r := newBoardRESTRouter(t, svc)
+		w := doBoardREST(t, r, http.MethodPatch, "/api/v1/me/epics/epc-bbbb2222",
+			`{"title":"E","outcome":"o","wrapUpReview":false}`)
+		require.Equal(t, http.StatusOK, w.Code, w.Body.String())
+		require.NotNil(t, svc.lastEpicInput)
+		require.NotNil(t, svc.lastEpicInput.WrapUpReview)
+		assert.False(t, *svc.lastEpicInput.WrapUpReview)
+	})
+	t.Run("omitted stays nil (PATCH semantics)", func(t *testing.T) {
+		svc := newFakeBoardManager()
+		r := newBoardRESTRouter(t, svc)
+		w := doBoardREST(t, r, http.MethodPatch, "/api/v1/me/epics/epc-bbbb2222",
+			`{"title":"E","outcome":"o"}`)
+		require.Equal(t, http.StatusOK, w.Code, w.Body.String())
+		require.NotNil(t, svc.lastEpicInput)
+		assert.Nil(t, svc.lastEpicInput.WrapUpReview, "absent on the wire = nil = unchanged")
 	})
 }
 
