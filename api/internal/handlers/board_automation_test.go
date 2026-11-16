@@ -43,7 +43,11 @@ type fakeBoardService struct {
 	verdictErr    error               // #1947: the verdict channel's guard-class arm
 	lastVerdict   *board.VerdictInput // #1947: the handler's payload pass-through
 	lastRequestID string
-	setCritErr    error // #1946: the criteria-met grant's guard-class arm
+	setCritErr error // #1946: the criteria-met grant's guard-class arm
+
+	// The wrap-up close's worker-surface arms.
+	lastWrapUpVerdict *board.WrapUpVerdictInput
+	wrapUpVerdictErr  error
 }
 
 func newFakeBoardService() *fakeBoardService {
@@ -94,6 +98,20 @@ func (f *fakeBoardService) RecordVerdict(_ context.Context, actor board.Actor, t
 	return &board.Task{ID: taskID, Stage: board.StageInProgress}, &board.Verdict{Verdict: in.Verdict, Applied: true}, nil
 }
 
+// RecordWrapUpVerdict is the wrap-up close verb's worker-surface arm
+// (board_wrapup_rest_test.go's automation pins).
+func (f *fakeBoardService) RecordWrapUpVerdict(_ context.Context, actor board.Actor, taskID, shortIDOrID string, in board.WrapUpVerdictInput, requestID string) (*board.Task, *board.Epic, error) {
+	f.calls["record_wrapup_verdict"]++
+	f.lastActor, f.lastTaskRef, f.lastShortID = actor, taskID, shortIDOrID
+	wu := in
+	f.lastWrapUpVerdict, f.lastRequestID = &wu, requestID
+	if f.wrapUpVerdictErr != nil {
+		return nil, nil, f.wrapUpVerdictErr
+	}
+	return &board.Task{ID: taskID, Stage: board.StageDone},
+		&board.Epic{ID: "e1", Status: board.EpicCompleted}, nil
+}
+
 func (f *fakeBoardService) SetCriteriaMet(_ context.Context, actor board.Actor, taskID, shortIDOrID string, check board.CriteriaCheck, _ string) (*board.Task, error) {
 	f.calls["criteria_met"]++
 	f.lastActor, f.lastTaskRef, f.lastShortID, f.lastCheck = actor, taskID, shortIDOrID, &check
@@ -139,6 +157,7 @@ func newBoardAutomationRouterWithManager(t *testing.T, svc *fakeBoardService, mg
 	b.POST("/tasks/heartbeat", h.BoardHeartbeat)
 	b.POST("/tasks/throttle", h.BoardReportThrottle)
 	b.POST("/tasks/verdict", h.BoardRecordVerdict) // #1947: the spawned reviewer's verdict channel
+	b.POST("/tasks/wrapup-verdict", h.BoardRecordWrapUpVerdict) // epic wrap-up review: the reviewer persona's close
 	b.POST("/tasks/move-stage", h.BoardMoveStage)
 	b.POST("/tasks/set-criteria-met", h.BoardSetCriteriaMet)      // #1946 reviewer-persona scoped grant
 	b.POST("/tasks/move-stage-bulk", h.BoardManagerMoveStageBulk) // #1836 bulk complete
@@ -153,6 +172,7 @@ func newBoardAutomationRouterWithManager(t *testing.T, svc *fakeBoardService, mg
 	b.POST("/projects/:id/import-plan", h.BoardImportPlan)
 	b.PATCH("/epics/:id", h.BoardUpdateEpic)
 	b.POST("/epics/:id/activate", h.BoardEpicActivate)
+	b.POST("/epics/:id/ack-wrapup", h.BoardAckEpicWrapUp) // epic wrap-up review: the human ack
 	b.POST("/epics/:id/pause", h.BoardEpicPause)
 	b.POST("/epics/:id/archive", h.BoardEpicArchive)
 	b.POST("/epics/:id/unarchive", h.BoardEpicUnarchive)

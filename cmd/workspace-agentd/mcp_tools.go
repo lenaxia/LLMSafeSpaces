@@ -2545,6 +2545,16 @@ func mcpAutomation(ctx context.Context, password, name string, body map[string]a
 			return "", err
 		}
 		res, err = client.BoardRecordVerdict(ctx, saToken, workspaceID, passThroughBody(body, "task"))
+	case "board_record_wrapup_verdict":
+		// The epic wrap-up review's close (engine-owned schema, the
+		// board_record_verdict surface pattern): worker projection only
+		// — the wrap-up reviewer persona's live claim token is REQUIRED
+		// on every surface; PASS completes the epic iff still drained,
+		// GAPS holds it open via the ordinary drain predicate.
+		if err := requireBoardClaimToken(name, body); err != nil {
+			return "", err
+		}
+		res, err = client.BoardRecordWrapUpVerdict(ctx, saToken, workspaceID, passThroughBody(body, "task"))
 	case "board_move_stage":
 		// #1832 WS2 dual-route: a caller holding a claim token rides
 		// the worker projection (unchanged); a token-less caller rides
@@ -2589,6 +2599,7 @@ func mcpAutomation(ctx context.Context, password, name string, body map[string]a
 		"board_create_epic", "board_update_epic",
 		"board_epic_activate", "board_epic_pause", "board_epic_archive", "board_epic_unarchive",
 		"board_delete_epic",
+		"board_ack_epic_wrapup",
 		"board_create_story",
 		"board_add_dependency", "board_remove_dependency",
 		"board_delete_story", "board_pause_story", "board_resume_story",

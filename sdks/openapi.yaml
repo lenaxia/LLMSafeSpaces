@@ -4937,6 +4937,46 @@ paths:
           $ref: "#/components/responses/BoardNotFound"
         "409":
           $ref: "#/components/responses/BoardConflict"
+  /me/epics/{id}/ack-wrapup:
+    post:
+      tags: [board]
+      summary: Ack an epic's wrap-up review (the recursion cap's human exit)
+      description: |
+        Epic wrap-up review §8 — a DEDICATED epic-level manager verb
+        (never a pending_input flag; epics have none). Resets the
+        consecutive-close ledger, clears the ack-wait flag and any
+        PARKED in-flight pointer (a wrap-up row closed by a raw manager
+        move_stage→done runs no settle — the pointer parks,
+        fail-visible, until this ack clears it), then re-runs the drain
+        check in the same transaction: an acked, still-drained epic
+        mints its next wrap-up immediately (the human said keep going).
+        A live in_review review is never acked out from under its
+        reviewer; acking an epic with nothing to ack is the original
+        echo (200, no event). Idempotent per requestId.
+      operationId: ackBoardEpicWrapUp
+      parameters:
+        - $ref: "#/components/parameters/BoardEpicId"
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/BoardEpicAckWrapUpRequest"
+      responses:
+        "200":
+          description: The epic's resulting state
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BoardEpicAckWrapUpResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/BoardNotFound"
+        "409":
+          $ref: "#/components/responses/BoardConflict"
   /me/epics/{id}/pause:
     post:
       tags: [board]
@@ -5223,6 +5263,53 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/BoardVerdictResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/BoardNotFound"
+        "409":
+          $ref: "#/components/responses/BoardConflict"
+  /me/tasks/{id}/wrapup-verdict:
+    post:
+      tags: [board]
+      summary: Close an epic's wrap-up review (the engine-owned verdict verb)
+      description: |
+        Epic wrap-up review (the ONLY sanctioned close — a plain
+        move_stage→done on a wrap-up row runs NO settle and parks the
+        epic until the ack). The schema is ENGINE-OWNED and closed:
+        `verdict` pass|gaps (a story verdict's approve|fail refuses),
+        `reportUrl` required on BOTH verdicts (the close's evidence),
+        `gapRefs` required non-empty iff gaps (same epic, gap-tagged
+        stories filed since the wrap-up's mint), `notes` size-capped.
+        The row's LIVE claim token is required on every surface (the
+        wrap-up reviewer persona's own claim), and ALL the row's
+        acceptance criteria must be met (the Done guard applies
+        regardless of reviewer role). `pass` completes the epic iff
+        still drained (atomically — never a fresh mint); `gaps` closes
+        the row done and the epic stays open — the non-done gap rows
+        hold it by the ordinary drain predicate (no bounce, no
+        implementer re-dispatch). A replay on an already-closed row is
+        200-with-original. Idempotent per requestId.
+      operationId: recordBoardTaskWrapUpVerdict
+      parameters:
+        - $ref: "#/components/parameters/BoardTaskId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/BoardWrapUpVerdictRequest"
+      responses:
+        "200":
+          description: The closed wrap-up row plus the epic's resulting state
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BoardWrapUpVerdictResponse"
         "400":
           $ref: "#/components/responses/BadRequest"
         "401":

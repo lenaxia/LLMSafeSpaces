@@ -94,6 +94,7 @@ var boardStampSetTools = map[string]bool{
 	"board_epic_archive":      true,
 	"board_epic_unarchive":    true,
 	"board_delete_epic":       true,
+	"board_ack_epic_wrapup":   true,
 	"board_create_story":      true,
 	"board_update_story":      true,
 	"board_add_dependency":    true,

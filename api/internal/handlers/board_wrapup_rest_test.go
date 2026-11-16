@@ -60,10 +60,9 @@ func TestBoardWrapUpVerdictREST_BindErrors(t *testing.T) {
 	svc := newFakeBoardManager()
 	r := wrapupVerdictRouter(svc)
 	for name, body := range map[string]string{
-		"missing verdict":   `{"reportUrl":"u","reviewer":"r"}`,
-		"missing reviewer":  `{"verdict":"pass","reportUrl":"u"}`,
-		"not an object":     `null`,
-		"verdict enum open": `{"verdict":"approve","reportUrl":"u","reviewer":"r"}`,
+		"missing verdict":  `{"reportUrl":"u","reviewer":"r"}`,
+		"missing reviewer": `{"verdict":"pass","reportUrl":"u"}`,
+		"not an object":    `null`,
 	} {
 		w := httptest.NewRecorder()
 		req := httptest.NewRequest(http.MethodPost, "/api/v1/me/tasks/tsk-wwww1111/wrapup-verdict", strings.NewReader(body))
@@ -72,6 +71,9 @@ func TestBoardWrapUpVerdictREST_BindErrors(t *testing.T) {
 		assert.Equal(t, http.StatusBadRequest, w.Code, name)
 	}
 	assert.Equal(t, 0, svc.calls["record_wrapup_verdict"], "no service call on bind failure")
+	// The verdict ENUM is engine-arbitrated (GuardInput → 400 through the
+	// real service; the closed-schema pins live in pkg/board's unit +
+	// integration suites) — a thin projection never re-validates it.
 }
 
 func TestBoardAckEpicWrapUpREST(t *testing.T) {
@@ -100,18 +102,21 @@ func TestBoardAutomation_WrapUpVerdictAndAck(t *testing.T) {
 	svc := newFakeBoardService()
 	mgr := newFakeBoardManager()
 	r := newBoardAutomationRouterWithManager(t, svc, mgr)
-	r.Group("/internal/v1/automation/board").
-		POST("/tasks/wrapup-verdict", (&PodAutomationHandler{board: svc}).BoardRecordWrapUpVerdict)
 
 	// The worker verdict: claimToken from the body rides the actor verbatim.
-	w := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/internal/v1/automation/board/tasks/wrapup-verdict", strings.NewReader(
-		`{"taskId":"tsk-wwww1111","claimToken":"tok-live","verdict":"pass","reportUrl":"https://ev.test/w","reviewer":"wrapup-reviewer"}`))
-	req.Header.Set("Content-Type", "application/json")
-	r.ServeHTTP(w, req)
+	w := doBoard(t, r, http.MethodPost, "/internal/v1/automation/board/tasks/wrapup-verdict",
+		`{"workspaceID":"ws-1","taskId":"tsk-wwww1111","claimToken":"tok-live","verdict":"pass","reportUrl":"https://ev.test/w","reviewer":"wrapup-reviewer"}`)
 	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
 	assert.Equal(t, 1, svc.calls["record_wrapup_verdict"])
 	assert.Equal(t, "tok-live", svc.lastActor.ClaimToken)
 	require.NotNil(t, svc.lastWrapUpVerdict)
 	assert.Equal(t, board.WrapUpVerdictPass, svc.lastWrapUpVerdict.Verdict)
+
+	// The manager ack: the epic ack route speaks the manager projection.
+	w2 := doBoard(t, r, http.MethodPost, "/internal/v1/automation/board/epics/epc-eeee3333/ack-wrapup",
+		`{"workspaceID":"ws-1","requestId":"rq-a2"}`)
+	require.Equal(t, http.StatusOK, w2.Code, w2.Body.String())
+	assert.Equal(t, 1, mgr.calls["ack_epic_wrapup"])
+	assert.Equal(t, "epc-eeee3333", mgr.lastEpicRef)
+	assert.Equal(t, board.SurfaceAgentManager, mgr.lastActor.Surface)
 }
