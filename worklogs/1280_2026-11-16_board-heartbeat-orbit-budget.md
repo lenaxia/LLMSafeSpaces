@@ -27,10 +27,10 @@ mint — the claim is never motion); heartbeat responses are the progress clock'
 (#2043's split). A declared watermark past the mint is motion; a stale or nil stamp is motionless.
 Computed in the victims query (`noEpochMotion`), never in Go against wall clocks.
 
-**Migration 000056** (`tasks.no_advance_renews integer NOT NULL DEFAULT 0`, api + helm mirror via
+**Migration 000057** (`tasks.no_advance_renews integer NOT NULL DEFAULT 0`, api + helm mirror via
 `chart-sync-migrations`): consecutive motionless heartbeat responses per claim epoch. The 000055
 header named this cohort ("sibling #2044 adds a no_advance_renew same-cohort column ... rides its
-own [migration]") — 000056 follows the 000053 busy_renews discipline: plain column add, no
+own [migration]") — renumbered 000056→000057 after the wrapup lane (#2071) merged ITS 000056 to main mid-flight (the exact number race repolint guards; also a worklog-number race: its 1277 forced this worklog to 1280). 000057 follows the 000053 busy_renews discipline: plain column add, no
 backfill, so no populated-DB migration test (000055 needed one only for its backfill).
 
 **EngineConfig.NoAdvanceHeartbeatCap (K, default 3)** — code default + `NewService` clamp (<=0 →
@@ -154,11 +154,11 @@ place to instrument — not the budget's CASEs.
 
 ## Skipped/deferred, with reasons
 
-- No populated-DB migration test: 000056 has no backfill (the 000053 class, not the 000055 class).
+- No populated-DB migration test: 000057 has no backfill (the 000053 class, not the 000055 class).
 - No depose.go change: `deposeShowsLife` reads `busy_renews` for its busy cap, but an at-cap
   orbiting worker's `last_heartbeat_at > nudged_at` still shows life (correctly — the worker IS
   alive; the wedge verdict, not depose, owns the orbit).
 - The shared test DB carried a phantom `schema_migrations.version=56` from an earlier unpushed
   attempt (no column, no artifact — verified against the 55-schema) before this lane; restamped to
-  55 and migrated forward with the real 000056. Noted here because the next lane on this DB
+  55 and migrated forward with the real migration (now 000057). Noted here because the next lane on this DB
   should not be surprised by the history.

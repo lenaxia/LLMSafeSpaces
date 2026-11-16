@@ -1,4 +1,4 @@
--- 000056_no_advance_renews — the heartbeat-orbit budget (issue #2044,
+-- 000057_no_advance_renews — the heartbeat-orbit budget (issue #2044,
 -- parent #2040): the third orbit channel. #2043's two-clock split
 -- bounds EVIDENCE-based renewal (the heartbeat-lapse arm reads the
 -- worker-anchored progress clock); #2042 bounds opaque management
@@ -28,5 +28,9 @@
 -- Migration cohort note (issue #2043, 000055's header): the sibling
 -- landed FIRST and stayed single-purpose so this one rides its own
 -- migration number, same cohort discipline as 000053 (busy_renews).
+-- Numbered 000057 (not 000056): the wrapup lane's 000056_board_wrapup_config_key
+-- landed on main while this branch was in review — the number race repolint
+-- exists for, resolved by renumber (the merge ref briefly carried both and
+-- golang-migrate refused the duplicate version).
 
 ALTER TABLE tasks ADD COLUMN IF NOT EXISTS no_advance_renews integer NOT NULL DEFAULT 0;

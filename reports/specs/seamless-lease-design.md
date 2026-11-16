@@ -333,7 +333,7 @@ nudge → response → renew indefinitely with `attempts` never moving. The budg
   stamp = motionless. No cross-process comparison ever runs.
 - **`NoAdvanceHeartbeatCap` (K, default 3)** on the board engine config (deploy knob
   `board.noAdvanceHeartbeatCap` / `LLMSAFESPACES_BOARD_NOADVANCEHEARTBEATCAP`, helm-wired; <=0
-  clamps to the default). `tasks.no_advance_renews` (migration **000056**, the 000055 cohort —
+  clamps to the default). `tasks.no_advance_renews` (migration **000057** — 000055's cohort, renumbered from 000056 after the wrapup lane's 000056 landed on main first;
   the sibling landed first and stayed single-purpose) counts CONSECUTIVE motionless heartbeat
   responses per claim epoch: +1 at every motionless response renewal (the handler's response arm
   AND the ladder's heartbeat belt), 0 on motion, on every non-heartbeat renewal (movement, busy,
