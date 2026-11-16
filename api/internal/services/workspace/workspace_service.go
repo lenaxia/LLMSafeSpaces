@@ -343,6 +343,20 @@ func (s *Service) CreateWorkspace(ctx context.Context, userID string, req types.
 		)
 	}
 
+	// Bind-once harness (owner ruling 2026-11-16): an explicit create
+	// param binds immediately — validated against the instance's
+	// enabled set HERE (the same seam as the other two bind entrances:
+	// PUT /harness and first-session), so a disabled or unknown value
+	// is a 422 before any CRD write, never a later 500. Omitted =
+	// UNBOUND — bound at first session (the frontend picker path) or
+	// via the bind endpoint. The default CHANGE (implicit opencode →
+	// unbound) is documented on the DTO.
+	if req.Harness != "" {
+		if err := s.validateHarnessForBind(ctx, req.Harness); err != nil {
+			return nil, err
+		}
+	}
+
 	// D4: workspace auto-attribution. When the user is in an org and did not
 	// supply OrgID, auto-attribute the workspace to their org. Users cannot
 	// create personal workspaces while part of an org. Non-org users get

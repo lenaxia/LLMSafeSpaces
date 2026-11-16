@@ -444,3 +444,29 @@ func TestEnsureSession_PiBoundWorkspace_CreatesViaAdapter(t *testing.T) {
 	assert.Equal(t, "pi-sess-1", resp.SessionID)
 	assert.Equal(t, "pi", idx.harness, "the session index row carries the bound harness")
 }
+
+// The create entrance enforces the enabled set like the other two bind
+// entrances (review r1 F1): a disabled or unknown harness is a 422
+// BEFORE any CRD write — an unexpected k8s/db mock call fails the test.
+func TestCreateWorkspace_DisabledOrUnknownHarnessRejected(t *testing.T) {
+	ctx := context.Background()
+	for _, tc := range []struct {
+		name, harness string
+		piEnabled     bool
+	}{
+		{"pi on an opencode-only instance", "pi", false},
+		{"unknown harness value", "bogus", true},
+		{"unknown harness value, pi disabled too", "claude", false},
+	} {
+		f := newHarnessFixture(t, tc.piEnabled)
+		req := types.CreateWorkspaceRequest{
+			Name: "ws", Runtime: "python:3.11", StorageSize: "5Gi", Harness: tc.harness,
+		}
+		_, err := f.svc.CreateWorkspace(ctx, "user-1", req)
+		apiErr := harnessAPIError(t, err)
+		assert.Equal(t, 422, apiErr.StatusCode(), tc.name)
+		assert.Equal(t, "validation_error", apiErr.Code, tc.name)
+		// The CRD-create mock has NO expectations: reaching it fails
+		// the test — the validation must front every write.
+	}
+}

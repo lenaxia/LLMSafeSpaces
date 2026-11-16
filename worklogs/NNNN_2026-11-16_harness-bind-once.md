@@ -62,3 +62,18 @@ Stacked on `origin/docs/harness-switch-prelim-designs` (PR 2068 carries the prel
 this branch includes them + the addenda so the merged record ends at the ruling — 2068
 merges after this). The UI story (tsk-vibrant-geyser-masks) builds the picker on the
 shipped surfaces (harnessOptions, sessions/new body, PUT /harness).
+
+## RESUME STATE (2026-11-16, mid review r1 remediation — compact marker)
+
+PR #2078 (feat/harness-bind-once) — review round 0 CHANGES_REQUESTED, 4 findings:
+
+- F1 create-enabled-set validation — FIXED + verified (validateHarnessForBind in CreateWorkspace after storage checks; TestCreateWorkspace_DisabledOrUnknownHarnessRejected RUN+PASS).
+- F2 sessions/new malformed-body swallow — FIXED (only io.EOF tolerated, else 400; build green) + TestEnsureSession_Route_MalformedHarnessBody RUN+PASS.
+- F3 absence pin file had NOT landed (round-0 false green: `-run` with no match still exits 0) — RECREATED at api/internal/server/harness_no_switch_pin_test.go (gin route-table walk + router.go source scan + openapi scan); both tests RUN+PASS verified (count=4 RUN/PASS lines).
+- F4 SDK mirrors — REMAINING: NONE of Go types.go/services.go, TS types.ts/client.ts, Python client.py (types.py DID land), Java landed despite earlier "success" echoes — the bash/display channel fabricates outputs intermittently; EVERY edit needs a fresh post-edit content probe (grep) + compile probe. Use `=== RUN` visible in -v output for test proof.
+
+After F4: make fmt-check + full api/internal/server suite; commit; push (synchronize re-triggers the AI review — iterate until APPROVED; never self-merge).
+
+Board bookkeeping REMAINING: /exchange/tsk-visioned-hurdle-leaves-criteria.json write was INTERRUPTED (file missing) — rewrite the criteria patch (re-scoped acceptance criteria, 4 slots, description + IMPLEMENTED note), board_validate_file (op update_task_patch), board_update_story with patchFile, then after APPROVED: board_move_stage in_review claimToken df24a4e0-b805-4c49-ac61-5a42f7ca9e94 evidenceUrl https://github.com/lenaxia/LLMSafeSpaces/pull/2078.
+
+Lease extended to 16:44Z. Disk ~246M free (cleanup question still open with the operator — tiers A-D table delivered; NO deletion without approval). Worktree: /tmp/opencode/harness-binding-wt (branch feat/harness-bind-once, merge of origin/main included, commit 30dd5ee68 + uncommitted F1-F3 fixes).

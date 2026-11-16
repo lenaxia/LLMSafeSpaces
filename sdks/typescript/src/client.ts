@@ -40,6 +40,7 @@ import type {
   CreateSecretRequest,
   CreateWorkspaceRequest,
   EnsureSessionResponse,
+  BindHarnessResult,
   CreateMcpServerRequest,
   FetchFn,
   FileUpload,
@@ -375,13 +376,40 @@ class WorkspacesAPI {
     const p = path.startsWith("/") ? path : `/${path}`;
     return `${this.client.baseUrl}/api/v1/workspaces/${id}/dev-preview/${port}${p}`;
   }
+
+  /**
+   * Bind an UNBOUND workspace's harness exactly once (PUT
+   * /workspaces/{id}/harness; owner ruling 2026-11-16: workspaces do
+   * NOT switch harnesses). Same value on a bound workspace is the
+   * idempotent already-bound path; any other value is a 409
+   * harness_immutable. There is no switch or recreate path.
+   */
+  bindHarness(id: string, harness: string) {
+    return this.client.request<BindHarnessResult>("PUT", `/workspaces/${id}/harness`, { harness });
+  }
 }
 
 class SessionsAPI {
   constructor(private client: LLMSafeSpaces) {}
 
+  /**
+   * Create a session. The workspace's BOUND harness serves the create;
+   * on an unbound workspace this binds opencode, the non-interactive
+   * default (owner ruling 2026-11-16: bind-once).
+   */
   ensure(workspaceId: string) {
     return this.client.request<EnsureSessionResponse>("POST", `/workspaces/${workspaceId}/sessions/new`);
+  }
+
+  /**
+   * Create a session with an explicit harness choice — the frontend
+   * picker's submit on an UNBOUND workspace: the harness binds
+   * atomically with the session (owner ruling 2026-11-16: bind-once).
+   * On a bound workspace the harness must match or be empty (mismatch:
+   * 409 harness_immutable).
+   */
+  ensureWithHarness(workspaceId: string, harness: string) {
+    return this.client.request<EnsureSessionResponse>("POST", `/workspaces/${workspaceId}/sessions/new`, { harness });
   }
   /**
    * #1735: archived sessions are opt-in — excluded by default; pass
