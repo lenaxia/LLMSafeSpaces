@@ -531,7 +531,7 @@ func (s *Service) doneCascade(ctx context.Context, tx pgx.Tx, t *Task, evidenceU
 // route through here — a stage move off a flagged row resolves the
 // flag with the move).
 func (s *Service) updateStageTx(ctx context.Context, tx pgx.Tx, taskID, from, toStage, extra, evidenceURL string, actor Actor) (string, error) {
-	extra += `, pending_origin=NULL, pending_input=false, nudge_id=NULL, nudged_at=NULL, last_heartbeat_at=NULL, busy_renews=0`
+	extra += `, pending_origin=NULL, pending_input=false, nudge_id=NULL, nudged_at=NULL, last_heartbeat_at=NULL, busy_renews=0, no_advance_renews=0`
 	tag, err := tx.Exec(ctx, `
 		UPDATE tasks SET stage=$2, stage_entered_at=now(), `+extra+`
 		WHERE id=$1 AND stage=$3`, taskID, toStage, from)
@@ -631,7 +631,7 @@ func (s *Service) bounceTx(ctx context.Context, tx pgx.Tx, taskID, implementer s
 			claim_token=$2, lease_expires_at=now()+make_interval(secs=>$3::float8), last_progress_at=now(),
 			assignee_session=$4, claim_incremented_attempts=false, claim_persona=NULL,
 			pending_input=false, pending_origin=NULL,
-			nudge_id=NULL, nudged_at=NULL, last_heartbeat_at=NULL, busy_renews=0
+			nudge_id=NULL, nudged_at=NULL, last_heartbeat_at=NULL, busy_renews=0, no_advance_renews=0
 		WHERE id=$1 AND NOT paused`,
 		taskID, token, s.cfg.LeaseDuration.Seconds(), assignee)
 	if err != nil {
@@ -660,7 +660,7 @@ func (s *Service) exitPendingReclaim(ctx context.Context, tx pgx.Tx, actor Actor
 	// with the re-claim, and the transition row below records that move.
 	tag, err := tx.Exec(ctx, `
 		UPDATE tasks SET stage='in_progress', stage_entered_at=now(), pending_input=false, pending_origin=NULL,
-			nudge_id=NULL, nudged_at=NULL, last_heartbeat_at=NULL, busy_renews=0,
+			nudge_id=NULL, nudged_at=NULL, last_heartbeat_at=NULL, busy_renews=0, no_advance_renews=0,
 			claim_token=$2, lease_expires_at=now()+make_interval(secs=>$3::float8), last_progress_at=now(),
 			assignee_session=NULL, implementer_session=NULL, claim_incremented_attempts=false, claim_persona=NULL, attempts=0,
 			failure_count=0, last_attempt_failed=false, last_failure_at=NULL
@@ -767,30 +767,64 @@ func (s *Service) Heartbeat(ctx context.Context, actor Actor, taskID, shortIDOrI
 	// session cannot call tools, so it can never answer a nudge — the
 	// wedge verdict owns corpses (the turnEvidence seam survives for
 	// the #1959c bounce re-dispatch).
+	//
+	// #2044 (the heartbeat-orbit budget): a motionless response — its
+	// declared watermark did not cross the claim mint — counts against
+	// NoAdvanceHeartbeatCap. Below cap (or with motion) the response
+	// renews and clears the slot; at cap it DECLINES: the arrival is
+	// recorded (last_heartbeat_at), the cycle is counted, the sentinel
+	// stays ARMED, and the lease is NOT extended — so the next lapse
+	// proceeds to the wedge verdict instead of renewing forever. All
+	// CASE arms read the PRE-update row (SQL assignment semantics):
+	// "no_advance_renews < cap" is the count BEFORE this cycle.
 	var lease, progress time.Time
+	var postNoAdvance int
+	var renewedSlot bool
 	responded := false
 	err = s.q().QueryRow(ctx, `
 		UPDATE tasks SET last_heartbeat_at=now(),
-			last_progress_at=$2, lease_expires_at=now()+make_interval(secs=>$3::float8),
-			nudge_id=NULL, nudged_at=NULL, busy_renews=0, updated_at=now()
+			last_progress_at=$2, updated_at=now(),
+			no_advance_renews=CASE WHEN $2::timestamptz > stage_entered_at THEN 0 ELSE no_advance_renews+1 END,
+			lease_expires_at=CASE WHEN $2::timestamptz > stage_entered_at OR no_advance_renews < $5
+				THEN now()+make_interval(secs=>$3::float8) ELSE lease_expires_at END,
+			nudge_id=CASE WHEN $2::timestamptz > stage_entered_at OR no_advance_renews < $5 THEN NULL ELSE nudge_id END,
+			nudged_at=CASE WHEN $2::timestamptz > stage_entered_at OR no_advance_renews < $5 THEN NULL ELSE nudged_at END,
+			busy_renews=CASE WHEN $2::timestamptz > stage_entered_at OR no_advance_renews < $5 THEN 0 ELSE busy_renews END
 		WHERE id=$1 AND stage IN ('in_progress','in_review') AND claim_token=$4
 		  AND NOT pending_input AND nudge_id IS NOT NULL
-		RETURNING lease_expires_at`,
-		t.ID, observedProgressAt, s.cfg.LeaseDuration.Seconds(), actor.ClaimToken).Scan(&lease)
+		RETURNING lease_expires_at, no_advance_renews, (nudge_id IS NULL)`,
+		t.ID, observedProgressAt, s.cfg.LeaseDuration.Seconds(), actor.ClaimToken,
+		s.cfg.NoAdvanceHeartbeatCap).Scan(&lease, &postNoAdvance, &renewedSlot)
 	switch {
 	case err == nil:
 		responded = true
 		progress = observedProgressAt
+		if !renewedSlot {
+			// The declined response leaves the lease untouched —
+			// surface the row's standing expiry, not the RETURNING
+			// echo of an extension that did not happen.
+			lease = derefTime(t.LeaseExpiresAt)
+		}
 		s.writeAudit(ctx, t.ProjectID, "heartbeat", "task", t.ID, actor)
-		// S4 (design 0072): the response-channel renewal is the
-		// observation plane's STRONGEST alive signal — the worker
-		// answered the sentinel with the tool the prose demanded.
-		// Emitted after the guarded write committed (the sink projects
-		// decisions, never attempts); fail-open like every projection.
-		s.emitLease(ctx, LeaseEvent{
-			Kind: LeaseEventRenewed, TaskID: t.ID, TaskShortID: t.ShortID, ProjectID: t.ProjectID,
-			Assignee: pick(t.AssigneeSession, actor.SessionID), Source: RenewSourceHeartbeat,
-		})
+		if postNoAdvance > 0 {
+			// The motionless cycle is countable whether it renewed
+			// (below cap) or declined (at cap) — the orbit's
+			// always-on signature (#2044 R3).
+			heartbeatNoAdvanceCycles.Inc()
+		}
+		if renewedSlot {
+			// S4 (design 0072): the response-channel renewal is the
+			// observation plane's STRONGEST alive signal — the worker
+			// answered the sentinel with the tool the prose demanded.
+			// Emitted after the guarded write committed (the sink
+			// projects decisions, never attempts); fail-open like
+			// every projection. A DECLINED response emits nothing —
+			// the wedge verdict downstream carries the budget facts.
+			s.emitLease(ctx, LeaseEvent{
+				Kind: LeaseEventRenewed, TaskID: t.ID, TaskShortID: t.ShortID, ProjectID: t.ProjectID,
+				Assignee: pick(t.AssigneeSession, actor.SessionID), Source: RenewSourceHeartbeat,
+			})
+		}
 	case errors.Is(err, pgx.ErrNoRows):
 		// No live nudge (or the claim raced away): record the arrival
 		// — the advisory shape. The lease is NOT extended (the
@@ -811,9 +845,16 @@ func (s *Service) Heartbeat(ctx context.Context, actor Actor, taskID, shortIDOrI
 	default:
 		return HeartbeatResult{}, err
 	}
-	res := HeartbeatResult{Extended: responded, LeaseExpiresAt: lease, LastProgressAt: progress}
-	if !responded {
+	res := HeartbeatResult{Extended: renewedSlot, LeaseExpiresAt: lease, LastProgressAt: progress}
+	switch {
+	case !responded:
 		res.Reason = "no active lease nudge — periodic heartbeats do not extend the lease (no standing renewal discipline); respond when nudged"
+	case !renewedSlot:
+		// The budget decline names itself (#2044 R3 prose): the worker
+		// answered, but presence alone stopped counting.
+		res.Reason = fmt.Sprintf(
+			"%d heartbeats without advancement (cap %d) — presence-only renewal is exhausted, the lease was not extended: advance the work (fresh declared progress or a stage move) or declare failure",
+			postNoAdvance, s.cfg.NoAdvanceHeartbeatCap)
 	}
 	return res, nil
 }

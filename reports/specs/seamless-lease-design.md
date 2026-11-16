@@ -316,3 +316,65 @@ reset ITS budget counter. This issue's arm trusts the progress clock exactly as 
 compose: the lapse arm bounds evidence-based renewal, #2044's budget bounds response-based renewal.
 Pins here (`TestPin_2043C_WorkerProgressResetsArm`) enforce the RESET, not the budget — mutating
 them to also bound declared-without-advance stamps belongs to #2044's born-red set.
+
+## #2044 amendment — the heartbeat-orbit budget (the third orbit channel, closed)
+
+The live-verified orbit (#2040, `tsk-polished-keystone-waits` 2026-11-15): a worker that answers
+every sentinel with `board_heartbeat` seconds after it lands satisfies the nudge contract's letter
+(FIRST respond) while doing none of its substance (then continue / advance / declare failure).
+Post-#2042 and post-#2043 that worker's honest declarations — "my last observed progress" — never
+cross the claim mint, but `hbAfterNudge` renews at every rung regardless, so the row orbits
+nudge → response → renew indefinitely with `attempts` never moving. The budget closes it.
+
+- **The detector is server-side, one clock domain**: forward motion per claim epoch =
+  `last_progress_at > stage_entered_at`. The claim mint writes both in one statement (equal at
+  mint), so the claim itself never reads as motion; heartbeat responses are the only other writer
+  of the progress clock (#2043's split). A declared stamp past the mint = motion; a stale or nil
+  stamp = motionless. No cross-process comparison ever runs.
+- **`NoAdvanceHeartbeatCap` (K, default 3)** on the board engine config (deploy knob
+  `board.noAdvanceHeartbeatCap` / `LLMSAFESPACES_BOARD_NOADVANCEHEARTBEATCAP`, helm-wired; <=0
+  clamps to the default). `tasks.no_advance_renews` (migration **000056**, the 000055 cohort —
+  the sibling landed first and stayed single-purpose) counts CONSECUTIVE motionless heartbeat
+  responses per claim epoch: +1 at every motionless response renewal (the handler's response arm
+  AND the ladder's heartbeat belt), 0 on motion, on every non-heartbeat renewal (movement, busy,
+  reaction — activity implies advance), and at every claim-path mint; the wedge verdict and the
+  suspension freeze zero it (epoch breaks).
+- **The decline**: the K+1th motionless response still records its arrival (and counts its cycle)
+  but does NOT renew — the sentinel stays ARMED, the lease is not extended, and the result's
+  reason names the budget ("N heartbeats without advancement"). The next lapse then demotes
+  EVERY renewal arm for that lapse — `hbAfterNudge` skips, and `MovedSinceLastSweep`, `Busy`, and
+  `EventsAfterNudge` read false — so the row proceeds to the ordinary quiet arms and the existing
+  wedge verdict (`StageFailed` through the unchanged reconciler path, evidence prose +
+  `board_events` payload carrying `no_advance_renews` + `no_advance_cap`).
+- **Why every arm — the #2042 interaction**: `board_heartbeat` is itself a tool call; its
+  PART_START/PART_DELTA/PART_END frames are worker-activity frames under #2042's allowlist and
+  stamp the movement index and the ordinal query like any tool's frames. A budget that demoted
+  only the heartbeat arm would leave the orbit alive through `RenewSourceReaction` (and the
+  movement arm). At cap, presence-shaped frames renew nothing — for ONE lapse, with the belt that
+  a row whose progress clock HAS crossed the mint never demotes (unreachable through the write
+  discipline; guards drift).
+- **The mover boundary, stated honestly**: because the seam cannot distinguish a mover's tool
+  frames from the heartbeat's own, a cap-exhausted row whose worker starts real work between
+  responses cannot prove it through frames alone — and must not (that proof re-opens the orbit).
+  The mover's protection is the respond-first contract the sentinel prose already demands: its
+  next heartbeat declares a watermark past the mint, which is MOTION — reset and renewal in the
+  same guarded write, at cap (pinned). Below cap, movement renewals reset the budget continuously,
+  so a worker that moves never approaches it.
+- **R5 — the response-arm guard, verdict**: the incident's 4.4s-late heartbeat took the advisory
+  path with the sentinel's row state committed. By code trace the response and advisory predicates
+  differ ONLY in `nudge_id IS NOT NULL` (same stage set, same token, same pending_input leg) — no
+  token-identity mismatch exists, and the guarded UPDATE evaluates its WHERE on the live locked
+  row (the send-window pin proves the racing shape lands RESPONSE by lock ordering). The reachable
+  advisory outcome for an ANSWERED sentinel is the EARLY-side race: the worker responds to a
+  sentinel whose row write has not landed (at-least-once bus redelivery of an old sentinel, or
+  delivery preceding the sweep's commit) — the row genuinely carries no armed nudge, the advisory
+  path is the predicate doing its job, and the worker's NEXT response converges (pinned). The
+  deterministic committed-sequence pin locks the RESPONSE contract; born-green, documented here.
+
+Pins (born-red against pre-fix main, `pkg/board/heartbeat_orbit_2044_integration_test.go`):
+2044-A the orbit cycle sequence (K renewing motionless responses → decline → wedge; pre-fix: the
+counter stayed 0 and the row renewed forever), 2044-B the demotion per arm, 2044-C fresh
+declarations never bounded, 2044-D movement resets + the ladder belt counts/skips + the at-cap
+mover's response-channel recovery, 2044-E the R5 committed-sequence response pin + the early-side
+race documentation, 2044-F reviewer personas structurally exempt (no sentinel ever arms on
+in_review).
