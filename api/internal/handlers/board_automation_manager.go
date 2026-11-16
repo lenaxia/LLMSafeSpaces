@@ -195,16 +195,17 @@ func (h *PodAutomationHandler) BoardCreateEpic(c *gin.Context) {
 		return
 	}
 	var req struct {
-		Title     string   `json:"title"`
-		Outcome   string   `json:"outcome"`
-		Tags      []string `json:"tags"`
-		RequestID string   `json:"requestId"`
+		Title        string   `json:"title"`
+		Outcome      string   `json:"outcome"`
+		Tags         []string `json:"tags"`
+		WrapUpReview *bool    `json:"wrapUpReview,omitempty"`
+		RequestID    string   `json:"requestId"`
 	}
 	if !bindBoardBody(c, raw, &req) {
 		return
 	}
 	e, err := h.boardMgr.CreateEpic(c.Request.Context(), h.managerActor(owner, ws, session), c.Param("id"), "",
-		board.EpicInput{Title: req.Title, Outcome: req.Outcome, Tags: req.Tags}, req.RequestID)
+		board.EpicInput{Title: req.Title, Outcome: req.Outcome, Tags: req.Tags, WrapUpReview: req.WrapUpReview}, req.RequestID)
 	if err != nil {
 		renderBoardError(c, err)
 		return
@@ -219,16 +220,17 @@ func (h *PodAutomationHandler) BoardUpdateEpic(c *gin.Context) {
 		return
 	}
 	var req struct {
-		Title     string   `json:"title"`
-		Outcome   string   `json:"outcome"`
-		Tags      []string `json:"tags"`
-		RequestID string   `json:"requestId"`
+		Title        string   `json:"title"`
+		Outcome      string   `json:"outcome"`
+		Tags         []string `json:"tags"`
+		WrapUpReview *bool    `json:"wrapUpReview,omitempty"`
+		RequestID    string   `json:"requestId"`
 	}
 	if !bindBoardBody(c, raw, &req) {
 		return
 	}
 	e, err := h.boardMgr.UpdateEpic(c.Request.Context(), h.managerActor(owner, ws, session), "", c.Param("id"),
-		board.EpicInput{Title: req.Title, Outcome: req.Outcome, Tags: req.Tags}, req.RequestID)
+		board.EpicInput{Title: req.Title, Outcome: req.Outcome, Tags: req.Tags, WrapUpReview: req.WrapUpReview}, req.RequestID)
 	if err != nil {
 		renderBoardError(c, err)
 		return

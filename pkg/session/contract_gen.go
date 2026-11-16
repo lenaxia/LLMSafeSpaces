@@ -82,6 +82,7 @@ const (
 	EventInputRequest   EventType = "input.request"
 	EventInputResolved  EventType = "input.resolved"
 	EventError          EventType = "error"
+	EventBoardTurnEnd   EventType = "board.turn.end"
 )
 
 // InputKind unifies questions and permissions: both are "the agent needs a
@@ -272,4 +273,11 @@ type Event struct {
 	Input             *InputRequest `json:"input,omitempty"`
 	Error             *Error        `json:"error,omitempty"`
 	InternalSessionID string        `json:"internalSessionId,omitempty"`
+	BoardTurnEnd      *BoardTurnEnd `json:"boardTurnEnd,omitempty"`
+}
+
+type BoardTurnEnd struct {
+	Advanced       bool   `json:"advanced,omitempty"`
+	Epoch          uint64 `json:"epoch,omitempty"`
+	TurnDurationMs int64  `json:"turnDurationMs,omitempty"`
 }

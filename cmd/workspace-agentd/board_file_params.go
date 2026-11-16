@@ -167,9 +167,11 @@ func isBoardFileParamKey(k string) bool {
 // boardReadFileField reads one workspace file under the loadImages
 // discipline: O_NONBLOCK open (FIFO wedge), regular-file gate, stat
 // AND read caps (TOCTOU), UTF-8 validation. key names the file param
-// in error prose; the return carries the CONSUMED (anchored) path for
-// the cleanup hook — what was read is what gets deleted.
-func boardReadFileField(key, path string, maxBytes int64) (string, string, error) {
+// in error prose; notFoundHint is the send-specific (vs board-CRUD)
+// not-found second half — #2030b's messageFile shares this reader with
+// its own retry semantics; the return carries the CONSUMED (anchored)
+// path for the cleanup hook — what was read is what gets deleted.
+func boardReadFileField(key, path string, maxBytes int64, notFoundHint string) (string, string, error) {
 	anchored := anchorBoardFilePath(path)
 	// The flat-contract gate (design 0070 §2.4a, review r1 finding 2):
 	// a NESTED exchange path can never auto-delete — refuse at read
@@ -180,7 +182,7 @@ func boardReadFileField(key, path string, maxBytes int64) (string, string, error
 	}
 	f, err := os.OpenFile(anchored, os.O_RDONLY|syscall.O_NONBLOCK, 0) //nolint:gosec // agent-supplied workspace path, gated below
 	if err != nil {
-		return "", "", boardFileReadError(key, err)
+		return "", "", boardFileReadError(key, err, notFoundHint)
 	}
 	defer func() { _ = f.Close() }()
 	info, err := f.Stat()
@@ -208,12 +210,12 @@ func boardReadFileField(key, path string, maxBytes int64) (string, string, error
 }
 
 // boardFileReadError renders an open failure, special-casing the
-// not-found class with the cleanup hint (a retry after a successful
-// call finds the file deleted — the message must say so instead of a
-// bare ENOENT).
-func boardFileReadError(key string, err error) error {
+// not-found class with the caller's cleanup hint (a retry after a
+// successful call finds the file deleted — the message must say so
+// instead of a bare ENOENT).
+func boardFileReadError(key string, err error, notFoundHint string) error {
 	if errors.Is(err, fs.ErrNotExist) {
-		return fmt.Errorf("%s: %s", key, boardFileNotFoundHint)
+		return fmt.Errorf("%s: %s", key, notFoundHint)
 	}
 	return fmt.Errorf("%s: unreadable: %w", key, err)
 }
@@ -316,7 +318,7 @@ func refuseDuplicateJSONKeys(data []byte) error {
 // merge; this returns the parsed fields plus the consumed (anchored)
 // path for the cleanup hook.
 func resolveBoardPayloadFile(key, path string) (map[string]any, string, error) {
-	content, consumed, err := boardReadFileField(key, path, boardPayloadFileMaxBytes)
+	content, consumed, err := boardReadFileField(key, path, boardPayloadFileMaxBytes, boardFileNotFoundHint)
 	if err != nil {
 		return nil, "", err
 	}

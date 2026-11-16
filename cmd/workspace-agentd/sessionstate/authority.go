@@ -165,6 +165,34 @@ type Config struct {
 	// defaultReplayBytes (16 MiB). The newest frame is always retained
 	// even when it alone exceeds the budget.
 	ReplayRingBytes int
+	// BoardTurnEndProbe (#2061/#2064 story 1) is the board seam
+	// consulted at a harness-attested turn end: it answers whether the
+	// session is a board CLAIM-HOLDER (spawner-minted assignee — user
+	// chats never are) and whether an advance-class board write
+	// (record_progress | stage move | verdict) occurred inside the turn
+	// window that opened at turnStart. Nil ⇒ the feature is unwired
+	// (degraded pod / seam absent): no event, sweep semantics (epic R5).
+	// The probe runs under the authority lock at turn transitions: it
+	// must be cheap, in-process, and never block (the #1722
+	// publication discipline); a panic is contained and counted, never
+	// thrown into the harness turn (R4).
+	BoardTurnEndProbe func(sessionID string, turnStart time.Time) BoardTurnEndFacts
+}
+
+// BoardTurnEndFacts is the board seam's verdict for one observed turn
+// end. The authority contributes the turn facts (epoch ordinal, turn
+// duration) and publishes EVENT_TYPE_BOARD_TURN_END; the event is
+// management-class under #2042 — it carries due-marking signal for the
+// board consumer and ZERO liveness/renewal authority.
+type BoardTurnEndFacts struct {
+	// ClaimHolder reports whether the session was spawned as a board
+	// worker (the spawner-minted assignee registry). false ⇒ no event.
+	ClaimHolder bool
+	// Advanced reports whether an advance-class board write occurred
+	// inside the turn window — the narrow set (record_progress | stage
+	// move | verdict), deliberately excluding presence reads and
+	// heartbeats (the keystone lesson).
+	Advanced bool
 }
 
 // StateSnapshot is an atomically-stamped view of the projection (I1: the
@@ -251,6 +279,15 @@ type Authority struct {
 	// answerBudgetExceeded counts budget-expired answer forwards
 	// (#1396; a.mu-guarded, Metrics-exposed).
 	answerBudgetExceeded int64
+	// #2061/#2064 story 1: the board turn-end publication's counters
+	// and per-session epoch ordinals (a.mu-guarded; Metrics-exposed).
+	// boardTurnEpochs is the EMITTER's 1-based per-session count of
+	// observed harness-attested turn ends — process-lifetime, the
+	// redelivery-dedupe/consecutive-no-advance key for the board
+	// consumer (the DB's claim epoch is unobservable agentd-side).
+	boardTurnEpochs           map[string]uint64
+	boardTurnEndsPublished    int64
+	boardTurnEndProbeFailures int64
 }
 
 // New constructs the authority and loads the durable seq cursor from
@@ -377,8 +414,14 @@ func (a *Authority) Ingest(raw []byte) {
 	// pending ask on a fold-dead session must NOT re-arm the stale
 	// store's BUSY re-derivation). The harness speaking again is the
 	// definitive alive signal; everything else goes around the hold.
-	a.liftFoldDeadLocked(evt)
-	a.applyLocked(evt)
+	//
+	// #2061/#2064: this is ALSO the sole board turn-end emission site —
+	// applyHarnessEventLocked observes the busy→idle transition on the
+	// harness's own settle and (claim-holders only) publishes
+	// EVENT_TYPE_BOARD_TURN_END after the harness event is applied. The
+	// synthetic settle sites never route through it (the anti-#2040
+	// emission-site rule).
+	a.applyHarnessEventLocked(evt)
 	a.mu.Unlock()
 }
 
@@ -940,6 +983,16 @@ type Metrics struct {
 	// DeadlineExceeded path — every count is a would-be 125s hang made
 	// visible and fast.
 	AnswerBudgetExceeded int64
+	// #2061/#2064 story 1: the board turn-end publication's counters.
+	// BoardTurnEndsPublished counts turn-end events that actually
+	// crossed applyLocked (a cursor-persist drop does not count); the
+	// delta-bridged ops series is
+	// llmsafespaces_board_turn_ends_published_total. BoardTurnEndProbe-
+	// Failures counts contained seam failures (panics) — a non-zero
+	// rate means the emission path is degraded, never that a turn was
+	// disturbed.
+	BoardTurnEndsPublished    int64
+	BoardTurnEndProbeFailures int64
 	// ReplayRing (design 0069): the retained-frame window's shape —
 	// frame count, serialized bytes, and the low/high water marks.
 	// ReplayFallbacks counts Events resume attempts that degraded to
@@ -987,6 +1040,8 @@ func (a *Authority) Metrics() Metrics {
 	m.ReconcileBusyCleared = a.reconBusyCleared
 	m.ReconcileEvidenceFails = a.reconEvidenceFails
 	m.AnswerBudgetExceeded = a.answerBudgetExceeded
+	m.BoardTurnEndsPublished = a.boardTurnEndsPublished
+	m.BoardTurnEndProbeFailures = a.boardTurnEndProbeFailures
 	m.ReplayRingFrames = len(a.ring.frames)
 	m.ReplayRingBytes = a.ring.bytes
 	m.ReplayLowWater = a.ring.lowWater(a.seq)
@@ -1067,9 +1122,9 @@ func (a *Authority) IngestForTest(evt *abiv1.Event) {
 		return
 	}
 	// Same harness provenance as Ingest (this shim IS the harness
-	// contract entry for tests) — the fold-dead hold lifts here too.
-	a.liftFoldDeadLocked(evt)
-	a.applyLocked(evt)
+	// contract entry for tests) — the fold-dead hold lifts here too,
+	// and the board turn-end emission site applies identically.
+	a.applyHarnessEventLocked(evt)
 	a.mu.Unlock()
 }
 

@@ -32,8 +32,16 @@ func (f *fakeSessionAlerts) RecordAlert(workspaceID, sessionID, _ string, _ int)
 	f.recorded = append(f.recorded, "record:"+workspaceID+":"+sessionID)
 }
 
+func (f *fakeSessionAlerts) RecordTaskAlert(workspaceID, sessionID, _ string, _ int, _ map[string]string) {
+	f.recorded = append(f.recorded, "record:"+workspaceID+":"+sessionID)
+}
+
 func (f *fakeSessionAlerts) ResolveWorkspace(workspaceID string) {
 	f.recorded = append(f.recorded, "resolve:"+workspaceID)
+}
+
+func (f *fakeSessionAlerts) ResolveSession(workspaceID, sessionID string) {
+	f.recorded = append(f.recorded, "resolve:"+workspaceID+":"+sessionID)
 }
 
 func (f *fakeSessionAlerts) ListByWorkspace(_ context.Context, _ string, _ int) ([]types.SessionAlert, error) {

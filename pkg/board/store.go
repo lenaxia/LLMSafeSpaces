@@ -68,7 +68,7 @@ func (q txQ) QueryRow(ctx context.Context, sql string, args ...any) pgx.Row {
 }
 
 const taskColumns = `t.id, t.project_id, t.epic_id, t.short_id, t.title, t.description,
-	t.stage, t.pending_origin, t.pending_input, t.nudge_id, t.nudged_at, t.salvage,
+	t.stage, t.kind, t.pending_origin, t.pending_input, t.nudge_id, t.nudged_at, t.salvage,
 	t.project_name, t.epic_name, t.tags,
 	t.acceptance_criteria, t.is_blocked, t.paused, t.assignee_session, t.implementer_session, t.claim_token::text,
 	t.claim_persona,
@@ -80,9 +80,9 @@ func scanTask(row pgx.Row) (*Task, error) {
 	var t Task
 	var criteria []byte
 	var salvage []byte
-	var token, assignee, implementer, persona, nudgeID *string
+	var token, assignee, implementer, persona, nudgeID, kind *string
 	err := row.Scan(&t.ID, &t.ProjectID, &t.EpicID, &t.ShortID, &t.Title, &t.Description,
-		&t.Stage, &t.PendingOrigin, &t.PendingInput, &nudgeID, &t.NudgedAt, &salvage,
+		&t.Stage, &kind, &t.PendingOrigin, &t.PendingInput, &nudgeID, &t.NudgedAt, &salvage,
 		&t.ProjectName, &t.EpicName, &t.Tags,
 		&criteria, &t.IsBlocked, &t.Paused, &assignee, &implementer, &token,
 		&persona,
@@ -91,6 +91,11 @@ func scanTask(row pgx.Row) (*Task, error) {
 		&t.CooldownUntil, &t.StageEnteredAt, &t.CreatedAt, &t.UpdatedAt)
 	if err != nil {
 		return nil, err
+	}
+	// The row-class marker: only the engine-minted class rides the wire
+	// (story — the default, every user-created row — omits).
+	if kind != nil && *kind == TaskKindWrapup {
+		t.Kind = TaskKindWrapup
 	}
 	if nudgeID != nil {
 		t.NudgeID = *nudgeID
@@ -142,12 +147,15 @@ func scanProject(row pgx.Row) (*Project, error) {
 }
 
 const epicColumns = `id, project_id, short_id, title, outcome, status, project_name,
-	tags, vft, deficit, quantum, created_at, updated_at`
+	tags, vft, deficit, quantum, wrap_up_review, last_wrapped_at, wrapup_count,
+	wrapup_task_id::text, wrapup_ack_pending, created_at, updated_at`
 
 func scanEpic(row pgx.Row) (*Epic, error) {
 	var e Epic
 	err := row.Scan(&e.ID, &e.ProjectID, &e.ShortID, &e.Title, &e.Outcome, &e.Status,
-		&e.ProjectName, &e.Tags, &e.VFT, &e.Deficit, &e.Quantum, &e.CreatedAt, &e.UpdatedAt)
+		&e.ProjectName, &e.Tags, &e.VFT, &e.Deficit, &e.Quantum,
+		&e.WrapUpReview, &e.LastWrappedAt, &e.WrapUpCount, &e.WrapUpTaskID,
+		&e.WrapUpAckPending, &e.CreatedAt, &e.UpdatedAt)
 	if err != nil {
 		return nil, err
 	}
@@ -446,21 +454,10 @@ func unblockDependents(ctx context.Context, q Queryer, taskID string, targetDone
 	return tag.RowsAffected(), nil
 }
 
-// epicCompletionCheck flips an active epic to completed iff it holds at
-// least one done task and no non-terminal tasks (RC4, §4.5). Returns true
-// when the flip fired.
-func epicCompletionCheck(ctx context.Context, q Queryer, epicID string) (bool, error) {
-	tag, err := q.Exec(ctx, `
-		UPDATE epics e SET status='completed'
-		WHERE e.id = $1 AND e.status='active'
-		  AND EXISTS(SELECT 1 FROM tasks t WHERE t.epic_id = e.id AND t.stage='done')
-		  AND NOT EXISTS(SELECT 1 FROM tasks t WHERE t.epic_id = e.id
-		                 AND t.stage <> 'done')`, epicID)
-	if err != nil {
-		return false, err
-	}
-	return tag.RowsAffected() > 0, nil
-}
+// epicCompletionCheck (the drain/completion seam) moved to wrapup.go as
+// wrapUpAwareEpicCompletion; the disabled-branch implementation is
+// epicCompletionCheckPlain there (the statement above is byte-identical,
+// D9).
 
 // actorView is the persisted actor shape (board_events.actor,
 // board_transitions.actor).

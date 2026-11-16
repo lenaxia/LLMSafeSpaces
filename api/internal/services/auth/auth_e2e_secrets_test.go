@@ -272,13 +272,16 @@ func (m *fullMockDB) ListSessionIndex(context.Context, string) ([]types.SessionL
 	return nil, nil
 }
 
-func (m *fullMockDB) InsertSessionAlert(context.Context, string, string, string, int) error {
+func (m *fullMockDB) InsertSessionAlert(context.Context, string, string, string, int, map[string]string) error {
 	return nil
 }
 func (m *fullMockDB) ListSessionAlerts(context.Context, string, int) ([]types.SessionAlert, error) {
 	return nil, nil
 }
 func (m *fullMockDB) ResolveSessionAlerts(context.Context, string) (int64, error) {
+	return 0, nil
+}
+func (m *fullMockDB) ResolveSessionAlertsForSession(context.Context, string, string) (int64, error) {
 	return 0, nil
 }
 func (m *fullMockDB) ResolveStaleSessionAlerts(context.Context, string, time.Time) (int64, error) {

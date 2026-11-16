@@ -334,6 +334,7 @@ export const BOARD_GUARD_MESSAGES: Record<string, string> = {
   claim_live: "The claim is live and healthy — deposition refuses (the lease has not lapsed, or the worker shows life).",
   manager_surface_only: "Pending-input exits are human decisions (manager surfaces only).",
   workspace_binding: "The caller's workspace is not this project's target.",
+  wrapup_endpoint: "Wrap-up review rows never enter the dependency graph.",
   epic_state: "The epic's state refuses this action.",
   project_state: "The project's state refuses this action.",
   authz: "You do not own this board.",

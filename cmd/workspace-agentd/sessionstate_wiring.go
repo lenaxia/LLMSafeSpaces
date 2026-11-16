@@ -291,6 +291,12 @@ func newStateAuthority(client *OpenCodeClient, password, controlPlanePassword st
 		// #1817/#1821 piece 1: contract frames leave keyed by the
 		// phrase (harness id additive) — the frontend fold's join.
 		IDTranslator: emissionIDTranslator,
+		// #2061/#2064 story 1: the board turn-end probe seam — the
+		// emitter answers claim-holder + advance at the harness's own
+		// settle fold (applyHarnessEventLocked). Nil would mean the
+		// feature is unwired (degraded); this wiring IS the opencode
+		// leg's probe backend (board_turn_ledger.go).
+		BoardTurnEndProbe: boardTurnEmitterInst().facts,
 	}
 	a, err := sessionstate.New(cfg)
 	if err != nil {

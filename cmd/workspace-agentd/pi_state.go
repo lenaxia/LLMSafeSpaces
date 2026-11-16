@@ -233,6 +233,13 @@ type piStateAggregator struct {
 	// OUTSIDE the lock on a copied slice — subscribers never race the
 	// fold and never alias the pump's buffer.
 	tap func(sessionID string, raw []byte)
+	// turnEndObserver (#2061/#2064 story 1): the board turn-end
+	// emission hook — receives the harness-attested busy→settled
+	// transitions folded by ApplyEvent (agent_settled, the one idle
+	// transition per the settle contract). Read under mu, invoked
+	// OUTSIDE the lock; the corroboration polls carry no hook and can
+	// never emit (the emission-site rule, the anti-#2040 guard).
+	turnEndObserver func(sessionID string, busySince, settledAt time.Time)
 }
 
 // setEventTap installs the raw-event tap (the bridge's SSE fan-out).
@@ -267,16 +274,42 @@ func (a *piStateAggregator) cellLocked(id string) *piSessionState {
 // ApplyEvent folds one event for one session. The whole mutation runs
 // under the aggregator mutex — a bare cell() hand-out would race
 // Snapshot's locked reads (pinned by -race).
+//
+// #2061/#2064 story 1: this is the pi leg's HARNESS-ATTESTED fold —
+// transport truth from the child's own stdout — and therefore the pi
+// emission site for the board turn-end publication. The hook fires on
+// the busy→settled transition folded HERE only (agent_settled is the
+// one idle transition per the settle contract above);
+// ApplyStatePoll/ApplyStatsPoll (corroboration) carry no hook and can
+// never emit — the same emission-site rule the sessionstate authority
+// enforces for opencode (a synthesized/polled settle carries no
+// due-marking authority, the anti-#2040 guard).
 func (a *piStateAggregator) ApplyEvent(sessionID string, rec *piRecord, raw []byte, now time.Time) {
 	a.mu.Lock()
 	tap := a.tap
-	a.cellLocked(sessionID).applyEvent(rec, raw, now)
+	obs := a.turnEndObserver
+	cell := a.cellLocked(sessionID)
+	busySince, wasBusy := cell.busySince, cell.busy
+	cell.applyEvent(rec, raw, now)
+	turnEnded := wasBusy && !cell.busy
 	a.mu.Unlock()
 	if tap != nil {
 		cp := make([]byte, len(raw))
 		copy(cp, raw)
 		tap(sessionID, cp)
 	}
+	if turnEnded && obs != nil {
+		obs(sessionID, busySince, now)
+	}
+}
+
+// setTurnEndObserver installs the board turn-end emission hook (the
+// supervise-pi wiring; nil = feature unwired — degraded, sweep
+// semantics, epic R5).
+func (a *piStateAggregator) setTurnEndObserver(obs func(sessionID string, busySince, settledAt time.Time)) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.turnEndObserver = obs
 }
 
 // ApplyStatePoll folds one get_state data payload for one session.
