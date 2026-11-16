@@ -455,7 +455,7 @@ func newMCPRouterFixture(t *testing.T) *mcpFixture {
 		ID: mcpTestWSID, UserID: mcpTestUserID, Name: "test", Runtime: "python:3.10",
 	}, nil).Maybe()
 	ws.On("CheckOwnership", mock.Anything, mcpTestUserID, mock.Anything).Return(nil).Maybe()
-	ws.On("EnsureSession", mock.Anything, mcpTestUserID, mcpTestWSID).Return(&types.EnsureSessionResponse{
+	ws.On("EnsureSession", mock.Anything, mcpTestUserID, mcpTestWSID, mock.Anything).Return(&types.EnsureSessionResponse{
 		WorkspaceID: mcpTestWSID, WorkspacePhase: "Active", SessionID: mcpTestSession, Resumed: true,
 	}, nil).Maybe()
 	ws.On("CreateWorkspace", mock.Anything, mcpTestUserID, mock.Anything).Return(&types.Workspace{

@@ -39,8 +39,7 @@ spec:
                 harness:
                   type: string
                   enum: ["opencode", "pi"]
-                  default: "opencode"
-                  description: "Coding-agent harness this workspace runs. Immutable after create: sessions, agent config, and artifacts are harness-specific — recreate the Workspace to switch. Enforced by the validating webhook."
+                  description: "Coding-agent harness this workspace runs. Nullable and bind-once (owner ruling 2026-11-16): empty = unbound, set exactly once (at create, explicit bind while unbound, or atomically with the first session); immutable forever after — enforced by the validating webhook. There is no switch or recreate path."
                 architecture:
                   type: string
                   enum: ["amd64", "arm64"]

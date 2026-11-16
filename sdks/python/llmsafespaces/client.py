@@ -19,6 +19,7 @@ from .errors import (
 from .types import (
     APIKey,
     AuthResponse,
+    BindHarnessResult,
     Cost,
     CreateAgentRoleRequest,
     EnsureSessionResponse,
@@ -590,9 +591,18 @@ class _WorkspacesAPI:
         return WorkspaceListResult(items=items, pagination=data.get("pagination"))
 
     def create(
-        self, *, name: str = "", runtime: str = "", storage_size: str = ""
+        self, *, name: str = "", runtime: str = "", storage_size: str = "", harness: str = ""
     ) -> Workspace:
-        body = {"name": name, "runtime": runtime, "storageSize": storage_size}
+        """Create a workspace. Owner ruling 2026-11-16 (bind-once): an
+        explicit ``harness`` binds at create (must be in the instance's
+        enabled set); omitted creates the workspace UNBOUND — bind it
+        (first session with ``harness=`` or ``bind_harness``) before
+        first use. DEFAULT CHANGE (2026-11-16): omitted no longer means
+        opencode implicitly; existing workspaces were backfilled to
+        explicit opencode."""
+        body: dict[str, Any] = {"name": name, "runtime": runtime, "storageSize": storage_size}
+        if harness:
+            body["harness"] = harness
         return Workspace(**self._c._request("POST", "/workspaces", json=body))
 
     def get(self, workspace_id: str) -> Workspace:
@@ -676,14 +686,34 @@ class _WorkspacesAPI:
         p = path if path.startswith("/") else f"/{path}"
         return f"{self._c._base_url}/api/v1/workspaces/{workspace_id}/dev-preview/{port}{p}"
 
+    def bind_harness(self, workspace_id: str, harness: str) -> BindHarnessResult:
+        """Bind an UNBOUND workspace's harness exactly once (owner
+        ruling 2026-11-16: workspaces do NOT switch harnesses). Same
+        value on a bound workspace: the idempotent already-bound path.
+        Any other value: 409 ``harness_immutable``. There is no switch
+        or recreate path."""
+        return BindHarnessResult(
+            **self._c._request(
+                "PUT", f"/workspaces/{workspace_id}/harness", json={"harness": harness}
+            )
+        )
+
 
 class _SessionsAPI:
     def __init__(self, client: LLMSafeSpaces):
         self._c = client
 
-    def ensure(self, workspace_id: str) -> EnsureSessionResponse:
+    def ensure(self, workspace_id: str, harness: str = "") -> EnsureSessionResponse:
+        """Create a session. Owner ruling 2026-11-16 (bind-once): on an
+        UNBOUND workspace, ``harness`` binds atomically with the session
+        (the picker's submit; omitted binds opencode, the
+        non-interactive default). On a bound workspace it must match or
+        be empty (mismatch: 409 ``harness_immutable``)."""
+        json_body = {"harness": harness} if harness else None
         return EnsureSessionResponse(
-            **self._c._request("POST", f"/workspaces/{workspace_id}/sessions/new")
+            **self._c._request(
+                "POST", f"/workspaces/{workspace_id}/sessions/new", json=json_body
+            )
         )
 
     def list(self, workspace_id: str, *, include_archived: bool = False) -> list[dict[str, Any]]:

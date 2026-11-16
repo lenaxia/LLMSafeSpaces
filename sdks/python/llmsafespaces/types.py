@@ -30,6 +30,13 @@ class Workspace:
     credentialsPendingSince: str | None = None
     devPreviewEnabled: bool = False
     phraseId: str | None = None
+    # Owner ruling 2026-11-16 (bind-once): the bound harness — None =
+    # unbound (no pod until the first-session bind or the bind
+    # endpoint); once bound, immutable for the workspace's lifetime.
+    harness: str | None = None
+    # The instance's enabled harness set (picker context; opencode
+    # always present). Read-only context.
+    harnessOptions: list[str] | None = None
 
 
 @dataclass
@@ -41,6 +48,9 @@ class WorkspaceListItem:
     storageSize: str
     createdAt: str
     updatedAt: str
+    # Owner ruling 2026-11-16 (bind-once): the bound harness; None =
+    # unbound (no pod until the bind), immutable once bound.
+    harness: str | None = None
     phase: str | None = None
     imageTag: str | None = None
     agentVersion: str | None = None
@@ -66,6 +76,22 @@ class EnsureSessionResponse:
     workspacePhase: str
     sessionId: str
     resumed: bool
+    # Owner ruling 2026-11-16 (bind-once): the bound harness; on an
+    # unbound workspace the request's harness (or the opencode
+    # default) bound atomically with the session.
+    harness: str | None = None
+
+
+@dataclass
+class BindHarnessResult:
+    """PUT /workspaces/{id}/harness response (owner ruling
+    2026-11-16: bind-once — same value is the idempotent alreadyBound
+    path; any other value on a bound workspace is a 409
+    harness_immutable; no switch or recreate path exists)."""
+
+    harness: str
+    alreadyBound: bool = False
+    harnessOptions: list[str] | None = None
 
 
 @dataclass

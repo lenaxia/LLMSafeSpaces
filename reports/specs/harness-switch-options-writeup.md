@@ -207,3 +207,27 @@ HIDDEN-PRESERVED, and (a)'s core honesty kept as the framing: *a switch is a sup
 that happens to preserve the workspace's identity, storage, board, and history — never an in-place
 flip.* The two implementation stories are patched to this shape; the high-level and low-level
 designs carry the contract.
+
+---
+
+## DECISION RECORD (2026-11-16) — RECOMMENDATION (b) REJECTED: no switch, no recreate
+
+**Owner ruling, 2026-11-16:** workspaces do NOT switch harnesses. One harness per workspace,
+bound once, immutable forever. This document's switch-with-recreate design (all variants) is
+**REJECTED before implementation** — none of it shipped, and no switch/recreate/migrate/unbind
+endpoint exists at any tier (pinned by `TestHarnessNoSwitchOrRecreateEndpointExists`).
+
+**Rationale:** users must never hunt for history or track which conversation happened on which
+harness — the workspace's identity includes its harness, and its pod topology never changes
+class. A switch — even a supervised recreation that preserves identity/storage/board/history —
+still splits the mental record across harness classes; the cost is permanent user confusion for
+a transient convenience.
+
+**What shipped instead (bind-once binding, PR #2078):** `spec.harness` is nullable and
+bind-once (create param / explicit `PUT /workspaces/{id}/harness` while unbound / first-session
+body — the three entrances); `value → anything else` is a loud `409 harness_immutable` at the
+API tier and an admission denial at the CRD tier; omitted-at-create now creates UNBOUND (the
+default change; legacy workspaces backfilled to explicit `opencode`); an unbound workspace
+builds no pod. To use another harness, create a new workspace on it. Full contract:
+`CHANGELOG.md` (2026-11-16 harness bind-once section); implementing story
+`tsk-visioned-hurdle-leaves`.
