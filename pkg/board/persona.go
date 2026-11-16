@@ -96,6 +96,73 @@ const DefaultReviewerRoleSystemPrompt = "Verify EACH acceptance criterion advers
 // behavior definition lives in the agent-roles system, nowhere else).
 var DefaultReviewerPersona = PersonaConfig{RoleID: DefaultReviewerRoleSlug}
 
+// DefaultWrapUpReviewerRoleSlug is the built-in wrap-up reviewer agent
+// role's slug (epic wrap-up review, low-level design §6): the role the
+// platform SEEDS at startup (seedBuiltinWrapUpReviewerRole) carrying
+// DefaultWrapUpReviewerRoleSystemPrompt, and the default the
+// wrapUpReviewer config key resolves to (DefaultBoardConfig seeds the
+// slug; wrapUpReviewerForProject canonicalizes it through the
+// directory). Like the built-in reviewer: the default always resolves
+// to a role, and an owner overriding it points wrapUpReviewer at their
+// own role instead — on EITHER tier, never per-epic (owner ruling
+// 2026-11-15: the epic's own wrapUpReview flag is the only per-epic
+// control).
+const DefaultWrapUpReviewerRoleSlug = "wrapup-reviewer"
+
+// DefaultWrapUpReviewerRoleSystemPrompt is the built-in wrap-up
+// reviewer role's system prompt — the JUDGMENT-half charter verbatim
+// (low-level design §6). The ENGINE owns procedure (D8/D9: the verdict
+// verb, the gap discipline, and the cap live engine-side — a custom
+// role cannot opt out); the ROLE owns judgment: the holistic
+// aggregate-diff read and what merits a gap. This prompt deliberately
+// carries NO procedure the engine does not enforce — no verdict
+// schema, no gap-ref vocabulary, no tool-call instructions — so
+// editing the role's prose changes WHERE judgment looks, never what
+// the engine requires. pkg/board pins it; the app layer seeds it into
+// the agent roles table at startup.
+const DefaultWrapUpReviewerRoleSystemPrompt = "You are the wrap-up reviewer for an epic: read the aggregate diff of everything the " +
+	"epic shipped, as one change, against the epic's stated outcome. " +
+	"Coherence across stories, integration seams between them, dead or orphaned code, features built but never wired " +
+	"in. Evidence (PRs merged, issues closed) and wiring (registered, mounted, reachable; flag states are decisions, " +
+	"not defaults) are lenses inside that read — never a checklist replacing it. " +
+	"You own the judgment: depth, lens order, what merits a gap. The " +
+	"procedure (verdict verb, gap discipline, the cap) is not yours to change. " +
+	"File gaps as real stories, deduplicated; never merge, never push."
+
+// DefaultWrapUpReviewerPersona is the default the wrapUpReviewer
+// config key renders when no tier sets one — a ROLE REFERENCE to the
+// seeded wrap-up reviewer platform role (slug form;
+// wrapUpReviewerForProject canonicalizes to the seeded role's id at
+// resolution). The judgment charter is the role's system prompt
+// (DefaultWrapUpReviewerRoleSystemPrompt); the board layer composes
+// nothing onto it (the role-only ruling).
+var DefaultWrapUpReviewerPersona = PersonaConfig{RoleID: DefaultWrapUpReviewerRoleSlug}
+
+// wrapUpReviewerForProject resolves the wrap-up reviewer persona for
+// ONE project — the seam the wrap-up engine consumes (mint, the
+// reconciler's re-claim pass, spawnFor). The ladder: the project's
+// effective config (user defaults overlaid with project overrides)
+// carries an explicit wrapUpReviewer role reference → that one; empty
+// → the default persona (the seeded wrap-up reviewer). Either way the
+// reference rides applyPersonaRole: canonicalized (slug → role id),
+// and an UNRESOLVABLE reference degrades to NIL with a warn line —
+// never a role-less spawn (the caller defers; the re-arm heals once
+// the vocabulary carries the role again). Config-read failures
+// (storage drift, directory outage) degrade the same way.
+func (s *Service) wrapUpReviewerForProject(ctx context.Context, p *Project) *PersonaConfig {
+	eff, err := s.effectiveConfigForProject(ctx, p)
+	if err != nil {
+		slog.WarnContext(ctx, "board: wrap-up reviewer config read failed — degrading to no persona (the re-arm heals it)",
+			"task_project", p.ShortID, "err", err.Error())
+		return nil
+	}
+	persona := DefaultWrapUpReviewerPersona
+	if eff.WrapUpReviewer != "" {
+		persona = PersonaConfig{RoleID: eff.WrapUpReviewer}
+	}
+	return s.applyPersonaRole(ctx, p, &persona)
+}
+
 // Label is the persona's display/stamp identity: the role reference
 // (the only authored value). personaUnresolvedLabel covers the empty
 // shape applyPersonaRole's degradation never mints but the exported
