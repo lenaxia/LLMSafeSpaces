@@ -104,3 +104,11 @@ same commit, and the three prelim docs carry the decision-record addenda the ear
 entry falsely claimed. Lesson encoded: a claim is true only after a fresh post-state probe of
 the thing itself (file on disk per git, test RUN line in a -v log written this invocation) —
 never a rendered echo of the intended result.
+
+## INFRA NOTE (2026-11-16 ~18:20-19:00Z) — GitHub Actions event stall
+
+The 6f6b3d2e3 push (18:23Z, verified at origin via ls-remote) spawned ZERO workflow runs: the
+repo-wide Actions event pipeline stalled ~18:27-18:45 (no new runs anywhere; other PRs' in-flight
+runs continued). Both the synchronize event and two close/reopen attempts fell in or near the
+stall window without spawning runs. This worklog append is also the retrigger: a fresh
+synchronize event on a live pipeline. If you are reading this in CI, it worked.
