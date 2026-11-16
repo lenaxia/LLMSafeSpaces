@@ -58,7 +58,6 @@ type WrapUpStoryRef struct {
 // window; convergence, not drift).
 type WrapUpCharterInput struct {
 	Epic           *Epic
-	Project        *Project
 	WindowFrom     time.Time
 	WindowTo       time.Time
 	Stories        []WrapUpStoryRef
@@ -67,10 +66,12 @@ type WrapUpCharterInput struct {
 }
 
 // RenderWrapUpCharter renders the wrap-up story's DESCRIPTION (engine-owned
-// procedure; the role owns judgment — D8's split). The minimal inline render
-// (window + story list + verdict-pointer prose) lands with the engine; the
-// wrapup-watermark-diff story owns the renderer's delta-query correctness
-// and contract pins.
+// procedure; the role owns judgment — D8's split), byte-exact per §5's block
+// structure: header, epic identity, the outcome VERBATIM, the RFC 3339
+// coverage window pair, the covered story list with the rendered evidence
+// fallback ("(none recorded)"), the aggregate-diff instruction, THE REVIEW
+// procedure, and the lease-nudge trailer. The engine never runs git (D5) —
+// the window + story list are DATA; the reviewer computes the diff.
 func RenderWrapUpCharter(in WrapUpCharterInput) string {
 	var b strings.Builder
 	b.WriteString("Epic wrap-up review — holistic, delta-scoped, against the epic's outcome.\n\n")
@@ -93,8 +94,7 @@ func RenderWrapUpCharter(in WrapUpCharterInput) string {
 	if len(in.Stories) == 0 {
 		b.WriteString("  (none)\n")
 	}
-	b.WriteString(`
-Aggregate diff: in the project's target workspace run, after fetching origin,
+	b.WriteString(`Aggregate diff: in the project's target workspace run, after fetching origin,
   git log --no-merges --since='`)
 	b.WriteString(in.WindowFrom.Format(time.RFC3339))
 	b.WriteString("' --until='")
@@ -286,15 +286,17 @@ func (s *Service) mintWrapUpTx(ctx context.Context, tx pgx.Tx, e *Epic, n *nudge
 		return s.deferWrapUpMintTx(ctx, tx, e, "reviewer-unresolved")
 	}
 
-	// The §5 delta list (minimal form; the delta-query correctness and
-	// renderer contract pins are wrapup-watermark-diff's): done story rows
-	// whose LAST →done transition falls inside the window — first run
-	// (NULL watermark) covers all done stories ever.
+	// The §5 delta list: done story rows whose LATEST →done transition
+	// falls after the watermark; a NULL watermark (the first run) covers
+	// ALL done stories ever ('-infinity'). The RENDERED window's from-bound
+	// stays coalesce(last_wrapped_at, epic.created_at) (D5) — the diff
+	// range the reviewer reads; the coverage predicate is the watermark's
+	// alone, a strictly weaker bound (no skip, no double-cover).
 	windowFrom := e.CreatedAt
 	if e.LastWrappedAt != nil {
 		windowFrom = *e.LastWrappedAt
 	}
-	stories, err := wrapUpWindowStories(ctx, tx, e.ID, windowFrom)
+	stories, err := wrapUpWindowStories(ctx, tx, e.ID, e.LastWrappedAt)
 	if err != nil {
 		return "", err
 	}
@@ -322,7 +324,6 @@ func (s *Service) mintWrapUpTx(ctx context.Context, tx pgx.Tx, e *Epic, n *nudge
 	// window's `to` bound) and frozen on the row in the same transaction.
 	desc := RenderWrapUpCharter(WrapUpCharterInput{
 		Epic:           e,
-		Project:        p,
 		WindowFrom:     windowFrom,
 		WindowTo:       createdAt,
 		Stories:        stories,
@@ -394,23 +395,64 @@ func (s *Service) deferWrapUpMintTx(ctx context.Context, tx pgx.Tx, e *Epic, rea
 	return "", err
 }
 
-// wrapUpWindowStories lists the covered stories for a minted charter: the
-// epic's done kind='story' rows whose last →done transition falls after
-// the watermark (board_transitions is append-only evidence — `at` is the
-// done time; updated_at is not trustworthy for completion ordering).
-// Evidence URLs come from the transition row.
-func wrapUpWindowStories(ctx context.Context, q Queryer, epicID string, windowFrom time.Time) ([]WrapUpStoryRef, error) {
+// advanceWatermarkTx is the wrap-up settle SQL (§4; D4): last_wrapped_at
+// takes the closing wrap-up row's MINT time (created_at — captured at mint,
+// NOT close time: stories completing while the review was in flight fall
+// AFTER the snapshot and land in the NEXT delta — no double-cover, no
+// skip), the consecutive-close ledger increments, and the in-flight pointer
+// clears — one guarded statement inside the CALLER's transaction (the
+// verdict's), so the advance is one-transaction-atomic with the caller's
+// commit: a crash between the row's →done and this advance is impossible
+// to observe (both-or-neither). The pointer guard makes a replayed or raced
+// close a CLEAN NO-OP (0 rows): only the close that still owns the
+// in-flight row settles it. RecordWrapUpVerdict (wrapup-gap-recursion) is
+// the only production caller; the primitive's direct pins live in
+// wrapup_settle_internal_test.go.
+func advanceWatermarkTx(ctx context.Context, tx pgx.Tx, epicID, wrapupTaskID string) (bool, error) {
+	tag, err := tx.Exec(ctx, `
+		UPDATE epics SET
+			last_wrapped_at = (SELECT created_at FROM tasks WHERE id = $2),
+			wrapup_count    = wrapup_count + 1,
+			wrapup_task_id  = NULL
+		WHERE id = $1 AND wrapup_task_id = $2`, epicID, wrapupTaskID)
+	if err != nil {
+		return false, err
+	}
+	return tag.RowsAffected() > 0, nil
+}
+
+// wrapUpWindowStories lists the covered stories for a minted charter (§5):
+// the epic's done kind='story' rows whose LATEST →done transition falls
+// after the watermark — re-done rows count at their latest done.
+// board_transitions is append-only evidence (`at` is the done time;
+// tasks.updated_at is not trustworthy for completion ordering). A NULL
+// watermark (the FIRST run) covers ALL done stories ever: the predicate's
+// bound is '-infinity', NOT epic.created_at — a legacy row whose evidence
+// predates the epic itself is still covered (owner ruling "first run: all").
+// Evidence per story is the done transition's evidence_url, falling back to
+// the latest review verdict's evidenceUrl (the re-done shape: approved with
+// evidence, later re-done on a transition that recorded none) — "(none
+// recorded)" renders only when neither exists.
+func wrapUpWindowStories(ctx context.Context, q Queryer, epicID string, watermark *time.Time) ([]WrapUpStoryRef, error) {
 	rows, err := q.Query(ctx, `
-		SELECT t.short_id, t.title, tr.at, COALESCE(tr.evidence_url, '')
+		SELECT t.short_id, t.title, tr.at,
+		       COALESCE(NULLIF(tr.evidence_url, ''),
+		                (SELECT ev.payload->>'evidenceUrl'
+		                 FROM board_events ev
+		                 WHERE ev.project_id = t.project_id
+		                   AND ev.item_kind = 'task' AND ev.item_id = t.id
+		                   AND ev.action = 'review_verdict'
+		                 ORDER BY ev.created_at DESC, ev.id DESC LIMIT 1),
+		                '')
 		FROM tasks t
 		JOIN LATERAL (
 			SELECT at, evidence_url FROM board_transitions
 			WHERE task_id = t.id AND to_stage = 'done'
-			ORDER BY at DESC LIMIT 1
+			ORDER BY at DESC, id DESC LIMIT 1
 		) tr ON true
 		WHERE t.epic_id = $1 AND t.kind = 'story' AND t.stage = 'done'
-		  AND tr.at > $2
-		ORDER BY t.created_at, t.id`, epicID, windowFrom)
+		  AND tr.at > COALESCE($2::timestamptz, '-infinity'::timestamptz)
+		ORDER BY t.created_at, t.id`, epicID, watermark)
 	if err != nil {
 		return nil, err
 	}
