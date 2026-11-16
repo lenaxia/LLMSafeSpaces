@@ -6,6 +6,7 @@ package database
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
@@ -1044,10 +1045,23 @@ func (s *Service) ListAPIKeysWithDecrypt(ctx context.Context, userID string) ([]
 // InsertSessionAlert appends one D6 (#998) escalation record. The
 // escalation path is fire-and-forget (background drainer in the
 // sessionalerts service); failures are logged upstream, not surfaced.
-func (s *Service) InsertSessionAlert(ctx context.Context, workspaceID, sessionID, alert string, oldestBusySeconds int) error {
+// facts (#2047, nil-able) is persisted as the row's JSON payload —
+// the worker_silent arm's task facts ride the same append path.
+func (s *Service) InsertSessionAlert(ctx context.Context, workspaceID, sessionID, alert string, oldestBusySeconds int, facts map[string]string) error {
+	var payload any
+	if len(facts) > 0 {
+		b, err := json.Marshal(facts)
+		if err != nil {
+			// Facts are plain strings; marshal cannot fail. Degraded
+			// insert (facts dropped) beats a lost alert.
+			payload = nil
+		} else {
+			payload = b
+		}
+	}
 	_, err := s.DB.ExecContext(ctx,
-		`INSERT INTO session_alerts (workspace_id, session_id, alert, oldest_busy_seconds)
-		 VALUES ($1, $2, $3, $4)`, workspaceID, sessionID, alert, oldestBusySeconds)
+		`INSERT INTO session_alerts (workspace_id, session_id, alert, oldest_busy_seconds, payload)
+		 VALUES ($1, $2, $3, $4, $5)`, workspaceID, sessionID, alert, oldestBusySeconds, payload)
 	return err
 }
 
@@ -1058,7 +1072,7 @@ func (s *Service) ListSessionAlerts(ctx context.Context, workspaceID string, lim
 		limit = 50
 	}
 	rows, err := s.DB.QueryContext(ctx,
-		`SELECT id::text, workspace_id, session_id, alert, oldest_busy_seconds, created_at, resolved_at
+		`SELECT id::text, workspace_id, session_id, alert, oldest_busy_seconds, created_at, resolved_at, payload
 		 FROM session_alerts WHERE workspace_id = $1
 		 ORDER BY created_at DESC LIMIT $2`, workspaceID, limit)
 	if err != nil {
@@ -1069,13 +1083,15 @@ func (s *Service) ListSessionAlerts(ctx context.Context, workspaceID string, lim
 	for rows.Next() {
 		var a types.SessionAlert
 		var resolvedAt sql.NullTime
-		if err := rows.Scan(&a.ID, &a.WorkspaceID, &a.SessionID, &a.Alert, &a.OldestBusySeconds, &a.CreatedAt, &resolvedAt); err != nil {
+		var payload []byte
+		if err := rows.Scan(&a.ID, &a.WorkspaceID, &a.SessionID, &a.Alert, &a.OldestBusySeconds, &a.CreatedAt, &resolvedAt, &payload); err != nil {
 			return nil, err
 		}
 		if resolvedAt.Valid {
 			t := resolvedAt.Time
 			a.ResolvedAt = &t
 		}
+		a.Payload = json.RawMessage(payload)
 		alerts = append(alerts, a)
 	}
 	return alerts, rows.Err()
@@ -1121,9 +1137,27 @@ func (s *Service) ResolveSessionAlerts(ctx context.Context, workspaceID string) 
 	return n, nil
 }
 
+// ResolveSessionAlertsForSession sets resolved_at on the workspace's
+// unresolved alerts for ONE session (#2047: worker_silent is
+// session-scoped — a resumed worker resolves their own row, never a
+// sibling silent worker's). Returns the number of rows resolved.
+func (s *Service) ResolveSessionAlertsForSession(ctx context.Context, workspaceID, sessionID string) (int64, error) {
+	tag, err := s.DB.ExecContext(ctx,
+		`UPDATE session_alerts SET resolved_at = now()
+		 WHERE workspace_id = $1 AND session_id = $2 AND resolved_at IS NULL`,
+		workspaceID, sessionID)
+	if err != nil {
+		return 0, err
+	}
+	n, err := tag.RowsAffected()
+	if err != nil {
+		return 0, err
+	}
+	return n, nil
+}
+
 // ListSessionIndex returns the workspace's COMPLETE session listing
-// (sidebar surface; #1886): message-recency first, then — through the
-// #1880 NULL pool of dispatch-spawned sessions whose message streams
+// (sidebar surface; #1886): message-recency first, then — through the// #1880 NULL pool of dispatch-spawned sessions whose message streams
 // never populate last_message_at — created_at DESC so the newest
 // spawn ranks ahead of stale rows, with the unique session_id as the
 // final key making the order total (dispatch cohorts share one

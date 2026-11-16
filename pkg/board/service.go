@@ -167,6 +167,11 @@ type Service struct {
 	// = inert: nothing is ever reported busy; claimed rows render
 	// claimed-but-quiet, never the dishonest spin.
 	busySrc AssigneeBusySource
+	// quietSrc answers "how long since this assignee's last worker
+	// activity, and how long has a busy one been silent?" for the read
+	// edge (#2047 — quiet.go). Nil = inert: rows render unknown (nil
+	// fields), never a fabricated quiet figure.
+	quietSrc AssigneeQuietSource
 	// leaseEvents projects the ladder's post-commit decisions (design
 	// 0072 S4 — the observation plane). Nil = inert (nothing is
 	// projected; the ladder itself is unchanged).

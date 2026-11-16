@@ -14,6 +14,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/lenaxia/llmsafespaces/api/internal/testharness"
+	"github.com/lenaxia/llmsafespaces/pkg/types"
 )
 
 // seedAlert inserts one alert row with explicit created_at control (the
@@ -106,4 +107,47 @@ func TestIntegration_SessionAlerts_StaleHealSemantics(t *testing.T) {
 			assert.NotNil(t, a.ResolvedAt, "already-resolved row untouched")
 		}
 	}
+}
+
+// TestIntegration_SessionAlerts_PayloadAndSessionResolve pins the #2047
+// additions: the facts payload round-trips through insert + list (nil on
+// fact-less alerts — the session_hung shape never changes), and the
+// session-scoped resolve moves ONLY the named session's unresolved row.
+func TestIntegration_SessionAlerts_PayloadAndSessionResolve(t *testing.T) {
+	h := testharness.New(t)
+	ctx := h.NewContext()
+	pool := h.Pool()
+	svc := &Service{DB: h.SQLDB()}
+
+	const ws = "int-alert-ws-2047"
+	_, _ = pool.Exec(ctx, "DELETE FROM session_alerts WHERE workspace_id = $1", ws)
+
+	// The fact-less shape (session_hung) — nil facts, NULL payload.
+	require.NoError(t, svc.InsertSessionAlert(ctx, ws, "ses-hung", "session_hung", 960, nil))
+	// Two worker_silent rows: one for the recovering session, one for
+	// the sibling that stays silent.
+	facts := map[string]string{"task_short_id": "tsk-quiet-one", "project_id": "prj-x", "lease_state": "lapsed"}
+	require.NoError(t, svc.InsertSessionAlert(ctx, ws, "ses-recover", "worker_silent", 2701, facts))
+	require.NoError(t, svc.InsertSessionAlert(ctx, ws, "ses-sibling", "worker_silent", 3600, facts))
+
+	n, err := svc.ResolveSessionAlertsForSession(ctx, ws, "ses-recover")
+	require.NoError(t, err)
+	assert.Equal(t, int64(1), n, "only the recovering session's row resolves")
+
+	alerts, err := svc.ListSessionAlerts(ctx, ws, 10)
+	require.NoError(t, err)
+	require.Len(t, alerts, 3)
+	bySession := map[string]types.SessionAlert{}
+	for _, a := range alerts {
+		bySession[a.SessionID] = a
+	}
+	assert.NotNil(t, bySession["ses-recover"].ResolvedAt, "the recovered worker's alert is resolved")
+	assert.Nil(t, bySession["ses-sibling"].ResolvedAt, "the sibling's alert is untouched — session-scoped isolation")
+	assert.Nil(t, bySession["ses-hung"].ResolvedAt, "the fact-less row is untouched by the session resolve")
+
+	// The payload round-trips verbatim on the worker_silent rows and is
+	// empty on the fact-less row.
+	assert.JSONEq(t, `{"task_short_id":"tsk-quiet-one","project_id":"prj-x","lease_state":"lapsed"}`,
+		string(bySession["ses-recover"].Payload), "the task facts ride the row byte-for-byte")
+	assert.Empty(t, bySession["ses-hung"].Payload, "fact-less alerts keep a NULL payload")
 }

@@ -86,11 +86,20 @@ type DatabaseService interface {
 	CheckPermission(ctx context.Context, userID, resourceType, resourceID, action string) (bool, error)
 	CheckResourceOwnership(ctx context.Context, userID, resourceType, resourceID string) (bool, error)
 	ListSessionIndex(ctx context.Context, workspaceID string) ([]types.SessionListItem, error)
-	InsertSessionAlert(ctx context.Context, workspaceID, sessionID, alert string, oldestBusySeconds int) error
+	// InsertSessionAlert appends one escalation record. facts (nil-able,
+	// #2047) is persisted as the row's JSON payload — the worker_silent
+	// arm's task facts (task short id, project, lease state) ride the
+	// same append path as the D6 busy escalation.
+	InsertSessionAlert(ctx context.Context, workspaceID, sessionID, alert string, oldestBusySeconds int, facts map[string]string) error
 	ListSessionAlerts(ctx context.Context, workspaceID string, limit int) ([]types.SessionAlert, error)
 	// ResolveSessionAlerts sets resolved_at on every unresolved alert
 	// for the workspace and returns the number resolved.
 	ResolveSessionAlerts(ctx context.Context, workspaceID string) (int64, error)
+	// ResolveSessionAlertsForSession sets resolved_at on the workspace's
+	// unresolved alerts for ONE session (#2047: worker_silent is
+	// session-scoped — one recovered worker resolves only their own
+	// row, never a sibling silent worker's).
+	ResolveSessionAlertsForSession(ctx context.Context, workspaceID, sessionID string) (int64, error)
 	// ResolveStaleSessionAlerts resolves unresolved alerts older than
 	// the cutoff (read-side heal for lost resolution authority).
 	ResolveStaleSessionAlerts(ctx context.Context, workspaceID string, before time.Time) (int64, error)
@@ -246,11 +255,20 @@ type SessionIndexService interface {
 // surfaces (GET /workspaces/:id/alerts).
 type SessionAlertsService interface {
 	RecordAlert(workspaceID, sessionID, alert string, oldestBusySeconds int)
+	// RecordTaskAlert appends one alert carrying task facts in its
+	// persisted payload (#2047 worker_silent: task short id, project,
+	// lease state) — non-blocking like RecordAlert.
+	RecordTaskAlert(workspaceID, sessionID, alert string, oldestBusySeconds int, facts map[string]string)
 	// ResolveWorkspace marks all of a workspace's unresolved alerts
 	// resolved (the D6 sweep observed the hang end, or the workspace
 	// left Active while alerted — proxy_events.go's watch hook).
 	// Non-blocking like RecordAlert (bounded queue + drainer).
 	ResolveWorkspace(workspaceID string)
+	// ResolveSession marks ONE session's unresolved alerts resolved
+	// (#2047: the worker_silent resolution is session-scoped — a
+	// resumed worker clears their own alert, never a sibling's).
+	// Non-blocking like RecordAlert.
+	ResolveSession(workspaceID, sessionID string)
 	ListByWorkspace(ctx context.Context, workspaceID string, limit int) ([]types.SessionAlert, error)
 	Start() error
 	Stop() error
