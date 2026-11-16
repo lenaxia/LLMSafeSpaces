@@ -296,6 +296,57 @@ paths:
           $ref: "#/components/responses/Unauthorized"
         "404":
           $ref: "#/components/responses/NotFound"
+  /workspaces/{id}/harness:
+    put:
+      tags: [workspaces]
+      summary: Bind the workspace's harness (bind-once)
+      description: >
+        The explicit bind of an UNBOUND workspace's harness (owner
+        ruling 2026-11-16: workspaces do NOT switch harnesses — one
+        harness per workspace, bound once, immutable forever; there
+        is NO switch or recreate endpoint at any tier). Same value on
+        a bound workspace: idempotent 200 (alreadyBound). Any other
+        value on a bound workspace (including the empty unbind
+        attempt): 409 harness_immutable. Disabled/unknown harness on
+        an unbound workspace: 422.
+      operationId: bindWorkspaceHarness
+      parameters:
+        - $ref: "#/components/parameters/WorkspaceId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [harness]
+              properties:
+                harness:
+                  type: string
+                  enum: [opencode, pi]
+                  description: The harness to bind, exactly once.
+      responses:
+        "200":
+          description: Bound (or already bound — the idempotent no-op)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BindHarnessResult"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: harness_immutable — the workspace is already bound (no switch or recreate path exists)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "422":
+          description: The harness is unknown or not enabled on this instance
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
   /workspaces/{id}/dev-preview:
     put:
       tags: [workspaces]
@@ -864,9 +915,27 @@ paths:
     post:
       tags: [sessions]
       summary: Create a new session (ensures workspace is active)
+      description: >
+        On an UNBOUND workspace the optional harness body field binds
+        the workspace's harness atomically with this session (owner
+        ruling 2026-11-16 — the frontend picker's submit; omitted binds
+        opencode, the non-interactive default). On a bound workspace
+        the harness must match or be omitted (mismatch: 409
+        harness_immutable).
       operationId: createSession
       parameters:
         - $ref: "#/components/parameters/WorkspaceId"
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                harness:
+                  type: string
+                  enum: [opencode, pi]
+                  description: The picker's harness choice on an unbound workspace (bind-once, atomic with the session).
       responses:
         "200":
           description: Session created or resumed
@@ -878,6 +947,12 @@ paths:
           $ref: "#/components/responses/Unauthorized"
         "404":
           $ref: "#/components/responses/NotFound"
+        "409":
+          description: harness_immutable — the workspace is bound to a different harness
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
   /workspaces/{id}/sessions/active:
     get:
       tags: [sessions]
@@ -10251,6 +10326,25 @@ components:
         phraseId:
           type: string
           description: The #1757 workspace phrase (2 words + 1 digit, fleet-unique) — the display/cross-workspace address. Absent only pre-backfill.
+        harness:
+          type: string
+          enum: [opencode, pi]
+          nullable: true
+          description: >
+            The bound coding-agent harness (owner ruling 2026-11-16:
+            bind-once — workspaces do NOT switch harnesses). null =
+            unbound: no pod runs until the harness is chosen (first
+            session's picker submit, or PUT /workspaces/{id}/harness).
+            Once bound, immutable for the workspace's lifetime.
+        harnessOptions:
+          type: array
+          items:
+            type: string
+            enum: [opencode, pi]
+          description: >
+            The instance's enabled harness set (the picker's offer
+            list; opencode always present). Read-only context — a
+            bound harness is unaffected by later enablement changes.
     CreateWorkspaceRequest:
       type: object
       properties:
@@ -10266,6 +10360,17 @@ components:
           type: object
           additionalProperties:
             type: string
+        harness:
+          type: string
+          enum: [opencode, pi]
+          description: >
+            Optionally bind the harness at create (owner ruling
+            2026-11-16: bind-once; must be in the instance's enabled
+            set). DEFAULT CHANGE (2026-11-16): omitted no longer means
+            opencode implicitly — the workspace is created UNBOUND and
+            must be bound (first session or PUT /workspaces/{id}/harness)
+            before first use. Pre-existing workspaces were backfilled to
+            explicit opencode.
     WorkspaceListResult:
       type: object
       properties:
@@ -10288,6 +10393,13 @@ components:
           type: string
         storageSize:
           type: string
+        harness:
+          type: string
+          enum: [opencode, pi]
+          nullable: true
+          description: >
+            The bound harness (owner ruling 2026-11-16: bind-once,
+            immutable forever). null = unbound (no pod until the bind).
         phase:
           type: string
           enum: [Pending, Creating, Active, Suspending, Suspended, Resuming, Terminating, Terminated, Failed]
@@ -10670,6 +10782,30 @@ components:
           description: >
             Carries the harness full id ONLY in the degraded window
             (phrase could not be minted); address sessions by phrase.
+        harness:
+          type: string
+          enum: [opencode, pi]
+          description: >
+            The workspace's bound harness (owner ruling 2026-11-16:
+            bind-once). On an unbound workspace the request's harness
+            (or the opencode non-interactive default) binds atomically
+            with this session — the frontend picker's submit path.
+    BindHarnessResult:
+      type: object
+      properties:
+        harness:
+          type: string
+          enum: [opencode, pi]
+          description: The workspace's harness after the call.
+        alreadyBound:
+          type: boolean
+          description: true when the workspace was already bound to this value (the idempotent 200 path).
+        harnessOptions:
+          type: array
+          items:
+            type: string
+            enum: [opencode, pi]
+          description: The instance's enabled harness set (picker context).
     SessionListItem:
       type: object
       properties:

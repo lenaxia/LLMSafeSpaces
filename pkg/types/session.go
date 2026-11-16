@@ -157,6 +157,11 @@ type EnsureSessionResponse struct {
 	// response had to degrade to it (seam unavailable) — the
 	// one-release input-deprecation notice travels with it (#1756 §2).
 	DeprecatedSessionID string `json:"deprecatedSessionId,omitempty"`
+	// Harness echoes the workspace's bound harness (owner ruling
+	// 2026-11-16: bind-once). On an unbound workspace the request's
+	// harness (or the platform default when omitted) binds atomically
+	// with this session — the frontend picker's submit path.
+	Harness string `json:"harness,omitempty"`
 }
 
 type CredentialStateResult struct {

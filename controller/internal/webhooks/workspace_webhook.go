@@ -643,13 +643,36 @@ func (v *WorkspaceValidator) Handle(ctx context.Context, req admission.Request) 
 		return admission.Denied(err.Error())
 	}
 
-	// 7a. spec.harness immutability (pi-scoping §6 / S5): sessions,
-	//     agent config, and PVC artifacts are harness-specific, so an
-	//     in-place switch would strand the old harness's state on the
-	//     shared PVC. Switching harness = create a new Workspace. The
-	//     comparison runs against the OLD object on UPDATE (the one
-	//     place the prior value exists); CREATE has nothing to compare
-	//     and passes (the CRD enum + default constrain the value).
+	// 7a. spec.harness bind-once immutability (owner ruling
+	//     2026-11-16: workspaces do NOT switch harnesses — one
+	//     harness per workspace, bound once, immutable forever; the
+	//     2026-11-15 prelim's switch-with-recreate was REJECTED).
+	//     Sessions, agent config, and PVC artifacts are
+	//     harness-specific, so a post-bind change would strand the old
+	//     harness's state on the shared PVC; there is deliberately NO
+	//     switch or recreate path. The comparison runs against the OLD
+	//     object on UPDATE (the one place the prior value exists);
+	//     CREATE has nothing to compare and passes (the CRD enum
+	//     constrains the value; absent = unbound, bound later).
+	//
+	//     Transitions on UPDATE:
+	//       "" -> ""            allow (still unbound / no-op)
+	//       "" -> opencode      allow (bind, or the controller's
+	//                           legacy backfill stamp — see
+	//                           reconcileHarnessBinding)
+	//       "" -> pi            allow ONLY on a born-unbound workspace
+	//                           (AnnotationHarnessUnbound on the OLD
+	//                           object — the API stamps it at create
+	//                           when the harness param is omitted).
+	//                           A marker-less "" object is a
+	//                           pre-binding-ruling workspace that has
+	//                           only ever run opencode (the old schema
+	//                           default): binding it to pi would
+	//                           strand its opencode state — denied
+	//                           with the immutability message.
+	//       value -> value      allow only when identical; any change
+	//                           (incl. back to "", the unbind attempt)
+	//                           is DENIED.
 	if req.Operation == "UPDATE" && len(req.OldObject.Raw) > 0 {
 		old := &v1.Workspace{}
 		if err := v.Decoder.DecodeRaw(req.OldObject, old); err != nil {
@@ -657,17 +680,25 @@ func (v *WorkspaceValidator) Handle(ctx context.Context, req admission.Request) 
 				fmt.Errorf("decoding old workspace for harness comparison: %w", err))
 		}
 		oldHarness := old.Spec.Harness
-		if oldHarness == "" {
-			oldHarness = v1.HarnessOpencode
-		}
 		newHarness := ws.Spec.Harness
-		if newHarness == "" {
-			newHarness = v1.HarnessOpencode
-		}
-		if oldHarness != newHarness {
+		if oldHarness == newHarness {
+			// No change (both unbound, both the same bound value).
+			// Fall through.
+		} else if oldHarness == "" {
+			// A bind while unbound. The legacy discriminator: only a
+			// born-unbound workspace (marker present) may bind to a
+			// non-default harness; legacy marker-less objects may only
+			// be stamped opencode (the backfill).
+			if newHarness != v1.HarnessOpencode && old.Annotations[v1.AnnotationHarnessUnbound] != "true" {
+				return admission.Denied(fmt.Sprintf(
+					"spec.harness is immutable once bound for this workspace (legacy workspace, bound %q; attempted %q) — workspaces do not switch harnesses; recreate the Workspace on %q instead",
+					v1.HarnessOpencode, newHarness, newHarness))
+			}
+			// Born-unbound bind, or the opencode backfill stamp: allow.
+		} else {
 			return admission.Denied(fmt.Sprintf(
-				"spec.harness is immutable (was %q, attempted %q) — sessions, config, and artifacts are harness-specific; recreate the Workspace to switch harness",
-				oldHarness, newHarness))
+				"spec.harness is immutable once bound for this workspace (was %q, attempted %q) — workspaces do not switch harnesses; recreate the Workspace on %q to use it",
+				oldHarness, newHarness, newHarness))
 		}
 	}
 

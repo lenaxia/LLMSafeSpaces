@@ -1788,12 +1788,54 @@ func registerWorkspaceRoutes(rg *gin.RouterGroup, idGroup *gin.RouterGroup, serv
 			c.JSON(http.StatusUnauthorized, gin.H{"error": "authentication required"})
 			return
 		}
-		resp, err := wsSvc.EnsureSession(c.Request.Context(), userID, c.Param("id"))
+		// Bind-once harness (owner ruling 2026-11-16): the optional
+		// body carries the picker's submit on an unbound workspace
+		// (binds atomically with the session). Empty body and empty
+		// harness are legal — the bound harness (or the opencode
+		// non-interactive default for a still-unbound workspace) is
+		// used; a mismatched harness on a bound workspace 409s in the
+		// service.
+		var body struct {
+			Harness string `json:"harness"`
+		}
+		if c.Request.Body != nil {
+			_ = c.ShouldBindJSON(&body) // absent/empty body is fine
+		}
+		resp, err := wsSvc.EnsureSession(c.Request.Context(), userID, c.Param("id"), body.Harness)
 		if err != nil {
 			respondWithError(c, err)
 			return
 		}
 		c.JSON(http.StatusOK, resp)
+	})
+
+	// PUT /harness — the explicit bind of an UNBOUND workspace's
+	// harness (owner ruling 2026-11-16: bind-once, immutable forever).
+	// Same value on a bound workspace: idempotent 200; any other
+	// value: 409 harness_immutable. There is deliberately NO switch
+	// or recreate endpoint anywhere (pinned by
+	// TestHarnessNoSwitchOrRecreateEndpointExists).
+	idGroup.PUT("/harness", func(c *gin.Context) {
+		userID := authSvc.GetUserID(c)
+		if userID == "" {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "authentication required"})
+			return
+		}
+		var req types.BindHarnessRequest
+		if err := c.ShouldBindJSON(&req); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "request body must be JSON with a harness field"})
+			return
+		}
+		// An empty harness flows to the service: on a BOUND workspace
+		// it is the unbind attempt (the loud 409 harness_immutable);
+		// on an unbound workspace the 422 required-field error. Only
+		// malformed JSON 400s here.
+		result, err := wsSvc.BindWorkspaceHarness(c.Request.Context(), userID, c.Param("id"), req.Harness)
+		if err != nil {
+			respondWithError(c, err)
+			return
+		}
+		c.JSON(http.StatusOK, result)
 	})
 
 	idGroup.PUT("/sessions/:sessionId/title", refMW, func(c *gin.Context) {

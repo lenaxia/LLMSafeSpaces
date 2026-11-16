@@ -262,7 +262,7 @@ func TestRenameWorkspace_NotFound(t *testing.T) {
 func TestEnsureSession_Route_Success(t *testing.T) {
 	router, svc := newRouterFixture(t)
 
-	svc.workspace.On("EnsureSession", mock.Anything, "test-user", "ws-1").Return(
+	svc.workspace.On("EnsureSession", mock.Anything, "test-user", "ws-1", "").Return(
 		&types.EnsureSessionResponse{
 			WorkspaceID:    "sb-1",
 			WorkspacePhase: "Active",
@@ -286,7 +286,7 @@ func TestEnsureSession_Route_Success(t *testing.T) {
 func TestEnsureSession_Route_Resumed(t *testing.T) {
 	router, svc := newRouterFixture(t)
 
-	svc.workspace.On("EnsureSession", mock.Anything, "test-user", "ws-2").Return(
+	svc.workspace.On("EnsureSession", mock.Anything, "test-user", "ws-2", "").Return(
 		&types.EnsureSessionResponse{
 			WorkspaceID:    "sb-new",
 			WorkspacePhase: "Active",
@@ -318,7 +318,7 @@ func TestEnsureSession_Route_Unauthorized(t *testing.T) {
 func TestEnsureSession_Route_ServiceError(t *testing.T) {
 	router, svc := newRouterFixture(t)
 
-	svc.workspace.On("EnsureSession", mock.Anything, "test-user", "ws-bad").Return(
+	svc.workspace.On("EnsureSession", mock.Anything, "test-user", "ws-bad", mock.Anything).Return(
 		nil, errors.New("internal_error: sandbox_timeout"))
 
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/workspaces/ws-bad/sessions/new", nil)
