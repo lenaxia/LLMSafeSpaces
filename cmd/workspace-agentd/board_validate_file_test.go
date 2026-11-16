@@ -267,6 +267,51 @@ func TestBoardValidate_HappyPaths(t *testing.T) {
 		paths := findingPaths(report)
 		assert.Contains(t, paths, "stagePersonas.backlog")
 	})
+
+	// The wrapUpReviewer key (epic wrap-up review, §6/D8): the SAME
+	// role-reference codec, one contract per shape — the bare string
+	// is canonical, the {roleId} object decodes, the legacy shapes and
+	// non-strings reject, and the trim-aware non-empty rule is the
+	// semantic check's (identical admission to the platform decoder).
+	t.Run("set_config wrapUpReviewer role-ref shapes", func(t *testing.T) {
+		for name, payload := range map[string]string{
+			"bare reference": `{"wrapUpReviewer":"wrapup-reviewer"}`,
+			"roleId object":  `{"wrapUpReviewer":{"roleId":"wrapup-reviewer"}}`,
+			"roleId uuid":    `{"wrapUpReviewer":{"roleId":"22222222-2222-2222-2222-222222222222"}}`,
+		} {
+			report := validateFixture(t, "set_config", payload)
+			assert.True(t, report.Valid, "%s: expected valid, findings %+v", name, report.Findings)
+		}
+		for name, payload := range map[string]string{
+			"legacy name+instructions": `{"wrapUpReviewer":{"name":"auditor","instructions":"Verify."}}`,
+			"roleId + instructions":    `{"wrapUpReviewer":{"roleId":"custom","instructions":"x"}}`,
+			"non-string type":          `{"wrapUpReviewer":17}`,
+			"boolean":                  `{"wrapUpReviewer":true}`,
+			"null":                     `{"wrapUpReviewer":null}`,
+			"empty bare":               `{"wrapUpReviewer":""}`,
+		} {
+			report := validateFixture(t, "set_config", payload)
+			assert.False(t, report.Valid, "%s: the non-role shape must reject", name)
+			assert.Contains(t, findingPaths(report), "wrapUpReviewer", name)
+		}
+		// The whitespace-only shapes carry the SEMANTIC persona-role-ref
+		// finding (the schema's minLength cannot see whitespace; this
+		// surface must agree with the platform decoder).
+		for name, payload := range map[string]string{
+			"whitespace bare": `{"wrapUpReviewer":"   "}`,
+			"whitespace obj":  `{"wrapUpReviewer":{"roleId":"   "}}`,
+		} {
+			report := validateFixture(t, "set_config", payload)
+			assert.False(t, report.Valid, "%s: must reject", name)
+			found := false
+			for _, f := range report.Findings {
+				if f.Path == "wrapUpReviewer" && f.Rule == "persona-role-ref" {
+					found = true
+				}
+			}
+			assert.True(t, found, "%s: the semantic persona-role-ref finding must name the rule: %+v", name, report.Findings)
+		}
+	})
 }
 
 func TestBoardValidate_ViolationClasses(t *testing.T) {

@@ -126,6 +126,48 @@ func seedBuiltinReviewerRole(ctx context.Context, store boardRoleStore) error {
 	return err
 }
 
+// seedBuiltinWrapUpReviewerRole seeds the built-in `wrapup-reviewer`
+// platform agent role (epic wrap-up review, low-level design §6) — the
+// JUDGMENT-half charter as its system prompt
+// (board.DefaultWrapUpReviewerRoleSystemPrompt: the holistic
+// aggregate-diff read; the ENGINE owns procedure, so the prompt
+// deliberately carries none of it). This is the role the wrapUpReviewer
+// config key defaults to (board.DefaultWrapUpReviewerPersona's slug
+// reference): with it seeded, the default resolves deterministically
+// and every wrap-up reviewer runs on it; an owner overriding the
+// reviewer points wrapUpReviewer at their own role instead (user or
+// project tier — never per-epic). Idempotent beside the reviewer seed:
+// an existing PLATFORM-scope role with the slug makes the seed a no-op
+// (the list is platform scope only — an org-scoped namesake does NOT
+// suppress the seed, the reviewer seed's same discipline).
+func seedBuiltinWrapUpReviewerRole(ctx context.Context, store boardRoleStore) error {
+	roles, err := store.ListAgentRoles(ctx, "platform", "")
+	if err != nil {
+		return err
+	}
+	for _, r := range roles {
+		if r != nil && r.Slug == board.DefaultWrapUpReviewerRoleSlug {
+			return nil // already present — the seed is idempotent
+		}
+	}
+	system := board.DefaultWrapUpReviewerRoleSystemPrompt
+	configJSON, err := types.MarshalRoleConfig(&types.RoleConfig{
+		Version: types.RoleConfigVersion,
+		System:  &system,
+	})
+	if err != nil {
+		return err
+	}
+	_, err = store.CreateAgentRole(ctx, &types.AgentRole{
+		Scope:       "platform",
+		Name:        "Wrap-up reviewer",
+		Slug:        board.DefaultWrapUpReviewerRoleSlug,
+		Description: "Built-in wrap-up reviewer — the holistic aggregate-diff judgment charter for epic wrap-up reviews as its system prompt. Seeded by the platform; point the board wrapUpReviewer config key here or at your own role.",
+		IsDefault:   false,
+	}, configJSON)
+	return err
+}
+
 // seedBuiltinBoardRoles seeds the shipped stage-persona vocabulary
 // (2026-11-13 owner ask): the six board.BuiltinBoardRoles —
 // implementer/reviewer pairs for coding, data analysis, and writing —
