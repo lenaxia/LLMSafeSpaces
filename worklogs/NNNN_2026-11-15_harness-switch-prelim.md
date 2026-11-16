@@ -107,3 +107,21 @@ charters embed REFINED ACCEPTANCE CRITERIA as binding prose for the orchestrator
     heals rolling-window rows at the next boot by construction; residuals documented
     (bounded visibility gap; the narrower mid-rollout-switch class accepted) and pinned
     (`TestSessionIndex_BootStampRolloutWindow`).
+- **r3** (`fb3c1d31d`): both r2 findings FIXED and verified by the reviewer; one new —
+  `pre-backfill-switch-wedge`: the §2a backfill premise ("webhook 7a ⇒ every status="" pod was
+  built for its spec") is falsified by the contract's OWN switch surface in the pre-backfill
+  window — a legacy Active workspace's first switch passes the phase-only guard, writes
+  spec+marker, and if the controller's backfill arm reaches the object first it stamps
+  status=desired onto the OLD-harness pod: spec==status forever, drift never fires, permanent
+  mis-routing + permanently hidden live sessions with no self-heal (the sweep excludes the
+  workspace — annotation present). r4 fix: MARKER-AWARE backfill — `status=="" && live pod &&
+  AnnotationHarnessSwitch present ⇒ NOT backfill; drift` (the marker proves the spec postdates
+  the pod; recreation is what the switch asked for). The reviewer's alternative (SwitchHarness
+  409s while status.harness=="") was considered and REJECTED: the first switch on an existing
+  workspace is the epic's flagship use case — recorded in §1a step 1. Known benign cost
+  documented: an aborted pre-backfill first switch costs one convergent same-harness
+  recreation (the controller cannot know a status="" pod's true harness; the marker-present
+  reading is the only one that never wedges a real switch). `TestHarnessDrift_BackfillSkipsMarkerPresent`
+  pinned (§2a + test-map row 3); §2b gains the backfill/annotation interplay sentence; HL D4,
+  lifecycle, and the failure table updated (legacy-fleet row scoped markerless; new
+  first-switch row).

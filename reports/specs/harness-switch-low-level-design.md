@@ -47,7 +47,11 @@ Service `SwitchHarness(ctx, userID, wsID, harness)` in
 1. **Guard** — terminal/Terminating reject (the refresh shape `:988`); phase ∈
    {`Active`,`Failed`,`Suspended`} else `409 {error, phase}` (D10 open question default); suspend
    semantics: a `Suspended` target performs NO recreation — spec write only; the next activation
-   builds the new harness (controller arm handles it naturally, §2).
+   builds the new harness (controller arm handles it naturally, §2). A LEGACY workspace
+   (`status.harness == ""`) in an allowed phase is ADMITTED, not 409'd: the first switch on an
+   existing workspace is this epic's flagship use case, and the marker-aware backfill (§2a)
+   converges it correctly (drift-recreate of the old-harness pod) — a
+   retry-when-status-backfilled guard was considered and rejected for exactly that reason.
 2. **Same-value short-circuit** — `204`, no sweep, no write, `switched:false` semantics.
 3. **Board sweep, pass 1** (§4) — BEFORE any spec write; a sweep failure aborts the request
    (500), nothing else happened.
@@ -110,15 +114,28 @@ Harness HarnessType `json:"harness,omitempty"`
 New arm in `handleActive`, after the architecture-drift block (`:202-231`; identical shape, D4):
 
 ```go
-// Harness drift (D4): spec.harness vs status.harness. Backfill FIRST:
-// status.harness=="" + live pod ⇒ a pre-switch-era object of ANY harness
-// (webhook 7a immutability means every existing pod was built for exactly
-// its spec value — including kubectl-created pi workspaces, per F1) —
-// write status=desired, no recreation. The fleet must not mass-recreate
-// on upgrade; unconditional-when-empty is the only shape that spares the
-// legacy pi fleet from an unswept, ungated recreate (the F3/#2040 chain).
+// Harness drift (D4): spec.harness vs status.harness. Backfill FIRST —
+// but only for MARKERLESS objects: status.harness=="" + live pod + no
+// AnnotationHarnessSwitch ⇒ a pre-switch-era object of ANY harness
+// (webhook 7a immutability means every markerless existing pod was built
+// for exactly its spec value — including kubectl-created pi workspaces,
+// per F1) — write status=desired, no recreation. The marker breaks the
+// premise: it proves the spec was written by the switch surface AFTER
+// the pod existed (a pre-backfill FIRST switch on a legacy workspace —
+// r3 review: the phase-only guard in §1a step 1 admits it, correctly),
+// and such an object is DRIFT, not backfill — stamping status=desired
+// onto the old-harness pod would wedge it permanently (spec==status
+// blocks the drift arm forever; status-first routing mis-serves the
+// live old pod with no TTL bound; §5c hides its live sessions; the §5a
+// sweep excludes the workspace — annotation present — so nothing ever
+// heals). The fleet must not mass-recreate on upgrade;
+// unconditional-when-empty-AND-markerless is the only shape that spares
+// the legacy pi fleet from an unswept, ungated recreate (the F3/#2040
+// chain) while converging the pre-backfill switch to the recreation it
+// asked for.
 desired := workspace.Spec.Harness; if desired == "" { desired = v1.HarnessOpencode }
-if workspace.Status.Harness == "" && pod != nil && pod.Status.Phase == corev1.PodRunning {
+if workspace.Status.Harness == "" && pod != nil && pod.Status.Phase == corev1.PodRunning &&
+    workspace.Annotations[v1.AnnotationHarnessSwitch] == "" {
     workspace.Status.Harness = desired                 // plain status write, no recreation
 } else if workspace.Status.Harness != desired {
     if r.drainBeforePodDeletion(ctx, workspace, drainReasonHarnessSwitch) == drainDefer {
@@ -133,6 +150,13 @@ if workspace.Status.Harness == "" && pod != nil && pod.Status.Phase == corev1.Po
 
 Pin: `TestHarnessDrift_BackfillPiNoRecreate` (controller/internal/workspace/phase_active_test.go) —
 spec=pi / status="" / live pod → status=pi, no drain, no recreation; same for spec=opencode.
+Pin: `TestHarnessDrift_BackfillSkipsMarkerPresent` — status="" / live pod / marker present →
+backfill SKIPPED, drift arm runs (drain → recreate → status at build): a pre-backfill switch on
+a running legacy pod never stamps `status=desired` onto the old pod. Known benign cost: an
+ABORTED pre-backfill first switch (spec PUT back to the original, marker re-gated to it) leaves
+status="" + marker on a pod that already matches spec — the arm reads it as drift and pays ONE
+convergent recreation (rebuilt for the same harness); the controller cannot know a status=""
+pod's true harness, and this reading is the only one that never wedges a real switch.
 A status="" object with NO live pod has nothing to backfill from — it takes the ordinary
 Creating path, which builds the pod and writes status at build (§2a second bullet).
 
@@ -174,6 +198,12 @@ AnnotationHarnessSwitchedAt = "llmsafespaces.dev/harness-switched-at"
   the denial message re-points at the API (`PUT /api/v1/workspaces/{id}/harness`) instead of
   "recreate the Workspace". Stale markers are harmless (value must equal the new spec) and the
   controller clears the marker after first observation (§2a).
+- **Backfill/annotation interplay (r3)**: the marker is not only the webhook's consent token —
+  on a `status.harness==""` object it is the signal that separates backfill from drift (§2a).
+  The two clear/observe duties stay in one place: the drift arm recreates, then clears the
+  marker after first observation; the backfill arm never touches marker-present objects. The
+  persistent `AnnotationHarnessSwitchedAt` (§1a step 4) is orthogonal — set-once at the API,
+  never cleared, read only by the §5a sweep.
 
 ## 3. Routing [api]
 
@@ -416,7 +446,7 @@ switch-back remains allowed (phase guard includes Failed).
 |---|---|
 | Webhook 7a′: markerless delta denied / matching marker admitted / mismatched marker denied | today all deltas denied |
 | `SwitchHarness`: no-op 204; guard 409s (Suspending/Creating/Terminating); two-pass sweep ordering (pass-1 failure ⇒ 500 with nothing moved; the racer-between-pass-1-and-spec-write lands swept by pass 2 and cannot re-claim — pin with a claim injected mid-call; `TestSweep_Pass2WaitsForGateArmed`, pkg/board/switch_test.go — pass 2 does not declare quiet until the gate reports armed); 202 shape | endpoint doesn't exist |
-| Controller: drift arm recreates preserving PVC name; backfill no-recreate for BOTH harnesses (`TestHarnessDrift_BackfillPiNoRecreate` — spec=pi/status=""/live pod → status=pi, no drain, no recreation); drain defer/force via `harness_switch` reason; marker cleared; Suspended-switch lands at next activation | arm doesn't exist |
+| Controller: drift arm recreates preserving PVC name; backfill no-recreate for BOTH harnesses (`TestHarnessDrift_BackfillPiNoRecreate` — spec=pi/status=""/live pod → status=pi, no drain, no recreation); `TestHarnessDrift_BackfillSkipsMarkerPresent` — status=""/live pod/marker present → backfill SKIPPED, drift runs (a pre-backfill switch on a running legacy pod never stamps status=desired onto the old pod); drain defer/force via `harness_switch` reason; marker cleared; Suspended-switch lands at next activation | arm doesn't exist |
 | Router: status-first resolution; stale-TTL post-flip mis-route reaches the LIVE wrong-harness bridge and fails loud 404-class — `TestHarnessRouter_StaleTTLPostFlip404` (pkg/agent/harnessrouter_test.go: opencode route shapes against the pi bridge's `/v1/pi/*`-only mux), pre-PodIP sub-window fails at resolution (`status.PodIP` cleared); never wrong-store data | resolver is spec-first |
 | Board sweep: in_progress clean requeue (NO failure_count/`last_attempt_failed`/cooldown, salvage embedded, next charter inherits); pending_input cleared + noted; in_review declaim no-accounting; stop directive post-commit | sweep doesn't exist |
 | Quiesce: claimOnce quiet no-grant; task_start 409; dispatch skip; persona re-arm skip — all while spec≠status, none after flip | gates key on phase today |

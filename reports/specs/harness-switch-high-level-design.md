@@ -55,9 +55,11 @@ existing long-op (202 + spec-write, controller-as-single-status-writer) API conv
       │
   controller (handleActive, new harness-drift arm — the arch-drift shape):
       spec.harness != status.harness?
-        ├─ status.harness backfill first ("" + live pod → write status=spec — ANY harness;
-        │  webhook 7a means every existing pod was built for its spec value; no recreation —
-        │  the legacy fleet, opencode AND kubectl-created pi, must not mass-recreate)
+         ├─ status.harness backfill first ("" + live pod + NO marker → write status=spec —
+         │  ANY harness; webhook 7a means every markerless existing pod was built for its spec
+         │  value; no recreation — the legacy fleet, opencode AND kubectl-created pi, must not
+         │  mass-recreate. Marker present ⇒ NOT backfill: a pre-backfill first switch — the
+         │  drift arm recreates, never stamping status onto the old pod)
         ├─ drainBeforePodDeletion(reason="harness_switch")  ← user turns finish politely;
         │    board workers are already swept; force after 60m no-progress (#761 unchanged)
         ├─ deletePodByName → phase=Creating → clear the marker
@@ -94,13 +96,17 @@ existing long-op (202 + spec-write, controller-as-single-status-writer) API conv
   `AnnotationForceRecycle` bookkeeping pattern, `force_recycle.go:38-64`); markerless flips keep
   today's denial, re-pointed at the API. The marker is consent bookkeeping, not an auth boundary
   (same trust posture as force-recycle); the controller clears it after first observation.
-- **D4 — Controller: a harness-drift arm in `handleActive`, plus a one-time backfill.** Desired vs
-  `status.harness`; polite drain with a new reason `harness_switch`; delete → `Creating` →
-  `buildPod` (already harness-aware). `status.harness == ""` on legacy pods backfills to
-  **spec.harness** (any harness — webhook 7a immutability means every existing pod, including
-  kubectl-created pi workspaces, was built for exactly its spec value) without recreation.
-  Switch requested while Suspended needs no recreation at all — the next
-  activation builds the new harness naturally.
+- **D4 — Controller: a harness-drift arm in `handleActive`, plus a marker-aware backfill.**
+  Desired vs `status.harness`; polite drain with a new reason `harness_switch`; delete →
+  `Creating` → `buildPod` (already harness-aware). `status.harness == ""` on legacy pods
+  backfills to **spec.harness** (any harness — webhook 7a immutability means every MARKERLESS
+  existing pod, including kubectl-created pi workspaces, was built for exactly its spec value)
+  without recreation. A marker-present `status.harness == ""` object is the pre-backfill
+  first-switch case — the backfill skips it and the drift arm recreates (stamping
+  `status=desired` onto the old-harness pod would wedge the switch permanently: spec==status
+  forever, no recreation, permanent mis-routing, hidden live sessions — LL §2a; pinned by
+  `TestHarnessDrift_BackfillSkipsMarkerPresent`). Switch requested while Suspended needs no
+  recreation at all — the next activation builds the new harness naturally.
 - **D5 — Board: sweep, don't freeze.** The #2040 lesson (never burn attempts on infra moves)
   is satisfied by *requeueing* the work to the new harness, not by freezing dead claims: the
   old-harness sessions can never resume (their harness is unservable), so a frozen lease has no
@@ -166,7 +172,8 @@ existing long-op (202 + spec-write, controller-as-single-status-writer) API conv
 | API replica's router cache stale ≤60s post-flip | Loud errors only (D8); self-heals at TTL |
 | Session-index reconcile sees foreign-harness rows | Shielded by harness predicate (D7); no reap, no metric storm |
 | Raw kubectl harness flip | Webhook 7a′ denies markerless deltas (D3) |
-| Legacy fleet (status.harness empty) | One-time backfill to spec, no recreation — any harness (D4) |
+| Legacy fleet (status.harness empty, marker absent) | Marker-aware backfill to spec, no recreation — any harness (D4) |
+| First switch on a legacy workspace, before its backfill reconcile | Marker present + status="" ⇒ backfill SKIPPED, drift arm recreates (the switch converges to what it asked for); an aborted pre-backfill switch costs one benign convergent recreation of a same-harness pod (LL §2a) |
 | Legacy kubectl-pi session rows (hardcoded "opencode" registrations, F5) | Repeatable boot sweep to the owning workspace's spec.harness, scoped to never-switched workspaces (LL §5a) — live pi sessions stay visible; the SQL default covers orphans only |
 | Session row mis-stamped in the rolling-update window (old replica registers after the sweep ran) | Next boot's sweep heals it (visibility gap bounded by the rollout, never data loss); mid-rollout switch + stale-replica write is the accepted narrow residual (LL §5a) |
 | Switch while board stories pending_input | Swept with the flag cleared, pointer notes the awaiting-input state (D5) |
