@@ -72,4 +72,7 @@ func TestDefaultEngineConfigR6(t *testing.T) {
 	if cfg.DRRQuantum != 1 {
 		t.Errorf("DRR quantum default 1, got %d", cfg.DRRQuantum)
 	}
+	if cfg.NoAdvanceHeartbeatCap != 3 {
+		t.Errorf("#2044: no-advance heartbeat budget default 3 (presence-only responses before the wedge verdict), got %d", cfg.NoAdvanceHeartbeatCap)
+	}
 }

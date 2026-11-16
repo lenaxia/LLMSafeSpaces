@@ -1979,6 +1979,18 @@ board:
   # windows (one nudge measurement + one response grace). Nil progress
   # lapses immediately; any worker progress write resets the arm.
   heartbeatLapseSeconds: 5400
+  # #2044 heartbeat-orbit budget: K consecutive heartbeat responses
+  # whose declared progress watermark never crossed the claim mint
+  # (last_progress_at > stage_entered_at) before presence-only renewal
+  # is exhausted — the K+1th motionless response declines (sentinel
+  # kept armed, lease not extended) and the next lapse demotes every
+  # renewal arm for that lapse, landing the existing wedge verdict.
+  # Motion (a fresh declared watermark past the mint), any non-
+  # heartbeat renewal, and every claim mint reset the count. Reviewer
+  # persona rows are structurally exempt (no sentinel ever arms on
+  # in_review). Default 3 ≈ 2¼ h of presence-only orbiting on the 45 m
+  # lease — the same epoch-scale bound as the busy cap.
+  noAdvanceHeartbeatCap: 3
   # 429 cooldown in seconds, applied to BOTH the task and the project's
   # worker slots (new claims into a throttled project pause).
   throttleBackoffSeconds: 300

@@ -239,6 +239,13 @@ func NewService(pool *pgxpool.Pool, cfg EngineConfig, opts ...Option) *Service {
 		// before observation evidence loses renewal authority entirely.
 		cfg.HeartbeatLapseThreshold = 90 * time.Minute
 	}
+	if cfg.NoAdvanceHeartbeatCap <= 0 {
+		// #2044: the heartbeat-orbit budget — K presence-only responses
+		// before the wedge verdict owns the row (same clamp class as
+		// AttemptsCap: a missing/zero config means the default, never a
+		// disabled budget).
+		cfg.NoAdvanceHeartbeatCap = 3
+	}
 	if cfg.ThrottleBackoff <= 0 {
 		cfg.ThrottleBackoff = 5 * time.Minute
 	}
