@@ -785,7 +785,6 @@ func mcpToolCatalog() []mcpTool {
 				"reportUrl":  map[string]any{"type": "string", "description": "The wrap-up report URL (required on both verdicts — the close's evidence)"},
 				"reviewer":   map[string]any{"type": "string", "description": "Your reviewer identity (session name or phrase)"},
 				"gapRefs":    map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "gaps only: the gap stories' short ids (filed via board_create_story with tag \"gap\" BEFORE the verdict); required non-empty iff verdict=gaps"},
-				"notes":      map[string]any{"type": "string", "description": "Optional prose (size-capped)"},
 				"requestId":  map[string]any{"type": "string", "description": "Optional idempotency key (UUID): reuse it on retry of the SAME logical verdict"},
 				"sessionId":  map[string]any{"type": "string", "description": "Optional: your own session id — self-identification for the assignee-stamp back-fill (RC-B), same as board_heartbeat's"},
 				"shortId":    map[string]any{"type": "string", "description": "The wrap-up row's short id (word-phrase form) — alternative to storyId"},
