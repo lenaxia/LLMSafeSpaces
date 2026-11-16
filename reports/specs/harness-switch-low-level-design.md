@@ -55,13 +55,20 @@ Service `SwitchHarness(ctx, userID, wsID, harness)` in
    `annotations[AnnotationHarnessSwitch] = <harness>` in ONE update (the marker must land with the
    delta or webhook 7a′ denies the write itself). This arms the quiesce gate (§4b): from here on,
    no new claim can enter the workspace.
-5. **Board sweep, pass 2** (§4) — after the spec write, now under the armed gate. Pass 1 closes
-   the live-claim surface before anything moves; pass 2 catches the only remaining race — a claim
-   granted in the window between pass 1 and the spec write (a claimOnce firing in those
-   milliseconds) — and because the gate is armed, a racer swept by pass 2 cannot re-claim. Usually
-   empty; idempotent. A persistent pass-2 failure responds 500 with the switch in flight: the
-   bounded residue is that single racer's attempt (documented; the rearm lane exists) — the gate
-   guarantees there is never a second victim.
+5. **Board sweep, pass 2** (§4) — after the spec write. Pass 1 closes the live-claim surface
+   before anything moves; pass 2 catches the only remaining race — a claim granted in the window
+   between pass 1 and the spec write (a claimOnce firing in those milliseconds) — and because the
+   gate is armed, a racer swept by pass 2 cannot re-claim. Usually empty; idempotent. **Pass 2
+   waits for the gate's observed arm**: it polls `SwitchingWorkspaces()` (bounded — ≤30s, 2s
+   interval; fail-open to sweeping on timeout, residue documented below) until THIS process's
+   cache observes the workspace armed, because grants issued before the observed arm are swept
+   and grants after it are refused — only then does pass 2 declare quiet. Residual (documented,
+   the suspension freeze's accepted posture, `board_suspend_source.go:19-25`): an API replica
+   whose informer cache lags the spec write can admit one grant after THIS replica's pass 2
+   declared quiet — a bounded (informer-lag, seconds) propagation window, one row worst case,
+   whose outcome is a single burned attempt with the rearm lane as the exit. The contract claims
+   quiet relative to the gate's observed view, never an absolute. A persistent pass-2 failure
+   responds 500 with the switch in flight (same residue class).
 6. **Respond** `202` + `SwitchHarnessResponse`.
 
 ### 1b. Create-side selection [api] (D11)
@@ -100,11 +107,15 @@ New arm in `handleActive`, after the architecture-drift block (`:202-231`; ident
 
 ```go
 // Harness drift (D4): spec.harness vs status.harness. Backfill FIRST:
-// status.harness=="" + live pod + spec==opencode ⇒ pre-S5 fleet — write
-// opencode, no recreation (the fleet must not mass-recreate on upgrade).
+// status.harness=="" + live pod ⇒ a pre-switch-era object of ANY harness
+// (webhook 7a immutability means every existing pod was built for exactly
+// its spec value — including kubectl-created pi workspaces, per F1) —
+// write status=desired, no recreation. The fleet must not mass-recreate
+// on upgrade; unconditional-when-empty is the only shape that spares the
+// legacy pi fleet from an unswept, ungated recreate (the F3/#2040 chain).
 desired := workspace.Spec.Harness; if desired == "" { desired = v1.HarnessOpencode }
-if workspace.Status.Harness == "" && desired == v1.HarnessOpencode {
-    workspace.Status.Harness = v1.HarnessOpencode      // plain status write, no recreation
+if workspace.Status.Harness == "" && pod != nil && pod.Status.Phase == corev1.PodRunning {
+    workspace.Status.Harness = desired                 // plain status write, no recreation
 } else if workspace.Status.Harness != desired {
     if r.drainBeforePodDeletion(ctx, workspace, drainReasonHarnessSwitch) == drainDefer {
         return ctrl.Result{RequeueAfter: drainPollInterval}, nil   // #761 polite drain
@@ -115,6 +126,11 @@ if workspace.Status.Harness == "" && desired == v1.HarnessOpencode {
     // status.Harness is written in handleCreating at buildPod time (below)
 }
 ```
+
+Pin: `TestHarnessDrift_BackfillPiNoRecreate` (controller/internal/workspace/phase_active_test.go) —
+spec=pi / status="" / live pod → status=pi, no drain, no recreation; same for spec=opencode.
+A status="" object with NO live pod has nothing to backfill from — it takes the ordinary
+Creating path, which builds the pod and writes status at build (§2a second bullet).
 
 - `drainReasonHarnessSwitch = "harness_switch"` joins the reasons in `session_drain.go:72-74`.
 - `handleCreating` (`phase_creating.go:29`): at `buildPod` (`:127`) — which already resolves
@@ -242,7 +258,11 @@ type SwitchSource interface{ SwitchingWorkspaces(ctx context.Context) map[string
 - Production adapter: `api/internal/app/board_suspend_source.go` grows the method over the same
   watcher-fed cache — the cache holds phases today (`GetAllKnownPhases`); it gains a
   harness-delta view (the watcher already sees full Workspace objects; expose
-  `SwitchingSet()` alongside phases). Honest default: unseen ⇒ not switching.
+  `SwitchingSet()` alongside phases). Honest default: unseen ⇒ not switching. Because grants key
+  on this same observed view, **sweep pass 2 waits until it observes the workspace armed before
+  declaring quiet** (§1a step 5 — grants before the observed arm are swept, grants after are
+  refused); the multi-replica propagation residual is documented there (the suspension freeze's
+  accepted posture — one bounded-grant worst case, rearm as the exit).
 - Gates (each mirrors its suspension twin verbatim): `claimOnce` quiet no-grant
   (`engine.go:359-367`); `task_start` loud 409 `GuardBackpressure`
   (`engine.go:175-181`); dispatch-drive filter (`reconciler.go:1081`); persona lapse/re-arm skip
@@ -322,8 +342,8 @@ switch-back remains allowed (phase guard includes Failed).
 | Pin | Red because |
 |---|---|
 | Webhook 7a′: markerless delta denied / matching marker admitted / mismatched marker denied | today all deltas denied |
-| `SwitchHarness`: no-op 204; guard 409s (Suspending/Creating/Terminating); two-pass sweep ordering (pass-1 failure ⇒ 500 with nothing moved; the racer-between-pass-1-and-spec-write lands swept by pass 2 and cannot re-claim — pin with a claim injected mid-call); 202 shape | endpoint doesn't exist |
-| Controller: drift arm recreates preserving PVC name; backfill no-recreate; drain defer/force via `harness_switch` reason; marker cleared; Suspended-switch lands at next activation | arm doesn't exist |
+| `SwitchHarness`: no-op 204; guard 409s (Suspending/Creating/Terminating); two-pass sweep ordering (pass-1 failure ⇒ 500 with nothing moved; the racer-between-pass-1-and-spec-write lands swept by pass 2 and cannot re-claim — pin with a claim injected mid-call; `TestSweep_Pass2WaitsForGateArmed`, pkg/board/switch_test.go — pass 2 does not declare quiet until the gate reports armed); 202 shape | endpoint doesn't exist |
+| Controller: drift arm recreates preserving PVC name; backfill no-recreate for BOTH harnesses (`TestHarnessDrift_BackfillPiNoRecreate` — spec=pi/status=""/live pod → status=pi, no drain, no recreation); drain defer/force via `harness_switch` reason; marker cleared; Suspended-switch lands at next activation | arm doesn't exist |
 | Router: status-first resolution; stale-TTL mis-route fails loud (connection refused), never wrong-store data | resolver is spec-first |
 | Board sweep: in_progress clean requeue (NO failure_count/`last_attempt_failed`/cooldown, salvage embedded, next charter inherits); pending_input cleared + noted; in_review declaim no-accounting; stop directive post-commit | sweep doesn't exist |
 | Quiesce: claimOnce quiet no-grant; task_start 409; dispatch skip; persona re-arm skip — all while spec≠status, none after flip | gates key on phase today |

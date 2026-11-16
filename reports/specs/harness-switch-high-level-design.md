@@ -54,8 +54,9 @@ existing long-op (202 + spec-write, controller-as-single-status-writer) API conv
       │
   controller (handleActive, new harness-drift arm — the arch-drift shape):
       spec.harness != status.harness?
-        ├─ status.harness backfill first ("" + live pod + spec=opencode → write opencode, no
-        │  recreation — pre-S5 fleet must not mass-recreate)
+        ├─ status.harness backfill first ("" + live pod → write status=spec — ANY harness;
+        │  webhook 7a means every existing pod was built for its spec value; no recreation —
+        │  the legacy fleet, opencode AND kubectl-created pi, must not mass-recreate)
         ├─ drainBeforePodDeletion(reason="harness_switch")  ← user turns finish politely;
         │    board workers are already swept; force after 60m no-progress (#761 unchanged)
         ├─ deletePodByName → phase=Creating → clear the marker
@@ -91,8 +92,10 @@ existing long-op (202 + spec-write, controller-as-single-status-writer) API conv
   (same trust posture as force-recycle); the controller clears it after first observation.
 - **D4 — Controller: a harness-drift arm in `handleActive`, plus a one-time backfill.** Desired vs
   `status.harness`; polite drain with a new reason `harness_switch`; delete → `Creating` →
-  `buildPod` (already harness-aware). `status.harness == ""` on legacy pods backfills to opencode
-  without recreation. Switch requested while Suspended needs no recreation at all — the next
+  `buildPod` (already harness-aware). `status.harness == ""` on legacy pods backfills to
+  **spec.harness** (any harness — webhook 7a immutability means every existing pod, including
+  kubectl-created pi workspaces, was built for exactly its spec value) without recreation.
+  Switch requested while Suspended needs no recreation at all — the next
   activation builds the new harness naturally.
 - **D5 — Board: sweep, don't freeze.** The #2040 lesson (never burn attempts on infra moves)
   is satisfied by *requeueing* the work to the new harness, not by freezing dead claims: the
@@ -155,7 +158,7 @@ existing long-op (202 + spec-write, controller-as-single-status-writer) API conv
 | API replica's router cache stale ≤60s post-flip | Loud errors only (D8); self-heals at TTL |
 | Session-index reconcile sees foreign-harness rows | Shielded by harness predicate (D7); no reap, no metric storm |
 | Raw kubectl harness flip | Webhook 7a′ denies markerless deltas (D3) |
-| Legacy fleet (status.harness empty) | One-time backfill, no recreation (D4) |
+| Legacy fleet (status.harness empty) | One-time backfill to spec, no recreation — any harness (D4) |
 | Switch while board stories pending_input | Swept with the flag cleared, pointer notes the awaiting-input state (D5) |
 
 ## 5. Non-goals
