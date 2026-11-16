@@ -47,7 +47,8 @@ existing long-op (202 + spec-write, controller-as-single-status-writer) API conv
       ├─ SPEC WRITE: spec.harness=pi + marker annotation llmsafespaces.dev/harness-switch=pi
       │        (webhook 7a′: a harness delta without the matching marker is DENIED —
       │         raw kubectl flips stay refused, exactly like today, with a pointer to the API)
-      │        ← the write arms the quiesce gate: no new claim can enter the workspace
+      │        ← the write arms the quiesce gate: on the gate's OBSERVED view no new
+      │          claim enters (bounded informer-lag residual per LL §1a step 5)
       ├─ BOARD SWEEP pass 2 (under the armed gate — catches the pass-1/spec-write
       │     racer; idempotent, usually empty)
       └─ 202 {harness:"pi", phase, switched:true}
@@ -65,8 +66,10 @@ existing long-op (202 + spec-write, controller-as-single-status-writer) API conv
       │
   switch window (spec write → status flip):
       router serves status.harness (old) — mis-routed calls fail LOUD (port absent),
-      never silent-wrong; claim gate: no new claims/spawns/review-mints into the workspace
-      (the suspend-gate shape, keyed on spec≠status instead of phase)
+      never silent-wrong; claim gate: on the gate's observed view, no new
+      claims/spawns/review-mints into the workspace (the suspend-gate shape,
+      keyed on spec≠status instead of phase; the multi-replica informer-lag
+      residual is documented in LL §1a step 5 — one bounded grant, rearm exit)
       │
   sidebar/UI: rows WHERE harness=status.harness (old rows hidden, preserved);
   on switch-back the same predicate restores them. Done.
@@ -154,11 +157,12 @@ existing long-op (202 + spec-write, controller-as-single-status-writer) API conv
 | Spec write lands, sweep already ran, user aborts pre-drain | Switch back (D10); residue = honest re-claims with salvage pointers |
 | Drain wedges (busy session, no progress) | #761 unchanged: force after 60m (`session_drain.go:91,220-229`) |
 | New-harness pod fails build/verify | Phase Failed + verify condition (85/86 for pi); switch back allowed (D10) |
-| Claim lands in the window | Quiesced (D6): no-grant / 409 / dispatch skip / re-arm skip |
+| Claim lands in the window | Quiesced on the gate's observed view (D6): no-grant / 409 / dispatch skip / re-arm skip; bounded informer-lag residual — one admitted grant on a lagging replica, rearm exit (LL §1a step 5) |
 | API replica's router cache stale ≤60s post-flip | Loud errors only (D8); self-heals at TTL |
 | Session-index reconcile sees foreign-harness rows | Shielded by harness predicate (D7); no reap, no metric storm |
 | Raw kubectl harness flip | Webhook 7a′ denies markerless deltas (D3) |
 | Legacy fleet (status.harness empty) | One-time backfill to spec, no recreation — any harness (D4) |
+| Legacy kubectl-pi session rows (hardcoded "opencode" registrations, F5) | One-time boot stamp to the owning workspace's spec.harness (LL §5a) — live pi sessions stay visible; the SQL default covers orphans only |
 | Switch while board stories pending_input | Swept with the flag cleared, pointer notes the awaiting-input state (D5) |
 
 ## 5. Non-goals
