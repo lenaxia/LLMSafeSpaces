@@ -30,9 +30,9 @@ CREATE INDEX IF NOT EXISTS idx_tasks_kind ON public.tasks USING btree (epic_id, 
 
 ALTER TABLE public.epics ADD COLUMN IF NOT EXISTS wrap_up_review boolean NOT NULL DEFAULT false;
 ALTER TABLE public.epics ADD COLUMN IF NOT EXISTS last_wrapped_at timestamp with time zone;
-ALTER TABLE public.epics ADD COLUMN IF EXISTS wrapup_count integer NOT NULL DEFAULT 0;
-ALTER TABLE public.epics ADD COLUMN IF EXISTS wrapup_task_id uuid;
-ALTER TABLE public.epics ADD COLUMN IF EXISTS wrapup_ack_pending boolean NOT NULL DEFAULT false;
+ALTER TABLE public.epics ADD COLUMN IF NOT EXISTS wrapup_count integer NOT NULL DEFAULT 0;
+ALTER TABLE public.epics ADD COLUMN IF NOT EXISTS wrapup_task_id uuid;
+ALTER TABLE public.epics ADD COLUMN IF NOT EXISTS wrapup_ack_pending boolean NOT NULL DEFAULT false;
 
 -- Reference integrity for the in-flight pointer: deleting the wrap-up
 -- row clears the pointer physically (the service-level clear + audit
