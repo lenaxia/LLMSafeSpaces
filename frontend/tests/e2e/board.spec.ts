@@ -1701,6 +1701,171 @@ test.describe("1x4 pipeline rail — snap navigation, keyboard parity (#2021), l
   });
 });
 
+// --- Owner direction 2026-11-15 fast-follow: the focus-column mode (portrait) -----
+
+test.describe("focus-column mode — snap-settled expansion, overview default, one-action transitions", () => {
+  test("portrait: the header chevron enters focus — focused column takes the width, neighbors compress; aria-expanded + announcement", async ({ page }) => {
+    await page.setViewportSize({ width: 375, height: 667 });
+    await openBoard(page);
+
+    const rail = page.getByTestId(`stage-grid-${PROJECT_A}`);
+    const inProgressCol = rail.getByTestId("stage-col-in_progress");
+    const chevron = rail.getByTestId("col-focus-toggle-in_progress");
+    await expect(chevron).toBeVisible();
+    await expect(chevron).toHaveAttribute("aria-expanded", "false");
+
+    // ONE tap on the header affordance enters the lens.
+    await chevron.click();
+    await expect(rail).toHaveAttribute("data-mode", "focus");
+    await expect(inProgressCol).toHaveAttribute("data-col-state", "focused");
+    await expect(chevron).toHaveAttribute("aria-expanded", "true");
+    for (const stage of ["backlog", "in_review"]) {
+      await expect(rail.getByTestId(`stage-col-${stage}`)).toHaveAttribute("data-col-state", "compressed");
+      await expect(rail.getByTestId(`col-focus-toggle-${stage}`)).toHaveAttribute("aria-expanded", "false");
+    }
+    // The non-focused done keeps its full page (the reachability
+    // invariant: the last column's snap point must stay within max
+    // scroll) — periphery, still transitable via its chevron.
+    await expect(rail.getByTestId("stage-col-done")).toHaveAttribute("data-col-state", "periphery");
+    await expect(rail.getByTestId("col-focus-toggle-done")).toHaveAttribute("aria-expanded", "false");
+
+    // The mode change is announced (#2021).
+    await expect(rail.getByTestId(`rail-mode-notice-${PROJECT_A}`)).toHaveText(/Focused In Progress column/);
+
+    // Wait out the width transition via its END anchor — the explicit
+    // re-snap (scheduled past the 200ms transition) aligning the
+    // focused column to the snapport. Measuring before it would race
+    // the animation.
+    await page.waitForFunction((railTestId) => {
+      const railEl = document.querySelector(`[data-testid="${railTestId}"]`) as HTMLElement | null;
+      if (!railEl) return false;
+      const target = railEl.querySelector('[data-stage-col="in_progress"]') as HTMLElement;
+      const expected = target.offsetLeft - railEl.offsetLeft - parseFloat(getComputedStyle(railEl).paddingLeft);
+      return Math.abs(railEl.scrollLeft - expected) < 2;
+    }, `stage-grid-${PROJECT_A}`, { timeout: 4000 });
+
+    // Real geometry (against the RAIL width — done's full page makes
+    // the content wider than the viewport): the focused column takes
+    // ~70% of the rail, the stubs ~10% (3rem floors absorb the tail).
+    const metrics = await rail.evaluate((el) => {
+      const railWidth = el.clientWidth;
+      const col = (s: string) => el.querySelector(`[data-stage-col="${s}"]`)!.getBoundingClientRect().width / railWidth;
+      return { focused: col("in_progress"), backlog: col("backlog"), review: col("in_review"), done: col("done") };
+    });
+    expect(metrics.focused).toBeGreaterThan(0.55);
+    expect(metrics.focused).toBeLessThan(0.78);
+    for (const stub of [metrics.backlog, metrics.review]) {
+      expect(stub).toBeGreaterThan(0.07);
+      expect(stub).toBeLessThan(0.2);
+    }
+    expect(metrics.done).toBeGreaterThan(0.9);
+  });
+
+  test("transit: a settled swipe moves the lens (focus follows snap-settle, never the live position)", async ({ page }) => {
+    await page.setViewportSize({ width: 375, height: 667 });
+    await openBoard(page);
+
+    const rail = page.getByTestId(`stage-grid-${PROJECT_A}`);
+    const railId = `stage-grid-${PROJECT_A}`;
+    await rail.getByTestId("col-focus-toggle-in_progress").click();
+    await expect(rail.getByTestId("stage-col-in_progress")).toHaveAttribute("data-col-state", "focused");
+
+    // The swipe-equivalent: a scroll that snap-settles on the done
+    // column. The native scrollend (scrolling fully stopped) is the
+    // transit moment — the lens follows the SETTLE, not the drag.
+    await rail.evaluate((el) => {
+      const railEl = el as HTMLElement;
+      const done = railEl.querySelector('[data-stage-col="done"]') as HTMLElement;
+      railEl.scrollTo({ left: done.offsetLeft - railEl.offsetLeft });
+    });
+    await expect(rail.getByTestId("stage-col-done")).toHaveAttribute("data-col-state", "focused", { timeout: 4000 });
+    await expect(rail.getByTestId("stage-col-in_progress")).toHaveAttribute("data-col-state", "compressed");
+
+    // …and after the reflow the explicit re-snap puts the expanded
+    // column fully at the snapport start.
+    await page.waitForFunction((railTestId) => {
+      const railEl = document.querySelector(`[data-testid="${railTestId}"]`) as HTMLElement | null;
+      if (!railEl) return false;
+      const done = railEl.querySelector('[data-stage-col="done"]') as HTMLElement;
+      const expected = done.offsetLeft - railEl.offsetLeft - parseFloat(getComputedStyle(railEl).paddingLeft);
+      return Math.abs(railEl.scrollLeft - expected) < 2;
+    }, railId, { timeout: 4000 });
+  });
+
+  test("transit via compressed-header tap: one action moves the lens to the tapped neighbor", async ({ page }) => {
+    await page.setViewportSize({ width: 375, height: 667 });
+    await openBoard(page);
+
+    const rail = page.getByTestId(`stage-grid-${PROJECT_A}`);
+    await rail.getByTestId("col-focus-toggle-in_progress").click();
+    await expect(rail.getByTestId("stage-col-in_progress")).toHaveAttribute("data-col-state", "focused");
+
+    // The compressed backlog header itself is a transit affordance.
+    await rail.locator('[data-stage-header="backlog"]').click();
+    await expect(rail.getByTestId("stage-col-backlog")).toHaveAttribute("data-col-state", "focused");
+    await expect(rail.getByTestId("stage-col-in_progress")).toHaveAttribute("data-col-state", "compressed");
+  });
+
+  test("exit via Escape re-centers the overview on the column just left (no jump to zero)", async ({ page }) => {
+    await page.setViewportSize({ width: 375, height: 667 });
+    await openBoard(page);
+
+    const rail = page.getByTestId(`stage-grid-${PROJECT_A}`);
+    const railId = `stage-grid-${PROJECT_A}`;
+    // Enter on in_review directly (its overview start is past zero —
+    // the re-center assertion can tell it from a position-zero jump).
+    await rail.getByTestId("col-focus-toggle-in_review").click();
+    await expect(rail.getByTestId("stage-col-in_review")).toHaveAttribute("data-col-state", "focused");
+
+    await page.keyboard.press("Escape");
+    await expect(rail).toHaveAttribute("data-mode", "overview");
+    for (const stage of ["backlog", "in_progress", "in_review", "done"]) {
+      await expect(rail.getByTestId(`stage-col-${stage}`)).toHaveAttribute("data-col-state", "overview");
+    }
+    // The overview re-centers on in_review: scrollLeft lands on ITS
+    // snap point (well past zero).
+    await page.waitForFunction((railTestId) => {
+      const railEl = document.querySelector(`[data-testid="${railTestId}"]`) as HTMLElement | null;
+      if (!railEl) return false;
+      const target = railEl.querySelector('[data-stage-col="in_review"]') as HTMLElement;
+      const expected = target.offsetLeft - railEl.offsetLeft - parseFloat(getComputedStyle(railEl).paddingLeft);
+      return railEl.scrollLeft > 5 && Math.abs(railEl.scrollLeft - expected) < 2;
+    }, railId, { timeout: 4000 });
+  });
+
+  test("landscape/desktop: no focus affordances, and the md crossing force-exits an open lens", async ({ page }) => {
+    await page.setViewportSize({ width: 375, height: 667 });
+    await openBoard(page);
+
+    const rail = page.getByTestId(`stage-grid-${PROJECT_A}`);
+    // Open the lens in portrait first…
+    await rail.getByTestId("col-focus-toggle-backlog").click();
+    await expect(rail).toHaveAttribute("data-mode", "focus");
+
+    // …then rotate to landscape: every chevron hides and the lens
+    // leaves with the affordances (there is no way back in from md+).
+    await page.setViewportSize({ width: 844, height: 390 });
+    await expect(rail).toHaveAttribute("data-mode", "overview", { timeout: 3000 });
+    for (const stage of ["backlog", "in_progress", "in_review", "done"]) {
+      await expect(rail.getByTestId(`col-focus-toggle-${stage}`)).toBeHidden();
+    }
+  });
+
+  test("focus is ephemeral: a reload starts in overview again (never persisted)", async ({ page }) => {
+    await page.setViewportSize({ width: 375, height: 667 });
+    await openBoard(page);
+
+    const rail = page.getByTestId(`stage-grid-${PROJECT_A}`);
+    await rail.getByTestId("col-focus-toggle-done").click();
+    await expect(rail).toHaveAttribute("data-mode", "focus");
+
+    await page.reload();
+    const railAfter = page.getByTestId(`stage-grid-${PROJECT_A}`);
+    await expect(railAfter).toHaveAttribute("data-mode", "overview");
+    await expect(railAfter.getByTestId("stage-col-done")).toHaveAttribute("data-col-state", "overview");
+  });
+});
+
 // --- 2026-10-29 owner ruling: the filter pills collapse into a drawer ------------
 
 test.describe("2026-10-29 filter drawer — pills collapsed, count badge, clear-all, mobile zero-height", () => {
