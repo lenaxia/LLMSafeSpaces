@@ -1698,6 +1698,18 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 				} else {
 					log.Info("board: built-in reviewer agent role ensured (slug reviewer, verdict-channel charter as system prompt)")
 				}
+				// The built-in wrap-up reviewer (epic wrap-up review,
+				// design §6): the wrapUpReviewer config key's default —
+				// the judgment-half charter as its system prompt. Same
+				// best-effort posture and idempotency as the reviewer
+				// seed (platform-scope slug check; an unseeded role
+				// merely leaves wrap-up resolution degrading to nil
+				// with a warn until the next boot seeds it).
+				if err := seedBuiltinWrapUpReviewerRole(seedCtx, pgOrgStore); err != nil {
+					log.Warn("board: built-in wrap-up reviewer role seeding skipped", "error", err.Error())
+				} else {
+					log.Info("board: built-in wrap-up reviewer agent role ensured (slug wrapup-reviewer, judgment charter as system prompt)")
+				}
 				// The shipped stage-persona vocabulary (2026-11-13):
 				// implementer/reviewer pairs for coding, data analysis,
 				// and writing — selectable from stagePersonas without
