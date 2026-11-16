@@ -262,6 +262,9 @@ func NewService(pool *pgxpool.Pool, cfg EngineConfig, opts ...Option) *Service {
 	if cfg.MaxNodesPerEpic <= 0 {
 		cfg.MaxNodesPerEpic = 64
 	}
+	if cfg.WrapUpConsecutiveCap <= 0 {
+		cfg.WrapUpConsecutiveCap = 3
+	}
 	if cfg.PressureSampleTTL <= 0 {
 		cfg.PressureSampleTTL = 2 * time.Minute
 	}
@@ -285,11 +288,15 @@ type ProjectInput struct {
 	Tags              []string
 }
 
-// EpicInput is the create/update payload for epics.
+// EpicInput is the create/update payload for epics. WrapUpReview is the
+// epic wrap-up review on/off flag (§1b): nil = unchanged on PATCH
+// (create defaults false); the engine mints a wrap-up review story when
+// a wrap_up_review epic drains and defers completion until it closes.
 type EpicInput struct {
-	Title   string
-	Outcome string
-	Tags    []string
+	Title        string
+	Outcome      string
+	Tags         []string
+	WrapUpReview *bool
 }
 
 // TaskInput is the create/update payload for tasks. DependsOn (create
@@ -663,9 +670,9 @@ func (s *Service) CreateEpic(ctx context.Context, actor Actor, projectID, shortI
 			return nil, err
 		}
 		if _, err := tx.Exec(ctx, `
-			INSERT INTO epics (id, project_id, short_id, title, outcome, status, project_name, tags, quantum)
-			VALUES ($1, $2, $3, $4, $5, 'draft', $6, $7, $8)`,
-			epicID, p.ID, shortID, in.Title, in.Outcome, p.Name, tagsOrEmpty(in.Tags), s.cfg.DRRQuantum); err != nil {
+			INSERT INTO epics (id, project_id, short_id, title, outcome, status, project_name, tags, quantum, wrap_up_review)
+			VALUES ($1, $2, $3, $4, $5, 'draft', $6, $7, $8, COALESCE($9, false))`,
+			epicID, p.ID, shortID, in.Title, in.Outcome, p.Name, tagsOrEmpty(in.Tags), s.cfg.DRRQuantum, in.WrapUpReview); err != nil {
 			return nil, err
 		}
 		return map[string]any{"id": epicID, "short_id": shortID}, nil
@@ -714,8 +721,8 @@ func (s *Service) UpdateEpic(ctx context.Context, actor Actor, epicID, shortIDOr
 	ew := &eventWriter{svc: s, projectID: p.ID, requestID: requestID, action: "update_epic", itemKind: "epic", itemID: e.ID, actor: actor}
 	_, dup, err := ew.run(ctx, func(tx pgx.Tx) (map[string]any, error) {
 		if _, err := tx.Exec(ctx, `
-			UPDATE epics SET title=$2, outcome=$3, tags=$4 WHERE id=$1`,
-			e.ID, title, in.Outcome, tagsOrEmpty(in.Tags)); err != nil {
+			UPDATE epics SET title=$2, outcome=$3, tags=$4, wrap_up_review=COALESCE($5, wrap_up_review) WHERE id=$1`,
+			e.ID, title, in.Outcome, tagsOrEmpty(in.Tags), in.WrapUpReview); err != nil {
 			return nil, err
 		}
 		if title != e.Title {
@@ -867,16 +874,18 @@ func (s *Service) epicLifecycle(ctx context.Context, actor Actor, epicID, shortI
 		return nil, &GuardError{Code: GuardEpicState, Detail: fmt.Sprintf("epic %s→%s is not a lifecycle transition (from %s)", e.Status, to, e.Status)}
 	}
 	ew := &eventWriter{svc: s, projectID: p.ID, requestID: requestID, action: action, itemKind: "epic", itemID: e.ID, actor: actor}
+	var wrapNudge nudge
 	_, dup, err = ew.run(ctx, func(tx pgx.Tx) (map[string]any, error) {
 		if _, err := tx.Exec(ctx, `UPDATE epics SET status=$2 WHERE id=$1`, e.ID, to); err != nil {
 			return nil, err
 		}
 		// The immediate re-check (RC4): draft/paused/archived-origin
-		// activations of a finished epic complete immediately; the
-		// completed→active re-open is exempt (stays active until follow-up
-		// work lands and finishes).
+		// activations of a finished epic complete immediately (or mint
+		// the wrap-up, when the epic has wrapUpReview enabled — the
+		// seam funnels both); the completed→active re-open is exempt
+		// (stays active until follow-up work lands and finishes).
 		if recheck && e.Status != EpicCompleted {
-			if _, err := epicCompletionCheck(ctx, tx, e.ID); err != nil {
+			if _, _, err := s.wrapUpAwareEpicCompletion(ctx, tx, e.ID, &wrapNudge); err != nil {
 				return nil, err
 			}
 		}
@@ -886,6 +895,8 @@ func (s *Service) epicLifecycle(ctx context.Context, actor Actor, epicID, shortI
 		return nil, err
 	}
 	_ = dup
+	// A wrap-up minted at activation rides its spawn post-commit (r1-C5).
+	wrapNudge.fire(ctx, s)
 	if to == EpicActive {
 		// Event-driven drive: activation starts feeding (§4.4).
 		s.pokeDrive(p.ID)
@@ -1171,8 +1182,22 @@ func (s *Service) addDependency(ctx context.Context, actor Actor, taskRef, depen
 // shared writer for add_dependency, create_task's inline dependsOn, and
 // delete_task's reconnect) — duplicate edges are an idempotent no-op
 // (ON CONFLICT DO NOTHING, #1747), the DB trigger is the cycle/shape
-// belt, mapDepErr sanitizes its violations.
+// belt, mapDepErr sanitizes its violations. §7 carve-out: wrap-up rows
+// are born edge-free and STAY edge-free — either endpoint being a
+// kind='wrapup' row refuses loud (the close path's unblockDependents
+// exemption and the epic's drain math both lean on wrap-up rows never
+// entering the dependency graph).
 func (s *Service) insertDependencyTx(ctx context.Context, tx pgx.Tx, p *Project, taskID string, dep *Task) error {
+	var srcKind, depKind string
+	if err := tx.QueryRow(ctx, `
+		SELECT (SELECT kind FROM tasks WHERE id=$1), (SELECT kind FROM tasks WHERE id=$2)`,
+		taskID, dep.ID).Scan(&srcKind, &depKind); err != nil {
+		return err
+	}
+	if srcKind == TaskKindWrapup || depKind == TaskKindWrapup {
+		return &DependencyError{Code: "wrapup_endpoint",
+			Detail: "wrap-up rows never enter the dependency graph (engine-driven review rows are edge-free, epic wrap-up review §7)"}
+	}
 	if _, err := tx.Exec(ctx, `
 		INSERT INTO board_dependencies (task_id, depends_on_task_id, created_by)
 		VALUES ($1, $2, $3) ON CONFLICT DO NOTHING`, taskID, dep.ID, p.UserID); err != nil {

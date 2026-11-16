@@ -1466,6 +1466,7 @@ func (s *Service) rc2Drift(ctx context.Context, cutoff time.Time) (done, review,
 					return done, review, reentry, err
 				}
 				if tag.RowsAffected() > 0 {
+					var wrapNudge nudge
 					if err := writeTransition(ctx, txQ{tx}, t.ID, StageInReview, StageDone, pr.URL, sys); err != nil {
 						_ = tx.Rollback(ctx)
 						return done, review, reentry, err
@@ -1474,14 +1475,14 @@ func (s *Service) rc2Drift(ctx context.Context, cutoff time.Time) (done, review,
 						_ = tx.Rollback(ctx)
 						return done, review, reentry, err
 					}
-					if _, err := epicCompletionCheck(ctx, tx, t.EpicID); err != nil {
+					if _, _, err := s.wrapUpAwareEpicCompletion(ctx, tx, t.EpicID, &wrapNudge); err != nil {
 						_ = tx.Rollback(ctx)
 						return done, review, reentry, err
 					}
 					// The #1832 review settle rides the drift-done path
 					// too (a drift-completed subject completes/parks its
 					// anchored review tasks in the same transaction).
-					settleEvts, settlePokes, err := s.completeReviewTasks(ctx, tx, t, pr.URL, nil)
+					settleEvts, settlePokes, err := s.completeReviewTasks(ctx, tx, t, pr.URL, nil, &wrapNudge)
 					if err != nil {
 						_ = tx.Rollback(ctx)
 						return done, review, reentry, err
@@ -1496,6 +1497,9 @@ func (s *Service) rc2Drift(ctx context.Context, cutoff time.Time) (done, review,
 					if err := s.commitPublishing(ctx, tx, append([]Event{evt}, settleEvts...)...); err != nil {
 						return done, review, reentry, err
 					}
+					// A wrap-up minted by the drift-done drain rides its
+					// spawn post-commit (the nudge carries it).
+					wrapNudge.fire(ctx, s)
 					for _, pid := range settlePokes {
 						s.pokeDrive(pid) // sibling projects of the subject (review r1, finding 5)
 					}
@@ -1683,7 +1687,8 @@ func (s *Service) rc4Net(ctx context.Context, cutoff time.Time) (int, error) {
 		if err != nil {
 			return n, err
 		}
-		flipped, err := epicCompletionCheck(ctx, tx, r.id)
+		var wrapNudge nudge
+		flipped, _, err := s.wrapUpAwareEpicCompletion(ctx, tx, r.id, &wrapNudge)
 		if err != nil {
 			_ = tx.Rollback(ctx)
 			return n, err
@@ -1704,6 +1709,10 @@ func (s *Service) rc4Net(ctx context.Context, cutoff time.Time) (int, error) {
 				return n, err
 			}
 		}
+		// A wrap-up minted by the net's drain rides its spawn
+		// post-commit (the reconciler's own re-claim pass is the
+		// backstop if the spawn seam is absent here).
+		wrapNudge.fire(ctx, s)
 	}
 	return n, nil
 }
