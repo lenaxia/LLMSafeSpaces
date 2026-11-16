@@ -143,11 +143,14 @@ func (s *BoardSuite) epicWrapup(id string) epicWrapupState {
 }
 
 // reopenStoryToInProgress raw-SQLs a done story back to an UNCLAIMED
-// in_progress row (the manager reopen fixture; done is terminal for
-// workers — the raw reset is the test seam for re-triggering the drain).
+// in_progress row with a LIVE lease (the manager reopen fixture; done is
+// terminal for workers — the raw reset is the test seam for re-triggering
+// the drain). The live lease keeps rc1's unclaimed-in_progress parking
+// sweep from swallowing the row between the reopen and the →done write
+// (sweep-proof: rc1 only parks NULL/expired leases).
 func (s *BoardSuite) reopenStoryToInProgress(taskID string) {
 	_, err := s.pool.Exec(context.Background(),
-		`UPDATE tasks SET stage='in_progress', claim_token=NULL, lease_expires_at=NULL,
+		`UPDATE tasks SET stage='in_progress', claim_token=NULL, lease_expires_at=now()+interval '1 hour',
 		 nudge_id=NULL, nudged_at=NULL WHERE id=$1`, taskID)
 	s.Require().NoError(err)
 }
@@ -225,7 +228,7 @@ func (s *BoardSuite) TestWrapUp_EnabledDrainMintsOnceAndDefers() {
 
 	var mintEvents int
 	s.Require().NoError(s.pool.QueryRow(context.Background(),
-		`SELECT count(*) FROM board_events WHERE action='wrapup_mint' AND id='wrapup:mint:'+$1`,
+		`SELECT count(*) FROM board_events WHERE action='wrapup_mint' AND id='wrapup:mint:'||$1`,
 		w.ID).Scan(&mintEvents))
 	require.Equal(s.T(), 1, mintEvents, "the deterministic wrapup:mint:<taskID> event row")
 

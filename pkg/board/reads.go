@@ -270,8 +270,14 @@ func (s *Service) ListEpics(ctx context.Context, projectID string) ([]Epic, erro
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
-	for i := range out {
-		s.decorateWrapUpTaskIDs(ctx, &out[i])
+	// One batched decorate pass for the whole list (the cross-epic
+	// dedupe rides the single call — one query per list, not per epic).
+	if len(out) > 0 {
+		ptrs := make([]*Epic, len(out))
+		for i := range out {
+			ptrs[i] = &out[i]
+		}
+		s.decorateWrapUpTaskIDs(ctx, ptrs...)
 	}
 	return out, nil
 }

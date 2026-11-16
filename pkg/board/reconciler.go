@@ -938,7 +938,7 @@ func (s *Service) rc1PersonaClaims(ctx context.Context) (personaReclaim, error) 
 	frozen := s.suspendSnapshot(ctx)
 	rows, err := s.q().Query(ctx, `
 		SELECT t.id, t.project_id, COALESCE(t.lease_expires_at::text, 'null'), t.failure_count,
-			COALESCE(t.short_id,''), COALESCE(t.assignee_session,''), COALESCE(p.target_workspace_id::text,'')
+			COALESCE(t.short_id,''), COALESCE(t.assignee_session,''), COALESCE(p.target_workspace_id::text,''), t.kind
 		FROM tasks t
 		LEFT JOIN projects p ON p.id = t.project_id
 		WHERE t.stage='in_review' AND t.lease_expires_at IS NOT NULL AND t.lease_expires_at < now()`)
@@ -950,11 +950,12 @@ func (s *Service) rc1PersonaClaims(ctx context.Context) (personaReclaim, error) 
 		failures             int32
 		shortID, assignee    string
 		ws                   string
+		kind                 string
 	}
 	var lapses []lapseVictim
 	for rows.Next() {
 		var v lapseVictim
-		if err := rows.Scan(&v.id, &v.project, &v.episode, &v.failures, &v.shortID, &v.assignee, &v.ws); err != nil {
+		if err := rows.Scan(&v.id, &v.project, &v.episode, &v.failures, &v.shortID, &v.assignee, &v.ws, &v.kind); err != nil {
 			rows.Close()
 			return out, err
 		}
@@ -996,7 +997,14 @@ func (s *Service) rc1PersonaClaims(ctx context.Context) (personaReclaim, error) 
 		}
 		var persona *PersonaConfig
 		if p := s.projectFor(ctx, v.project); p != nil {
-			persona = s.stagePersona(ctx, p, StageInReview)
+			// §7: a wrap-up row's claim resolves the WRAP-UP reviewer
+			// persona (never the in_review stage persona — the wrap-up
+			// claim is engine-minted, independent of stagePersonas).
+			if v.kind == TaskKindWrapup {
+				persona = s.wrapUpReviewerForProject(ctx, p)
+			} else {
+				persona = s.stagePersona(ctx, p, StageInReview)
+			}
 		}
 		tx, err := s.store.pool.Begin(ctx)
 		if err != nil {
@@ -1112,11 +1120,12 @@ func (s *Service) rc1PersonaClaims(ctx context.Context) (personaReclaim, error) 
 		id, project string
 		failures    int32
 		ws          string
+		kind        string
 	}
 	var candidates []rearmCandidate
 	for rows.Next() {
 		var v rearmCandidate
-		if err := rows.Scan(&v.id, &v.project, &v.failures, &v.ws); err != nil {
+		if err := rows.Scan(&v.id, &v.project, &v.failures, &v.ws, &v.kind); err != nil {
 			rows.Close()
 			return out, err
 		}
@@ -1137,7 +1146,16 @@ func (s *Service) rc1PersonaClaims(ctx context.Context) (personaReclaim, error) 
 		if p == nil {
 			continue
 		}
+		// §7: per-row persona resolution — a wrap-up row re-claims under
+		// the WRAP-UP reviewer persona (the frozen charter description
+		// rides the row; a lapsed/dead reviewer converges HERE with a
+		// fresh claim + spawn of the SAME window). Escalation at the
+		// attempts cap applies unchanged (failed/escalated — rearm's
+		// wrap-up branch returns the row to in_review).
 		persona := s.stagePersona(ctx, p, StageInReview)
+		if v.kind == TaskKindWrapup {
+			persona = s.wrapUpReviewerForProject(ctx, p)
+		}
 		if persona == nil {
 			continue
 		}
@@ -1228,11 +1246,12 @@ func (s *Service) dispatchDrive(ctx context.Context) (int, error) {
 		  AND (p.slot_cooldown_until IS NULL OR p.slot_cooldown_until < now())
 		  AND (SELECT count(*) FROM tasks t2
 		       WHERE t2.project_id=p.id AND t2.stage='in_progress') < p.worker_slots
-		  AND EXISTS (SELECT 1 FROM tasks t3 JOIN epics e3 ON e3.id=t3.epic_id
-		              WHERE t3.project_id=p.id AND e3.status='active'
-		                AND t3.stage='backlog'
-		                AND NOT t3.is_blocked
-		                AND (t3.cooldown_until IS NULL OR t3.cooldown_until < now()))`)
+	  AND EXISTS (SELECT 1 FROM tasks t3 JOIN epics e3 ON e3.id=t3.epic_id
+	              WHERE t3.project_id=p.id AND e3.status='active'
+	                AND t3.kind='story'
+	                AND t3.stage='backlog'
+	                AND NOT t3.is_blocked
+	                AND (t3.cooldown_until IS NULL OR t3.cooldown_until < now()))`)
 	if err != nil {
 		return 0, err
 	}
