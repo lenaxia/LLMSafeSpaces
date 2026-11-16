@@ -80,3 +80,26 @@ now pins it by name.
 - Full suites green at head: `cmd/workspace-agentd` (95s),
   `sessionstate` (27s), `pkg/abi`, `pkg/session`, and the api
   liveness pins; -race on every new test file.
+
+## §5 Review r3 — the two still-open PR-review findings (head 0248a007e)
+
+- **advances-tail-unbounded-under-a-mu (robustness)**: the advance
+  tail had no compaction bound (unlike the pi journal's 10k) and is
+  full-scanned on every consult — under the authority's `a.mu` on the
+  opencode leg, unconditionally on the pi leg. Fixed with the mirrored
+  posture: `boardAdvancesCompactLines=10000` / `boardAdvancesKeepLines=1000`,
+  basis seeded at construction (pre-existing lines count), compaction
+  after the append that crosses the bound (temp + rename + append-handle
+  re-open — the rename orphans the old inode), failure keeps the current
+  tail and retries next append (the pi leg's append-anyway posture).
+  Pinned: `TestBoardAdvanceLedger_TailBounded` (kept-window + handle
+  survival + post-compaction readability) and
+  `TestBoardAdvanceLedger_TailAutoCompacts` (the trigger fires from the
+  append path; fresh stamp lands inside the kept window).
+- **pi-turnend-fails-bridge-claim (style)**: the counter's comment
+  claimed an ops-bridge reader that does not exist. Topology check:
+  `/metrics` is served only on the sidecar's admin port
+  (server.go:767); supervise-pi serves no prometheus surface, so a
+  production reader cannot exist — the comment now names the real
+  consumers (emission-site error logs + tests) and why the atomic
+  stays (a zero-plumbing seam for a future cross-process bridge).

@@ -97,8 +97,12 @@ func piBoardTurnEndObserver(sessionID string, busySince, settledAt time.Time) {
 }
 
 // boardTurnEndPiFails counts contained pi-leg emission failures (the
-// health signal for this leg; the ops bridge reads it at teardown —
-// kept as an atomic here to avoid new plumbing for a counter).
+// health signal for this leg). Consumers today: the failure paths log
+// loudly at the emission site, and the tests read the atomic —
+// supervise-pi serves no prometheus surface (the sidecar owns
+// :4098/metrics), so a production reader cannot exist by topology,
+// not by omission; the atomic keeps a zero-plumbing seam for any
+// future cross-process bridge to pick up.
 var boardTurnEndPiFails atomic.Int64
 
 // boardTurnEndEntry is the journal record: the EVENT_TYPE_BOARD_TURN_END

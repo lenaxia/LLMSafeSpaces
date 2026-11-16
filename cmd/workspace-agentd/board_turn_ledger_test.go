@@ -16,6 +16,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -186,4 +187,99 @@ func TestBoardAdvanceLedger_TailEntryShape(t *testing.T) {
 	assert.Equal(t, "ses_shape", rec.SessionID)
 	_, err = time.Parse(time.RFC3339Nano, rec.AdvancedAt)
 	assert.NoError(t, err, "advanced_at must be RFC3339Nano")
+}
+
+// tailBoundedBase is the seed stamps' epoch (disjoint from wall-clock
+// time so assertions parse exactly what the test wrote).
+var tailBoundedBase = time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+
+// seedAdvanceTail writes n stamp lines for session with strictly
+// increasing timestamps base+1ms .. base+nms (line i carries marker i).
+func seedAdvanceTail(t *testing.T, path, session string, n int) {
+	t.Helper()
+	var buf []byte
+	for i := 1; i <= n; i++ {
+		b, err := json.Marshal(map[string]any{
+			"session_id":  session,
+			"advanced_at": tailBoundedBase.Add(time.Duration(i) * time.Millisecond).Format(time.RFC3339Nano),
+		})
+		require.NoError(t, err)
+		buf = append(buf, append(b, '\n')...)
+	}
+	require.NoError(t, os.WriteFile(path, buf, 0o600))
+}
+
+// tailStampAt reads the idx-th tail line's advanced_at (raw, for the
+// kept-window assertion).
+func tailStampAt(t *testing.T, path string, idx int) string {
+	t.Helper()
+	b, err := os.ReadFile(path)
+	require.NoError(t, err)
+	lines := strings.Split(strings.TrimRight(string(b), "\n"), "\n")
+	require.Greater(t, len(lines), idx)
+	var rec struct {
+		AdvancedAt string `json:"advanced_at"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(lines[idx]), &rec))
+	return rec.AdvancedAt
+}
+
+// TestBoardAdvanceLedger_TailBounded: past the keep bound the tail
+// rewrites keeping the newest boardAdvancesKeepLines (temp + rename),
+// the append handle survives the swap (re-open after rename — the next
+// stamp lands on the compacted file), and the cross-process reader
+// still derives from the kept tail (mirrors the pi journal's
+// TestPiBoardTurnEnd_CompactionKeepsTail).
+func TestBoardAdvanceLedger_TailBounded(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "adv.jsonl")
+	t.Setenv("LLMSAFESPACES_BOARD_ADVANCES_PATH", path)
+	seedAdvanceTail(t, path, "ses_seed", boardAdvancesKeepLines+5)
+
+	l := newBoardAdvanceLedger(path, nil)
+	require.NotNil(t, l.appnd, "the seeded tail must open")
+	l.mu.Lock()
+	l.compactTailLocked()
+	l.mu.Unlock()
+
+	require.Equal(t, boardAdvancesKeepLines, countFileLines(path), "past the bound the tail rewrites keeping the newest 1000")
+	assert.Equal(t, tailBoundedBase.Add(6*time.Millisecond).Format(time.RFC3339Nano), tailStampAt(t, path, 0),
+		"the newest 1000 (stamps 6..1005) survive")
+	assert.Equal(t, tailBoundedBase.Add(time.Duration(boardAdvancesKeepLines+5)*time.Millisecond).Format(time.RFC3339Nano),
+		tailStampAt(t, path, boardAdvancesKeepLines-1))
+
+	// The append handle survived the rename swap: the next stamp lands
+	// on the compacted file (the re-open pin — an orphaned handle would
+	// append into the renamed-away inode and the reader would miss it).
+	l.observeToolCall("board_move_stage", map[string]any{"lsp_injected_session": "ses_after"})
+	require.Equal(t, boardAdvancesKeepLines+1, countFileLines(path))
+	_, ok := readBoardAdvanceStamps("ses_after")
+	assert.True(t, ok, "a stamp appended after compaction is readable by the cross-process reader")
+}
+
+// TestBoardAdvanceLedger_TailAutoCompacts: the bound fires from the
+// append path itself — one stamp past boardAdvancesCompactLines
+// compacts (pre-existing lines count: the basis is seeded at
+// construction), the fresh stamp survives inside the kept window, and
+// both derivations (memory, tail) still answer.
+func TestBoardAdvanceLedger_TailAutoCompacts(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "adv.jsonl")
+	t.Setenv("LLMSAFESPACES_BOARD_ADVANCES_PATH", path)
+	seedAdvanceTail(t, path, "ses_seed", boardAdvancesCompactLines+5)
+
+	l := newBoardAdvanceLedger(path, nil) // counts the seeded basis
+	l.observeToolCall("board_move_stage", map[string]any{"lsp_injected_session": "ses_live"})
+
+	require.Equal(t, boardAdvancesKeepLines, countFileLines(path),
+		"the append past the bound compacts the tail back to the keep window")
+	assert.True(t, l.advancedSince("ses_live", time.Time{}), "memory holds the fresh stamp regardless")
+
+	at, ok := readBoardAdvanceStamps("ses_live")
+	require.True(t, ok, "the fresh stamp sits inside the kept window — the cross-process reader finds it")
+	assert.True(t, at.After(tailBoundedBase))
+
+	// The newest pre-existing stamp survived the rewrite too.
+	seedAt, ok := readBoardAdvanceStamps("ses_seed")
+	require.True(t, ok)
+	assert.Equal(t, tailBoundedBase.Add(time.Duration(boardAdvancesCompactLines+5)*time.Millisecond).Format(time.RFC3339Nano),
+		seedAt.UTC().Format(time.RFC3339Nano))
 }

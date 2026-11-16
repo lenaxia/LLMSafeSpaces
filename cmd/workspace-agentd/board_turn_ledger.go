@@ -62,6 +62,18 @@ var boardAdvanceTools = map[string]bool{
 
 const boardAdvancesDefaultPath = "/workspace/.opencode-board-advances"
 
+// The tail's compaction bound (the pi journal's
+// boardTurnEndJournalCompactLines posture): past boardAdvancesCompactLines
+// the tail rewrites keeping the newest boardAdvancesKeepLines, so the
+// probe's consult stays a bounded read (the BoardTurnEndProbe contract —
+// cheap, in-process, never block) and the shared volume never grows an
+// unbounded artifact. Compaction drops OLD stamps only; the newest 1000
+// advance observations span far past any turn window the probe consults.
+const (
+	boardAdvancesCompactLines = 10000
+	boardAdvancesKeepLines    = 1000
+)
+
 // boardAdvancesPath resolves the advance-ledger tail's location (the
 // markerPathFromEnv pattern; shared-volume default so the sidecar
 // appends and the supervise-pi process reads the same file).
@@ -76,12 +88,16 @@ func boardAdvancesPath() string {
 // wall-clock stamp per session that made an advance-class board tool
 // call through THIS agentd (both harnesses share the MCP surface).
 // Memory is authoritative for the serving process; the JSONL tail
-// carries the fact across processes on the pod (the pi leg).
+// carries the fact across processes on the pod (the pi leg) — BOUNDED
+// at boardAdvancesCompactLines (compaction keeps the newest
+// boardAdvancesKeepLines), so the cross-process consult stays a small
+// bounded read, never an unbounded shared-volume artifact.
 type boardAdvanceLedger struct {
 	mu     sync.Mutex
 	last   map[string]time.Time
 	path   string
 	appnd  *os.File
+	lines  int
 	fails  int64
 	logger *zap.Logger
 }
@@ -107,7 +123,25 @@ func newBoardAdvanceLedger(path string, logger *zap.Logger) *boardAdvanceLedger 
 		return l
 	}
 	l.appnd = f
+	l.lines = countFileLines(path) // the compaction basis: pre-existing tail lines count too
 	return l
+}
+
+// countFileLines is the compaction guard's read (one bounded scan at
+// construction; the tail is bounded by construction once this file
+// owns a compaction bound).
+func countFileLines(path string) int {
+	f, err := os.Open(path)
+	if err != nil {
+		return 0
+	}
+	defer func() { _ = f.Close() }()
+	n := 0
+	sc := bufio.NewScanner(f)
+	for sc.Scan() {
+		n++
+	}
+	return n
 }
 
 func (l *boardAdvanceLedger) close() {
@@ -144,8 +178,73 @@ func (l *boardAdvanceLedger) observeToolCall(tool string, args map[string]any) {
 		if _, err := l.appnd.Write(append(b, '\n')); err != nil {
 			l.fails++
 			l.logger.Warn("board advance ledger: tail append failed (memory holds)", zap.Error(err))
+			return
+		}
+		l.lines++
+		if l.lines > boardAdvancesCompactLines {
+			l.compactTailLocked()
 		}
 	}
+}
+
+// compactTailLocked bounds the shared tail: rewrite keeping the newest
+// boardAdvancesKeepLines (temp + rename — atomic on POSIX; a crash
+// mid-compaction leaves the old tail intact), then re-open the append
+// handle (the rename orphaned the old inode — an un-reopened handle
+// would keep appending into the renamed-away file, losing stamps).
+// Caller holds l.mu (single-writer posture: only the MCP choke point of
+// the serving process appends). Best-effort: any failure keeps the
+// current tail and handle (the file grows past the bound; the next
+// append retries), never the stamp (memory holds regardless).
+func (l *boardAdvanceLedger) compactTailLocked() {
+	f, err := os.Open(l.path)
+	if err != nil {
+		return
+	}
+	var lines []string
+	sc := bufio.NewScanner(f)
+	for sc.Scan() {
+		lines = append(lines, sc.Text())
+	}
+	_ = f.Close()
+	if len(lines) <= boardAdvancesKeepLines {
+		l.lines = len(lines) // re-derive the basis: the file is already inside the bound
+		return
+	}
+	lines = lines[len(lines)-boardAdvancesKeepLines:]
+	tmp := l.path + ".compact"
+	tf, err := os.OpenFile(tmp, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600)
+	if err != nil {
+		l.logger.Warn("board advance ledger: compaction temp unavailable — tail grows past the bound (retried next append)", zap.Error(err))
+		return
+	}
+	for _, ln := range lines {
+		if _, err := tf.WriteString(ln + "\n"); err != nil {
+			_ = tf.Close()
+			l.logger.Warn("board advance ledger: compaction write failed — tail grows past the bound (retried next append)", zap.Error(err))
+			return
+		}
+	}
+	if err := tf.Close(); err != nil {
+		l.logger.Warn("board advance ledger: compaction write failed — tail grows past the bound (retried next append)", zap.Error(err))
+		return
+	}
+	_ = l.appnd.Close() // the swap: old handle first, then the rename, then the re-open
+	l.appnd = nil
+	if err := os.Rename(tmp, l.path); err != nil {
+		l.logger.Warn("board advance ledger: compaction rename failed — re-opening the original tail", zap.Error(err))
+	} else {
+		l.lines = len(lines)
+	}
+	af, err := os.OpenFile(l.path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
+	if err != nil {
+		l.logger.Warn("board advance ledger: append handle lost after compaction — memory-only degrade (restart re-opens)", zap.Error(err))
+		return
+	}
+	l.appnd = af
+	// Rename-failure shape: l.lines still stands past the bound, so the
+	// NEXT append retries the compaction (the pi leg's append-anyway
+	// posture — advance calls are rare; a warn per retry, never a storm).
 }
 
 // advancedSince answers whether an advance-class call was observed for
@@ -158,8 +257,9 @@ func (l *boardAdvanceLedger) advancedSince(sessionID string, turnStart time.Time
 }
 
 // readBoardAdvanceStamps scans the shared tail for the session's last
-// advance stamp (the pi leg's cross-process consult; scan cost is one
-// small-file read per observed turn end — advance calls are rare). The
+// advance stamp (the pi leg's cross-process consult; the scan is bounded
+// by the tail's compaction — at most boardAdvancesKeepLines+delta lines,
+// one small-file read per observed turn end; advance calls are rare). The
 // tail's location resolves HERE, in the same scope as the open (the
 // board_workers.go posture — an env-derived path never travels through
 // a parameter to an os.Open; gosec's taint rule stays quiet by shape,
