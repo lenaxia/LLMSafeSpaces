@@ -592,6 +592,7 @@ func TestConfig_Canary_EnabledWithoutClassesFailsClosed(t *testing.T) {
 func TestBoardEnvOverrides_R6(t *testing.T) {
 	t.Setenv("LLMSAFESPACES_BOARD_ATTEMPTSCAP", "5")
 	t.Setenv("LLMSAFESPACES_BOARD_LEASESECONDS", "42")
+	t.Setenv("LLMSAFESPACES_BOARD_HEARTBEATLAPSESECONDS", "43")
 	t.Setenv("LLMSAFESPACES_BOARD_THROTTLEBACKOFFSECONDS", "77")
 	t.Setenv("LLMSAFESPACES_BOARD_FAILUREBACKOFFSECONDS", "120")
 	t.Setenv("LLMSAFESPACES_BOARD_DRRQUANTUM", "2")
@@ -609,6 +610,7 @@ func TestBoardEnvOverrides_R6(t *testing.T) {
 		Enabled                bool `mapstructure:"enabled"`
 		AttemptsCap            int  `mapstructure:"attemptsCap"`
 		LeaseSeconds           int  `mapstructure:"leaseSeconds"`
+		HeartbeatLapseSeconds  int  `mapstructure:"heartbeatLapseSeconds"`
 		ThrottleBackoffSeconds int  `mapstructure:"throttleBackoffSeconds"`
 		FailureBackoffSeconds  int  `mapstructure:"failureBackoffSeconds"`
 		DRRQuantum             int  `mapstructure:"drrQuantum"`
@@ -627,12 +629,13 @@ func TestBoardEnvOverrides_R6(t *testing.T) {
 			Addr     string `mapstructure:"addr"`
 			Password string `mapstructure:"password"`
 		} `mapstructure:"eventbus"`
-	}{Enabled: true, AttemptsCap: 3, LeaseSeconds: 900, ThrottleBackoffSeconds: 300, FailureBackoffSeconds: 60, DRRQuantum: 1, SweepSeconds: 30,
+	}{Enabled: true, AttemptsCap: 3, LeaseSeconds: 900, HeartbeatLapseSeconds: 5400, ThrottleBackoffSeconds: 300, FailureBackoffSeconds: 60, DRRQuantum: 1, SweepSeconds: 30,
 		UserClaimCap: 8, GlobalClaimCap: 64, MaxEdgesPerNode: 16, MaxNodesPerEpic: 64,
 		WorkerSessionCap: 50, WorkerSessionGraceSecs: 3600}}
 	applyBoardEnvOverrides(cfg)
 
 	if cfg.Board.Enabled != false || cfg.Board.AttemptsCap != 5 || cfg.Board.LeaseSeconds != 42 ||
+		cfg.Board.HeartbeatLapseSeconds != 43 ||
 		cfg.Board.ThrottleBackoffSeconds != 77 || cfg.Board.FailureBackoffSeconds != 120 || cfg.Board.DRRQuantum != 2 || cfg.Board.SweepSeconds != 15 ||
 		cfg.Board.UserClaimCap != 12 || cfg.Board.GlobalClaimCap != 96 ||
 		cfg.Board.MaxEdgesPerNode != 20 || cfg.Board.MaxNodesPerEpic != 80 ||
@@ -673,10 +676,12 @@ func TestBoardEnvOverrides_LeaseEventbus(t *testing.T) {
 func TestBoardEnvOverrides_R6_InvalidIgnored(t *testing.T) {
 	t.Setenv("LLMSAFESPACES_BOARD_ATTEMPTSCAP", "-1")
 	t.Setenv("LLMSAFESPACES_BOARD_LEASESECONDS", "not-a-number")
+	t.Setenv("LLMSAFESPACES_BOARD_HEARTBEATLAPSESECONDS", "also-not-a-number")
 	cfg := &Config{Board: struct {
 		Enabled                bool `mapstructure:"enabled"`
 		AttemptsCap            int  `mapstructure:"attemptsCap"`
 		LeaseSeconds           int  `mapstructure:"leaseSeconds"`
+		HeartbeatLapseSeconds  int  `mapstructure:"heartbeatLapseSeconds"`
 		ThrottleBackoffSeconds int  `mapstructure:"throttleBackoffSeconds"`
 		FailureBackoffSeconds  int  `mapstructure:"failureBackoffSeconds"`
 		DRRQuantum             int  `mapstructure:"drrQuantum"`
@@ -695,11 +700,11 @@ func TestBoardEnvOverrides_R6_InvalidIgnored(t *testing.T) {
 			Addr     string `mapstructure:"addr"`
 			Password string `mapstructure:"password"`
 		} `mapstructure:"eventbus"`
-	}{Enabled: true, AttemptsCap: 3, LeaseSeconds: 900, ThrottleBackoffSeconds: 300, FailureBackoffSeconds: 60, DRRQuantum: 1, SweepSeconds: 30,
+	}{Enabled: true, AttemptsCap: 3, LeaseSeconds: 900, HeartbeatLapseSeconds: 5400, ThrottleBackoffSeconds: 300, FailureBackoffSeconds: 60, DRRQuantum: 1, SweepSeconds: 30,
 		UserClaimCap: 8, GlobalClaimCap: 64, MaxEdgesPerNode: 16, MaxNodesPerEpic: 64,
 		WorkerSessionCap: 50, WorkerSessionGraceSecs: 3600}}
 	applyBoardEnvOverrides(cfg)
-	if cfg.Board.AttemptsCap != 3 || cfg.Board.LeaseSeconds != 900 {
+	if cfg.Board.AttemptsCap != 3 || cfg.Board.LeaseSeconds != 900 || cfg.Board.HeartbeatLapseSeconds != 5400 {
 		t.Fatalf("invalid env must not clobber the base: %+v", cfg.Board)
 	}
 }

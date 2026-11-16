@@ -54,6 +54,17 @@ type EngineConfig struct {
 	// gone assignee's row can stay pinned; 15m burned live workers
 	// mid-verification on long tool calls the watermark never stamped).
 	LeaseDuration time.Duration
+	// HeartbeatLapseThreshold is how stale the worker-anchored progress
+	// clock (tasks.last_progress_at) may get on a lease-due row before
+	// the heartbeat-lapse arm fires (#2043, the 2026-11-15 incident's
+	// remediation): past the threshold, ALL observation renewal
+	// evidence (movement, busy, post-nudge reaction) is overridden and
+	// the row proceeds through the quiet arms (nudge →
+	// heartbeat-or-wedge). A heartbeat response or any worker progress
+	// write resets the arm by refreshing the clock. Nil last_progress_at
+	// is lapsed-by-default. Default 90m (2 lease windows: one window of
+	// nudge measurement + one of response grace before the arm hardens).
+	HeartbeatLapseThreshold time.Duration
 	// ThrottleBackoff is the cooldown applied by report_throttle to both
 	// the task (cooldown_until) and the project (slot_cooldown_until).
 	// Default 5m.
@@ -93,17 +104,18 @@ type EngineConfig struct {
 // backpressure/graph-limit defaults).
 func DefaultEngineConfig() EngineConfig {
 	return EngineConfig{
-		AttemptsCap:       3,
-		FailureBackoff:    time.Minute,
-		LeaseDuration:     45 * time.Minute,
-		ThrottleBackoff:   5 * time.Minute,
-		DRRQuantum:        1,
-		SweepInterval:     30 * time.Second,
-		UserClaimCap:      8,
-		GlobalClaimCap:    64,
-		MaxEdgesPerNode:   16,
-		MaxNodesPerEpic:   64,
-		PressureSampleTTL: 2 * time.Minute,
+		AttemptsCap:             3,
+		FailureBackoff:          time.Minute,
+		LeaseDuration:           45 * time.Minute,
+		HeartbeatLapseThreshold: 90 * time.Minute,
+		ThrottleBackoff:         5 * time.Minute,
+		DRRQuantum:              1,
+		SweepInterval:           30 * time.Second,
+		UserClaimCap:            8,
+		GlobalClaimCap:          64,
+		MaxEdgesPerNode:         16,
+		MaxNodesPerEpic:         64,
+		PressureSampleTTL:       2 * time.Minute,
 	}
 }
 

@@ -281,12 +281,16 @@ func (s *Service) rc1Reclaims(ctx context.Context) (int, error) {
 		SELECT t.id, t.project_id, COALESCE(t.lease_expires_at::text, 'null'), t.failure_count,
 			COALESCE(t.assignee_session,''), COALESCE(t.nudge_id,''), COALESCE(t.short_id,''),
 			t.nudged_at, t.last_heartbeat_at, t.busy_renews,
+			t.last_progress_at,
+			(t.last_progress_at IS NULL
+				OR t.last_progress_at < now() - make_interval(secs=>$1::float8)),
 			COALESCE(p.target_workspace_id::text, '')
 		FROM tasks t
 		LEFT JOIN projects p ON p.id = t.project_id
 		WHERE t.stage='in_progress' AND NOT t.pending_input
 		  AND (t.lease_expires_at IS NULL OR t.lease_expires_at < now())
-		FOR UPDATE OF t SKIP LOCKED`)
+		FOR UPDATE OF t SKIP LOCKED`,
+		s.cfg.HeartbeatLapseThreshold.Seconds())
 	if err != nil {
 		return 0, err
 	}
@@ -299,12 +303,20 @@ func (s *Service) rc1Reclaims(ctx context.Context) (int, error) {
 		lastHeartbeat        *time.Time
 		busyRenews           int32
 		ws                   string
+		// lastProgress is the worker-anchored progress clock
+		// (last_progress_at) at scan time; progressLapsed is the
+		// heartbeat-lapse arm's input, computed SERVER-SIDE in the
+		// same now() clock domain as every other ladder comparison —
+		// nil progress is lapsed-by-default (#2043: no evidence of
+		// worker progress is no movement veto).
+		lastProgress   *time.Time
+		progressLapsed bool
 	}
 	var victims []victim
 	for rows.Next() {
 		var v victim
 		if err := rows.Scan(&v.id, &v.project, &v.episode, &v.failures, &v.assignee, &v.nudgeID, &v.shortID,
-			&v.nudgedAt, &v.lastHeartbeat, &v.busyRenews, &v.ws); err != nil {
+			&v.nudgedAt, &v.lastHeartbeat, &v.busyRenews, &v.lastProgress, &v.progressLapsed, &v.ws); err != nil {
 			rows.Close()
 			return 0, err
 		}
@@ -410,6 +422,15 @@ func (s *Service) rc1Reclaims(ctx context.Context) (int, error) {
 		ladderNudges.Inc()
 		return id
 	}
+	// nudgeReasonFor attributes a sentinel to the ladder arm that armed
+	// it (#2043 R3): a lapsed row's nudge says WHY (heartbeat_lapse) —
+	// the ordinary quiet path stays unattributed ("").
+	nudgeReasonFor := func(v victim) string {
+		if v.progressLapsed {
+			return NudgeReasonHeartbeatLapse
+		}
+		return ""
+	}
 	for _, v := range victims {
 		decisions[v.id] = ladderReclaim
 		if v.assignee == "" {
@@ -425,6 +446,33 @@ func (s *Service) rc1Reclaims(ctx context.Context) (int, error) {
 			v.lastHeartbeat.After(*v.nudgedAt)
 		o, ok := observations[v.assignee]
 		observed := ok && o.Observed
+		// The heartbeat-lapse arm (#2043, the 2026-11-15 incident's
+		// remediation): the progress clock is the WORKER-anchored truth
+		// (claim mints and heartbeat responses write it — the renewal
+		// write stopped touching it in the same fix), so a progress
+		// stamp stale past HeartbeatLapseThreshold (nil = lapsed by
+		// default) means NO worker progress has been evidenced for the
+		// whole threshold window — and observation evidence (movement
+		// frames, busy, post-nudge reactions) CANNOT renew the row:
+		// frames without progress were exactly the incident's
+		// renewal-forever orbit. The evidence is zeroed HERE, before
+		// the renewal rungs consult it, so the ladder falls through to
+		// its ordinary quiet arms (nudge → heartbeat-or-wedge) with
+		// dead-evidence reclaim and the no-evidence floor preserved.
+		// The response channel still wins: hbAfterNudge was checked
+		// ABOVE this override, and a genuine heartbeat response also
+		// refreshes last_progress_at — the arm is stateless, reset for
+		// free by any worker-anchored write.
+		if v.progressLapsed && (o.MovedSinceLastSweep || o.EventsAfterNudge || o.Busy) {
+			// The suppression is the arm's always-on signature
+			// (board_ladder_heartbeat_lapse_total): would-be renewal
+			// evidence denied by a stale progress clock — countable in
+			// one scrape, the #2040 incident's counterfactual.
+			ladderHeartbeatLapse.Inc()
+			o.MovedSinceLastSweep = false
+			o.EventsAfterNudge = false
+			o.Busy = false
+		}
 		// The busy-gate's engine-side bound: past boardBusyRenewCap
 		// consecutive busy-only renewals, Busy evidence is EXHAUSTED
 		// for this claim epoch — honored as false so the quiet arms
@@ -534,7 +582,15 @@ func (s *Service) rc1Reclaims(ctx context.Context) (int, error) {
 				sem <- struct{}{}
 				defer func() { <-sem }()
 				results[i] = s.nudger(ctx, assignee, p)
-			}(i, pn.v.assignee, NudgePayload{NudgeID: pn.id, TaskID: pn.v.id, TaskShortID: pn.v.shortID})
+			}(i, pn.v.assignee, NudgePayload{
+				NudgeID: pn.id, TaskID: pn.v.id, TaskShortID: pn.v.shortID,
+				// The lapse arm's attribution rides the payload (#2043
+				// R3): a sentinel armed on a stale progress clock says
+				// so, so the harness-side sentinel and any bus
+				// projection distinguish "you were quiet" from "you
+				// have not evidenced progress in N minutes".
+				Reason: nudgeReasonFor(pn.v),
+			})
 		}
 		wg.Wait()
 		for i, pn := range outbound {
@@ -570,9 +626,17 @@ func (s *Service) rc1Reclaims(ctx context.Context) (int, error) {
 			// the trail), NO overlay. busy_renews carries the
 			// consecutive busy-ONLY count (the cap's input): +1 when
 			// Busy alone renewed, 0 when stronger evidence did.
+			//
+			// #2043 two-clock split: the renewal stamps last_renewed_at
+			// (the RENEWAL clock) and NEVER last_progress_at — a
+			// platform extension of the lease is not worker progress,
+			// and conflating them was the 2026-11-15 incident (each
+			// renewal deferred wedge detection by a full lease window,
+			// indefinitely). last_progress_at stays worker-anchored:
+			// claim mints and heartbeat responses are its only writers.
 			if _, err := tx.Exec(ctx, `
 				UPDATE tasks SET lease_expires_at=now()+make_interval(secs=>$2::float8),
-					last_progress_at=now(), nudge_id=NULL, nudged_at=NULL, updated_at=now(),
+					last_renewed_at=now(), nudge_id=NULL, nudged_at=NULL, updated_at=now(),
 					busy_renews=CASE WHEN $3::bool THEN busy_renews+1 ELSE 0 END
 				WHERE id=$1 AND stage='in_progress'`,
 				v.id, s.cfg.LeaseDuration.Seconds(), busyOnlyRenew[v.id]); err != nil {
