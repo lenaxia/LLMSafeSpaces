@@ -99,7 +99,10 @@ backstop verbatim (epic R5 posture; recorded in the design doc Part 7).
   INCLUDING the two repaired #2047 tests (previously red on any live
   DB, skip-masked in CI).
 - `go build ./pkg/board/ ./api/internal/app/`, `go vet` (both tags),
-  `make fmt-check`, `make imports-check` — clean on the final tree.
+  `make fmt-check`, `make imports-check` — clean on the post-r2 head
+  (round 1 caught the r1 atomic edit landing misaligned — the recorded
+  fmt-clean line had gone stale the same way round 0's suite line had;
+  the record now post-dates every edit).
 - Born-red honesty note: the pins were developed red-first; the
   guarded write's guards surfaced real test-shape defects before any
   implementation existed, and round 0 caught that one fix (the

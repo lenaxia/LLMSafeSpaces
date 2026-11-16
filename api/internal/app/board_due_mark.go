@@ -87,7 +87,7 @@ type boardTurnEndConsumer struct {
 	mu      sync.Mutex
 	epochs  map[string]uint64 // canonical session key → last dispatched epoch
 	evict   []string          // FIFO basis for the cap
-	dropped atomic.Bool // overflow latched for one warn (loud-once posture); atomic — written by the fold goroutine, reset by the drain (review r1: the plain bool was a data race)
+	dropped atomic.Bool       // overflow latched for one warn (loud-once posture); atomic — written by the fold goroutine, reset by the drain (review r1: the plain bool was a data race)
 }
 
 func newBoardTurnEndConsumer(sink boardTurnEndSink, logger *logger.Logger) *boardTurnEndConsumer {
