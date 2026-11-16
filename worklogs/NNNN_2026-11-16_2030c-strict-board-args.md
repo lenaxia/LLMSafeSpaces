@@ -37,7 +37,7 @@ Workspace `7eaa3f1b…`-class pod, `/workspace/.local/opencode/opencode.db`, rea
 
 - `cmd/workspace-agentd/strict_board_args.go` (new): the flag (`AGENTD_STRICT_BOARD_ARGS=1`), the stamp-set mirror (37 tools, parity-pinned), `strictBoardArgsCheck` (deterministic order: identity keys first, then unknown fields, both sorted), the admitted-vocabulary derivation, and `strictBoardToolSchemas` (map schemas shallow-copied; raw-JSON schemas byte-spliced with the `additionalProperties:false` prefix — #1849 order preserved, re-validated by decode).
 - `mcp_server.go`: the check hooks tools/call AFTER alias normalization / BEFORE `callMCPTool`, rejecting through the standard isError envelope (the deprecation notice still rides, pinned); `mcpToolCatalog` returns `strictBoardToolSchemas(tools)`.
-- `strict_board_args_test.go` (new, 8 test funcs / 15 subtests): the pins listed in the CHANGELOG, including the no-valid-call-rejected catalog sweep and the raw-splice byte pin.
+- `strict_board_args_test.go` (new, 7 test funcs / 13 subtests): the pins listed in the CHANGELOG, including the no-valid-call-rejected catalog sweep and the raw-splice byte pin.
 - CHANGELOG `[Unreleased]` entry.
 
 ## Verification
