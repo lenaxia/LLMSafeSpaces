@@ -385,7 +385,7 @@ func (s *BoardSuite) TestPin_2044E_ResponseGuard_CommittedNudgeSequence() {
 	s.expireLease(task.ID)
 	s.rc1Sweep(recon)
 	s.Require().Equal(1, nudger.count())
-	slotID, nudgedAt := s.nudgeState(task.ID)
+	slotID, _ := s.nudgeState(task.ID)
 	s.Require().NotEmpty(slotID, "the sentinel is committed on the row")
 
 	// The observed wall gap: the heartbeat lands 4.4s after the
@@ -394,7 +394,6 @@ func (s *BoardSuite) TestPin_2044E_ResponseGuard_CommittedNudgeSequence() {
 	_, err := s.pool.Exec(context.Background(),
 		`UPDATE tasks SET nudged_at=now()-interval '4 seconds' WHERE id=$1 AND nudge_id IS NOT NULL`, task.ID)
 	s.Require().NoError(err)
-	_ = nudgedAt
 
 	// The live token answers: the guarded RESPONSE arm.
 	res, err := s.svc.Heartbeat(context.Background(), s.agent("sess", c.ClaimToken), task.ID, "", time.Now().UTC())

@@ -318,7 +318,7 @@ func (s *Service) rc1Reclaims(ctx context.Context) (int, error) {
 			t.last_progress_at,
 			(t.last_progress_at IS NULL
 				OR t.last_progress_at < now() - make_interval(secs=>$1::float8)),
-			t.no_advance_renews, t.stage_entered_at,
+			t.no_advance_renews,
 			(t.last_progress_at IS NULL OR t.last_progress_at <= t.stage_entered_at),
 			COALESCE(p.target_workspace_id::text, '')
 		FROM tasks t
@@ -354,17 +354,17 @@ func (s *Service) rc1Reclaims(ctx context.Context) (int, error) {
 		// (stage_entered_at, written by every claim-path mint in the
 		// same statement as the mint's last_progress_at=now(), so the
 		// claim itself never reads as motion). Nil progress is
-		// motionless by default.
-		noAdvance      int
-		noEpochMotion  bool
-		stageEnteredAt time.Time
+		// motionless by default. (The raw mint timestamp stays in SQL —
+		// the sweep never needs it in Go.)
+		noAdvance     int
+		noEpochMotion bool
 	}
 	var victims []victim
 	for rows.Next() {
 		var v victim
 		if err := rows.Scan(&v.id, &v.project, &v.episode, &v.failures, &v.assignee, &v.nudgeID, &v.shortID,
 			&v.nudgedAt, &v.lastHeartbeat, &v.busyRenews, &v.lastProgress, &v.progressLapsed,
-			&v.noAdvance, &v.stageEnteredAt, &v.noEpochMotion, &v.ws); err != nil {
+			&v.noAdvance, &v.noEpochMotion, &v.ws); err != nil {
 			rows.Close()
 			return 0, err
 		}
