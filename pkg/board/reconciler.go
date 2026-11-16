@@ -229,10 +229,15 @@ func (r *Reconciler) readWatermark(ctx context.Context) (time.Time, error) {
 }
 
 // maxEventAt reads the current max event timestamp (the sweep's
-// high-water capture point).
+// high-water capture point). An EMPTY board_events max()s to NULL —
+// coalesced to the origin watermark (to_timestamp(0), the same seed
+// readWatermark mints for a fresh scope): an empty event history is
+// "watermark at zero", never a failed capture (#2063 — the NULL scan
+// aborted the whole sweep before any phase ran).
 func (r *Reconciler) maxEventAt(ctx context.Context) (time.Time, error) {
 	var t time.Time
-	err := r.svc.q().QueryRow(ctx, `SELECT max(created_at) FROM board_events`).Scan(&t)
+	err := r.svc.q().QueryRow(ctx,
+		`SELECT COALESCE(max(created_at), to_timestamp(0)) FROM board_events`).Scan(&t)
 	return t, err
 }
 

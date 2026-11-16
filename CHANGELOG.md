@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed — board: empty `board_events` no longer aborts the reconciler sweep at watermark capture (issue #2063)
+
+- **The bug** (latent, found during the #2042 full-suite runs; parent #2040): `Reconciler.maxEventAt` scanned `SELECT max(created_at) FROM board_events` into a non-pointer `time.Time` — on an EMPTY event table `max()` returns NULL and pgx fails the scan (`cannot scan NULL into *time.Time`), aborting the ENTIRE sweep at its watermark-capture point before any phase ran (no RC1 reclaims, no pending coupling, no drift, no RC4 net, no watermark advance). The §4.4 sweep backstop was dead on any board whose event history had zero rows — exactly a fresh install's first sweep. Observed live once (#2042 run 3: `col: max` scan errors surfacing as sweep failures on unrelated pins); state-dependent, so nearly every fixture (which seeds events before sweeping) hid it.
+- **The fix**: the capture coalesces to the origin watermark — `SELECT COALESCE(max(created_at), to_timestamp(0))` — the SAME seed `readWatermark` mints for a fresh scope, so an empty event history now means "watermark at zero" on both watermark paths by construction, and the first real event later advances the cursor normally. Matches the repo's established empty-max pattern (`COALESCE(MAX(id), 0)` in metering).
+- **Sibling sweep (R3)**: every bare `max(/min(/sum(` aggregate scanned into a non-pointer type in `pkg/board` and `api/internal` adjudicated — no other NULL-unsafe scan exists (the remainder are coalesced, GROUP BY-guarded, or ordering keys never scanned into Go); table in the worklog and PR.
+- Pinned by: `pkg/board/watermark_empty_2063_integration_test.go` — born-red empty-events pin (sweep completes, watermark held at the origin seed via SQL-side instant equality, second still-empty sweep idempotent) and the populated-events pin (watermark advances to the pre-captured `max(created_at)` exactly — behavior unchanged when rows exist). Full `pkg/board` suite green `-race`; gofmt/vet/lint clean.
+
 ### Changed — board: directive delivery discipline — halt/resume sentinel, delivery audit events, turn-boundary pins (issue #2046)
 
 - **The gap** (2026-11-15 incident, parent #2040): board HALT/RESUME directives rode into worker transcripts as plain unattributable text — no machine marker, no audit event for the cascade (delivery outcomes dropped with `_ =`), and during the incident the persisted message rows showed ZERO parts. A second unexplained injection pair (23:46:18/23:46:23 into `ses_e2459678…`) matched no board event and no agentd log line.
