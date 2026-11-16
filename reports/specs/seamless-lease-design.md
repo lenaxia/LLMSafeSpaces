@@ -242,16 +242,22 @@ arm on the honest signal.
 
 ### The two clocks (the definition)
 
-- **The renewal clock — `tasks.last_renewed_at`.** When the PLATFORM last extended the lease on
-  evidence. Writers: the ladder's `ladderRenew` arm ONLY (movement, post-nudge reaction, busy-gate,
-  heartbeat-response renewals — the write that used to lie). The suspension freeze (suspend.go) keeps
-  its deliberate no-clock discipline (it never touched `last_progress_at` either; its renewals are
+- **The renewal clock — `tasks.last_renewed_at`.** When the LADDER last extended the lease on
+  evidence. Writers: the ladder's `ladderRenew` arm ONLY (`reconciler.go` — movement, post-nudge
+  reaction, busy-gate renewals — the write that used to lie). Two deliberate exclusions, so an
+  operator correlating this column against `board_lease_renewals_total` reads renewal recency for
+  LADDER renewals only: the DIRECT heartbeat-response arm (`stage.go`'s live-nudge response write)
+  extends `lease_expires_at` on evidence but does not stamp the column (its renewal is counted by
+  the counter's `source=heartbeat`, and its progress write anchors the PROGRESS clock instead —
+  v1 telemetry scope, per review round 1), and the suspension freeze (suspend.go) keeps its
+  deliberate no-clock discipline (it never touched `last_progress_at` either; its renewals are
   evented with source `workspace_suspended` — extending it here changes no decision).
 - **The progress clock — `tasks.last_progress_at`.** When the WORKER last evidenced progress.
-  Writers: claim mints (`stage.go`, `engine.go`, `persona.go` — claim time is a legitimate anchor)
-  and heartbeat RESPONSES (`stage.go` — the worker-declared `observedProgressAt`, #1847-clamped
-  server-side). NOTHING else writes it; in particular the ladder renewal does not, ever (born-red
-  pinned: `TestPin_2043A_RenewalWritesRenewedClockNotProgress`).
+  Writers: claim mints (`stage.go`, `engine.go`, `persona.go` — claim time is a legitimate anchor),
+  the drift-review closed-unmerged re-claim (`reconciler.go` — a fresh claim epoch, claim-mint
+  semantics), and heartbeat RESPONSES (`stage.go` — the worker-declared `observedProgressAt`,
+  #1847-clamped server-side). NOTHING else writes it; in particular the ladder renewal does not,
+  ever (born-red pinned: `TestPin_2043A_RenewalWritesRenewedClockNotProgress`).
 
 Backfill (migration 000055, conservative mid-deploy): `last_renewed_at` initializes from
 `last_progress_at` — in-flight rows carry today's semantics across the deploy; the arm first fires
