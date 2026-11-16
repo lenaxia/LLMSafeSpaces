@@ -89,10 +89,12 @@ func TestIntegration_FullWorkflow(t *testing.T) {
 	// deprecated story-rename aliases (story rename phase 2, owner
 	// ruling 2026-10-30: board_create_task, board_task_verdicts,
 	// board_task_events, board_start_task(s), board_delete_tasks,
-	// board_(rearm|pause|resume|depose)_task) = 68).
+	// board_(rearm|pause|resume|depose)_task) = 68, PLUS 2 epic
+	// wrap-up review tools (board_record_wrapup_verdict,
+	// board_ack_epic_wrapup) = 70).
 	toolsResp, err := mcpClient.ListTools(ctx, mcp.ListToolsRequest{})
 	require.NoError(t, err)
-	assert.Len(t, toolsResp.Tools, 68)
+	assert.Len(t, toolsResp.Tools, 70)
 
 	toolNames := make(map[string]bool)
 	toolSchemas := make(map[string]mcp.Tool)

@@ -125,19 +125,21 @@ var boardRecordWrapUpVerdictTool = mcp.NewTool("board_record_wrapup_verdict",
 	mcp.WithDescription("Close an epic's wrap-up review (the REST wire term is 'task'; the epic wrap-up "+
 		"review's engine-owned close verb — the ONLY sanctioned close; a plain move_stage→done on a "+
 		"wrap-up row runs NO settle and parks the epic until board_ack_epic_wrapup). PASS completes the "+
-		"epic iff still drained (atomically — never a fresh mint); GAPS references gap stories you filed "+
+		"epic iff still drained (atomically — never a fresh mint); GAPS references gap stories filed "+
 		"FIRST via board_create_story (tag \"gap\", deduped against existing rows) and the epic stays "+
 		"open — the non-done gap rows hold it. The schema is closed: verdict pass|gaps (a story verdict's "+
-		"approve|fail refuses), reportUrl required on BOTH (the close's evidence), gapRefs required "+
+		"approve|fail refuses), report_url required on BOTH (the close's evidence), gap_refs required "+
 		"non-empty iff gaps (same epic, gap-tagged, filed since the wrap-up's mint), notes size-capped. "+
-		"Requires the wrap-up row's LIVE claim token (from your charter envelope) on every surface, and "+
-		"ALL the row's acceptance criteria met (board_update_story {setCriteriaMet} — the Done guard "+
-		"applies regardless of reviewer role). A replay on an already-closed row is 200-with-original."),
+		"THE CLOSE IS THE REVIEWER'S ACT: the engine requires the wrap-up row's LIVE claim token on "+
+		"every surface (the spawned wrap-up reviewer persona's own claim — the in-workspace agent tool "+
+		"carries it), and this external surface carries no claim-token parameter (§4.3b: external actors "+
+		"hold no claims) — a call here without the reviewer's claim renders the engine's loud refusal. "+
+		"The owner's levers on this surface: read the wrap-up row + its report, the manager raw-done "+
+		"posture (parks until ack), and board_ack_epic_wrapup."),
 	mcp.WithString("story_id", mcp.Required(), mcp.Description("The wrap-up row's short id (tsk-XXXXXXXX)")),
 	mcp.WithString("verdict", mcp.Required(), mcp.Description("pass or gaps")),
 	mcp.WithString("report_url", mcp.Required(), mcp.Description("The wrap-up report URL (required on both verdicts — the close's evidence)")),
 	mcp.WithString("reviewer", mcp.Required(), mcp.Description("Your reviewer identity (the record's author)")),
-	mcp.WithString("claim_token", mcp.Required(), mcp.Description("The live claim token from your charter envelope (the in-flight guard)")),
 	mcp.WithArray("gap_refs", mcp.WithStringItems(),
 		mcp.Description("gaps only: the gap stories' short ids (filed via board_create_story with tag \"gap\" BEFORE the verdict); required non-empty iff verdict=gaps")),
 	mcp.WithString("notes", mcp.Description("Optional prose (size-capped)")),
@@ -998,9 +1000,8 @@ func (h *handlers) boardRecordWrapUpVerdict(ctx context.Context, req mcp.CallToo
 	taskID := storyRefArg(args)
 	verdict := strArg(args, "verdict")
 	reviewer := strArg(args, "reviewer")
-	claimToken := strArg(args, "claim_token")
-	if taskID == "" || verdict == "" || reviewer == "" || claimToken == "" {
-		return mcp.NewToolResultError("story_id, verdict, reviewer, and claim_token are required"), nil
+	if taskID == "" || verdict == "" || reviewer == "" {
+		return mcp.NewToolResultError("story_id, verdict, and reviewer are required"), nil
 	}
 	if verdict != "pass" && verdict != "gaps" {
 		return mcp.NewToolResultError("verdict must be pass or gaps (the story verdict's approve|fail is a different verb)"), nil
@@ -1023,7 +1024,7 @@ func (h *handlers) boardRecordWrapUpVerdict(ctx context.Context, req mcp.CallToo
 		Verdict: verdict, ReportURL: reportURL,
 		GapRefs: gapRefs,
 		Notes:   strArg(args, "notes"), Reviewer: reviewer,
-		ClaimToken: claimToken, RequestID: strArg(args, "request_id"),
+		RequestID: strArg(args, "request_id"),
 	})
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("failed to record wrap-up verdict: %v", err)), nil
