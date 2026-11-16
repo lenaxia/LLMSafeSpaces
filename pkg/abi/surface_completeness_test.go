@@ -58,6 +58,11 @@ func TestSchemaSurfaceCompleteness(t *testing.T) {
 		"FileDiff": false, "CustomPart": false,
 		"Event": false, "InputRequest": false, "InputOption": false,
 		"ToolRef": false,
+		// #2061/#2064: the board turn-end publication's payload — a NEW
+		// event class (EVENT_TYPE_BOARD_TURN_END), additive to Event as
+		// field 14. Management-class under #2042 (zero liveness
+		// authority); the enum-set pin below carries the member.
+		"BoardTurnEnd": false,
 	}
 
 	services := map[string]bool{}
@@ -159,6 +164,9 @@ func assertClosedUnions(t *testing.T, files []protoreflect.FileDescriptor) {
 		"EVENT_TYPE_MESSAGE_END": true, "EVENT_TYPE_PART_START": true, "EVENT_TYPE_PART_DELTA": true,
 		"EVENT_TYPE_PART_END": true, "EVENT_TYPE_INPUT_REQUEST": true, "EVENT_TYPE_INPUT_RESOLVED": true,
 		"EVENT_TYPE_ERROR": true,
+		// #2061/#2064: the board turn-end publication for claim-holder
+		// sessions — additive member 11, never a SESSION_STATUS overload.
+		"EVENT_TYPE_BOARD_TURN_END": true,
 	}
 	if !equalSets(eventValues, wantEvents) {
 		t.Errorf("EventType must match the pinned Epic 65 event set exactly, got %v", eventValues)

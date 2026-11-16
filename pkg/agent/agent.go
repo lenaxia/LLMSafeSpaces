@@ -215,7 +215,22 @@ func NewAdapterForType(agentType AgentType, deps AdapterFactoryDeps) (Adapter, e
 	if deps.Logger == nil {
 		deps.Logger = zap.NewNop()
 	}
-	return f(deps)
+	a, err := f(deps)
+	if err != nil {
+		return nil, err
+	}
+	// #2030a: every registry-built adapter must provide the
+	// transcript-hygiene contract — served transcripts strip identity
+	// stamps from tool-call args (stored records keep them). The check
+	// is HERE, at the one construction seam every harness crosses, so
+	// a non-compliant third harness fails loudly at construction
+	// (startup-fatal for a default harness; a per-call error for a
+	// lazily constructed one) instead of silently serving stamped
+	// transcripts.
+	if _, err := TranscriptHygieneFor(a); err != nil {
+		return nil, err
+	}
+	return a, nil
 }
 
 // RegisteredAdapterTypes lists the harnesses with adapter factories

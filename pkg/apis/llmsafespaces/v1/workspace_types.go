@@ -45,6 +45,24 @@ const (
 	// concurrency lane and never conflicts with Status().Update
 	// (US-23.3 single-writer migration).
 	AnnotationLastActivityAt = "llmsafespaces.dev/last-activity-at"
+
+	// AnnotationHarnessUnbound marks a workspace as INTENTIONALLY
+	// unbound at create (owner ruling 2026-11-16: harness is a
+	// nullable, bind-once field; "opencode" is no longer the implicit
+	// create default). Stamped by the API server (value "true") ONLY
+	// when CreateWorkspace omits the harness param — the
+	// frontend-picker path, whose first session (or an explicit bind)
+	// sets
+	// spec.harness exactly once. The marker is the LEGACY
+	// DISCRIMINATOR at both enforcement tiers: a workspace with
+	// spec.harness == "" AND this marker is a born-unbound workspace
+	// (bindable to any enabled harness), while spec.harness == ""
+	// WITHOUT the marker is a pre-binding-ruling object that has only
+	// ever run opencode (the old schema default) — the controller
+	// backfills those to an explicit "opencode" on first observe, and
+	// until then binding them to anything but opencode is refused.
+	// Removed at bind; its absence on a bound workspace is normal.
+	AnnotationHarnessUnbound = "llmsafespaces.dev/harness-unbound"
 )
 
 // WorkspaceStorageConfig defines PVC configuration for a Workspace.
@@ -94,11 +112,13 @@ type WorkspaceAutoSuspend struct {
 // HarnessType selects the coding-agent harness a Workspace runs. The
 // harness is a structural dimension of the workspace — sessions,
 // agent config, and artifacts are harness-specific — so it is
-// IMMUTABLE after create (the image-class immutability precedent:
-// switching means a new Workspace, never an in-place flip that would
-// strand the PVC state of the old harness). Values align with
-// agent.AgentType; this package keeps its own constants so the API
-// types stay self-contained (the kubebuilder posture).
+// BIND-ONCE and then immutable forever (owner ruling 2026-11-16:
+// workspaces do NOT switch harnesses; users must never hunt for
+// history or track which conversation happened on which harness —
+// the workspace's identity includes its harness, and its pod
+// topology never changes class). Values align with agent.AgentType;
+// this package keeps its own constants so the API types stay
+// self-contained (the kubebuilder posture).
 type HarnessType string
 
 const (
@@ -198,13 +218,19 @@ type WorkspaceSpec struct {
 	Runtime string `json:"runtime"`
 
 	// Harness selects the coding-agent harness this workspace runs
-	// (pi-scoping report §6, S5 plumbing). Immutable after create:
-	// sessions, agent config, and PVC artifacts are harness-specific,
-	// so switching requires recreating the Workspace (enforced by the
-	// validating webhook). Empty = opencode (the default and the
-	// only harness pre-S5 clusters know).
+	// (pi-scoping report §6, S5 plumbing). Nullable and BIND-ONCE
+	// (owner ruling 2026-11-16): empty = UNBOUND — set exactly once,
+	// at create (explicit harness param), via an explicit bind while
+	// unbound, or atomically with the first session (the frontend
+	// picker's submit); after that the value is immutable forever and
+	// the validating webhook refuses every change (a switch would
+	// strand the old harness's sessions/config/artifacts on the
+	// shared PVC — there is deliberately NO switch or recreate path).
+	// NO SCHEMA DEFAULT: pre-binding-ruling objects created under the
+	// old default are backfilled to explicit "opencode" by the
+	// controller on first observe (AnnotationHarnessUnbound is the
+	// born-unbound discriminator).
 	// +kubebuilder:validation:Enum=opencode;pi
-	// +kubebuilder:default=opencode
 	Harness HarnessType `json:"harness,omitempty"`
 
 	// Architecture is the CPU architecture for the workspace pod.
@@ -365,6 +391,15 @@ const (
 	WorkspaceConditionSuspended            WorkspaceConditionType = "Suspended"
 	WorkspaceConditionCredentialsAvailable WorkspaceConditionType = "CredentialsAvailable"
 	WorkspaceConditionAgentHealthy         WorkspaceConditionType = "AgentHealthy"
+	// WorkspaceConditionHarnessBindingPending (owner ruling
+	// 2026-11-16): True while a BORN-UNBOUND workspace (spec.harness
+	// == "" + AnnotationHarnessUnbound) waits for its harness choice —
+	// the controller deliberately builds no pod in this state (the
+	// pod's topology is harness-class, so nothing runs until the
+	// bind). Flips to False/absent on bind; never set on legacy
+	// (marker-less) workspaces — those are backfilled to opencode
+	// instead.
+	WorkspaceConditionHarnessBindingPending WorkspaceConditionType = "HarnessBindingPending"
 	// WorkspaceConditionLegacyKeysScrubbed (US-72.6, design 0058 §8):
 	// the one-time legacy-key migration scrub's outcome, mirrored from
 	// healthz's (/v1/healthz) legacyScrub slice. True/clean = the steady

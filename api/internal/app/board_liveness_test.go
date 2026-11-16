@@ -695,6 +695,27 @@ func TestLeaseLivenessHub_ManagementEventsAreNotWorkerMovement(t *testing.T) {
 	assert.Positive(t, unknownOpaque)
 	assert.False(t, unknownWorker)
 
+	// #2061/#2064 story 1: the board turn-end event is due-marking
+	// signal for the board consumer, NEVER movement evidence — zero
+	// liveness/renewal authority by construction. A mutation that names
+	// it in the #2040 allowlist (workerActivityStampsEvidence) reddens
+	// here: an emitted turn-end (even advanced=true) must not renew a
+	// wedged-worker verdict.
+	hub.ObserveFrame("ws", &abiv1.Event{
+		Type:              abiv1.EventType_EVENT_TYPE_BOARD_TURN_END,
+		InternalSessionId: "ses_settle",
+		SessionId:         "settle-phrase",
+		BoardTurnEnd:      &abiv1.BoardTurnEnd{Advanced: true, Epoch: 1, TurnDurationMs: 42},
+	})
+	hub.mu.Lock()
+	_, turnEndWorker := hub.framesWorker["ses_settle"]
+	_, turnEndWorkerPhrase := hub.framesWorker["settle-phrase"]
+	turnEndOpaque := hub.framesOpaque["ses_settle"]
+	hub.mu.Unlock()
+	assert.False(t, turnEndWorker, "BOARD_TURN_END must never stamp the worker index (zero liveness authority)")
+	assert.False(t, turnEndWorkerPhrase, "BOARD_TURN_END must never stamp the worker index (either identity key)")
+	assert.Greater(t, turnEndOpaque, unknownOpaque, "the board turn-end stays visible as telemetry (a NEWer opaque stamp)")
+
 	// Worker activity stamps the worker index under both identity keys.
 	hub.ObserveFrame("ws", &abiv1.Event{
 		Type:              abiv1.EventType_EVENT_TYPE_PART_DELTA,

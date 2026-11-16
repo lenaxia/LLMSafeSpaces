@@ -214,8 +214,12 @@ func translateAssistantMessage(entry *piEntry, msg *piAgentMessage, results map[
 			tool := &session.ToolPart{
 				CallID: blk.ID,
 				Name:   blk.Name,
-				Input:  blk.Arguments,
-				State:  session.ToolState{Status: session.ToolStatusCompleted},
+				// #2030a hygiene: the SERVED view of tool args carries
+				// no identity stamps (byte-stable passthrough when
+				// clean); the persisted pi-sessions entry keeps them
+				// for attribution.
+				Input: stripIdentityStampsJSON(blk.Arguments),
+				State: session.ToolState{Status: session.ToolStatusCompleted},
 			}
 			if res, ok := results[blk.ID]; ok && res != nil {
 				tool.Output = res.toolResultOutput()

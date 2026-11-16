@@ -22,12 +22,27 @@ type Workspace struct {
 	// PhraseID is the #1757 workspace phrase (2 words + 1 digit,
 	// fleet-unique) — the display address; the UUID stays the key.
 	PhraseID string `json:"phraseId,omitempty"`
+
+	// Harness is the bound coding-agent harness (owner ruling
+	// 2026-11-16: bind-once, immutable forever). nil = unbound (no
+	// pod until the first-session bind or PUT /workspaces/{id}/harness).
+	Harness *string `json:"harness,omitempty"`
+	// HarnessOptions is the instance's enabled harness set (picker context).
+	HarnessOptions []string `json:"harnessOptions,omitempty"`
 }
 
 type CreateWorkspaceRequest struct {
 	Name        string `json:"name,omitempty"`
 	Runtime     string `json:"runtime,omitempty"`
 	StorageSize string `json:"storageSize,omitempty"`
+
+	// Harness optionally binds the harness at create (owner ruling
+	// 2026-11-16: bind-once; must be in the instance's enabled set).
+	// DEFAULT CHANGE (2026-11-16): omitted no longer means opencode
+	// implicitly - the workspace is created UNBOUND; bind it (first
+	// session or WorkspacesService.BindHarness) before first use.
+	// Existing workspaces were backfilled to explicit opencode.
+	Harness string `json:"harness,omitempty"`
 }
 
 // FileUpload is the result of POST /workspaces/:id/uploads (Epic 68):
@@ -69,6 +84,27 @@ type EnsureSessionResponse struct {
 	WorkspacePhase string `json:"workspacePhase"`
 	SessionID      string `json:"sessionId"`
 	Resumed        bool   `json:"resumed"`
+
+	// Harness echoes the bound harness (owner ruling 2026-11-16:
+	// bind-once). On an unbound workspace the request's harness (or
+	// the opencode default when omitted) binds atomically with the
+	// session.
+	Harness string `json:"harness,omitempty"`
+}
+
+// BindHarnessRequest is the PUT /workspaces/{id}/harness body.
+type BindHarnessRequest struct {
+	Harness string `json:"harness"`
+}
+
+// BindHarnessResult is the PUT /workspaces/{id}/harness response
+// (owner ruling 2026-11-16: bind-once - same value is the idempotent
+// 200 alreadyBound path; any other value on a bound workspace is a
+// 409 harness_immutable; there is no switch or recreate path).
+type BindHarnessResult struct {
+	Harness        string   `json:"harness"`
+	AlreadyBound   bool     `json:"alreadyBound,omitempty"`
+	HarnessOptions []string `json:"harnessOptions,omitempty"`
 }
 
 // Message is one entry in a session transcript (pkg/session contract).

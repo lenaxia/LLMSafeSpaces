@@ -338,6 +338,10 @@ func scalarGo(k protoreflect.Kind) string {
 		return "bool"
 	case protoreflect.Int64Kind, protoreflect.Sint64Kind, protoreflect.Sfixed64Kind:
 		return "int64"
+	case protoreflect.Uint64Kind:
+		// #2061/#2064: BoardTurnEnd.epoch — the emitter's per-session
+		// ordinal (a counter, never a duration); unsigned like the ABI.
+		return "uint64"
 	case protoreflect.Int32Kind, protoreflect.Sint32Kind, protoreflect.Sfixed32Kind:
 		return "int"
 	case protoreflect.DoubleKind:

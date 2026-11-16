@@ -122,10 +122,20 @@ func (m *MockWorkspaceService) SetDevPreview(ctx context.Context, userID, worksp
 	return m.Called(ctx, userID, workspaceID, enabled).Error(0)
 }
 
-func (m *MockWorkspaceService) EnsureSession(ctx context.Context, userID, workspaceID string) (*types.EnsureSessionResponse, error) {
-	args := m.Called(ctx, userID, workspaceID)
+func (m *MockWorkspaceService) EnsureSession(ctx context.Context, userID, workspaceID, harness string) (*types.EnsureSessionResponse, error) {
+	args := m.Called(ctx, userID, workspaceID, harness)
 	if args.Get(0) == nil {
 		return nil, args.Error(1)
 	}
 	return args.Get(0).(*types.EnsureSessionResponse), args.Error(1)
+}
+
+// BindWorkspaceHarness is the bind-once harness bind (owner ruling
+// 2026-11-16) — see interfaces.WorkspaceService.
+func (m *MockWorkspaceService) BindWorkspaceHarness(ctx context.Context, userID, workspaceID, harness string) (*types.BindHarnessResult, error) {
+	args := m.Called(ctx, userID, workspaceID, harness)
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+	return args.Get(0).(*types.BindHarnessResult), args.Error(1)
 }

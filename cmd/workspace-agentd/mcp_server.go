@@ -1207,6 +1207,14 @@ func argSlice(args map[string]any, key string) ([]any, bool) {
 }
 
 func callMCPTool(ctx context.Context, password, name string, args map[string]any) (string, error) {
+	// #2061/#2064 story 1: the board turn-end advance observation —
+	// stamped at the dispatch choke point for advance-class board tools
+	// (record_progress | stage move | verdict), keyed on the
+	// harness-attested lsp_injected_session ONLY. Observation at
+	// ARRIVAL, outcome untouched; best-effort by construction (the
+	// ledger never blocks or fails the call). Both harness legs share
+	// this surface — the stamp is harness-agnostic.
+	boardAdvanceLedgerInst().observeToolCall(name, args)
 	switch name {
 	case "session_list":
 		// #1735: archived sessions are opt-in on the listing — the
@@ -1572,10 +1580,16 @@ func mcpSessionRead(ctx context.Context, password, sessionID string, limit int) 
 	}
 	// #1307: image data URLs never cross this surface either — strip
 	// them to metadata + omission markers (the seam owns the wire rule).
+	// #2030a: identity stamps never cross this surface either — the
+	// served view of tool-call args carries zero lsp_injected_session /
+	// sessionId / session_id keys (the replay-hygiene mirror of the
+	// accept-side strip; the stored transcript keeps them for
+	// attribution — the #1374/#1307 read-time-repair discipline).
 	// #1756 §1: full ids leave tool output — rewrite the body's
 	// session-id values to the replica-known phrases (best-effort,
 	// same never-break-the-payload rule as the list rewrite).
-	return emitShortOnlyRawBody(opencode.StripImageDataURLs(body)), nil
+	served := opencode.StripIdentityStamps(opencode.StripImageDataURLs(body))
+	return emitShortOnlyRawBody(served), nil
 }
 
 // emitShortOnlyRawBody rewrites session-id VALUES inside a raw seam
