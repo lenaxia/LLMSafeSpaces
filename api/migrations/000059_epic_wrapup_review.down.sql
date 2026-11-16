@@ -1,4 +1,4 @@
--- 000058_epic_wrapup_review (down) — drop the wrap-up engine's row
+-- 000059_epic_wrapup_review (down) — drop the wrap-up engine's row
 -- shape in reverse: the FK floor, the epic lifecycle columns, the kind
 -- index/constraint/column. board_events rows are history and stay.
 
