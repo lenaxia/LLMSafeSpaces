@@ -186,13 +186,17 @@ describe("BoardPage — 2026-10-28 board declutter rulings", () => {
     expect(kebab.parentElement!.className).toContain("shrink-0");
   });
 
-  it("collapses the main stage grid to 2 columns on small screens, 4 from md up", async () => {
+  it("keeps all four stages on ONE row: the 1x4 scroll-snap rail (2026-11-15 owner direction) — no 2x2 grid", async () => {
     renderBoard();
     await screen.findByTestId("task-card-tsk-aaaa0001");
 
+    // The 2x2 grid is gone (in_review under in_progress destroyed the
+    // pipeline's left-to-right flow axis); the rail pins live in
+    // BoardPage.rail.test.tsx — this guards the removal itself.
     const grid = screen.getByTestId("stage-grid-prj-aaaa1111");
-    expect(grid.className).toContain("grid-cols-2");
-    expect(grid.className).toContain("md:grid-cols-4");
+    expect(grid.className).not.toContain("grid-cols-2");
+    expect(grid.className).not.toContain("md:grid-cols-4");
+    expect(grid.className).toContain("snap-x");
   });
 
   // --- Ruling 2 companion: the click-highlight stays the epic→task path ------
