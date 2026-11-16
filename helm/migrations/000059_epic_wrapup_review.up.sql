@@ -1,4 +1,4 @@
--- 000058_epic_wrapup_review — the wrap-up engine's row-shape migration
+-- 000059_epic_wrapup_review — the wrap-up engine's row-shape migration
 -- (epic wrap-up review, low-level design §1b; the design named this
 -- migration 000056 at design time — main took 000055 for
 -- task_last_renewed_at in #2067 and 000056 for the wrapUpReviewer
