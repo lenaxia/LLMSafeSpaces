@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.44.15] - 2026-11-16
+
 ### Added — board: event-driven due-marking — turn-end(no-advance) enters the quiet arms within one sweep (issue #2065, epic #2061; #2066 folded)
 
 - **The gap (the measured incident, #2060)**: a board worker's turn ends without a board advance — the most common real halt (live: stop 19:51:13 → first nudge 21:38:59 = 1h47m detection latency; the worker answered in 20s). Detection waited out a lease the worker's own past-window activity had renewed; no consumer existed for #2064's turn-end event on claim holders.
