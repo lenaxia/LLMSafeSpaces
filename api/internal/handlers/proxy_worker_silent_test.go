@@ -27,18 +27,30 @@ import (
 )
 
 // fakeQuietLookup scripts the board seam: per-workspace facts plus the
-// asked-workspace tape.
+// asked-workspace tape. A workspace in degraded reads as nil facts (the
+// production pool-error shape); hook observes each call's ctx (the
+// per-workspace budget pin).
 type fakeQuietLookup struct {
-	mu    sync.Mutex
-	facts map[string][]QuietTaskFact
-	asked []string
+	mu       sync.Mutex
+	facts    map[string][]QuietTaskFact
+	degraded map[string]bool
+	asked    []string
+	hook     func(ctx context.Context)
 }
 
-func (f *fakeQuietLookup) InProgressAssignees(_ context.Context, workspaceID string) []QuietTaskFact {
+func (f *fakeQuietLookup) InProgressAssignees(ctx context.Context, workspaceID string) []QuietTaskFact {
 	f.mu.Lock()
-	defer f.mu.Unlock()
 	f.asked = append(f.asked, workspaceID)
-	return append([]QuietTaskFact{}, f.facts[workspaceID]...)
+	degraded := f.degraded[workspaceID]
+	facts := append([]QuietTaskFact{}, f.facts[workspaceID]...)
+	f.mu.Unlock()
+	if f.hook != nil {
+		f.hook(ctx)
+	}
+	if degraded {
+		return nil
+	}
+	return facts
 }
 
 func (f *fakeQuietLookup) set(workspaceID string, facts ...QuietTaskFact) {
@@ -48,6 +60,18 @@ func (f *fakeQuietLookup) set(workspaceID string, facts ...QuietTaskFact) {
 		f.facts = map[string][]QuietTaskFact{}
 	}
 	f.facts[workspaceID] = append([]QuietTaskFact{}, facts...)
+	if f.degraded != nil {
+		delete(f.degraded, workspaceID) // a scripted snapshot un-degrades
+	}
+}
+
+func (f *fakeQuietLookup) setDegraded(workspaceID string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.degraded == nil {
+		f.degraded = map[string]bool{}
+	}
+	f.degraded[workspaceID] = true
 }
 
 // silentFakeAlerts records record/resolve calls so the persistence leg
@@ -498,4 +522,130 @@ func TestWorkerSilent_NilLookupInert(t *testing.T) {
 
 	assert.NotPanics(t, func() { env.handler.escalateSilentWorkers([]string{"ws-1"}) })
 	assertNoAlert(t, sub)
+}
+
+// TestWorkerSilent_LeaveActiveResolves (review r2): the resolution
+// authority gap — a PURE-SILENT workspace leaving Active must resolve
+// its live worker_silent alerts (the d6 leave-Active hook gates on the
+// BUSY arm's map; without the #2047 leg the badge latches, the row
+// waits out the read-side heal, and the cooldown entry leaks).
+func TestWorkerSilent_LeaveActiveResolves(t *testing.T) {
+	origCooldown := silentWorkerCooldown
+	silentWorkerCooldown = time.Hour
+	t.Cleanup(func() { silentWorkerCooldown = origCooldown })
+
+	lookup := &fakeQuietLookup{}
+	stale := 45 * time.Minute
+	lookup.set("ws-1", silentFact("ses-depart", quietSecs(45*60), false, "tsk-depart", &stale))
+
+	env, broker, alerts := newSilentEnv(t, lookup)
+	sub, err := broker.SubscribeWorkspace("ws-1")
+	require.NoError(t, err)
+	defer broker.UnsubscribeWorkspace("ws-1", sub)
+
+	env.handler.escalateSilentWorkers([]string{"ws-1"})
+	mustDrainAlert(t, sub)
+	require.Len(t, alerts.calls(), 1, "precondition: one live silent alert")
+
+	// Prior Active phase established (as the watcher does), then the
+	// departure — no statusz involved anywhere (a pure-silent shape).
+	env.handler.onPhaseChange(makeWorkspaceCRDWithStatus("ws-1", "", "Active", ""))
+	env.handler.onPhaseChange(makeWorkspaceCRDWithStatus("ws-1", "", "Suspended", ""))
+
+	select {
+	case evt := <-sub.Ch:
+		require.Equal(t, "workspace.alert_resolved", evt.Type)
+		require.Equal(t, "worker_silent", evt.Status)
+		require.Equal(t, "ses-depart", evt.SessionID)
+	case <-time.After(2 * time.Second):
+		t.Fatal("leaving Active must resolve the workspace's live silent alerts")
+	}
+	assert.Contains(t, alerts.calls(), "resolve:ws-1:ses-depart")
+	assert.Empty(t, env.handler.silentWorkspaceSessions("ws-1"),
+		"the cooldown entry is dropped, not leaked")
+}
+
+// TestWorkerSilent_TaskDepartureResolves (review r2): an AUTHORITATIVE
+// facts snapshot that no longer carries an alerted session resolves it
+// (the task left in_progress — the slot is freed, that IS the recovery
+// event), while a DEGRADED nil snapshot fires nothing (a blip must not
+// resolve a live alert).
+func TestWorkerSilent_TaskDepartureResolves(t *testing.T) {
+	origCooldown := silentWorkerCooldown
+	silentWorkerCooldown = time.Hour
+	t.Cleanup(func() { silentWorkerCooldown = origCooldown })
+
+	lookup := &fakeQuietLookup{}
+	stale := 45 * time.Minute
+	lookup.set("ws-1", silentFact("ses-gone", quietSecs(45*60), false, "tsk-gone", &stale))
+
+	env, broker, alerts := newSilentEnv(t, lookup)
+	sub, err := broker.SubscribeWorkspace("ws-1")
+	require.NoError(t, err)
+	defer broker.UnsubscribeWorkspace("ws-1", sub)
+
+	env.handler.escalateSilentWorkers([]string{"ws-1"})
+	mustDrainAlert(t, sub)
+
+	// Degraded read (nil facts): NO resolution — no evidence either way.
+	lookup.setDegraded("ws-1")
+	env.handler.escalateSilentWorkers([]string{"ws-1"})
+	select {
+	case evt := <-sub.Ch:
+		t.Fatalf("degraded nil facts must not resolve: got %+v", evt)
+	default:
+	}
+	assert.NotContains(t, alerts.calls(), "resolve:ws-1:ses-gone")
+
+	// The task left in_progress (reclaim/bounce): the EXPLICIT empty
+	// set resolves the departed subject.
+	lookup.set("ws-1") // zero facts, non-nil
+	env.handler.escalateSilentWorkers([]string{"ws-1"})
+	select {
+	case evt := <-sub.Ch:
+		require.Equal(t, "workspace.alert_resolved", evt.Type)
+		require.Equal(t, "worker_silent", evt.Status)
+		require.Equal(t, "ses-gone", evt.SessionID)
+	case <-time.After(2 * time.Second):
+		t.Fatal("a departed subject must resolve on the authoritative empty set")
+	}
+	assert.Contains(t, alerts.calls(), "resolve:ws-1:ses-gone")
+}
+
+// TestWorkerSilent_PerWorkspaceBudgetFresh (review r2): the lookup
+// budget is PER WORKSPACE — a slow first workspace must not starve the
+// second's read (map-random starvation was the blindness this arm
+// exists to catch; the d6 arm creates its budget inside the loop).
+func TestWorkerSilent_PerWorkspaceBudgetFresh(t *testing.T) {
+	origBudget := quietLookupBudget
+	quietLookupBudget = 400 * time.Millisecond
+	t.Cleanup(func() { quietLookupBudget = origBudget })
+
+	var mu sync.Mutex
+	var remaining []time.Duration
+	lookup := &fakeQuietLookup{}
+	lookup.hook = func(ctx context.Context) {
+		dlg, ok := ctx.Deadline()
+		mu.Lock()
+		if ok {
+			remaining = append(remaining, time.Until(dlg))
+		} else {
+			remaining = append(remaining, -1)
+		}
+		mu.Unlock()
+		time.Sleep(300 * time.Millisecond) // burn most of THIS call's budget
+	}
+	stale := 45 * time.Minute
+	lookup.set("ws-a", silentFact("ses-a", quietSecs(45*60), false, "tsk-a", &stale))
+	lookup.set("ws-b", silentFact("ses-b", quietSecs(45*60), false, "tsk-b", &stale))
+
+	env, _, _ := newSilentEnv(t, lookup)
+	env.handler.escalateSilentWorkers([]string{"ws-a", "ws-b"})
+
+	mu.Lock()
+	defer mu.Unlock()
+	require.Len(t, remaining, 2, "both workspaces were asked")
+	assert.Greater(t, remaining[0], 300*time.Millisecond, "the first call starts with the full budget")
+	assert.Greater(t, remaining[1], 300*time.Millisecond,
+		"the second call gets a FRESH budget — not the first call's remainder (≤100ms)")
 }

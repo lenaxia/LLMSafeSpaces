@@ -42,9 +42,12 @@ func newQuietBoardLookup(pool *pgxpool.Pool, hub *boardLivenessHub) handlers.Qui
 
 // InProgressAssignees implements handlers.QuietBoardLookup: every
 // claimed in_progress task of the workspace's projects, with the
-// assignee's quiet/busy truth attached. A degraded read (pool error,
-// resolve failure) returns nil — the evaluator treats no-facts as
-// no-evidence, never a fleet-wide alert.
+// assignee's quiet/busy truth attached. The nil contract is LOAD-BEARING
+// (review r2): nil = DEGRADED (pool error, scan failure — no evidence
+// either way, the evaluator fires no verdicts), while a SUCCESSFUL read
+// returns non-nil — an explicit empty set means the workspace genuinely
+// holds no claimed in_progress rows, and the evaluator resolves live
+// alerts whose subjects departed.
 func (q *quietBoardLookup) InProgressAssignees(ctx context.Context, workspaceID string) []handlers.QuietTaskFact {
 	if q == nil || q.pool == nil || q.hub == nil || workspaceID == "" {
 		return nil
@@ -62,7 +65,6 @@ func (q *quietBoardLookup) InProgressAssignees(ctx context.Context, workspaceID 
 	}
 	defer rows.Close()
 
-	var out []handlers.QuietTaskFact
 	var raws []handlers.QuietTaskFact
 	refs := make([]string, 0, 4)
 	now := time.Now()
@@ -87,9 +89,9 @@ func (q *quietBoardLookup) InProgressAssignees(ctx context.Context, workspaceID 
 	if err := rows.Err(); err != nil {
 		return nil
 	}
-	if len(raws) == 0 {
-		return nil
-	}
+	// Success with zero rows: the EXPLICIT empty set (non-nil) — the
+	// departure-delta signal, distinct from degraded nil above.
+	out := make([]handlers.QuietTaskFact, 0, len(raws))
 
 	// The liveness join: one batched quiet question (identity resolve
 	// + worker stamps + busy truth — board_quiet_source.go).

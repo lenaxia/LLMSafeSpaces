@@ -1122,11 +1122,14 @@ func (s *Service) ResolveStaleSessionAlerts(ctx context.Context, workspaceID str
 // ResolveSessionAlerts sets resolved_at on every unresolved alert for
 // the workspace (the D6 sweep observed the hang end, or the workspace
 // left Active while alerted) and returns the number of rows resolved.
-// Zero rows = nothing was live.
+// Zero rows = nothing was live. #2047 review r2: scoped AWAY from
+// worker_silent — that class's resolution authority is session-scoped
+// (a recovered busy session must never flip a still-silent sibling
+// worker's row; the false-resolved gap would run to one cooldown).
 func (s *Service) ResolveSessionAlerts(ctx context.Context, workspaceID string) (int64, error) {
 	tag, err := s.DB.ExecContext(ctx,
 		`UPDATE session_alerts SET resolved_at = now()
-		 WHERE workspace_id = $1 AND resolved_at IS NULL`, workspaceID)
+		 WHERE workspace_id = $1 AND resolved_at IS NULL AND alert <> 'worker_silent'`, workspaceID)
 	if err != nil {
 		return 0, err
 	}

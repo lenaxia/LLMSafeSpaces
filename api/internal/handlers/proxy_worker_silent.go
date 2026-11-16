@@ -33,6 +33,7 @@ package handlers
 
 import (
 	"context"
+	"strings"
 	"time"
 
 	apitypes "github.com/lenaxia/llmsafespaces/api/internal/types"
@@ -69,10 +70,12 @@ func silentWorkerCooldownWindow() time.Duration {
 	return silentWorkerCooldown
 }
 
-// quietLookupBudget bounds one workspace's board-join read. The sweep
-// rides the state reconciler's tick; stalling here stalls every other
-// periodic duty (the boardObserveBudget hygiene, proxy-side).
-const quietLookupBudget = 5 * time.Second
+// quietLookupBudget bounds ONE workspace's board-join read (the d6
+// posture: the budget is created inside the per-workspace loop so DB
+// latency on one workspace cannot starve the rest of the sweep —
+// map-random starvation was the blindness this arm exists to catch).
+// Var for tests.
+var quietLookupBudget = 5 * time.Second
 
 // QuietTaskFact is one in_progress board task's assignee-liveness
 // fact — the evaluator's entire world per task. The task facts ride
@@ -170,27 +173,42 @@ func workerAliveEvidence(f QuietTaskFact, threshold time.Duration, now time.Time
 // facts, one session-scoped verdict per assignee (a session holding
 // two tasks alerts once — the first fact's), d6's cooldown discipline
 // per (workspace, session).
+//
+// Nil facts = DEGRADED (pool error, resolve failure): no evidence
+// either way — no verdicts fire (a blip must not resolve a live
+// alert). NON-nil facts (an explicit empty set included) are
+// AUTHORITATIVE: a session holding a live alert whose subject vanished
+// from the workspace's in_progress set (task reclaimed, bounced,
+// deleted — the slot is freed) resolves on the departure, the review
+// r2 resolution-authority gap.
 func (h *ProxyHandler) escalateSilentWorkers(workspaceIDs []string) {
 	lookup := h.currentQuietBoardLookup()
 	if lookup == nil || len(workspaceIDs) == 0 {
 		return // inert seam: nothing to ask
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), quietLookupBudget)
-	defer cancel()
 	now := time.Now()
 	threshold := silentWorkerThreshold()
 	for _, wid := range workspaceIDs {
+		ctx, cancel := context.WithTimeout(context.Background(), quietLookupBudget)
 		facts := lookup.InProgressAssignees(ctx, wid)
-		if len(facts) == 0 {
-			continue
+		cancel()
+		if facts == nil {
+			continue // degraded read: never a verdict
 		}
+		// The departure delta: live alerts whose session no longer
+		// holds any in_progress task in THIS workspace resolve (the
+		// slot is freed — that IS the recovery event for the alert).
 		bySession := make(map[string]QuietTaskFact, len(facts))
 		for _, f := range facts {
-			if f.AssigneeSession == "" {
-				continue
+			if f.AssigneeSession != "" {
+				if _, seen := bySession[f.AssigneeSession]; !seen {
+					bySession[f.AssigneeSession] = f
+				}
 			}
-			if _, seen := bySession[f.AssigneeSession]; !seen {
-				bySession[f.AssigneeSession] = f
+		}
+		for _, ses := range h.silentWorkspaceSessions(wid) {
+			if _, stillHolds := bySession[ses]; !stillHolds {
+				h.resolveWorkerSilent(wid, ses)
 			}
 		}
 		for ses, f := range bySession {
@@ -280,6 +298,34 @@ func (h *ProxyHandler) resolveWorkerSilent(workspaceID, sessionID string) {
 // independent cooldowns, never one workspace-wide gate).
 func silentAlertsKey(workspaceID, sessionID string) string {
 	return workspaceID + "\x00" + sessionID
+}
+
+// silentWorkspaceSessions snapshots the sessions holding LIVE silent
+// entries for one workspace (review r2: the departure paths need the
+// enumeration — the leave-Active hook and the per-pass absence delta).
+func (h *ProxyHandler) silentWorkspaceSessions(workspaceID string) []string {
+	prefix := workspaceID + "\x00"
+	h.silentAlertsMu.Lock()
+	defer h.silentAlertsMu.Unlock()
+	var out []string
+	for k := range h.silentAlerts {
+		if strings.HasPrefix(k, prefix) {
+			out = append(out, strings.TrimPrefix(k, prefix))
+		}
+	}
+	return out
+}
+
+// resolveDepartedSilentWorkers closes every live silent entry for a
+// workspace that left Active (review r2: the d6 leave-Active hook
+// gates on the BUSY arm's map, so a pure-silent workspace would fire
+// nothing — the badge latches, the row waits out the read-side heal,
+// and the cooldown entry leaks). The subjects die with the pod; the
+// resolution is per-session (the same resolveWorkerSilent flow).
+func (h *ProxyHandler) resolveDepartedSilentWorkers(workspaceID string) {
+	for _, ses := range h.silentWorkspaceSessions(workspaceID) {
+		h.resolveWorkerSilent(workspaceID, ses)
+	}
 }
 
 func (h *ProxyHandler) silentWorkerCooling(workspaceID, sessionID string) bool {

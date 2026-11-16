@@ -151,3 +151,43 @@ func TestIntegration_SessionAlerts_PayloadAndSessionResolve(t *testing.T) {
 		string(bySession["ses-recover"].Payload), "the task facts ride the row byte-for-byte")
 	assert.Empty(t, bySession["ses-hung"].Payload, "fact-less alerts keep a NULL payload")
 }
+
+// TestIntegration_SessionAlerts_WorkspaceResolveLeavesWorkerSilent pins
+// the #2047 review-r2 scoping: the d6 workspace-wide resolve must never
+// flip a still-silent sibling worker's live worker_silent row (that
+// class's resolution authority is session-scoped — the false-resolved
+// gap would run to one cooldown).
+func TestIntegration_SessionAlerts_WorkspaceResolveLeavesWorkerSilent(t *testing.T) {
+	h := testharness.New(t)
+	ctx := h.NewContext()
+	pool := h.Pool()
+	svc := &Service{DB: h.SQLDB()}
+
+	const ws = "int-alert-ws-2047-r2"
+	_, _ = pool.Exec(ctx, "DELETE FROM session_alerts WHERE workspace_id = $1", ws)
+
+	require.NoError(t, svc.InsertSessionAlert(ctx, ws, "ses-hung", "session_hung", 960, nil))
+	require.NoError(t, svc.InsertSessionAlert(ctx, ws, "ses-silent-sib", "worker_silent", 2701,
+		map[string]string{"task_short_id": "tsk-sib", "project_id": "prj-x", "lease_state": "live"}))
+
+	n, err := svc.ResolveSessionAlerts(ctx, ws)
+	require.NoError(t, err)
+	assert.Equal(t, int64(1), n, "only the session_hung row resolves")
+
+	alerts, err := svc.ListSessionAlerts(ctx, ws, 10)
+	require.NoError(t, err)
+	require.Len(t, alerts, 2)
+	for _, a := range alerts {
+		switch a.Alert {
+		case "session_hung":
+			assert.NotNil(t, a.ResolvedAt, "the d6 row resolves on the d6 path")
+		case "worker_silent":
+			assert.Nil(t, a.ResolvedAt, "the sibling silent worker's row stays live — session-scoped authority")
+		}
+	}
+
+	// The session-scoped path remains the worker_silent row's resolver.
+	m, err := svc.ResolveSessionAlertsForSession(ctx, ws, "ses-silent-sib")
+	require.NoError(t, err)
+	assert.Equal(t, int64(1), m)
+}

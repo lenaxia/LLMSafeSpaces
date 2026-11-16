@@ -262,6 +262,10 @@ type SessionAlertsService interface {
 	// ResolveWorkspace marks all of a workspace's unresolved alerts
 	// resolved (the D6 sweep observed the hang end, or the workspace
 	// left Active while alerted — proxy_events.go's watch hook).
+	// #2047: scoped AWAY from worker_silent rows — that class's
+	// resolution authority is session-scoped (ResolveSession), so a
+	// recovered busy session never flips a still-silent sibling
+	// worker's row.
 	// Non-blocking like RecordAlert (bounded queue + drainer).
 	ResolveWorkspace(workspaceID string)
 	// ResolveSession marks ONE session's unresolved alerts resolved
