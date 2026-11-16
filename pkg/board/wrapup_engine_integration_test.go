@@ -445,6 +445,49 @@ func (s *BoardSuite) TestWrapUp_DeleteInFlightClearsPointerAndReMints() {
 
 // --- [4] Mint defers on an unresolvable reviewer (fail-closed) ----------------
 
+// TestWrapUp_ConsecutiveCapArmsAckWait pins the seam's recursion
+// circuit-breaker (§2 steps 6-7): a drained enabled epic at
+// wrapup_count >= WrapUpConsecutiveCap arms wrapup_ack_pending with
+// exactly ONE wrapup_ack_required event and mints NOTHING; the armed
+// flag defers every later drain (no double-event, no mint) until the
+// human ack verb (wrapup-gap-recursion's) clears it.
+func (s *BoardSuite) TestWrapUp_ConsecutiveCapArmsAckWait() {
+	ws := s.seedWorkspace()
+	p := s.seedProject(ws, 2)
+	svc := s.wrapSvc(nil)
+	e := s.seedWrapEpic(svc, p, true)
+
+	s1 := s.seedTask(e, "s1", nil, true)
+	s.claimAndComplete(svc, ws, s1.ShortID)
+	require.Equal(s.T(), 1, s.countWrapupRows(), "the healthy drain minted wrap-up #1")
+
+	// Simulate the close having happened through the cap's ledger (the
+	// verdict story owns the real settle): count at the cap, in-flight
+	// pointer cleared.
+	capN := svc.Config().WrapUpConsecutiveCap
+	_, err := s.pool.Exec(context.Background(),
+		`UPDATE epics SET wrapup_count=$2, wrapup_task_id=NULL WHERE id=$1`, e.ID, capN)
+	s.Require().NoError(err)
+
+	// The next drain ARMS ack-wait: no mint, the flag set, one event.
+	s.reopenStoryToInProgress(s1.ID)
+	s.managerCompleteUnclaimed(svc, s1.ShortID)
+	require.Equal(s.T(), 1, s.countWrapupRows(), "at the cap the drain mints NOTHING")
+	require.Equal(s.T(), board.EpicActive, s.epicStatus(e.ID), "the epic parks in ack-wait, never completes past the review")
+	st := s.epicWrapup(e.ID)
+	require.True(s.T(), st.AckPending, "wrapup_ack_pending armed")
+	require.Equal(s.T(), 1, s.countEvents("wrapup_ack_required"), "exactly one wrapup_ack_required event")
+
+	// The ARMED flag defers later drains: no second event, no mint, the
+	// guarded arm write is idempotent.
+	s.reopenStoryToInProgress(s1.ID)
+	s.managerCompleteUnclaimed(svc, s1.ShortID)
+	require.Equal(s.T(), 1, s.countWrapupRows(), "an armed ackPending drain still mints nothing")
+	require.Equal(s.T(), 1, s.countEvents("wrapup_ack_required"), "no double-event on the re-drain")
+	require.True(s.T(), s.epicWrapup(e.ID).AckPending, "the flag holds until the human ack verb clears it")
+	require.Equal(s.T(), board.EpicActive, s.epicStatus(e.ID))
+}
+
 func (s *BoardSuite) TestWrapUp_UnresolvedReviewerDefersMint() {
 	ctx := context.Background()
 	ws := s.seedWorkspace()

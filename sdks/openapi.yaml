@@ -13649,6 +13649,9 @@ components:
           type: array
           items:
             type: string
+        wrapUpReview:
+          type: boolean
+          description: Epic wrap-up review on/off flag (default off) — a drained epic with this on mints a wrap-up review story and defers completion until it closes
         requestId:
           $ref: "#/components/schemas/BoardRequestId"
     BoardEpicUpdateRequest:
@@ -13663,6 +13666,9 @@ components:
           items:
             type: string
           description: REPLACES the set when provided — send the full set
+        wrapUpReview:
+          type: boolean
+          description: Epic wrap-up review on/off flag — absent leaves it unchanged (PATCH semantics)
         requestId:
           $ref: "#/components/schemas/BoardRequestId"
     BoardTaskCreateRequest:
