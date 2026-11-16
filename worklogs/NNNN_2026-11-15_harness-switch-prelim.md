@@ -55,7 +55,12 @@ into the stack branch — S6/S7's main PR pending; noted as a precondition in th
 - Two-pass sweep: closes the only claim-race (a claim granted between pass 1 and the spec
   write) — pass 2 runs under the armed quiesce gate so the racer cannot re-claim.
 - Routing pins to `status.harness` (the pod's truth), not spec — the mis-route window fails
-  loud (single harness port per pod incarnation), never wrong-data.
+  loud and never wrong-data, but NOT via a closed port: both harness incarnations hold the SAME
+  port 4096 (the pi bridge on pi pods, `pi_bridge.go:8-9`) and the pod IP resolves fresh per
+  call, so a stale post-flip route reaches the LIVE wrong-harness bridge and fails loud
+  404-class against its shim-free route surface; pre-PodIP the resolution itself fails
+  (`status.PodIP` cleared at deletion). (r2 review correction — the r0 "connection refused"
+  mechanism was false.)
 - Board claims live in Postgres, not the pod — the switch can sweep BEFORE anything dies;
   the only option with that luxury.
 
@@ -65,3 +70,40 @@ Both implementation stories patched via the manager route (patchFile under /exch
 #0070 file-only cutover) with change summaries; `dependsOn` edge added:
 harness-switch-ui → harness-switch-api (the wire fields must exist before the UI control).
 Recommendation (b) keeps the epic's plan — no pending_input raised.
+
+Sequencing honesty (r3): the ui charter landed in the r2 working session; the api charter's
+patch was lost when that attempt's lease lapsed mid-work (the board row still carried its stub
+— caught by re-reading both rows at r3 start). The api charter was (re)applied at r3 from the
+final post-r3 design text. Both rows now carry the binding preamble. Criteria rewrites are
+platform-barred for spawned workers (ruling 2026-10-27, enforced at the patch call) — both
+charters embed REFINED ACCEPTANCE CRITERIA as binding prose for the orchestrator to formalize.
+
+## §6 Review trail (PR #2068, docs lane)
+
+- **r0** (`0b05901ee`): CHANGES_REQUESTED — (1) §2a backfill spared only spec=opencode legacy
+  objects (the whole kubectl-pi fleet took drain+recreate at upgrade, the doc's own F3
+  attempt-burn chain, fleet-wide); (2) "never a second victim" overstated the watcher-fed
+  gate's observed view. Fixed: backfill unconditional on live pod (any harness);
+  pass 2 waits (≤30s) for the gate's observed arm; residuals documented; both test pins added.
+- **r1** (`68b054186`): both r0 findings FIXED; two new — (1) the disclaimed absolute survived
+  at five quotable sites; (2) the session-space migration's SQL DEFAULT mis-stamped the
+  kubectl-pi fleet's live rows (orphaning them under HIDDEN-PRESERVED). Fixed: five sites
+  qualified to the observed view; one-time boot stamp to spec.harness introduced.
+- **r2** (`838cdf07b`): both r1 findings FIXED; two new — (1) the routing fail-loud mechanism
+  was FALSE as stated ("closed port / connection refused" — both incarnations serve 4096 and
+  IP resolves fresh, so the stale route reaches a live wrong-harness bridge: 404-class); the
+  false claim lived at four sites + a test pin that could never pass; (2) the one-time boot
+  stamp had an undocumented rolling-update window (old replicas still registering hardcoded
+  'opencode' after the marker lands — mis-stamped forever). r3 fixes, both verified against
+  main before editing (`pi_bridge.go:8-9,14-15`, `pkg/agent/opencode/adapter.go:131`,
+  `pkg/agent/pi/podtransport.go:78`, `resolver_host.go:126-138`,
+  `phase_active.go:104,136,179,223`, `proxy_session_index.go:538,696,882`):
+  - routing rewritten to the honest two-window contract at all four sites + the test map
+    re-pinned (`TestHarnessRouter_StaleTTLPostFlip404`, 404-class; pre-PodIP = resolution
+    failure);
+  - the one-time stamp replaced by a REPEATABLE boot sweep scoped to never-switched workspaces
+    (new persistent `AnnotationHarnessSwitchedAt`, set-once at first accepted switch, never
+    cleared — the sweep's predicate; safety from the predicate, not run-once-ness), which
+    heals rolling-window rows at the next boot by construction; residuals documented
+    (bounded visibility gap; the narrower mid-rollout-switch class accepted) and pinned
+    (`TestSessionIndex_BootStampRolloutWindow`).

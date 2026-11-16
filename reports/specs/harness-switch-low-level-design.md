@@ -52,8 +52,10 @@ Service `SwitchHarness(ctx, userID, wsID, harness)` in
 3. **Board sweep, pass 1** (§4) — BEFORE any spec write; a sweep failure aborts the request
    (500), nothing else happened.
 4. **Spec write** — under `RetryOnConflict`: `spec.harness = <harness>` AND
-   `annotations[AnnotationHarnessSwitch] = <harness>` in ONE update (the marker must land with the
-   delta or webhook 7a′ denies the write itself). This arms the quiesce gate (§4b): from here on,
+   `annotations[AnnotationHarnessSwitch] = <harness>` AND (set-once)
+   `annotations[AnnotationHarnessSwitchedAt] = now()` in ONE update (the marker must land with the
+   delta or webhook 7a′ denies the write itself; the persistent companion lands with it and is
+   never cleared — §2b). This arms the quiesce gate (§4b): from here on,
    on the gate's observed view, no new claim enters the workspace (the informer-lag residual is
    step 5's, below).
 5. **Board sweep, pass 2** (§4) — after the spec write. Pass 1 closes the live-claim surface
@@ -155,6 +157,16 @@ Creating path, which builds the pod and writes status at build (§2a second bull
 // webhook 7a′ admits a harness change only when present and equal. Consent
 // bookkeeping, not an auth boundary (the force-recycle trust posture).
 AnnotationHarnessSwitch = "llmsafespaces.dev/harness-switch"
+
+// AnnotationHarnessSwitchedAt is the PERSISTENT companion, set (RFC 3339
+// timestamp of the first accepted switch) in the same update as the
+// transient marker and NEVER cleared — the controller clears the marker
+// after first observation but leaves this one. It is the durable
+// "this workspace has used the switch surface" signal: the §5a boot sweep
+// stamps rows to spec.harness ONLY for workspaces without it (a
+// never-switched workspace's spec IS its actual harness, webhook 7a; a
+// switched one may own legitimately-foreign rows).
+AnnotationHarnessSwitchedAt = "llmsafespaces.dev/harness-switched-at"
 ```
 
 - Webhook section 7a (`workspace_webhook.go:646-672`) becomes 7a′ (D3): deny when
@@ -181,9 +193,23 @@ return agent.AgentType(ws.Spec.Harness), nil
 The lookup-failure fail-open in `harnessrouter.go` (`:146,165-169`) tightens to the last-known
 observed harness (cache's prior entry) rather than the static default where a prior entry exists.
 The header comment (`:26-29`) is rewritten: the harness is switch-gated (7a′), the cache's
-staleness window is bounded by the 60s TTL (`:70`) and mis-routing inside it fails loud — the
-harness port (4096) serves exactly one harness per pod incarnation, so a stale route hits a
-closed port, never a wrong-harness server. Multi-replica drift also bounded by TTL.
+staleness window is bounded by the 60s TTL (`:70`), and mis-routing inside it fails LOUD — by
+two mechanisms, both honest about the port topology (both harness incarnations hold the SAME
+harness port 4096: opencode serve on opencode pods, the pi bridge on pi pods —
+`cmd/workspace-agentd/pi_bridge.go:8-9`; both adapters dial `agentd.AgentPort` —
+`pkg/agent/opencode/adapter.go:131`, `pkg/agent/pi/podtransport.go:78`; and the pod IP resolves
+fresh per call from the CRD with no incarnation pinning, `resolver_host.go:126-138`):
+
+- **Post-flip (new pod Active, cache still old ≤60s):** the stale route dials the NEW pod's LIVE
+  wrong-harness bridge — the port is open, not closed. It fails loud anyway because the bridge is
+  a dumb pipe with no cross-harness route shims ("No compatibility shims onto opencode's route
+  shapes — a pi pod is honestly a pi pod", `pi_bridge.go:14-15`): foreign route shapes hit a
+  `/v1/pi/*`-only mux and answer 404-class — never wrong-store data.
+- **Pre-PodIP (old pod deleted, new pod not yet Running):** `status.PodIP` is cleared at
+  deletion (`phase_active.go:104,136,179,223`), so the fresh resolution yields no IP and the
+  call fails at resolution — the new harness cannot be reached before it exists.
+
+Multi-replica drift also bounded by TTL.
 
 ## 4. Board: sweep + quiesce [api]
 
@@ -280,30 +306,52 @@ type SwitchSource interface{ SwitchingWorkspaces(ctx context.Context) map[string
 
 ```sql
 -- session_index rows carry the owning harness: HIDDEN-PRESERVED visibility
--- (D7). The SQL DEFAULT 'opencode' is the ORPHAN fallback only — the true
--- backfill is the one-time boot stamp below: F1+F5 mean kubectl pi
--- workspaces exist with live pi sessions registered under the hardcoded
+-- (D7). The SQL DEFAULT 'opencode' is the ORPHAN/rolling-window fallback only
+-- — the true backfill is the repeatable boot sweep below: F1+F5 mean kubectl
+-- pi workspaces exist with live pi sessions registered under the hardcoded
 -- "opencode" (proxy_session_index.go:538,696,882) — the SQL default alone
 -- would mis-stamp that operator-known fleet, and §2a's status=pi backfill
--- would then HIDE their live sessions (D7) with nothing ever re-stamping.
+-- would then HIDE their live sessions (D7) until the sweep heals them.
 ALTER TABLE session_index ADD COLUMN IF NOT EXISTS harness text NOT NULL DEFAULT 'opencode';
 ```
 
 (Mirrored under `helm/migrations/` per house practice.)
 
-**One-time boot stamp (code-side — SQL cannot see the CRD).** At first boot after this story
-deploys (api/internal/app startup, beside the board seeding blocks), stamp every session_index
-row to its owning workspace's `spec.harness` — webhook 7a immutability makes spec the ACTUAL
-harness for every pre-switch-era object (§2a's own argument; the switch surface does not exist
-until this deploy, so no workspace has ever switched and every non-opencode-harness row in
-existence is a legacy truth, never a hidden foreign row). Mechanics: an atomic completion marker
-(`INSERT … ON CONFLICT DO NOTHING` on a platform marker row — the winner stamps, losers skip),
-then `UPDATE session_index s SET harness = w.spec_harness FROM <workspace-view> w WHERE
-s.workspace_id = w.id AND s.harness <> w.spec_harness` over the k8s-cache-resolved workspace
-list. Strictly one-time by the marker — it is NOT an invariant: post-switch HIDDEN-PRESERVED
-rows (a workspace switched opencode→pi keeps legitimately-opencode foreign rows) must never be
-re-stamped by later boots; the marker freezes the stamp to the first boot, when no switch can
-have occurred.
+**Boot sweep to spec (code-side — SQL cannot see the CRD; repeatable, not one-time).** At every
+api boot after this story deploys (api/internal/app startup, beside the board seeding blocks),
+stamp session_index rows to their owning workspace's `spec.harness` — but ONLY for workspaces
+WITHOUT `AnnotationHarnessSwitchedAt` (§2b):
+
+```sql
+UPDATE session_index s SET harness = w.spec_harness
+FROM <workspace-view> w
+WHERE s.workspace_id = w.id AND s.harness <> w.spec_harness
+  AND w.spec_harness <> '' AND NOT w.switched_at_present
+```
+
+(over the k8s-cache-resolved workspace list; empty spec normalizes to `opencode`, today's
+behavior). **The safety argument is the predicate, not run-once-ness**: a workspace that has
+never switched has `spec.harness == actual harness` for every moment of its life (webhook 7a
+immutability), so spec-stamping its rows is a truth operation, safe to repeat at every boot
+forever; a workspace that HAS switched owns legitimately-foreign HIDDEN-PRESERVED rows, and the
+persistent annotation excludes it from the sweep entirely — no completion marker is needed and
+none is used (a one-time marker would freeze the stamp at first boot, which is exactly the
+rolling-update hole below).
+
+**Rolling-update window, closed by repetition.** The sweep runs at FIRST new-replica boot while
+old API replicas (hardcoded `"opencode"` registrations, `proxy_session_index.go:538,696,882`;
+§5b's replacement not yet live on them) are still serving — a session they register after that
+boot lands `harness='opencode'` from the SQL DEFAULT. On a kubectl-pi workspace (the F1 fleet)
+such a row is a live pi session mis-stamped and hidden (D7). Because the sweep is idempotent
+and repeats at EVERY boot, the first boot after rollout completion (every remaining boot is
+new-code) heals every window row. Residual, stated honestly: until that heal, the window row is
+HIDDEN — a visibility gap bounded by the rollout, self-healing at the next boot, never data
+loss. Narrower accepted residual (the gate's informer-lag posture, §1a step 5): a switch
+executed MID-rollout sets the persistent annotation, so a subsequent old-replica registration
+on that same workspace mis-stamps a row the sweep will never touch — that class requires a
+user switch inside the rollout window AND a stale-replica write on that workspace afterward;
+it is bounded by rollout completion and accepted (the row stays on disk, HIDDEN-PRESERVED,
+direct reads answer the gone-class).
 
 ### 5b. Writes
 
@@ -320,10 +368,11 @@ have occurred.
 - **Busy merge + counts**: `ServeHarnessMessageCounts` and the busy overlay naturally key to the
   current harness adapter; foreign rows are excluded by the list predicate (no separate rule).
 - **Reconcile shield** (`proxy_session_index.go:285-299`): foreign-harness rows never enter the
-  diff — no miss counting, no reap candidacy, no `kept_for_operator` storm. With the one-time
-  boot stamp (§5a) every row carries its true harness, so F5's false-positive class is
-  unreachable by construction for the stamped fleet — the claim is scoped to truthful rows
-  (a mis-stamped row would falsify it, which is why the stamp is pinned in §8). Guard pin:
+  diff — no miss counting, no reap candidacy, no `kept_for_operator` storm. With the boot sweep
+  (§5a) every pre-switch-era row carries its true harness (window rows after the next boot's
+  heal), so F5's false-positive class is unreachable for never-switched workspaces — the claim
+  is scoped to truthful rows (a mis-stamped row would falsify it, which is why the sweep and its
+  rollout-window pins are in §8). Guard pin:
   switching must not decrement any row's miss-counter universe.
 
 ### 5d. Direct reads of foreign-harness sessions
@@ -368,10 +417,10 @@ switch-back remains allowed (phase guard includes Failed).
 | Webhook 7a′: markerless delta denied / matching marker admitted / mismatched marker denied | today all deltas denied |
 | `SwitchHarness`: no-op 204; guard 409s (Suspending/Creating/Terminating); two-pass sweep ordering (pass-1 failure ⇒ 500 with nothing moved; the racer-between-pass-1-and-spec-write lands swept by pass 2 and cannot re-claim — pin with a claim injected mid-call; `TestSweep_Pass2WaitsForGateArmed`, pkg/board/switch_test.go — pass 2 does not declare quiet until the gate reports armed); 202 shape | endpoint doesn't exist |
 | Controller: drift arm recreates preserving PVC name; backfill no-recreate for BOTH harnesses (`TestHarnessDrift_BackfillPiNoRecreate` — spec=pi/status=""/live pod → status=pi, no drain, no recreation); drain defer/force via `harness_switch` reason; marker cleared; Suspended-switch lands at next activation | arm doesn't exist |
-| Router: status-first resolution; stale-TTL mis-route fails loud (connection refused), never wrong-store data | resolver is spec-first |
+| Router: status-first resolution; stale-TTL post-flip mis-route reaches the LIVE wrong-harness bridge and fails loud 404-class — `TestHarnessRouter_StaleTTLPostFlip404` (pkg/agent/harnessrouter_test.go: opencode route shapes against the pi bridge's `/v1/pi/*`-only mux), pre-PodIP sub-window fails at resolution (`status.PodIP` cleared); never wrong-store data | resolver is spec-first |
 | Board sweep: in_progress clean requeue (NO failure_count/`last_attempt_failed`/cooldown, salvage embedded, next charter inherits); pending_input cleared + noted; in_review declaim no-accounting; stop directive post-commit | sweep doesn't exist |
 | Quiesce: claimOnce quiet no-grant; task_start 409; dispatch skip; persona re-arm skip — all while spec≠status, none after flip | gates key on phase today |
-| Session index: migration backfill + the one-time boot stamp (pins: legacy kubectl-pi rows stamped to spec-harness on first boot — live pi sessions stay visible; the completion marker makes it strictly one-time, second boot is a no-op, and post-switch HIDDEN-PRESERVED rows are never re-stamped; switch-back on a legacy-pi workspace neither reaps nor mis-lists foreign transcripts); foreign rows invisible in list; reconcile never miss-counts foreign rows (switch mid-test, 3 reconcile passes, rows intact); direct read gone-class | column doesn't exist |
+| Session index: migration + the repeatable boot sweep (pins: legacy kubectl-pi rows stamped to spec-harness — live pi sessions stay visible; `TestSessionIndex_BootStampRolloutWindow` — a row the SQL DEFAULT stamped during the rollout window on a spec=pi never-switched workspace IS stamped spec-harness by the next boot's sweep; a workspace carrying `AnnotationHarnessSwitchedAt` is NEVER re-stamped — post-switch HIDDEN-PRESERVED rows and switch-back foreign rows intact; switch-back on a legacy-pi workspace neither reaps nor mis-lists foreign transcripts); foreign rows invisible in list; reconcile never miss-counts foreign rows (switch mid-test, 3 reconcile passes, rows intact); direct read gone-class | column doesn't exist |
 | UI: control disabled states; confirm copy carries both warnings; badge truthful for pi | control doesn't exist |
 
 ## 9. Story split + build order

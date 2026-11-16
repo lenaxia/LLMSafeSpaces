@@ -65,7 +65,8 @@ existing long-op (202 + spec-write, controller-as-single-status-writer) API conv
            already harness-aware) → status.harness=pi written at build → Creating→Active
       │
   switch window (spec write → status flip):
-      router serves status.harness (old) — mis-routed calls fail LOUD (port absent),
+      router serves status.harness (old) — mis-routed calls fail LOUD (wrong-harness
+      bridge, 404-class; resolution failure pre-PodIP — LL §3),
       never silent-wrong; claim gate: on the gate's observed view, no new
       claims/spawns/review-mints into the workspace (the suspend-gate shape,
       keyed on spec≠status instead of phase; the multi-replica informer-lag
@@ -120,9 +121,13 @@ existing long-op (202 + spec-write, controller-as-single-status-writer) API conv
   the same predicate. Direct reads answer the typed gone-class. Disk is never touched.
 - **D8 — Routing pins to the pod: `status.harness`.** `GetWorkspaceHarness` resolves
   `status.harness` first (spec fallback for pre-switch objects); the router's 60s TTL stays.
-  The stale window is ≤60s of loud errors (wrong-harness port absent), never wrong data — both
-  harnesses serve the same port, so a mis-route cannot reach a live wrong-harness server after
-  recreation, and cannot reach the new harness before it exists. The lookup-failure fail-open
+  The stale window is ≤60s of loud errors, never wrong data. Because both harnesses hold the
+  same port (4096 — the pi bridge on pi pods, `pi_bridge.go:8-9`) and the pod IP resolves fresh
+  per call, a stale post-flip route DOES reach the new pod's live wrong-harness bridge — but
+  the bridge is a dumb pipe with no cross-harness route shims (`pi_bridge.go:14-15`), so
+  foreign route shapes fail loud 404-class; before the new pod reports its IP (`status.PodIP`
+  cleared at deletion) resolution itself fails — the new harness cannot be reached before it
+  exists. The lookup-failure fail-open
   tightens from the static opencode default to the observed harness.
 - **D9 — UI: a settings-drawer control with the destructive-confirm convention.** The harness
   selector lives in `WorkspaceSettingsDrawer` (the settings surface; lifecycle kebab actions stay
@@ -162,7 +167,8 @@ existing long-op (202 + spec-write, controller-as-single-status-writer) API conv
 | Session-index reconcile sees foreign-harness rows | Shielded by harness predicate (D7); no reap, no metric storm |
 | Raw kubectl harness flip | Webhook 7a′ denies markerless deltas (D3) |
 | Legacy fleet (status.harness empty) | One-time backfill to spec, no recreation — any harness (D4) |
-| Legacy kubectl-pi session rows (hardcoded "opencode" registrations, F5) | One-time boot stamp to the owning workspace's spec.harness (LL §5a) — live pi sessions stay visible; the SQL default covers orphans only |
+| Legacy kubectl-pi session rows (hardcoded "opencode" registrations, F5) | Repeatable boot sweep to the owning workspace's spec.harness, scoped to never-switched workspaces (LL §5a) — live pi sessions stay visible; the SQL default covers orphans only |
+| Session row mis-stamped in the rolling-update window (old replica registers after the sweep ran) | Next boot's sweep heals it (visibility gap bounded by the rollout, never data loss); mid-rollout switch + stale-replica write is the accepted narrow residual (LL §5a) |
 | Switch while board stories pending_input | Swept with the flag cleared, pointer notes the awaiting-input state (D5) |
 
 ## 5. Non-goals

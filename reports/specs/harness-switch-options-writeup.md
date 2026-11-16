@@ -67,9 +67,14 @@ This writeup asks which relaxation is sound.
 - **F6 — routing resolves per-call from the CRD with a fail-open default.** `HarnessRouter`
   resolves `spec.harness` per request (`harnessrouter.go:131-152`), caches 60s, and fails open to
   opencode on lookup error (`:146,165-169`). Both harnesses serve the same harness port (4096):
-  opencode's HTTP server or pi's bridge. So a spec flip ahead of pod recreation routes pi traffic
-  at an opencode server (loud 404-class errors, not silent corruption), and post-recreation the
-  old harness's port is simply gone (connection refused). The window is loud, bounded, and
+  opencode's HTTP server or pi's bridge (`pi_bridge.go:8-9` — on pi pods the bridge holds it;
+  both adapters dial `agentd.AgentPort`). The pod IP resolves fresh per call
+  (`resolver_host.go:126-138`), so a spec flip ahead of pod recreation routes pi traffic at an
+  opencode server (loud 404-class errors, not silent corruption), and post-recreation a stale
+  route dials the NEW pod's live wrong-harness bridge on the same open port — foreign route
+  shapes fail loud 404-class against the shim-free bridge surface (`pi_bridge.go:14-15`), and
+  before the new pod reports its IP (cleared at deletion, `phase_active.go:104`) the call fails
+  at resolution. The window is loud, bounded, and
   self-healing — but `status` carries no harness field (`WorkspaceStatus`,
   `workspace_types.go:671-794`), so nothing pins routing to what the *pod* actually runs, and the
   frontend hardcodes the opencode badge (`frontend/src/components/layout/Sidebar.tsx:412-415`).
@@ -153,7 +158,8 @@ Both harnesses in one workspace, per-session choice. Rejected on five anchored g
 - **(d2) The routing window (F6):** spec-resolved routing is wrong-by-design for a mutable
   harness; the designs pin resolution to `status.harness` (the pod's actual harness) with spec
   fallback, and shrink the stale window to the existing 60s TTL — during which mis-routing fails
-  loud (port absent), never silent-wrong-data. The fail-open-to-opencode default is tightened for
+  loud (wrong-harness bridge 404-class post-flip, resolution failure pre-PodIP), never
+  silent-wrong-data. The fail-open-to-opencode default is tightened for
   the lookup-failure case to the *observed* harness, not the static default.
 - **(d3) No observable harness (F6):** `status.harness` is new — the controller writes it at pod
   build; it drives the router, the wire DTOs, and the UI badge (replacing the hardcoded opencode
