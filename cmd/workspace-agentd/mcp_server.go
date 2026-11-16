@@ -851,7 +851,13 @@ func mcpToolCatalog() []mcpTool {
 		},
 	}...)
 	appendSessionBulkTools(&tools)
-	return tools
+
+	// #2030c: with AGENTD_STRICT_BOARD_ARGS=1, every board tool's
+	// InputSchema gains additionalProperties:false (the schema-side
+	// half of strict mode — the catalog teaches the closed vocabulary;
+	// strictBoardArgsCheck enforces it at dispatch). Flag unset (the
+	// default): the catalog is returned byte-identical.
+	return strictBoardToolSchemas(tools)
 }
 
 // appendSessionBulkTools splices the #1836 session bulk pair —
@@ -1047,6 +1053,26 @@ func mcpHandler(password string) http.HandlerFunc {
 			toolName, aliasNotice := boardStoryToolCanonical(params.Name)
 			toolArgs, legacyKeyNote := normalizeBoardStoryArgs(toolName, params.Arguments)
 			storyNote := boardStoryDeprecationNote(aliasNotice, legacyKeyNote)
+			// #2030c strict board args (AGENTD_STRICT_BOARD_ARGS=1,
+			// default OFF): unknown argument fields and emitted identity
+			// stamps on board tools reject LOUDLY, before dispatch —
+			// teaching errors whose recovery path (re-emit without the
+			// field) is the self-correction the live instance already
+			// observes. The check is a no-op with the flag unset.
+			if serr := strictBoardArgsCheck(params.Name, toolName, toolArgs); serr != nil {
+				res := map[string]any{
+					"content": []map[string]any{
+						{"type": "text", "text": fmt.Sprintf("Error: %v", serr)},
+					},
+					"isError": true,
+				}
+				if note := firstNonEmpty(sessionArgsDeprecationNote(params.Arguments), storyNote); note != "" {
+					res["content"] = append(res["content"].([]map[string]any),
+						map[string]any{"type": "text", "text": note})
+				}
+				writeMCPResult(w, req.ID, res)
+				return
+			}
 			result, err := callMCPTool(r.Context(), password, toolName, toolArgs)
 			if err != nil {
 				res := map[string]any{
