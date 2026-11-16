@@ -286,11 +286,15 @@ func (s *Service) ListEpics(ctx context.Context, projectID string) ([]Epic, erro
 // the LIVE wrap-up row's short id (§1b: join at read time, never stored
 // denormalized — the stored column keeps the UUID identity). One bounded
 // query; a dangling pointer (raced delete between read and join) renders
-// the raw value.
+// the raw value. The §8 read surface's config-derived half rides along:
+// wrap-up-enabled epics carry the engine's consecutive-close cap.
 func (s *Service) decorateWrapUpTaskIDs(ctx context.Context, epics ...*Epic) {
 	byTask := map[string]*Epic{}
 	ids := make([]string, 0, len(epics))
 	for _, e := range epics {
+		if e.WrapUpReview {
+			e.WrapUpCap = s.cfg.WrapUpConsecutiveCap
+		}
 		if p := e.WrapUpTaskID; p != nil && *p != "" {
 			if _, dup := byTask[*p]; !dup {
 				ids = append(ids, *p)
@@ -459,6 +463,7 @@ func (s *Service) BoardHealth(ctx context.Context, userID string) (*Health, erro
 		PendingInputByOrigin: map[string]int{},
 		RecentReclaims:       []HealthReclaim{},
 		ProjectSlots:         []HealthProjectSlots{},
+		AckWaits:             []HealthAckWait{},
 	}
 	if err := s.healthActiveLeases(ctx, userID, h); err != nil {
 		return nil, err
@@ -472,7 +477,43 @@ func (s *Service) BoardHealth(ctx context.Context, userID string) (*Health, erro
 	if err := s.healthRecentReclaims(ctx, userID, h); err != nil {
 		return nil, err
 	}
+	if err := s.healthAckWaits(ctx, &userID, nil, h); err != nil {
+		return nil, err
+	}
 	return h, s.healthProjectSlots(ctx, userID, h)
+}
+
+// healthAckWaits renders the wrap-up circuit-breaker's surface (§8): the
+// owner's epics parked in ack-wait (wrapup_ack_pending — the human holds
+// the gate) or carrying a PARKED in-flight pointer (the pointed row is
+// NOT in_review: a manager-override close, §4's fail-visible tail — a
+// healthy in-flight review never rides this list). A nil bound widens
+// the perimeter (the agent surface passes no user, only its workspace).
+func (s *Service) healthAckWaits(ctx context.Context, userID, workspaceID *string, h *Health) error {
+	rows, err := s.q().Query(ctx, `
+		SELECT e.id, e.short_id, e.project_id, e.title, e.wrapup_count, e.wrapup_ack_pending,
+		       COALESCE(t.short_id, '')
+		FROM epics e
+		JOIN projects p ON p.id = e.project_id
+		LEFT JOIN tasks t ON t.id = e.wrapup_task_id AND t.stage <> 'in_review'
+		WHERE ($1::text IS NULL OR p.user_id = $1)
+		  AND ($2::uuid IS NULL OR p.target_workspace_id = $2::uuid)
+		  AND (e.wrapup_ack_pending OR t.id IS NOT NULL)
+		ORDER BY e.created_at`, userID, workspaceID)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var aw HealthAckWait
+		if err := rows.Scan(&aw.EpicID, &aw.EpicShortID, &aw.ProjectID, &aw.EpicTitle,
+			&aw.WrapUpCount, &aw.AckPending, &aw.InFlightShortID); err != nil {
+			return err
+		}
+		aw.Cap = s.cfg.WrapUpConsecutiveCap
+		h.AckWaits = append(h.AckWaits, aw)
+	}
+	return rows.Err()
 }
 
 func (s *Service) healthActiveLeases(ctx context.Context, userID string, h *Health) error {
@@ -670,6 +711,7 @@ func (s *Service) BoardHealthInWorkspace(ctx context.Context, workspaceID string
 		PendingInputByOrigin: map[string]int{},
 		RecentReclaims:       []HealthReclaim{},
 		ProjectSlots:         []HealthProjectSlots{},
+		AckWaits:             []HealthAckWait{},
 	}
 	rows, err := s.q().Query(ctx, `
 		SELECT t.id, t.short_id, t.title, t.project_id, coalesce(t.assignee_session, ''), t.lease_expires_at
@@ -806,5 +848,8 @@ func (s *Service) BoardHealthInWorkspace(ctx context.Context, workspaceID string
 		return nil, err
 	}
 	srows.Close()
+	if err := s.healthAckWaits(ctx, nil, &workspaceID, h); err != nil {
+		return nil, err
+	}
 	return h, nil
 }

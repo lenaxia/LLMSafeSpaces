@@ -38,7 +38,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"testing"
 	"time"
 
 	"github.com/stretchr/testify/require"
@@ -83,6 +82,41 @@ func (s *BoardSuite) wrapupMintAt(id string) time.Time {
 	s.Require().NoError(s.pool.QueryRow(context.Background(),
 		`SELECT created_at FROM tasks WHERE id=$1`, id).Scan(&at))
 	return at
+}
+
+// wrapupMintText renders the wrap-up row's mint timestamp as text (the
+// same ::text domain epicWrapup renders last_wrapped_at in — exact
+// equality across the two columns is the D4 pin).
+func (s *BoardSuite) wrapupMintText(id string) string {
+	var txt string
+	s.Require().NoError(s.pool.QueryRow(context.Background(),
+		`SELECT created_at::text FROM tasks WHERE id=$1`, id).Scan(&txt))
+	return txt
+}
+
+// countVerdictRowsFor counts the CANONICAL verdict rows for one wrap-up
+// row (the deterministic wrapup:verdict:<taskID> id — one per row, ever;
+// the requestID-keyed eventWriter row shares the action but never the id).
+func (s *BoardSuite) countVerdictRowsFor(taskID string) int {
+	var n int
+	s.Require().NoError(s.pool.QueryRow(context.Background(),
+		`SELECT count(*) FROM board_events WHERE id=$1`,
+		"wrapup:verdict:"+taskID).Scan(&n))
+	return n
+}
+
+// liveWrapupTask resolves the epic's CURRENT in-flight wrap-up row (the
+// pointer target) — the multi-cycle shape, where done wrap-up rows from
+// earlier cycles accumulate in the board.
+func (s *BoardSuite) liveWrapupTask(svc *board.Service, epicID string) *board.Task {
+	var id string
+	s.Require().NoError(s.pool.QueryRow(context.Background(),
+		`SELECT wrapup_task_id::text FROM epics WHERE id=$1`, epicID).Scan(&id))
+	s.Require().NotEmpty(id, "the epic carries an in-flight wrap-up pointer")
+	t, err := svc.GetTask(context.Background(), id, "")
+	s.Require().NoError(err)
+	s.Require().Equal(board.StageInReview, t.Stage, "the pointer names a live review")
+	return t
 }
 
 // verdictEventPayload decodes the deterministic wrapup:verdict:<taskID>
@@ -135,7 +169,6 @@ func (s *BoardSuite) TestWrapUp_PassVerdictCompletesEpicAtomically() {
 	e := s.seedWrapEpic(svc, p, true)
 
 	w := s.drainToMint(svc, ws, e, 2)
-	mintAt := s.wrapupMintAt(w.ID)
 
 	task, epic := s.passVerdict(svc, w, "rq-pass-1")
 
@@ -146,7 +179,7 @@ func (s *BoardSuite) TestWrapUp_PassVerdictCompletesEpicAtomically() {
 	require.Nil(t, st.TaskID, "the in-flight pointer settled")
 	require.Equal(t, 1, st.Count, "the consecutive-close ledger advanced")
 	require.NotNil(t, st.LastWrapped, "the watermark advanced")
-	require.Equal(t, mintAt, *st.LastWrapped,
+	require.Equal(t, s.wrapupMintText(w.ID), *st.LastWrapped,
 		"D4: the watermark takes the row's MINT time, never close time")
 
 	// TERMINUS pins: no fresh mint, no ack-wait, epic_complete exactly
@@ -157,7 +190,7 @@ func (s *BoardSuite) TestWrapUp_PassVerdictCompletesEpicAtomically() {
 	require.False(t, st.AckPending, "the cap does not gate the terminus")
 	require.Equal(t, 0, s.countEvents("wrapup_ack_required"), "ack-wait arms ONLY on drain-mint paths")
 
-	require.Equal(t, 1, s.countEvents("wrapup_verdict"), "the canonical verdict event")
+	require.Equal(t, 1, s.countVerdictRowsFor(w.ID), "the canonical verdict event")
 	payload := s.verdictEventPayload(w.ID)
 	require.Equal(t, "pass", payload["verdict"])
 	require.NotEmpty(t, payload["report_url"], "the report URL rides the audit payload")
@@ -182,7 +215,7 @@ func (s *BoardSuite) TestWrapUp_PassVerdictCompletesEpicAtomically() {
 	s.Require().NoError(err, "a stale replay is 200-with-original, never an error")
 	require.Equal(t, board.StageDone, task2.Stage)
 	require.Equal(t, board.EpicCompleted, epic2.Status)
-	require.Equal(t, 1, s.countEvents("wrapup_verdict"), "one verdict per row, ever")
+	require.Equal(t, 1, s.countVerdictRowsFor(w.ID), "one verdict per row, ever")
 	require.Equal(t, 1, s.epicWrapup(e.ID).Count, "no double ledger advance")
 	require.Equal(t, 1, s.countWrapupRows(), "still no mint")
 }
@@ -270,7 +303,8 @@ func (s *BoardSuite) TestWrapUp_GapsVerdictRefValidation() {
 	// A same-epic gap story filed AFTER mint through the NORMAL create
 	// path (tag 'gap') — the charter discipline the engine validates.
 	g1, err := svc.CreateTask(ctx, s.owner(), e.ID, "",
-		board.TaskInput{Title: "gap-1", Tags: []string{"gap"},
+		board.TaskInput{Title: "gap-1", Description: "Seam gap filed by the wrap-up reviewer: the integration seam between the two stories is unpinned.",
+			Tags:               []string{"gap"},
 			AcceptanceCriteria: []board.AcceptanceCriterion{{Text: "fix the seam"}}}, "")
 	s.Require().NoError(err)
 
@@ -282,13 +316,15 @@ func (s *BoardSuite) TestWrapUp_GapsVerdictRefValidation() {
 	// A wrong-epic gap row (a sibling epic in the same project).
 	e2 := s.seedWrapEpic(svc, p, false)
 	foreign, err := svc.CreateTask(ctx, s.owner(), e2.ID, "",
-		board.TaskInput{Title: "gap-foreign", Tags: []string{"gap"},
+		board.TaskInput{Title: "gap-foreign", Description: "A gap-tagged story in a DIFFERENT epic (the wrong-epic refusal fixture).",
+			Tags:               []string{"gap"},
 			AcceptanceCriteria: []board.AcceptanceCriterion{{Text: "x"}}}, "")
 	s.Require().NoError(err)
 
 	// An untagged same-epic row filed after mint.
 	plain, err := svc.CreateTask(ctx, s.owner(), e.ID, "",
-		board.TaskInput{Title: "plain", AcceptanceCriteria: []board.AcceptanceCriterion{{Text: "x"}}}, "")
+		board.TaskInput{Title: "plain", Description: "An untagged same-epic row filed after mint (the untagged refusal fixture).",
+			AcceptanceCriteria: []board.AcceptanceCriterion{{Text: "x"}}}, "")
 	s.Require().NoError(err)
 
 	gapsInput := func(refs ...string) board.WrapUpVerdictInput {
@@ -300,11 +336,11 @@ func (s *BoardSuite) TestWrapUp_GapsVerdictRefValidation() {
 		}
 	}
 	for name, ref := range map[string]string{
-		"wrong-epic ref":   foreign.ShortID,
-		"untagged ref":     plain.ShortID,
-		"pre-mint ref":     s1.ShortID,
-		"nonexistent ref":  "tsk-no-such-gap-row",
-		"uuid of a story":  s1.ID,
+		"wrong-epic ref":  foreign.ShortID,
+		"untagged ref":    plain.ShortID,
+		"pre-mint ref":    s1.ShortID,
+		"nonexistent ref": "tsk-no-such-gap-row",
+		"uuid of a story": s1.ID,
 	} {
 		_, _, err := svc.RecordWrapUpVerdict(ctx, s.reviewerActor(w), w.ID, "", gapsInput(ref), "")
 		s.Require().Error(err, name)
@@ -364,7 +400,8 @@ func (s *BoardSuite) TestWrapUp_GapCompletionTriggersDeltaScopedMint() {
 	w1Mint := s.wrapupMintAt(w1.ID)
 
 	g1, err := svc.CreateTask(ctx, s.owner(), e.ID, "",
-		board.TaskInput{Title: "gap-1", Tags: []string{"gap"},
+		board.TaskInput{Title: "gap-1", Description: "Gap story: the delta-scoped re-review's covered row.",
+			Tags:               []string{"gap"},
 			AcceptanceCriteria: []board.AcceptanceCriterion{{Text: "fix", Met: true}}}, "")
 	s.Require().NoError(err)
 
@@ -377,7 +414,7 @@ func (s *BoardSuite) TestWrapUp_GapCompletionTriggersDeltaScopedMint() {
 			Reviewer:  "wrapup-reviewer",
 		}, "")
 	s.Require().NoError(err)
-	require.Equal(t, w1Mint, *s.epicWrapup(e.ID).LastWrapped,
+	require.Equal(t, s.wrapupMintText(w1.ID), *s.epicWrapup(e.ID).LastWrapped,
 		"the verdict's settle advanced the watermark to W1's mint")
 
 	// The gap story completes through the real engine path: the drain
@@ -450,13 +487,14 @@ func (s *BoardSuite) TestWrapUp_VerdictGuardChain() {
 	s.Require().Error(err, "unmet criteria refuse (Done-guard parity)")
 	require.Contains(t, err.Error(), board.GuardDone)
 
-	// Criteria met but no report URL: still refuses.
+	// Criteria met but no report URL: still refuses (the schema layer —
+	// the report is the close's evidence on both verdicts).
 	s.checkWrapupCriteria(svc, w)
 	noReport := in
 	noReport.ReportURL = ""
 	_, _, err = svc.RecordWrapUpVerdict(ctx, s.reviewerActor(w), w.ID, "", noReport, "")
 	s.Require().Error(err, "a missing reportUrl refuses (both verdicts require it)")
-	require.Contains(t, err.Error(), board.GuardDone)
+	require.Contains(t, err.Error(), "reportUrl")
 
 	// Enum discipline: an unknown verdict value refuses at validation.
 	bogus := board.WrapUpVerdictInput{Verdict: "approve", ReportURL: "https://ev.test/x", Reviewer: "r"}
@@ -505,7 +543,7 @@ func (s *BoardSuite) TestWrapUp_VerdictFailpointAtomicity() {
 			ReportURL: "https://ev.test/fp", Reviewer: "wrapup-reviewer"}, "")
 	s.Require().NoError(err)
 	require.Equal(t, board.EpicCompleted, epic.Status, "the retry completes")
-	require.Equal(t, 1, s.countEvents("wrapup_verdict"), "exactly one verdict row (converged)")
+	require.Equal(t, 1, s.countVerdictRowsFor(w.ID), "exactly one canonical verdict row (converged)")
 }
 
 // --- [2] The cap/ack state machine --------------------------------------------
@@ -533,10 +571,11 @@ func (s *BoardSuite) TestWrapUp_AckResetsLedgerAndRedrains() {
 	// capN consecutive GAPS cycles, each through the REAL verdict close
 	// (the ledger increments only through advanceWatermarkTx).
 	for i := 0; i < capN; i++ {
-		w := s.soleWrapupTask(svc)
-		s.Require().Equal(board.StageInReview, w.Stage, "cycle %d: exactly one live wrap-up", i)
+		w := s.liveWrapupTask(svc, e.ID)
+		s.Require().Equal(board.StageInReview, w.Stage, "cycle %d: the epic's live wrap-up", i)
 		g, err := svc.CreateTask(ctx, s.owner(), e.ID, "",
-			board.TaskInput{Title: fmt.Sprintf("gap-%d", i), Tags: []string{"gap"},
+			board.TaskInput{Title: fmt.Sprintf("gap-%d", i), Description: fmt.Sprintf("Cycle %d's gap story: pin the delta the wrap-up flagged.", i),
+				Tags:               []string{"gap"},
 				AcceptanceCriteria: []board.AcceptanceCriterion{{Text: "fix", Met: true}}}, "")
 		s.Require().NoError(err)
 		s.checkWrapupCriteria(svc, w)
@@ -625,9 +664,12 @@ func (s *BoardSuite) TestWrapUp_AckClearsParkedManagerOverridePointer() {
 	require.Len(t, health.AckWaits, 1, "the parked pointer rides the ack_waits surface")
 	require.NotEmpty(t, health.AckWaits[0].InFlightShortID, "the parked row is named")
 
-	// The ack clears the parked pointer and re-drains (fresh mint).
+	// The ack clears the parked pointer and re-drains (fresh mint): the
+	// pointer after ack names the FRESH wrap-up, never the parked row.
 	_, err = svc.AckWrapUp(ctx, s.owner(), e.ID, "", "")
 	s.Require().NoError(err)
-	require.Nil(t, s.epicWrapup(e.ID).TaskID, "the parked pointer cleared")
+	fresh := s.epicWrapup(e.ID).TaskID
+	require.NotNil(t, fresh, "the acked, still-drained epic minted immediately")
+	require.NotEqual(t, w.ID, *fresh, "the PARKED pointer was cleared — this is the fresh review")
 	require.Equal(t, 2, s.countWrapupRows(), "the acked drain re-minted a fresh wrap-up")
 }

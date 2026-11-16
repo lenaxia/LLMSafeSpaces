@@ -11,6 +11,7 @@
 package board_test
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
@@ -39,7 +40,7 @@ func TestValidateWrapUpVerdictInput(t *testing.T) {
 	})
 	t.Run("notes ride along under the cap", func(t *testing.T) {
 		in := validWrapUpVerdict()
-		in.Notes = strings.Repeat("a", 512)
+		in.Notes = variedNotes(512)
 		require.NoError(t, board.ValidateWrapUpVerdictInput(in))
 	})
 
@@ -76,9 +77,20 @@ func TestValidateWrapUpVerdictInput(t *testing.T) {
 	})
 	t.Run("notes are size-capped", func(t *testing.T) {
 		in := validWrapUpVerdict()
-		in.Notes = strings.Repeat("n", board.MaxWrapUpNotesBytes+1)
+		in.Notes = variedNotes(board.MaxWrapUpNotesBytes + 1)
 		err := board.ValidateWrapUpVerdictInput(in)
 		require.Error(t, err)
 		require.Contains(t, err.Error(), "notes")
 	})
+}
+
+// variedNotes builds n bytes of non-degenerate prose (every line unique —
+// the textguard's repetition heuristics stay quiet; only the CAP is under
+// test here).
+func variedNotes(n int) string {
+	var b strings.Builder
+	for i := 0; b.Len() < n; i++ {
+		fmt.Fprintf(&b, "wrap-up note line %d: findings reviewed, evidence linked. ", i)
+	}
+	return b.String()[:n]
 }
