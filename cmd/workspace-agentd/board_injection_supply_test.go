@@ -84,4 +84,18 @@ func TestMCPBoard_ManagerInjectionSupply(t *testing.T) {
 			t.Errorf("platform tool %s lost its injection — the pre-#1747 baseline must hold", name)
 		}
 	}
+	// #2061/#2064 story 1: the advance-stamp pair — board_move_stage and
+	// board_record_verdict (board_record_progress joins the day #2044
+	// lands it) carry the injected session as the board turn-end ADVANCE
+	// stamp's key: agentd's choke point derives the stamp from
+	// lsp_injected_session ONLY (a model-declared sessionId copy never
+	// stamps — the #2040 evidence-poisoning guard).
+	for _, name := range []string{
+		"llmsafespaces_board_move_stage",
+		"llmsafespaces_board_record_verdict",
+	} {
+		if !pluginSet[name] {
+			t.Errorf("advance tool %s lost its injection — the #2064 board turn-end advance stamp loses its attribution key (agentd stamps lsp_injected_session only)", name)
+		}
+	}
 }
