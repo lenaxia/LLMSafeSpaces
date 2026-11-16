@@ -136,12 +136,40 @@ func (s *WorkspacesService) ReloadAgent(ctx context.Context, id string) error {
 	return s.c.do(ctx, "POST", "/workspaces/"+id+"/agent/reload", nil, nil)
 }
 
+// BindHarness binds an UNBOUND workspace's harness exactly once (PUT
+// /workspaces/{id}/harness; owner ruling 2026-11-16: workspaces do NOT
+// switch harnesses). Binding the same value on an already-bound
+// workspace is the idempotent already-bound path; any other value on a
+// bound workspace is a 409 harness_immutable. There is no switch or
+// recreate path.
+func (s *WorkspacesService) BindHarness(ctx context.Context, id, harness string) (*BindHarnessResult, error) {
+	var result BindHarnessResult
+	err := s.c.do(ctx, "PUT", "/workspaces/"+id+"/harness", BindHarnessRequest{Harness: harness}, &result)
+	return &result, err
+}
+
 // SessionsService handles session operations.
 type SessionsService struct{ c *Client }
 
+// Ensure creates a session, activating the workspace if needed. The
+// workspace's BOUND harness serves the create; on an unbound workspace
+// this binds opencode, the non-interactive default (owner ruling
+// 2026-11-16: bind-once).
 func (s *SessionsService) Ensure(ctx context.Context, workspaceID string) (*EnsureSessionResponse, error) {
 	var resp EnsureSessionResponse
 	err := s.c.do(ctx, "POST", "/workspaces/"+workspaceID+"/sessions/new", nil, &resp)
+	return &resp, err
+}
+
+// EnsureWithHarness is Ensure with an explicit harness choice — the
+// frontend picker's submit on an UNBOUND workspace: the harness binds
+// atomically with the session (owner ruling 2026-11-16: bind-once). On
+// a bound workspace the harness must match or be empty (mismatch: 409
+// harness_immutable).
+func (s *SessionsService) EnsureWithHarness(ctx context.Context, workspaceID, harness string) (*EnsureSessionResponse, error) {
+	body := map[string]string{"harness": harness}
+	var resp EnsureSessionResponse
+	err := s.c.do(ctx, "POST", "/workspaces/"+workspaceID+"/sessions/new", body, &resp)
 	return &resp, err
 }
 

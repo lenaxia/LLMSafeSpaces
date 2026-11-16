@@ -25,6 +25,19 @@ type Workspace struct {
 	CredentialsPendingSince *time.Time        `json:"credentialsPendingSince,omitempty"`
 	// DevPreviewEnabled reflects spec.networkAccess.devPreview (Epic 66).
 	DevPreviewEnabled bool `json:"devPreviewEnabled,omitempty"`
+	// Harness is the bound coding-agent harness (owner ruling
+	// 2026-11-16: bind-once, immutable forever — workspaces do NOT
+	// switch harnesses). nil = UNBOUND: created without a harness
+	// choice; no pod runs until the bind (first session's picker
+	// submit, or PUT /workspaces/{id}/harness). "opencode"/"pi" =
+	// bound for the workspace's lifetime.
+	Harness *string `json:"harness,omitempty"`
+	// HarnessOptions is the instance's enabled harness set (the
+	// picker's offer list; opencode always present). Read-only
+	// context for clients — binding consumes it, but a bound value
+	// is unaffected by later enablement changes (immutability
+	// protects it).
+	HarnessOptions []string `json:"harnessOptions,omitempty"`
 	// PhraseID is the #1757 workspace phrase (2 words + 1 digit,
 	// fleet-unique) — THE address for display; the UUID stays the
 	// internal key. omitempty: absent only pre-backfill.
@@ -44,6 +57,17 @@ type CreateWorkspaceRequest struct {
 	// built image ref and overrides Runtime with it. The config must be
 	// Ready and owned by the user, their org, or be platform-scoped.
 	ImageConfigHash string `json:"imageConfigHash,omitempty"`
+	// Harness optionally binds the coding-agent harness at create
+	// (owner ruling 2026-11-16: bind-once): "opencode" or "pi", must
+	// be in the instance's enabled set (harnessOptions on reads).
+	// DEFAULT CHANGE (2026-11-16): omitted no longer implicitly means
+	// "opencode" — the workspace is created UNBOUND (no pod until the
+	// harness is chosen at first session or via
+	// PUT /workspaces/{id}/harness). Pre-existing workspaces were
+	// backfilled to explicit opencode by the platform, so existing
+	// callers see no change on old workspaces; new omitted-harness
+	// creates must complete the bind before first use.
+	Harness string `json:"harness,omitempty"`
 }
 
 // WorkspaceListResult bundles workspace list items with pagination.
@@ -80,6 +104,11 @@ type WorkspaceListItem struct {
 	// above stays the internal key. omitempty: absent only pre-backfill.
 	// Mirrors WorkspaceMetadata.PhraseID.
 	PhraseID string `json:"phraseId,omitempty"`
+	// Harness is the bound coding-agent harness (owner ruling
+	// 2026-11-16: bind-once, immutable forever). nil = unbound (no
+	// pod until the first-session picker submit or an explicit bind);
+	// "opencode"/"pi" = bound for life.
+	Harness *string `json:"harness,omitempty"`
 }
 
 // WorkspaceStatusResult carries the status fields read from the Workspace CRD.
@@ -192,4 +221,27 @@ type ActivateWorkspaceResponse struct {
 // refreshed resource requests.
 type RefreshWorkspaceResult struct {
 	RestartGeneration int64 `json:"restartGeneration"`
+}
+
+// BindHarnessRequest is the body for PUT /workspaces/:id/harness — the
+// explicit bind of an UNBOUND workspace's harness (owner ruling
+// 2026-11-16: bind-once). On an already-bound workspace the same value
+// is an idempotent no-op; any other value is a 409 harness_immutable
+// (there is no switch or recreate path at any tier).
+type BindHarnessRequest struct {
+	// Harness to bind: "opencode" or "pi", must be in the instance's
+	// enabled set.
+	Harness string `json:"harness"`
+}
+
+// BindHarnessResult is the response for PUT /workspaces/:id/harness.
+type BindHarnessResult struct {
+	// Harness is the workspace's harness after the call (bound value,
+	// or the pre-existing value on the idempotent path).
+	Harness string `json:"harness"`
+	// AlreadyBound is true when the workspace was already bound to
+	// this value and nothing changed (the idempotent 200 path).
+	AlreadyBound bool `json:"alreadyBound,omitempty"`
+	// HarnessOptions echoes the instance's enabled set (picker context).
+	HarnessOptions []string `json:"harnessOptions,omitempty"`
 }

@@ -1037,32 +1037,47 @@ func newHarnessValidator(t *testing.T) *WorkspaceValidator {
 	}
 }
 
-// TestS5Workspace_HarnessImmutableOnUpdate: switching the harness in
-// place is denied — sessions, config, and PVC artifacts are
-// harness-specific; switching requires recreating the Workspace. The
-// empty value normalizes to opencode on BOTH sides (old="" and
-// new="opencode" are the same harness — no false denial).
+// TestS5Workspace_HarnessImmutableOnUpdate — BIND-ONCE (owner ruling
+// 2026-11-16: workspaces do NOT switch harnesses; one harness per
+// workspace, bound once, immutable forever — the 2026-11-15 prelim's
+// switch-with-recreate was REJECTED). "" is a REAL state now (unbound),
+// not opencode-in-disguise: value→"" (the unbind attempt) is denied;
+// ""→opencode is the bind/backfill stamp and allowed for anyone; ""→pi
+// is a bind allowed ONLY on a born-unbound workspace (the
+// AnnotationHarnessUnbound marker — the legacy discriminator); a
+// marker-less "" object predates the ruling and has only ever run
+// opencode (the old schema default), so binding it to pi is denied
+// with the immutability message.
 func TestS5Workspace_HarnessImmutableOnUpdate(t *testing.T) {
 	v := newHarnessValidator(t)
 
 	cases := []struct {
 		name       string
 		old, new   v1.HarnessType
+		unbound    bool // born-unbound marker on the OLD object
 		wantDenied bool
 	}{
-		{"pi to opencode", v1.HarnessPi, v1.HarnessOpencode, true},
-		{"opencode to pi", v1.HarnessOpencode, v1.HarnessPi, true},
-		{"unset to pi", "", v1.HarnessPi, true},
-		{"pi to unset", v1.HarnessPi, "", true},
-		{"pi unchanged", v1.HarnessPi, v1.HarnessPi, false},
-		{"opencode unchanged", v1.HarnessOpencode, v1.HarnessOpencode, false},
-		{"unset to opencode (same effective harness)", "", v1.HarnessOpencode, false},
-		{"opencode to unset (same effective harness)", v1.HarnessOpencode, "", false},
-		{"unset unchanged", "", "", false},
+		{"pi to opencode (switch)", v1.HarnessPi, v1.HarnessOpencode, false, true},
+		{"opencode to pi (switch)", v1.HarnessOpencode, v1.HarnessPi, false, true},
+		{"pi to unset (unbind attempt)", v1.HarnessPi, "", false, true},
+		{"opencode to unset (unbind attempt)", v1.HarnessOpencode, "", false, true},
+		{"pi unchanged", v1.HarnessPi, v1.HarnessPi, false, false},
+		{"opencode unchanged", v1.HarnessOpencode, v1.HarnessOpencode, false, false},
+		{"unset unchanged", "", "", false, false},
+		{"unset to opencode (bind / backfill stamp)", "", v1.HarnessOpencode, false, false},
+		{"unset to pi on legacy (marker-less) object", "", v1.HarnessPi, false, true},
+		{"unset to opencode on born-unbound", "", v1.HarnessOpencode, true, false},
+		{"unset to pi on born-unbound (the picker bind)", "", v1.HarnessPi, true, false},
 	}
 	for _, tc := range cases {
 		oldWs := minimalValidWorkspace()
 		oldWs.Spec.Harness = tc.old
+		if tc.unbound {
+			if oldWs.Annotations == nil {
+				oldWs.Annotations = map[string]string{}
+			}
+			oldWs.Annotations[v1.AnnotationHarnessUnbound] = "true"
+		}
 		newWs := oldWs.DeepCopy()
 		newWs.Spec.Harness = tc.new
 
@@ -1070,10 +1085,10 @@ func TestS5Workspace_HarnessImmutableOnUpdate(t *testing.T) {
 		assert.Equal(t, tc.wantDenied, !resp.Allowed, "%s: allowed=%v", tc.name, resp.Allowed)
 		if tc.wantDenied {
 			require.NotNil(t, resp.Result)
-			assert.Contains(t, resp.Result.Message, "spec.harness is immutable",
-				"%s: the denial must name the field and the remedy", tc.name)
+			assert.Contains(t, resp.Result.Message, "spec.harness is immutable once bound for this workspace",
+				"%s: the denial names the bind-once rule verbatim", tc.name)
 			assert.Contains(t, resp.Result.Message, "recreate",
-				"%s: the denial must state switching requires recreate", tc.name)
+				"%s: the denial must point at recreating on the other harness", tc.name)
 		}
 	}
 }

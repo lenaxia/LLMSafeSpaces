@@ -289,6 +289,11 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 	if wsSvc, ok := svc.Workspace.(*workspace.Service); ok {
 		wsSvc.SetSessionIndex(sessionIndexSvc)
 		wsSvc.SetSessionRefs(svc.Database)
+		// Bind-once harness (owner ruling 2026-11-16): the harness
+		// router backs EnsureSession's pi arm (first-session creates
+		// on a pi-bound workspace dial the pod's bridge through the
+		// adapter; the opencode arm keeps its raw pod path).
+		wsSvc.SetAgentAdapter(agentAdapter)
 	}
 	proxyHandler.SetSessionIndex(sessionIndexSvc)
 	proxyHandler.SetSessionRefs(svc.Database)

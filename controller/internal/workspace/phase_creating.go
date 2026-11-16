@@ -41,6 +41,17 @@ func (r *WorkspaceReconciler) handleCreating(ctx context.Context, workspace *v1.
 		return r.suspendFromPreActive(ctx, workspace)
 	}
 
+	// Harness bind-once gate (owner ruling 2026-11-16): a born-unbound
+	// workspace never builds a pod — the pod's topology is
+	// harness-class, so nothing runs until the bind (first session or
+	// PUT /harness) sets spec.harness, whose write re-arms this phase
+	// machine via the watch. Defense in depth: reconcileHarnessBinding
+	// already steers legacy objects away from this state; only a
+	// born-unbound workspace can be parked here.
+	if halt, err := r.gateUnboundCreating(ctx, workspace); halt {
+		return ctrl.Result{}, err
+	}
+
 	// Epic 72 / US-72.3: relay staging pass (nil-config no-op when the
 	// deployment flag is off) — before pod build so the handoff Secret is
 	// staged by the time a (post-US-72.4) token batch is first requested.

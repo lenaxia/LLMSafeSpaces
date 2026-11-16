@@ -252,6 +252,21 @@ func (r *WorkspaceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	if !workspace.DeletionTimestamp.IsZero() {
 		result, err = r.handleDeletion(ctx, workspace)
 	} else {
+		// Harness bind-once invariant (owner ruling 2026-11-16),
+		// before phase dispatch so every phase observes it: legacy
+		// marker-less empty-harness workspaces are backfilled to
+		// explicit opencode (handled = stop this pass; the requeue
+		// re-reads the bound object); born-unbound workspaces fall
+		// through — their no-pod gate lives in handleCreating.
+		if handled, hRes, hErr := r.reconcileHarnessBinding(ctx, workspace); handled {
+			if hErr != nil {
+				countReconcileError("Workspace", "phase_handler")
+				observeReconcileDuration("Workspace", "error", time.Since(start))
+			} else {
+				observeReconcileDuration("Workspace", "ok", time.Since(start))
+			}
+			return hRes, hErr
+		}
 		switch workspace.Status.Phase {
 		case "", v1.WorkspacePhasePending:
 			result, err = r.handlePending(ctx, workspace)
