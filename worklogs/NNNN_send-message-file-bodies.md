@@ -147,3 +147,11 @@ root-proof refusal (NON-EMPTY-DIRECTORY swap mid-POST,
 board_exchange_dir_test.go:114-125) — ENOTEMPTY for every uid. The
 reviewer's summary upheld everything else (admission, shared reader,
 round-trip, schema order, harness parity).
+
+Review r2 (head 279005b79, APPROVED 2026-11-16 05:29Z): the
+remediation verified in source (timing deterministic, swap
+mutex-guarded and idempotent, a silent swap failure would fail the
+assertion rather than false-pass) — no open findings. CI green on the
+exact head after one failed-job rerun (the secret-audit python canary
+flaked — `entry for created secret present` — and passed on retry;
+this diff has zero API/SDK surface; main's CI green same day).
