@@ -24,6 +24,12 @@ cd "$(dirname "$0")/.."
 # differs across Postgres versions (PG16: empty string; PG17:
 # "standard public schema") and across reset-via-DROP-CASCADE vs
 # fresh-database initial states. It's metadata, not application schema.
+# pg_attver is stripped (PG18 pg_dump emits `ALTER COLUMN ... SET
+# (pg_attver=N)` per column): N is a catalog-assigned attribute version
+# whose value depends on recreate order, so it differs between the two
+# cycles on EVERY column — pure noise, same class as the filters above
+# (broke every branch's round-trip leg from 2026-11-13; the #2043 lane
+# verified the gate green again once stripped).
 snapshot() {
     pg_dump --schema-only --no-owner --no-privileges \
         | grep -v '^--' \
@@ -32,6 +38,7 @@ snapshot() {
         | grep -v '^\\restrict' \
         | grep -v '^\\unrestrict' \
         | grep -v "^COMMENT ON SCHEMA public " \
+        | sed -E 's/ SET \(pg_attver=[0-9]+\)//g' \
         | sort -u
 }
 
