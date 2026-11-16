@@ -124,9 +124,10 @@ func TestBoardTurnEndWiring_RealChainEmits(t *testing.T) {
 
 	// The stamp also landed in the redirected shared tail (TestMain's
 	// hermetic LLMSAFESPACES_BOARD_ADVANCES_PATH) — the e2e provably
-	// used the REAL process-wide ledger, not a test double.
+	// used the REAL process-wide ledger, not a test double. The reader
+	// resolves the same env path (same-scope posture).
 	if tail := os.Getenv("LLMSAFESPACES_BOARD_ADVANCES_PATH"); tail != "" {
-		_, ok := readBoardAdvanceStamps(tail, sid)
+		_, ok := readBoardAdvanceStamps(sid)
 		assert.True(t, ok, "the choke-point stamp must persist to the shared tail")
 	}
 

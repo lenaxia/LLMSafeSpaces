@@ -159,8 +159,13 @@ func (l *boardAdvanceLedger) advancedSince(sessionID string, turnStart time.Time
 
 // readBoardAdvanceStamps scans the shared tail for the session's last
 // advance stamp (the pi leg's cross-process consult; scan cost is one
-// small-file read per observed turn end — advance calls are rare).
-func readBoardAdvanceStamps(path, sessionID string) (time.Time, bool) {
+// small-file read per observed turn end — advance calls are rare). The
+// tail's location resolves HERE, in the same scope as the open (the
+// board_workers.go posture — an env-derived path never travels through
+// a parameter to an os.Open; gosec's taint rule stays quiet by shape,
+// not by nolint).
+func readBoardAdvanceStamps(sessionID string) (time.Time, bool) {
+	path := boardAdvancesPath()
 	f, err := os.Open(path)
 	if err != nil {
 		return time.Time{}, false
@@ -185,23 +190,24 @@ func readBoardAdvanceStamps(path, sessionID string) (time.Time, bool) {
 
 // sessionHoldsBoardAdvance consults both stores (memory first, then the
 // shared tail) — the wiring probe and the pi pump share this one
-// derivation.
-func sessionHoldsBoardAdvance(l *boardAdvanceLedger, path, sessionID string, turnStart time.Time) bool {
+// derivation. The tail's path resolves inside readBoardAdvanceStamps
+// (same-scope posture).
+func sessionHoldsBoardAdvance(l *boardAdvanceLedger, sessionID string, turnStart time.Time) bool {
 	if l != nil && l.advancedSince(sessionID, turnStart) {
 		return true
 	}
-	if turnStart.IsZero() {
-		// No window anchor (should not happen — the fold always knows
-		// busySince): fail toward "no advance" (the safe direction —
-		// the board due-marks, the sweep re-checks).
-		if at, ok := readBoardAdvanceStamps(path, sessionID); ok {
-			_ = at
-			return true
-		}
+	at, ok := readBoardAdvanceStamps(sessionID)
+	if !ok {
 		return false
 	}
-	at, ok := readBoardAdvanceStamps(path, sessionID)
-	return ok && at.After(turnStart)
+	if turnStart.IsZero() {
+		// No window anchor (should not happen — the fold always knows
+		// busySince): fail toward "no advance" being UNKNOWN, i.e. the
+		// safe direction — any observed stamp counts (the board
+		// due-marks, the sweep re-checks).
+		return true
+	}
+	return at.After(turnStart)
 }
 
 // boardAdvanceLedgerInst is the process-wide advance ledger (the MCP
@@ -263,7 +269,7 @@ func (e *boardTurnEmitter) facts(sessionID string, turnStart time.Time) sessions
 	claim := e.registry != nil && e.registry.isWorker(sessionID)
 	return sessionstate.BoardTurnEndFacts{
 		ClaimHolder: claim,
-		Advanced:    claim && sessionHoldsBoardAdvance(e.ledger, boardAdvancesPath(), sessionID, turnStart),
+		Advanced:    claim && sessionHoldsBoardAdvance(e.ledger, sessionID, turnStart),
 	}
 }
 

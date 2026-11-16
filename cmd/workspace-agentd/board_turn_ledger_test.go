@@ -80,22 +80,25 @@ func TestBoardAdvanceLedger_Window(t *testing.T) {
 
 // TestBoardAdvanceLedger_TailRoundtrip: the shared-volume tail carries
 // the stamp across processes — the pi leg consults it with a NIL memory
-// ledger (a different agentd process on the pod).
+// ledger (a different agentd process on the pod). The tail's location
+// resolves env-side (t.Setenv redirects), matching the same-scope
+// posture of the reader.
 func TestBoardAdvanceLedger_TailRoundtrip(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "adv.jsonl")
+	t.Setenv("LLMSAFESPACES_BOARD_ADVANCES_PATH", path)
 	l := newBoardAdvanceLedger(path, nil)
 	turnStart := time.Now().Add(-time.Second)
 	l.observeToolCall("board_move_stage", map[string]any{"lsp_injected_session": "ses_pi"})
 
-	at, ok := readBoardAdvanceStamps(path, "ses_pi")
+	at, ok := readBoardAdvanceStamps("ses_pi")
 	require.True(t, ok, "the tail must carry the stamp for the cross-process reader")
 	assert.True(t, at.After(turnStart), "the tailed stamp must sit inside the window")
 
 	// The pi shape: nil memory ledger, derivation from the tail alone.
-	assert.True(t, sessionHoldsBoardAdvance(nil, path, "ses_pi", turnStart))
-	assert.False(t, sessionHoldsBoardAdvance(nil, path, "ses_pi", time.Now().Add(time.Second)),
+	assert.True(t, sessionHoldsBoardAdvance(nil, "ses_pi", turnStart))
+	assert.False(t, sessionHoldsBoardAdvance(nil, "ses_pi", time.Now().Add(time.Second)),
 		"a window opening after the last stamp sees no advance")
-	assert.False(t, sessionHoldsBoardAdvance(nil, path, "ses_nobody", turnStart))
+	assert.False(t, sessionHoldsBoardAdvance(nil, "ses_nobody", turnStart))
 }
 
 // TestBoardAdvanceLedger_ZeroWindowSafeDirection: a zero turnStart (no
@@ -103,9 +106,10 @@ func TestBoardAdvanceLedger_TailRoundtrip(t *testing.T) {
 // board due-marks; the sweep re-checks), pinned.
 func TestBoardAdvanceLedger_ZeroWindowSafeDirection(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "adv.jsonl")
+	t.Setenv("LLMSAFESPACES_BOARD_ADVANCES_PATH", path)
 	newBoardAdvanceLedger(path, nil).observeToolCall("board_move_stage", map[string]any{"lsp_injected_session": "ses_z"})
-	assert.True(t, sessionHoldsBoardAdvance(nil, path, "ses_z", time.Time{}))
-	assert.False(t, sessionHoldsBoardAdvance(nil, path, "ses_absent", time.Time{}))
+	assert.True(t, sessionHoldsBoardAdvance(nil, "ses_z", time.Time{}))
+	assert.False(t, sessionHoldsBoardAdvance(nil, "ses_absent", time.Time{}))
 }
 
 // TestBoardAdvanceLedger_UnwritableTailMemoryOnly: a tail that cannot

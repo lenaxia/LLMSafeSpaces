@@ -201,7 +201,7 @@ func TestPiBoardTurnEnd_CompactionKeepsTail(t *testing.T) {
 	}
 	require.NoError(t, os.WriteFile(journal, lines, 0o600))
 
-	require.NoError(t, compactJournalTail(journal))
+	require.NoError(t, compactJournalTail()) // the journal path resolves env-side (piTurnEndEnv)
 
 	kept := readJournal(t, journal)
 	require.Len(t, kept, 1000)
