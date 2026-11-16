@@ -159,6 +159,21 @@ type ProxyHandler struct {
 	busyAlerts   map[string]time.Time
 	busyAlertsMu sync.Mutex
 
+	// quietBoardLookup (SetQuietBoardLookup; guarded by
+	// quietBoardLookupMu) is the #2047 silent-worker arm's narrow board
+	// seam: the in_progress assignee facts per workspace, wired by
+	// app.go's board setup (the SetFrameObserver one-function style —
+	// the handler never holds the board service). nil = inert.
+	quietBoardLookupMu sync.RWMutex
+	quietBoardLookup   QuietBoardLookup
+
+	// silentAlerts / silentAlertsMu back the #2047 worker_silent
+	// cooldown — SESSION-scoped (key: workspace + "\x00" + session),
+	// unlike busyAlerts' workspace scope: 3 silent workers are 3
+	// independent cooldowns, never one workspace-wide gate.
+	silentAlerts   map[string]time.Time
+	silentAlertsMu sync.Mutex
+
 	// sessionAlerts persists D6 (#998) escalations (nil = dev/test:
 	// SSE-only, no durability). Wired via SetSessionAlerts before Start.
 	sessionAlerts interfaces.SessionAlertsService
@@ -241,13 +256,14 @@ func NewProxyHandler(
 		}
 	}
 	return &ProxyHandler{
-		k8sClient:  k8sClient,
-		httpClient: httpClient,
-		logger:     logger,
-		namespace:  namespace,
-		connCount:  make(map[string]int),
-		busyAlerts: make(map[string]time.Time),
-		adapter:    adapter,
+		k8sClient:    k8sClient,
+		httpClient:   httpClient,
+		logger:       logger,
+		namespace:    namespace,
+		connCount:    make(map[string]int),
+		busyAlerts:   make(map[string]time.Time),
+		silentAlerts: make(map[string]time.Time),
+		adapter:      adapter,
 	}, nil
 }
 

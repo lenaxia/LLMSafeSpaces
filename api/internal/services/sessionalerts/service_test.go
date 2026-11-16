@@ -30,7 +30,7 @@ func TestRecordAlert_NonBlocking(t *testing.T) {
 func TestRecordAlert_DrainsToInsert(t *testing.T) {
 	db := &mocks.MockDatabaseService{}
 	var inserted atomic.Bool
-	db.On("InsertSessionAlert", mock.Anything, "ws-1", "ses-x", "session_hung", 960).
+	db.On("InsertSessionAlert", mock.Anything, "ws-1", "ses-x", "session_hung", 960, map[string]string(nil)).
 		Run(func(mock.Arguments) { inserted.Store(true) }).
 		Return(nil).Once()
 	svc := New(db, nil)
@@ -45,7 +45,7 @@ func TestRecordAlert_DrainsToInsert(t *testing.T) {
 
 func TestStop_FlushesQueuedAlerts(t *testing.T) {
 	db := &mocks.MockDatabaseService{}
-	db.On("InsertSessionAlert", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).
+	db.On("InsertSessionAlert", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).
 		Return(nil).Times(3)
 	svc := New(db, nil)
 	require.NoError(t, svc.Start())
@@ -101,7 +101,7 @@ func TestResolveWorkspace_ResolveFailureLoggedNotFatal(t *testing.T) {
 	db.On("ResolveSessionAlerts", mock.Anything, "ws-1").
 		Run(func(mock.Arguments) { resolved.Store(true) }).
 		Return(int64(0), errors.New("db down")).Once()
-	db.On("InsertSessionAlert", mock.Anything, "ws-1", "ses-x", "session_hung", 960).
+	db.On("InsertSessionAlert", mock.Anything, "ws-1", "ses-x", "session_hung", 960, map[string]string(nil)).
 		Run(func(mock.Arguments) { inserted.Store(true) }).
 		Return(nil).Once()
 	svc := New(db, nil)
@@ -114,6 +114,47 @@ func TestResolveWorkspace_ResolveFailureLoggedNotFatal(t *testing.T) {
 	// The drainer must survive the failure (best-effort durability).
 	svc.RecordAlert("ws-1", "ses-x", "session_hung", 960)
 	require.Eventually(t, inserted.Load, 2*time.Second, 10*time.Millisecond)
+	db.AssertExpectations(t)
+}
+
+// TestRecordTaskAlert_DrainsToInsertWithFacts (#2047): the
+// worker_silent arm's task facts ride the same bounded-queue drainer
+// and land in the insert call verbatim.
+func TestRecordTaskAlert_DrainsToInsertWithFacts(t *testing.T) {
+	db := &mocks.MockDatabaseService{}
+	var inserted atomic.Bool
+	facts := map[string]string{"task_short_id": "tsk-quiet-one", "project_id": "prj-x", "lease_state": "lapsed"}
+	db.On("InsertSessionAlert", mock.Anything, "ws-1", "ses-silent", "worker_silent", 2701, facts).
+		Run(func(mock.Arguments) { inserted.Store(true) }).
+		Return(nil).Once()
+	svc := New(db, nil)
+	require.NoError(t, svc.Start())
+	t.Cleanup(func() { _ = svc.Stop() })
+
+	svc.RecordTaskAlert("ws-1", "ses-silent", "worker_silent", 2701, facts)
+
+	require.Eventually(t, inserted.Load, 2*time.Second, 10*time.Millisecond)
+	db.AssertExpectations(t)
+}
+
+// TestResolveSession_DrainsToSessionResolve (#2047): the session-scoped
+// resolution resolves ONLY the named session's rows — a resumed worker
+// clears their own worker_silent, never a sibling's.
+func TestResolveSession_DrainsToSessionResolve(t *testing.T) {
+	db := &mocks.MockDatabaseService{}
+	var resolved atomic.Bool
+	db.On("ResolveSessionAlertsForSession", mock.Anything, "ws-1", "ses-recovered").
+		Run(func(mock.Arguments) { resolved.Store(true) }).
+		Return(int64(1), nil).Once()
+	// The workspace-wide resolve must NEVER fire on this path.
+	db.On("ResolveSessionAlerts", mock.Anything, mock.Anything).Return(int64(0), nil).Maybe()
+	svc := New(db, nil)
+	require.NoError(t, svc.Start())
+	t.Cleanup(func() { _ = svc.Stop() })
+
+	svc.ResolveSession("ws-1", "ses-recovered")
+
+	require.Eventually(t, resolved.Load, 2*time.Second, 10*time.Millisecond)
 	db.AssertExpectations(t)
 }
 

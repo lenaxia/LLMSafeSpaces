@@ -134,6 +134,20 @@ type Task struct {
 	// TTL: a lapsed claim never spins). Never stored: the answer is a
 	// property of NOW, sampled per read (busy.go's decorate pass).
 	AssigneeBusy bool `json:"assignee_busy,omitempty"`
+	// AssigneeQuietSeconds / AssigneeBusySeconds (#2047, net-new
+	// read-edge surface — owner decision 2026-11-15: the WIRE fields
+	// are camelCase, the heartbeat-response precedent
+	// leaseExpiresAt/lastProgressAt, not the row-shape snake_case):
+	// seconds since the assignee's last WORKER-activity stamp (the
+	// #2040 movement-allowlist index — post-#2042 its stamps are
+	// worker-activity-only, so a quiet stamp is a true quiet), and —
+	// while the derived-busy truth holds the row — how long that busy
+	// worker has been frame-silent (mid-tool-call silence is ALIVE,
+	// the 2026-10-29 ruling). nil = unknown (never observed in this
+	// process / not busy). Never stored: properties of NOW, sampled
+	// per read (quiet.go's decorate pass, beside the busy pass).
+	AssigneeQuietSeconds *int `json:"assigneeQuietSeconds,omitempty"`
+	AssigneeBusySeconds  *int `json:"assigneeBusySeconds,omitempty"`
 	// ImplementerSession is the #1959 bounce-consumer identity: the
 	// session that moved the row to in_review — the ORIGINAL worker the
 	// ruling's bounce re-dispatches. Captured at the forward exit

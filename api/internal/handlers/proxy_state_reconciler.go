@@ -113,6 +113,18 @@ func (h *ProxyHandler) reconcilePass() {
 		}()
 		h.escalateHungs(watched)
 	}()
+	// #2047: the silent-worker arm rides the SAME alert evaluation
+	// pass (no new polling loop) — notify-only, session-scoped, and
+	// nil-inert until app wires the board seam. Failure-isolated.
+	func() {
+		defer func() {
+			if r := recover(); r != nil {
+				h.logger.Error("worker_silent sweep panicked (isolated; reconciler continues)",
+					fmt.Errorf("%v", r), "component", "worker_silent")
+			}
+		}()
+		h.escalateSilentWorkers(watched)
+	}()
 }
 
 // rearmGatesForLiveSessions re-arms usage gates for Active workspaces
