@@ -43,6 +43,8 @@ var sessionStateMetrics = struct {
 	leaseGatherFails       prometheus.Counter
 	orphanPartsAborted     prometheus.Counter
 	answerBudgetExceeded   prometheus.Counter
+	boardTurnEndsPublished prometheus.Counter
+	boardTurnEndProbeFails prometheus.Counter
 }{
 	seqStall: promauto.NewGaugeVec(prometheus.GaugeOpts{
 		Name: "llmsafespaces_seq_stall_seconds",
@@ -118,6 +120,14 @@ var sessionStateMetrics = struct {
 	answerBudgetExceeded: promauto.NewCounter(prometheus.CounterOpts{
 		Name: "llmsafespaces_answer_budget_exceeded_total",
 		Help: "Answer forwards that exceeded their 5s deadline budget (#1396) — every count is a would-be multi-minute hang surfaced as a typed retryable DeadlineExceeded instead.",
+	}),
+	boardTurnEndsPublished: promauto.NewCounter(prometheus.CounterOpts{
+		Name: "llmsafespaces_board_turn_ends_published_total",
+		Help: "Board turn-end events published at the harness-attested settle fold for claim-holder sessions (#2061/#2064 story 1) — the opencode leg's emission volume (the pi leg journals on the shared volume instead). The event carries zero liveness authority (#2042): a gap means degraded emission and the sweep backstop owns behavior verbatim, never the turn.",
+	}),
+	boardTurnEndProbeFails: promauto.NewCounter(prometheus.CounterOpts{
+		Name: "llmsafespaces_board_turn_end_probe_failures_total",
+		Help: "Contained board turn-end probe failures (#2061/#2064): seam panics contained at the emission site — a non-zero rate means the emission path is degraded, never that a harness turn was disturbed (R4).",
 	}),
 }
 
@@ -268,6 +278,36 @@ func answerBudgetDelta(workspaceID string, cumulative int64) int64 {
 	return cumulative - prev
 }
 
+// boardTurnEndLast carries the last cumulative #2061/#2064 board
+// turn-end counters per workspace — same delta convention as
+// answerBudgetLast (first scrape carries the full cumulative; a
+// monotonicity break resets the baseline instead of double-counting).
+var boardTurnEndLast = struct {
+	mu         sync.Mutex
+	published  map[string]int64
+	probeFails map[string]int64
+}{published: map[string]int64{}, probeFails: map[string]int64{}}
+
+func boardTurnEndDeltas(workspaceID string, published, probeFails int64) (dp, df int64) {
+	boardTurnEndLast.mu.Lock()
+	defer boardTurnEndLast.mu.Unlock()
+	dp = boardTurnEndDeltaLocked(boardTurnEndLast.published, workspaceID, published)
+	df = boardTurnEndDeltaLocked(boardTurnEndLast.probeFails, workspaceID, probeFails)
+	return dp, df
+}
+
+func boardTurnEndDeltaLocked(m map[string]int64, workspaceID string, v int64) int64 {
+	prev, seen := m[workspaceID]
+	m[workspaceID] = v
+	if !seen {
+		return v
+	}
+	if v < prev {
+		return 0 // baseline reset after authority recreation
+	}
+	return v - prev
+}
+
 func orphanPartsDelta(workspaceID string, cumulative int64) int64 {
 	orphanPartsLast.mu.Lock()
 	defer orphanPartsLast.mu.Unlock()
@@ -344,6 +384,18 @@ func recordSessionStateMetrics(workspaceID string, a *sessionstate.Authority) {
 	// authority exposes the cumulative; the scrape is periodic).
 	if d := answerBudgetDelta(workspaceID, m.AnswerBudgetExceeded); d > 0 {
 		sessionStateMetrics.answerBudgetExceeded.Add(float64(d))
+	}
+	// #2061/#2064 story 1: the board turn-end publication's counters —
+	// same delta convention. The pi leg journals on the shared volume
+	// (its contained failures live in the supervise-pi process and do
+	// not cross this bridge).
+	if dp, df := boardTurnEndDeltas(workspaceID, m.BoardTurnEndsPublished, m.BoardTurnEndProbeFailures); dp > 0 || df > 0 {
+		if dp > 0 {
+			sessionStateMetrics.boardTurnEndsPublished.Add(float64(dp))
+		}
+		if df > 0 {
+			sessionStateMetrics.boardTurnEndProbeFails.Add(float64(df))
+		}
 	}
 	// The funnel: reset-then-set so vanished states drop to zero instead
 	// of lingering at their last value.

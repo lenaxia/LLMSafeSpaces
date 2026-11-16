@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — board: the turn-end event for claim-holders, both harnesses (issue #2064, epic #2061)
+
+- Schema: `EVENT_TYPE_BOARD_TURN_END` (=11) + `BoardTurnEnd{advanced, epoch, turn_duration_ms}` + `Event.board_turn_end` (=14) — the board turn-end event, emitted at the harness's own settle fold for board claim-holder sessions only, carrying the advance flag (the narrow set: `record_progress` | stage move | verdict), a per-session epoch ordinal, and the turn duration. Zero liveness/renewal authority: the event stays opaque-class in the #2040 movement allowlist (pinned — a mutation naming it reddens).
+- Emission-site rule (the anti-#2040 guard, born-red pinned on both legs): ONLY the harness-attested turn-end observation path emits — the opencode leg's `applyHarnessEventLocked` (Ingest/IngestForTest fold) and the pi leg's pump settle fold (`agent_settled`); synthetic settles (reconcile store evidence, lease rederive), corroboration polls, and the reseed flush NEVER emit.
+- Opencode leg: `Config.BoardTurnEndProbe` seam (claim-holder via the spawner-minted worker registry + advance via the MCP choke-point stamp keyed on `lsp_injected_session` only — a model-declared `sessionId` copy never stamps); nil probe = degraded, sweep semantics verbatim.
+- Pi leg: the supervise-pi pump journals the event to the shared-volume turn-end journal (`/workspace/.opencode-board-turnends`, env-overridable, compaction-bounded) — the emission artifact for the board consumer (story #2065 wires it).
+- Origin plugin: `board_move_stage` + `board_record_verdict` join `INJECTED_SESSION_TOOLS` (the advance stamp's attribution key; lockstep-pinned both directions).
+- Ops: `llmsafespaces_board_turn_ends_published_total` + `llmsafespaces_board_turn_end_probe_failures_total` (delta-bridged from the authority's cumulatives).
+
 ### Fixed — board: lease renewal split from worker progress (two clocks) + the heartbeat-lapse arm (issue #2043)
 
 - **The lie** (2026-11-15 incident, parent #2040): the seamless-lease ladder wrote `now()` into `tasks.last_progress_at` on every evidence-based renewal — renewal was indistinguishable from worker progress, and since the ladder only sees lease-due rows, each renewal deferred wedge/reclaim detection by a full lease window, indefinitely (renewal stamps 00:27/00:32/01:12 read as a working thread for hours).

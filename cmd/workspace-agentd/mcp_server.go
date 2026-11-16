@@ -1167,6 +1167,14 @@ func argSlice(args map[string]any, key string) ([]any, bool) {
 }
 
 func callMCPTool(ctx context.Context, password, name string, args map[string]any) (string, error) {
+	// #2061/#2064 story 1: the board turn-end advance observation —
+	// stamped at the dispatch choke point for advance-class board tools
+	// (record_progress | stage move | verdict), keyed on the
+	// harness-attested lsp_injected_session ONLY. Observation at
+	// ARRIVAL, outcome untouched; best-effort by construction (the
+	// ledger never blocks or fails the call). Both harness legs share
+	// this surface — the stamp is harness-agnostic.
+	boardAdvanceLedgerInst().observeToolCall(name, args)
 	switch name {
 	case "session_list":
 		// #1735: archived sessions are opt-in on the listing — the
