@@ -1620,10 +1620,14 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 				// #2043 two-clock split: the progress clock's staleness
 				// bound; <=0 falls back to the engine's 90m default.
 				HeartbeatLapseThreshold: time.Duration(cfg.Board.HeartbeatLapseSeconds) * time.Second,
-				ThrottleBackoff:         time.Duration(cfg.Board.ThrottleBackoffSeconds) * time.Second,
-				FailureBackoff:          time.Duration(cfg.Board.FailureBackoffSeconds) * time.Second,
-				DRRQuantum:              cfg.Board.DRRQuantum,
-				SweepInterval:           time.Duration(cfg.Board.SweepSeconds) * time.Second,
+				// #2044 heartbeat-orbit budget: K presence-only
+				// heartbeat responses before the wedge verdict; <=0
+				// falls back to the engine's default (3).
+				NoAdvanceHeartbeatCap: cfg.Board.NoAdvanceHeartbeatCap,
+				ThrottleBackoff:       time.Duration(cfg.Board.ThrottleBackoffSeconds) * time.Second,
+				FailureBackoff:        time.Duration(cfg.Board.FailureBackoffSeconds) * time.Second,
+				DRRQuantum:            cfg.Board.DRRQuantum,
+				SweepInterval:         time.Duration(cfg.Board.SweepSeconds) * time.Second,
 				// #1747 backpressure caps + DAG blast-radius bounds.
 				UserClaimCap:    cfg.Board.UserClaimCap,
 				GlobalClaimCap:  cfg.Board.GlobalClaimCap,

@@ -65,6 +65,22 @@ type EngineConfig struct {
 	// is lapsed-by-default. Default 90m (2 lease windows: one window of
 	// nudge measurement + one of response grace before the arm hardens).
 	HeartbeatLapseThreshold time.Duration
+	// NoAdvanceHeartbeatCap is K — the heartbeat-orbit budget (#2044,
+	// the third #2040 orbit channel): the ceiling on CONSECUTIVE
+	// heartbeat responses whose declared watermark never crosses the
+	// claim mint (last_progress_at > stage_entered_at, one clock
+	// domain). The first K motionless responses renew (presence is
+	// alive, the budget counts); the K+1th DECLINES — arrival recorded,
+	// sentinel kept armed, lease not extended — and the next lapse
+	// demotes every renewal arm for that lapse (the heartbeat's own
+	// PART frames are presence, not reaction, after #2042's allowlist),
+	// landing the existing wedge verdict. Motion (a declared watermark
+	// past the mint), any non-heartbeat renewal, and every claim mint
+	// reset the count. Reviewer persona rows are structurally exempt
+	// (the ladder never arms sentinels on in_review). Default 3
+	// (≈ 2¼ h of presence-only orbiting on the 45 m lease before the
+	// verdict — the same epoch-scale bound as boardBusyRenewCap).
+	NoAdvanceHeartbeatCap int
 	// ThrottleBackoff is the cooldown applied by report_throttle to both
 	// the task (cooldown_until) and the project (slot_cooldown_until).
 	// Default 5m.
@@ -108,6 +124,7 @@ func DefaultEngineConfig() EngineConfig {
 		FailureBackoff:          time.Minute,
 		LeaseDuration:           45 * time.Minute,
 		HeartbeatLapseThreshold: 90 * time.Minute,
+		NoAdvanceHeartbeatCap:   3,
 		ThrottleBackoff:         5 * time.Minute,
 		DRRQuantum:              1,
 		SweepInterval:           30 * time.Second,
