@@ -157,9 +157,13 @@ Both harnesses in one workspace, per-session choice. Rejected on five anchored g
   secondary criterion (same validation surface as the switch).
 - **(d2) The routing window (F6):** spec-resolved routing is wrong-by-design for a mutable
   harness; the designs pin resolution to `status.harness` (the pod's actual harness) with spec
-  fallback, and shrink the stale window to the existing 60s TTL — during which mis-routing fails
+  fallback, and shrink the stale window to the existing 60s TTL on status-set switches —
+  during which mis-routing fails
   loud (wrong-harness bridge 404-class post-flip, resolution failure pre-PodIP), never
-  silent-wrong-data. The fail-open-to-opencode default is tightened for
+  silent-wrong-data. The pre-backfill first switch (status="") is the honest exception: the
+  spec fallback serves the new harness against the old pod from TTL expiry until the
+  recreation writes status — reconcile+drain-bounded, not TTL-bounded (LL §3). The
+  fail-open-to-opencode default is tightened for
   the lookup-failure case to the *observed* harness, not the static default.
 - **(d3) No observable harness (F6):** `status.harness` is new — the controller writes it at pod
   build; it drives the router, the wire DTOs, and the UI badge (replacing the hardcoded opencode

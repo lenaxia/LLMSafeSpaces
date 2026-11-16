@@ -239,7 +239,24 @@ fresh per call from the CRD with no incarnation pinning, `resolver_host.go:126-1
   deletion (`phase_active.go:104,136,179,223`), so the fresh resolution yields no IP and the
   call fails at resolution — the new harness cannot be reached before it exists.
 
-Multi-replica drift also bounded by TTL.
+**The pre-backfill first-switch window (status.harness == "" — the flagship legacy case).**
+The two mechanisms above and the TTL bound describe the STATUS-SET switch. For a status=""
+object the resolver's spec fallback returns the NEW harness from the moment the PUT lands:
+for the first ≤60s the router's stale cache actually routes CORRECTLY (old harness = the live
+old pod); after TTL expiry the API serves the NEW harness adapter against the OLD live pod
+until `buildPod` writes `status.harness` — a window bounded by controller reconcile plus
+drain, which a busy-session defer can stretch toward the 60m force (`session_drain.go:91`),
+NOT by the TTL. New calls in that window fail loud 404-class against the old pod's shim-free
+surface (never wrong-data); in-flight turns still finish — their streams predate the flip and
+the drain is watching them, so the drain's politeness covers in-flight turns, not new calls,
+for this class. This window also exists on the abort path's §2a benign recreation (same
+status="" shape). Pin: `TestHarnessRouter_PreBackfillFallbackWindow`
+(pkg/agent/harnessrouter_test.go — a status="" object resolves spec after TTL, and the
+mis-route fails 404-class, never wrong-store).
+
+Multi-replica drift also bounded by TTL — except the pre-backfill fallback window above,
+which every replica enters at its own TTL expiry and which ends only when the controller
+writes status.
 
 ## 4. Board: sweep + quiesce [api]
 
@@ -434,8 +451,14 @@ gone-class (the #1340 read path) — never a wrong-harness error, never disk acc
 
 ## 7. Abort / rollback (D10)
 
-No dedicated cancel verb. Pre-drain: `PUT` the old value back (marker re-gated; desired==actual
-⇒ no recreation; the drift arm never fires). Post-deletion: committed; switch back is the
+No dedicated cancel verb. Pre-drain, on a STATUS-SET switch (`status.harness` written — the
+post-backfill fleet, or any workspace that has already completed one switch): `PUT` the old
+value back (marker re-gated; desired==status ⇒ the drift arm never fires, no recreation).
+Pre-drain on a PRE-BACKFILL first switch (`status.harness == ""`): the abort leaves
+status="" + marker on a pod that already matches spec — §2a's known benign cost applies (the
+arm reads it as drift; exactly one convergent same-harness recreation). In both cases the
+sweep's cost — re-claims with salvage pointers — is the only residue, and it is honest work,
+not damage. Post-deletion: committed; switch back is the
 rollback (symmetric; D7's predicate restores old sessions). Failed new-harness builds land in
 `Failed` with the verify condition (`PiVerified` 85/86 class, `phase_active.go:271`) and
 switch-back remains allowed (phase guard includes Failed).
@@ -447,7 +470,7 @@ switch-back remains allowed (phase guard includes Failed).
 | Webhook 7a′: markerless delta denied / matching marker admitted / mismatched marker denied | today all deltas denied |
 | `SwitchHarness`: no-op 204; guard 409s (Suspending/Creating/Terminating); two-pass sweep ordering (pass-1 failure ⇒ 500 with nothing moved; the racer-between-pass-1-and-spec-write lands swept by pass 2 and cannot re-claim — pin with a claim injected mid-call; `TestSweep_Pass2WaitsForGateArmed`, pkg/board/switch_test.go — pass 2 does not declare quiet until the gate reports armed); 202 shape | endpoint doesn't exist |
 | Controller: drift arm recreates preserving PVC name; backfill no-recreate for BOTH harnesses (`TestHarnessDrift_BackfillPiNoRecreate` — spec=pi/status=""/live pod → status=pi, no drain, no recreation); `TestHarnessDrift_BackfillSkipsMarkerPresent` — status=""/live pod/marker present → backfill SKIPPED, drift runs (a pre-backfill switch on a running legacy pod never stamps status=desired onto the old pod); drain defer/force via `harness_switch` reason; marker cleared; Suspended-switch lands at next activation | arm doesn't exist |
-| Router: status-first resolution; stale-TTL post-flip mis-route reaches the LIVE wrong-harness bridge and fails loud 404-class — `TestHarnessRouter_StaleTTLPostFlip404` (pkg/agent/harnessrouter_test.go: opencode route shapes against the pi bridge's `/v1/pi/*`-only mux), pre-PodIP sub-window fails at resolution (`status.PodIP` cleared); never wrong-store data | resolver is spec-first |
+| Router: status-first resolution; stale-TTL post-flip mis-route reaches the LIVE wrong-harness bridge and fails loud 404-class — `TestHarnessRouter_StaleTTLPostFlip404` (pkg/agent/harnessrouter_test.go: opencode route shapes against the pi bridge's `/v1/pi/*`-only mux), pre-PodIP sub-window fails at resolution (`status.PodIP` cleared); the pre-backfill fallback window (status="" ⇒ spec served against the old pod after TTL, reconcile+drain-bounded — §3) — `TestHarnessRouter_PreBackfillFallbackWindow`; never wrong-store data | resolver is spec-first |
 | Board sweep: in_progress clean requeue (NO failure_count/`last_attempt_failed`/cooldown, salvage embedded, next charter inherits); pending_input cleared + noted; in_review declaim no-accounting; stop directive post-commit | sweep doesn't exist |
 | Quiesce: claimOnce quiet no-grant; task_start 409; dispatch skip; persona re-arm skip — all while spec≠status, none after flip | gates key on phase today |
 | Session index: migration + the repeatable boot sweep (pins: legacy kubectl-pi rows stamped to spec-harness — live pi sessions stay visible; `TestSessionIndex_BootStampRolloutWindow` — a row the SQL DEFAULT stamped during the rollout window on a spec=pi never-switched workspace IS stamped spec-harness by the next boot's sweep; a workspace carrying `AnnotationHarnessSwitchedAt` is NEVER re-stamped — post-switch HIDDEN-PRESERVED rows and switch-back foreign rows intact; switch-back on a legacy-pi workspace neither reaps nor mis-lists foreign transcripts); foreign rows invisible in list; reconcile never miss-counts foreign rows (switch mid-test, 3 reconcile passes, rows intact); direct read gone-class | column doesn't exist |

@@ -127,13 +127,21 @@ existing long-op (202 + spec-write, controller-as-single-status-writer) API conv
   the same predicate. Direct reads answer the typed gone-class. Disk is never touched.
 - **D8 — Routing pins to the pod: `status.harness`.** `GetWorkspaceHarness` resolves
   `status.harness` first (spec fallback for pre-switch objects); the router's 60s TTL stays.
-  The stale window is ≤60s of loud errors, never wrong data. Because both harnesses hold the
+  On a STATUS-SET switch the stale window is ≤60s of loud errors, never wrong data. Because both
+  harnesses hold the
   same port (4096 — the pi bridge on pi pods, `pi_bridge.go:8-9`) and the pod IP resolves fresh
   per call, a stale post-flip route DOES reach the new pod's live wrong-harness bridge — but
   the bridge is a dumb pipe with no cross-harness route shims (`pi_bridge.go:14-15`), so
   foreign route shapes fail loud 404-class; before the new pod reports its IP (`status.PodIP`
   cleared at deletion) resolution itself fails — the new harness cannot be reached before it
-  exists. The lookup-failure fail-open
+  exists. PRE-BACKFILL first switch (status.harness == "", the flagship legacy case): the spec
+  fallback serves the NEW harness from router-TTL expiry (the first ≤60s the stale cache
+  actually routes correctly — old harness, old pod) until `buildPod` writes status — a window
+  bounded by controller reconcile plus drain, which a busy-session defer can stretch toward the
+  60m force (`session_drain.go`), not by the TTL. In that window new calls against the old live
+  pod fail loud 404-class (never wrong-data) and in-flight turns still finish (their streams
+  predate the flip; the drain watches them) — the drain's politeness covers in-flight turns,
+  not new calls, for this class. The lookup-failure fail-open
   tightens from the static opencode default to the observed harness.
 - **D9 — UI: a settings-drawer control with the destructive-confirm convention.** The harness
   selector lives in `WorkspaceSettingsDrawer` (the settings surface; lifecycle kebab actions stay
@@ -145,7 +153,12 @@ existing long-op (202 + spec-write, controller-as-single-status-writer) API conv
   reports a switchable state (phase ∈ {Active, Failed, Suspended}). The hardcoded
   `opencode v…` badge (`Sidebar.tsx:412-415`) becomes harness-truthful.
 - **D10 — Abort and rollback are the same move: switch back.** Before pod deletion the drift arm
-  hasn't fired; PUTting the old value back converges with no recreation (the sweep's cost —
+  hasn't fired; PUTting the old value back converges with no recreation on a STATUS-SET switch
+  (status.harness written — the post-backfill fleet and every once-switched workspace). A
+  PRE-BACKFILL first switch (status.harness == "") aborted pre-drain pays §2a's known benign
+  cost — exactly one convergent same-harness recreation (status=""+marker is indistinguishable
+  from drift; the controller cannot know a status="" pod's true harness). In both cases the
+  sweep's cost —
   re-claims with salvage pointers — is the only residue, and it is honest work, not damage).
   After deletion the switch is committed; there is no in-flight cancel (mid-recreation
   cancellation would add a third pod state for no product value). A failed new-harness build

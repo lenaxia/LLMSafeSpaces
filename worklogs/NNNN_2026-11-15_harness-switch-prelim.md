@@ -125,3 +125,18 @@ charters embed REFINED ACCEPTANCE CRITERIA as binding prose for the orchestrator
   pinned (§2a + test-map row 3); §2b gains the backfill/annotation interplay sentence; HL D4,
   lifecycle, and the failure table updated (legacy-fleet row scoped markerless; new
   first-switch row).
+- **r4** (`fb7d1a5ba`): the r3 marker-aware backfill FIXED and verified; two new findings, both
+  unpropagated consequences of the newly-introduced pre-backfill class:
+  - `pre-backfill-abort-recreation` — §7/HL D10 still promised "pre-drain abort ⇒ no
+    recreation, drift never fires", contradicting §2a's benign cost for the status="" class.
+    Fixed: §7 and D10 split the abort contract (status-set: no recreation; pre-backfill:
+    exactly one convergent same-harness recreation — the sweep residue is the only other
+    cost); pinned in the Controller test-map row.
+  - `pre-backfill-routing-window` — D8's "≤60s stale window" and the lifecycle's "router
+    serves status.harness (old)" are false for status="" objects: the spec fallback serves
+    the NEW harness against the OLD live pod from router-TTL expiry (the first ≤60s the
+    stale cache routes correctly!) until buildPod writes status — reconcile+drain-bounded
+    (defer can stretch toward the 60m force), not TTL-bounded; new calls fail loud 404-class
+    while in-flight turns still finish (streams predate the flip; the drain watches them).
+    Fixed at HL D8, HL lifecycle, LL §3 (new paragraph + `TestHarnessRouter_PreBackfillFallbackWindow`
+    pin), Router test-map row, and OW (d2) proactively (same claim class).
