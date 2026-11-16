@@ -348,6 +348,18 @@ const (
 	EventType_EVENT_TYPE_INPUT_REQUEST   EventType = 8
 	EventType_EVENT_TYPE_INPUT_RESOLVED  EventType = 9
 	EventType_EVENT_TYPE_ERROR           EventType = 10
+	// #2061/#2064: the board turn-end publication for claim-holder
+	// sessions — a NEW type, never a SESSION_STATUS overload. Carries the
+	// board-advance flag (did the turn advance the worker's claim?) and
+	// NOTHING the model or the liveness plane can mistake for worker
+	// activity: under the #2042 evidence contract it lands the opaque
+	// class (workerActivityStampsEvidence does not name it — pinned), so
+	// it holds due-marking signal for the board consumer (story #2065)
+	// and ZERO renewal/liveness authority. Emission-site rule (#2040
+	// remediation): only the harness-attested turn-end observation path
+	// (transport truth / the delivery FSM, per harness) may emit it —
+	// agentd's reconcile/settle/reseed paths never do.
+	EventType_EVENT_TYPE_BOARD_TURN_END EventType = 11
 )
 
 // Enum value maps for EventType.
@@ -364,6 +376,7 @@ var (
 		8:  "EVENT_TYPE_INPUT_REQUEST",
 		9:  "EVENT_TYPE_INPUT_RESOLVED",
 		10: "EVENT_TYPE_ERROR",
+		11: "EVENT_TYPE_BOARD_TURN_END",
 	}
 	EventType_value = map[string]int32{
 		"EVENT_TYPE_UNSPECIFIED":     0,
@@ -377,6 +390,7 @@ var (
 		"EVENT_TYPE_INPUT_REQUEST":   8,
 		"EVENT_TYPE_INPUT_RESOLVED":  9,
 		"EVENT_TYPE_ERROR":           10,
+		"EVENT_TYPE_BOARD_TURN_END":  11,
 	}
 )
 
@@ -1774,8 +1788,12 @@ type Event struct {
 	// one space. Absent on ingest-path events and on un-refreshed
 	// emitters (heal window) — consumers must not require it.
 	InternalSessionId string `protobuf:"bytes,13,opt,name=internal_session_id,json=internalSessionId,proto3" json:"internal_session_id,omitempty"`
-	unknownFields     protoimpl.UnknownFields
-	sizeCache         protoimpl.SizeCache
+	// #2061/#2064: present only on EVENT_TYPE_BOARD_TURN_END. The raw
+	// session id rides session_id/internal_session_id exactly as every
+	// other event (one identity space); the board facts ride here.
+	BoardTurnEnd  *BoardTurnEnd `protobuf:"bytes,14,opt,name=board_turn_end,json=boardTurnEnd,proto3" json:"board_turn_end,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *Event) Reset() {
@@ -1897,6 +1915,88 @@ func (x *Event) GetInternalSessionId() string {
 		return x.InternalSessionId
 	}
 	return ""
+}
+
+func (x *Event) GetBoardTurnEnd() *BoardTurnEnd {
+	if x != nil {
+		return x.BoardTurnEnd
+	}
+	return nil
+}
+
+// BoardTurnEnd is the #2061/#2064 turn-end publication's payload: the
+// board-advance verdict for one observed turn of a claim-holder
+// session. The emitter derives `advanced` from its own seam-local
+// observation of the advance-class board tool calls
+// (board_record_progress | board_move_stage | board_record_verdict)
+// inside the turn window — presence tools (board_read/list/health) and
+// heartbeats deliberately do NOT advance (the keystone lesson), and no
+// productivity detection beyond that narrow set exists here.
+// `epoch` is the EMITTER's 1-based per-session ordinal of observed
+// turn ends (process/journal lifetime): a consecutive-no-advance
+// counter and redelivery-dedupe key for the consumer — the board binds
+// to the raw session id, not to any DB epoch. `turn_duration_ms` is
+// the turn window's length (busy-mark to settle). #2042 contract: the
+// event is management-class — zero liveness/renewal authority; never
+// stamped into worker-activity evidence.
+type BoardTurnEnd struct {
+	state          protoimpl.MessageState `protogen:"open.v1"`
+	Advanced       bool                   `protobuf:"varint,1,opt,name=advanced,proto3" json:"advanced,omitempty"`
+	Epoch          uint64                 `protobuf:"varint,2,opt,name=epoch,proto3" json:"epoch,omitempty"`
+	TurnDurationMs int64                  `protobuf:"varint,3,opt,name=turn_duration_ms,json=turnDurationMs,proto3" json:"turn_duration_ms,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
+}
+
+func (x *BoardTurnEnd) Reset() {
+	*x = BoardTurnEnd{}
+	mi := &file_llmsafespaces_abi_v1_contract_proto_msgTypes[16]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *BoardTurnEnd) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*BoardTurnEnd) ProtoMessage() {}
+
+func (x *BoardTurnEnd) ProtoReflect() protoreflect.Message {
+	mi := &file_llmsafespaces_abi_v1_contract_proto_msgTypes[16]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use BoardTurnEnd.ProtoReflect.Descriptor instead.
+func (*BoardTurnEnd) Descriptor() ([]byte, []int) {
+	return file_llmsafespaces_abi_v1_contract_proto_rawDescGZIP(), []int{16}
+}
+
+func (x *BoardTurnEnd) GetAdvanced() bool {
+	if x != nil {
+		return x.Advanced
+	}
+	return false
+}
+
+func (x *BoardTurnEnd) GetEpoch() uint64 {
+	if x != nil {
+		return x.Epoch
+	}
+	return 0
+}
+
+func (x *BoardTurnEnd) GetTurnDurationMs() int64 {
+	if x != nil {
+		return x.TurnDurationMs
+	}
+	return 0
 }
 
 var File_llmsafespaces_abi_v1_contract_proto protoreflect.FileDescriptor
@@ -2032,7 +2132,7 @@ const file_llmsafespaces_abi_v1_contract_proto_rawDesc = "" +
 	"\x04tool\x18\x0e \x01(\v2\x1d.llmsafespaces.abi.v1.ToolRefR\x04tool\x1a;\n" +
 	"\rMetadataEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\fR\x05value:\x028\x01\"\xdf\x04\n" +
+	"\x05value\x18\x02 \x01(\fR\x05value:\x028\x01\"\xa9\x05\n" +
 	"\x05Event\x123\n" +
 	"\x04type\x18\x01 \x01(\x0e2\x1f.llmsafespaces.abi.v1.EventTypeR\x04type\x128\n" +
 	"\ttimestamp\x18\x02 \x01(\v2\x1a.google.protobuf.TimestampR\ttimestamp\x12\x1d\n" +
@@ -2049,7 +2149,12 @@ const file_llmsafespaces_abi_v1_contract_proto_rawDesc = "" +
 	" \x01(\tR\x05delta\x128\n" +
 	"\x05input\x18\v \x01(\v2\".llmsafespaces.abi.v1.InputRequestR\x05input\x121\n" +
 	"\x05error\x18\f \x01(\v2\x1b.llmsafespaces.abi.v1.ErrorR\x05error\x12.\n" +
-	"\x13internal_session_id\x18\r \x01(\tR\x11internalSessionId*\xd3\x01\n" +
+	"\x13internal_session_id\x18\r \x01(\tR\x11internalSessionId\x12H\n" +
+	"\x0eboard_turn_end\x18\x0e \x01(\v2\".llmsafespaces.abi.v1.BoardTurnEndR\fboardTurnEnd\"j\n" +
+	"\fBoardTurnEnd\x12\x1a\n" +
+	"\badvanced\x18\x01 \x01(\bR\badvanced\x12\x14\n" +
+	"\x05epoch\x18\x02 \x01(\x04R\x05epoch\x12(\n" +
+	"\x10turn_duration_ms\x18\x03 \x01(\x03R\x0eturnDurationMs*\xd3\x01\n" +
 	"\rSessionStatus\x12\x1e\n" +
 	"\x1aSESSION_STATUS_UNSPECIFIED\x10\x00\x12\x1a\n" +
 	"\x16SESSION_STATUS_UNKNOWN\x10\x01\x12\x17\n" +
@@ -2086,7 +2191,7 @@ const file_llmsafespaces_abi_v1_contract_proto_rawDesc = "" +
 	"\x19MESSAGE_TYPE_AGENT_SWITCH\x10\x04\x12\x1d\n" +
 	"\x19MESSAGE_TYPE_MODEL_SWITCH\x10\x05\x12\x1b\n" +
 	"\x17MESSAGE_TYPE_COMPACTION\x10\x06\x12\x17\n" +
-	"\x13MESSAGE_TYPE_SYSTEM\x10\a*\xc2\x02\n" +
+	"\x13MESSAGE_TYPE_SYSTEM\x10\a*\xe1\x02\n" +
 	"\tEventType\x12\x1a\n" +
 	"\x16EVENT_TYPE_UNSPECIFIED\x10\x00\x12\x1d\n" +
 	"\x19EVENT_TYPE_SESSION_STATUS\x10\x01\x12\x1e\n" +
@@ -2099,7 +2204,8 @@ const file_llmsafespaces_abi_v1_contract_proto_rawDesc = "" +
 	"\x18EVENT_TYPE_INPUT_REQUEST\x10\b\x12\x1d\n" +
 	"\x19EVENT_TYPE_INPUT_RESOLVED\x10\t\x12\x14\n" +
 	"\x10EVENT_TYPE_ERROR\x10\n" +
-	"*[\n" +
+	"\x12\x1d\n" +
+	"\x19EVENT_TYPE_BOARD_TURN_END\x10\v*[\n" +
 	"\tInputKind\x12\x1a\n" +
 	"\x16INPUT_KIND_UNSPECIFIED\x10\x00\x12\x17\n" +
 	"\x13INPUT_KIND_QUESTION\x10\x01\x12\x19\n" +
@@ -2118,7 +2224,7 @@ func file_llmsafespaces_abi_v1_contract_proto_rawDescGZIP() []byte {
 }
 
 var file_llmsafespaces_abi_v1_contract_proto_enumTypes = make([]protoimpl.EnumInfo, 7)
-var file_llmsafespaces_abi_v1_contract_proto_msgTypes = make([]protoimpl.MessageInfo, 17)
+var file_llmsafespaces_abi_v1_contract_proto_msgTypes = make([]protoimpl.MessageInfo, 18)
 var file_llmsafespaces_abi_v1_contract_proto_goTypes = []any{
 	(SessionStatus)(0),            // 0: llmsafespaces.abi.v1.SessionStatus
 	(PartType)(0),                 // 1: llmsafespaces.abi.v1.PartType
@@ -2143,20 +2249,21 @@ var file_llmsafespaces_abi_v1_contract_proto_goTypes = []any{
 	(*ToolRef)(nil),               // 20: llmsafespaces.abi.v1.ToolRef
 	(*InputRequest)(nil),          // 21: llmsafespaces.abi.v1.InputRequest
 	(*Event)(nil),                 // 22: llmsafespaces.abi.v1.Event
-	nil,                           // 23: llmsafespaces.abi.v1.InputRequest.MetadataEntry
-	(*timestamppb.Timestamp)(nil), // 24: google.protobuf.Timestamp
+	(*BoardTurnEnd)(nil),          // 23: llmsafespaces.abi.v1.BoardTurnEnd
+	nil,                           // 24: llmsafespaces.abi.v1.InputRequest.MetadataEntry
+	(*timestamppb.Timestamp)(nil), // 25: google.protobuf.Timestamp
 }
 var file_llmsafespaces_abi_v1_contract_proto_depIdxs = []int32{
-	24, // 0: llmsafespaces.abi.v1.TimeRange.started_at:type_name -> google.protobuf.Timestamp
-	24, // 1: llmsafespaces.abi.v1.TimeRange.completed_at:type_name -> google.protobuf.Timestamp
+	25, // 0: llmsafespaces.abi.v1.TimeRange.started_at:type_name -> google.protobuf.Timestamp
+	25, // 1: llmsafespaces.abi.v1.TimeRange.completed_at:type_name -> google.protobuf.Timestamp
 	10, // 2: llmsafespaces.abi.v1.Session.model:type_name -> llmsafespaces.abi.v1.ModelRef
 	0,  // 3: llmsafespaces.abi.v1.Session.status:type_name -> llmsafespaces.abi.v1.SessionStatus
 	8,  // 4: llmsafespaces.abi.v1.Session.cost:type_name -> llmsafespaces.abi.v1.Cost
 	9,  // 5: llmsafespaces.abi.v1.Session.context_usage:type_name -> llmsafespaces.abi.v1.ContextUsage
 	7,  // 6: llmsafespaces.abi.v1.Session.time:type_name -> llmsafespaces.abi.v1.TimeRange
 	2,  // 7: llmsafespaces.abi.v1.ToolState.status:type_name -> llmsafespaces.abi.v1.ToolStatus
-	24, // 8: llmsafespaces.abi.v1.ToolState.started_at:type_name -> google.protobuf.Timestamp
-	24, // 9: llmsafespaces.abi.v1.ToolState.completed_at:type_name -> google.protobuf.Timestamp
+	25, // 8: llmsafespaces.abi.v1.ToolState.started_at:type_name -> google.protobuf.Timestamp
+	25, // 9: llmsafespaces.abi.v1.ToolState.completed_at:type_name -> google.protobuf.Timestamp
 	12, // 10: llmsafespaces.abi.v1.ToolPart.state:type_name -> llmsafespaces.abi.v1.ToolState
 	3,  // 11: llmsafespaces.abi.v1.FileDiff.status:type_name -> llmsafespaces.abi.v1.ChangeStatus
 	1,  // 12: llmsafespaces.abi.v1.Part.type:type_name -> llmsafespaces.abi.v1.PartType
@@ -2164,7 +2271,7 @@ var file_llmsafespaces_abi_v1_contract_proto_depIdxs = []int32{
 	14, // 14: llmsafespaces.abi.v1.Part.file_change:type_name -> llmsafespaces.abi.v1.FileDiff
 	15, // 15: llmsafespaces.abi.v1.Part.custom:type_name -> llmsafespaces.abi.v1.CustomPart
 	4,  // 16: llmsafespaces.abi.v1.Message.type:type_name -> llmsafespaces.abi.v1.MessageType
-	24, // 17: llmsafespaces.abi.v1.Message.created_at:type_name -> google.protobuf.Timestamp
+	25, // 17: llmsafespaces.abi.v1.Message.created_at:type_name -> google.protobuf.Timestamp
 	16, // 18: llmsafespaces.abi.v1.Message.parts:type_name -> llmsafespaces.abi.v1.Part
 	10, // 19: llmsafespaces.abi.v1.Message.model:type_name -> llmsafespaces.abi.v1.ModelRef
 	8,  // 20: llmsafespaces.abi.v1.Message.cost:type_name -> llmsafespaces.abi.v1.Cost
@@ -2173,21 +2280,22 @@ var file_llmsafespaces_abi_v1_contract_proto_depIdxs = []int32{
 	18, // 23: llmsafespaces.abi.v1.Message.error:type_name -> llmsafespaces.abi.v1.Error
 	6,  // 24: llmsafespaces.abi.v1.InputRequest.kind:type_name -> llmsafespaces.abi.v1.InputKind
 	19, // 25: llmsafespaces.abi.v1.InputRequest.options:type_name -> llmsafespaces.abi.v1.InputOption
-	23, // 26: llmsafespaces.abi.v1.InputRequest.metadata:type_name -> llmsafespaces.abi.v1.InputRequest.MetadataEntry
+	24, // 26: llmsafespaces.abi.v1.InputRequest.metadata:type_name -> llmsafespaces.abi.v1.InputRequest.MetadataEntry
 	20, // 27: llmsafespaces.abi.v1.InputRequest.tool:type_name -> llmsafespaces.abi.v1.ToolRef
 	5,  // 28: llmsafespaces.abi.v1.Event.type:type_name -> llmsafespaces.abi.v1.EventType
-	24, // 29: llmsafespaces.abi.v1.Event.timestamp:type_name -> google.protobuf.Timestamp
+	25, // 29: llmsafespaces.abi.v1.Event.timestamp:type_name -> google.protobuf.Timestamp
 	0,  // 30: llmsafespaces.abi.v1.Event.status:type_name -> llmsafespaces.abi.v1.SessionStatus
 	11, // 31: llmsafespaces.abi.v1.Event.session:type_name -> llmsafespaces.abi.v1.Session
 	17, // 32: llmsafespaces.abi.v1.Event.message:type_name -> llmsafespaces.abi.v1.Message
 	16, // 33: llmsafespaces.abi.v1.Event.part:type_name -> llmsafespaces.abi.v1.Part
 	21, // 34: llmsafespaces.abi.v1.Event.input:type_name -> llmsafespaces.abi.v1.InputRequest
 	18, // 35: llmsafespaces.abi.v1.Event.error:type_name -> llmsafespaces.abi.v1.Error
-	36, // [36:36] is the sub-list for method output_type
-	36, // [36:36] is the sub-list for method input_type
-	36, // [36:36] is the sub-list for extension type_name
-	36, // [36:36] is the sub-list for extension extendee
-	0,  // [0:36] is the sub-list for field type_name
+	23, // 36: llmsafespaces.abi.v1.Event.board_turn_end:type_name -> llmsafespaces.abi.v1.BoardTurnEnd
+	37, // [37:37] is the sub-list for method output_type
+	37, // [37:37] is the sub-list for method input_type
+	37, // [37:37] is the sub-list for extension type_name
+	37, // [37:37] is the sub-list for extension extendee
+	0,  // [0:37] is the sub-list for field type_name
 }
 
 func init() { file_llmsafespaces_abi_v1_contract_proto_init() }
@@ -2211,7 +2319,7 @@ func file_llmsafespaces_abi_v1_contract_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_llmsafespaces_abi_v1_contract_proto_rawDesc), len(file_llmsafespaces_abi_v1_contract_proto_rawDesc)),
 			NumEnums:      7,
-			NumMessages:   17,
+			NumMessages:   18,
 			NumExtensions: 0,
 			NumServices:   0,
 		},
