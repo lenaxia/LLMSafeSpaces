@@ -30,7 +30,7 @@ func TestHarnessNoSwitchOrRecreateEndpointExists(t *testing.T) {
 		path := strings.ToLower(r.Path)
 		if strings.Contains(path, "harness") {
 			harnessRouteCount++
-			if !(r.Method == "PUT" && strings.HasSuffix(path, "/workspaces/:id/harness")) {
+			if r.Method != "PUT" || !strings.HasSuffix(path, "/workspaces/:id/harness") {
 				t.Errorf("harness-bearing route %s %s: the ruling admits exactly ONE harness route (the bind PUT); switch/recreate/unbind paths must not exist", r.Method, r.Path)
 			}
 		}
