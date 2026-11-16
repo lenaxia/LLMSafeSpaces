@@ -81,3 +81,7 @@ The wrapup-engine story (000056, the seam/mint) consumes `wrapUpReviewerForProje
 - NEW class pin: `api/migrations/migration_set_unit_test.go` — `iofs.New(migrations.FS, ".")` must open (duplicates refuse), versions strictly ascending, non-empty. Unit-speed (no DB): reddens the collision class in the plain Test lane at PR time. (Placed beside the FS in `api/migrations` rather than testharness — strictly wider coverage, same class.)
 
 **CI note:** the Test job's single failure (`TestWedgeRestartFunc_Attribution_MarkerMetricRestartLog`, admission-watch) passes on pristine `origin/main` in isolation — an ordering/parallelism flake in the #2045/#2067 area, not this diff; watching it on the re-run.
+
+## Review Round 2 (CHANGES_REQUESTED → addressed)
+
+**Finding:** the renumber bot fired on main post-round-1 (orphan → main's `1275`, main took `1276` for #2069's worklog); this branch's `1274`/`1275` pair became a rename/rename + duplicate-1275 collision — unmergeable. **Fix:** merged current main (`c672e5656`); kept main's `1275` rename, dropped the `1274` copy, renumbered this story's worklog to `1277` (CHANGELOG conflict resolved keeping both entries). Round-1 finding verified fixed by the reviewer (renumber byte-parity + the `iofs.New` pin).
