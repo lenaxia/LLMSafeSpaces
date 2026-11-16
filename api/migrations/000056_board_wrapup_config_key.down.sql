@@ -1,7 +1,8 @@
 -- Down: restore the 000049 key vocabulary (wrapUpReviewer leaves BOTH
 -- tiers). Any stored wrapUpReviewer rows must be removed before this
--- runs (the CHECK constraint is the floor); the engine's wrap-up
--- state columns (000056) are untouched by this migration either way.
+-- runs (the CHECK constraint is the floor); the engine story's wrap-up
+-- state columns (its own migration, numbered when it lands) are
+-- untouched by this migration either way.
 
 BEGIN;
 

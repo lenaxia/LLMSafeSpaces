@@ -1,9 +1,13 @@
--- 000055_board_wrapup_config_key — the wrapUpReviewer board-config
--- key (epic wrap-up review, low-level design §1a): the wrap-up
+-- 000056_board_wrapup_config_key — the wrapUpReviewer board-config
+-- key (epic wrap-up review, low-level design §1a — the design named
+-- this migration 000055 and the engine story's row-shape migration
+-- 000056 at design time; main took 000055 for task_last_renewed_at
+-- in #2067, so this file takes the next free number and the engine
+-- story takes the next free when it lands): the wrap-up
 -- reviewer persona slot joins BOTH tiers — user defaults AND
 -- per-project overrides. Vocabulary growth only (the 000049 pattern,
 -- deliberately its own migration so the key story and the engine
--- story's row-shape migration 000056 can land in either order).
+-- story's row-shape migration can land in either order).
 --
 -- wrapUpReviewer is a BARE ROLE REFERENCE (id or slug of a platform
 -- agent role; the seeded default is the `wrapup-reviewer` platform

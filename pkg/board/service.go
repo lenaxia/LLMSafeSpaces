@@ -228,6 +228,12 @@ func NewService(pool *pgxpool.Pool, cfg EngineConfig, opts ...Option) *Service {
 		// commands) while observation-based renewal carries liveness.
 		cfg.LeaseDuration = 45 * time.Minute
 	}
+	if cfg.HeartbeatLapseThreshold <= 0 {
+		// #2043: the progress clock's staleness bound — 2 lease windows
+		// (one nudge measurement window + one response grace window)
+		// before observation evidence loses renewal authority entirely.
+		cfg.HeartbeatLapseThreshold = 90 * time.Minute
+	}
 	if cfg.ThrottleBackoff <= 0 {
 		cfg.ThrottleBackoff = 5 * time.Minute
 	}

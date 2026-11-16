@@ -14,7 +14,7 @@ Land the wrap-up reviewer's CONFIG half (low-level design §6 / high-level D8): 
 
 ## Work Completed
 
-### Migration — `000055_board_wrapup_config_key` (NEW, api + helm mirror)
+### Migration — `000056_board_wrapup_config_key` (NEW, api + helm mirror — the design named it 000055; main took 000055 in #2067 post-cut, so it lands as 000056, review round 1)
 
 Both key CHECK constraints grown with `'wrapUpReviewer'` (the 000049 vocabulary-growth pattern): defaults → 5 keys, overrides → 4 (defaultWorkerSlots stays user-only). No row-shape change; a stored config without the key resolves to the code default at merge time. Roundtrip + idempotency verified (`make migration-roundtrip migration-idempotent`).
 
@@ -68,3 +68,16 @@ None. NOTE: `TestSupervisePiSubprocess_GracefulShutdown`/`RepeatSignalExitsAtOnc
 ## Next Steps
 
 The wrapup-engine story (000056, the seam/mint) consumes `wrapUpReviewerForProject` at its three call sites (mint, reconciler re-claim, spawnFor).
+
+---
+
+## Review Round 1 (CHANGES_REQUESTED → addressed)
+
+**Finding (correctness, dispositive): migration number collision.** The branch cut from `71cb54f80` before #2067 merged `000055_task_last_renewed_at` to main; both `api/migrations/` and `helm/migrations/` would carry two version-55 pairs post-merge and `iofs.New` refuses duplicates — every migration consumer dead on the merged tree (reproduced by the reviewer).
+
+**Fixes:**
+- Renumbered `000055_board_wrapup_config_key` → `000056_board_wrapup_config_key` (api + helm, both directions; headers state the design-time number and why it moved; the engine story takes the next free number when it lands).
+- Merged `origin/main` (`809462278`, #2067) — CHANGELOG conflict resolved keeping both entries.
+- NEW class pin: `api/migrations/migration_set_unit_test.go` — `iofs.New(migrations.FS, ".")` must open (duplicates refuse), versions strictly ascending, non-empty. Unit-speed (no DB): reddens the collision class in the plain Test lane at PR time. (Placed beside the FS in `api/migrations` rather than testharness — strictly wider coverage, same class.)
+
+**CI note:** the Test job's single failure (`TestWedgeRestartFunc_Attribution_MarkerMetricRestartLog`, admission-watch) passes on pristine `origin/main` in isolation — an ordering/parallelism flake in the #2045/#2067 area, not this diff; watching it on the re-run.
