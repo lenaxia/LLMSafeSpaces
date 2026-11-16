@@ -1,7 +1,7 @@
 // Copyright (C) 2026 Michael Kao
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useQuery, useQueries, useMutation, useQueryClient } from "@tanstack/react-query";
 import * as Dialog from "@radix-ui/react-dialog";
 import { Button } from "../components/ui/Button";
@@ -30,7 +30,10 @@ import { ApiClientError } from "../api/client";
 import {
   MAIN_STAGES,
   SIDE_STAGES,
+  STAGE_BACKLOG,
   STAGE_DONE,
+  STAGE_IN_PROGRESS,
+  STAGE_IN_REVIEW,
   STAGE_LABELS,
   isManagerDragAllowed,
   stageDragKey,
@@ -1208,41 +1211,44 @@ export function BoardPage() {
             </div>
           )}
         </div>
-        {/* Ruling 5: 4 columns cannot wrap cleanly at mobile widths —
-         * the standard responsive collapse: 2 columns on small
-         * screens, 4 from md up (cards keep min-w-0/break-words so
-         * long titles wrap INSIDE the card and buttons stay
-         * contained — see StoryCard). */}
-        <div className="grid grid-cols-2 gap-2 p-2 md:grid-cols-4" data-testid={`stage-grid-${project.short_id}`}>
-          {MAIN_STAGES.map((stage) => (
-            <StageCell
-              key={stage}
-              stage={stage}
-              projectTasks={projectTasks}
-              allProjectTasks={laneAllTasks}
-              workspaceId={project.target_workspace_id}
-              stageOf={stageOf}
-              optimistic={optimistic}
-              refusedShortId={refusedShortId}
-              draggingStage={draggingStage}
-              highlightEpicId={highlightEpicId}
-              onDrop={handleDrop(stage)}
-              onOpenCard={(t) => setTaskDialog({ mode: "edit", task: t })}
-              onCardDetails={(t) => setTaskDrawer(t)}
-              onCardDragStart={(t) => setDraggingStage(stageDragKey(t))}
-              onCardDragEnd={() => setDraggingStage(null)}
-              onCardStart={(t) => {
-                setStartingShortId(t.short_id);
-                startTaskMutation.mutate(t);
-              }}
-              storyKebabItems={buildStoryKebabItems}
-              decorateTask={applyCardOverrides}
-              startingShortId={startingShortId}
-              laneShortId={project.short_id}
-              onShowAllDone={() => setDoneDrawerProjectId(project.id)}
-            />
-          ))}
-        </div>
+        {/* Owner direction 2026-11-15: a board is a PIPELINE — pipeline
+         * state reads left-to-right, and the old 2x2 grid put
+         * in_review UNDER in_progress, destroying the flow axis. The
+         * 1x4 rail: one row, all four columns, scroll-snap per column
+         * (the snap points ARE the navigation; #2021 gives arrow keys
+         * + visible focus the same path). Geometry confirmation before
+         * the grid removal: nothing in the board depends on the 2x2
+         * geometry — drag/drop and the card interactions are
+         * event-target based (data-stage-drop closest() lookups, kebab
+         * stopPropagation), never grid-position based, and the column
+         * cells are DOM-independent siblings either way. */}
+        <StageRail
+          laneShortId={project.short_id}
+          onDropStage={handleDrop}
+          cellProps={{
+            projectTasks,
+            allProjectTasks: laneAllTasks,
+            workspaceId: project.target_workspace_id,
+            stageOf,
+            optimistic,
+            refusedShortId,
+            draggingStage,
+            highlightEpicId,
+            onOpenCard: (t) => setTaskDialog({ mode: "edit", task: t }),
+            onCardDetails: (t) => setTaskDrawer(t),
+            onCardDragStart: (t) => setDraggingStage(stageDragKey(t)),
+            onCardDragEnd: () => setDraggingStage(null),
+            onCardStart: (t) => {
+              setStartingShortId(t.short_id);
+              startTaskMutation.mutate(t);
+            },
+            storyKebabItems: buildStoryKebabItems,
+            decorateTask: applyCardOverrides,
+            startingShortId,
+            laneShortId: project.short_id,
+            onShowAllDone: () => setDoneDrawerProjectId(project.id),
+          }}
+        />
         {/* Side column: Failed (collapsible, §4.8; pending_input rows
          * stay in their real stage wearing the badge) */}
         <div className="border-t border-border px-2 py-1.5">
@@ -2025,6 +2031,117 @@ function DoneReadinessView({ task }: { task: BoardTask }) {
           </ul>
         </>
       )}
+    </div>
+  );
+}
+
+/** Owner direction 2026-11-15 — the 1x4 pipeline rail's column
+ * geometry. PORTRAIT (the default view): the active trio — backlog,
+ * in_progress, in_review — shares 95% of the rail's width (29/36/30;
+ * in_progress runs widest: titles + assignee + lease chips are the
+ * densest column), so the done column's leading edge keeps the final
+ * 5% visible — the continuation affordance (carousel edge-peek: done
+ * is discoverable without dedicating real estate; most of the time it
+ * is terminal reference, hence the existing Done cap + drawer). The
+ * active trio cedes 0.375rem per column so the three gap-2 gutters
+ * (1.5rem) are funded without eating the peek. DONE renders as a
+ * FULL-WIDTH final page (100% + 0.75rem): with done at a share-width,
+ * its snap point — and even in_progress's — sits past the rail's
+ * maximum scroll (max scroll = last offset + doneWidth − railWidth),
+ * and mandatory snap FREEZES at the clamp instead of settling; the
+ * full page keeps every column's snap-start reachable, so swipe and
+ * arrow keys truly move column-to-column. The resting view is
+ * unchanged — done still peeks at 5%; its width only shows once you
+ * navigate to it. LANDSCAPE/DESKTOP doubles as the md+ rule: 24/28/
+ * 24/24 splits the full row — all four columns visible — over
+ * min-width floors that no longer overwhelm a real md-era rail (the
+ * board's left panel narrows the rail well below the viewport);
+ * narrower rails scroll, never squeeze the cards. Widths live on
+ * fixed-basis shrink-0 wrappers, never on content: EMPTY COLUMNS KEEP
+ * THEIR WIDTH (skeleton cells), so the layout cannot jump as stages
+ * drain. (failed never rides the rail — it is the §4.8 side column —
+ * hence the Partial.) */
+const STAGE_COL_WIDTH: Partial<Record<BoardStage, string>> = {
+  [STAGE_BACKLOG]: "w-[calc(29%-0.375rem)] md:w-[calc(24%-0.375rem)]",
+  [STAGE_IN_PROGRESS]: "w-[calc(36%-0.375rem)] md:min-w-[8rem] md:w-[calc(28%-0.375rem)]",
+  [STAGE_IN_REVIEW]: "w-[calc(30%-0.375rem)] md:w-[calc(24%-0.375rem)]",
+  [STAGE_DONE]: "w-[calc(100%+0.75rem)] md:w-[calc(24%-0.375rem)]",
+};
+
+/** The wrapper every column wears: snap-start makes each column a snap
+ * point (the snap points ARE the navigation — swipe and arrow keys
+ * land column-to-column); shrink-0 + the min-width floor keep the
+ * column's width through every drain state; md:grow fills the row at
+ * landscape/desktop so the fourth column never leaves a ragged edge
+ * (grow only distributes free space — it cannot compress a shrink-0
+ * column); the focus-visible ring is the #2021 keyboard-parity
+ * affordance (arrow keys navigate columns, focus visible). */
+const STAGE_COL_BASE_CLASS =
+  "flex min-w-[6rem] shrink-0 snap-start flex-col rounded-md outline-none focus-visible:outline-2 focus-visible:outline-primary/60 focus-visible:-outline-offset-2 md:min-w-[7.5rem] md:grow";
+
+interface StageRailProps {
+  /** The swimlane's short id — the rail's testid keeps the
+   * stage-grid-<lane> name the e2e suite already pins. */
+  laneShortId: string;
+  /** Everything StageCell needs except the per-column stage and drop
+   * handler (both derive from the mapped stage). */
+  cellProps: Omit<StageCellProps, "stage" | "onDrop">;
+  /** Builds the per-column drop handler (the engine's arbiter surface
+   * — unchanged by the rail; drops are event-target based). */
+  onDropStage: (stage: BoardStage) => (e: React.DragEvent) => void;
+}
+
+/** StageRail — the 1x4 pipeline (owner direction 2026-11-15): all four
+ * through-flow columns on ONE row inside a horizontal scroll-snap
+ * container, left-to-right in MAIN_STAGES order. Keyboard parity per
+ * the #2021 a11y discipline: the columns are a roving-tabindex group —
+ * exactly one column is the rail's tab stop; ArrowLeft/ArrowRight move
+ * focus column-to-column and snap-scroll the target into view. */
+function StageRail({ laneShortId, cellProps, onDropStage }: StageRailProps) {
+  const [activeIndex, setActiveIndex] = useState(0);
+  const colRefs = useRef<Array<HTMLDivElement | null>>([]);
+  const focusColumn = useCallback((index: number) => {
+    setActiveIndex(index);
+    const el = colRefs.current[index];
+    if (!el) return;
+    el.focus({ preventScroll: true });
+    el.scrollIntoView({ behavior: "smooth", inline: "start", block: "nearest" });
+  }, []);
+  const handleColumnKeyDown = useCallback(
+    (e: React.KeyboardEvent<HTMLDivElement>, index: number) => {
+      if (e.key !== "ArrowRight" && e.key !== "ArrowLeft") return;
+      e.preventDefault();
+      const next = e.key === "ArrowRight" ? Math.min(index + 1, MAIN_STAGES.length - 1) : Math.max(index - 1, 0);
+      if (next === index) return;
+      focusColumn(next);
+    },
+    [focusColumn],
+  );
+  return (
+    <div
+      className="flex snap-x snap-mandatory gap-2 overflow-x-auto p-2"
+      data-testid={`stage-grid-${laneShortId}`}
+      data-stage-rail="true"
+      role="region"
+      aria-label="Pipeline stages — use the left and right arrow keys to move between columns"
+    >
+      {MAIN_STAGES.map((stage, index) => (
+        <div
+          key={stage}
+          ref={(el) => {
+            colRefs.current[index] = el;
+          }}
+          tabIndex={index === activeIndex ? 0 : -1}
+          role="group"
+          aria-label={`${STAGE_LABELS[stage]} column`}
+          data-testid={`stage-col-${stage}`}
+          data-stage-col={stage}
+          onKeyDown={(e) => handleColumnKeyDown(e, index)}
+          className={cn(STAGE_COL_BASE_CLASS, STAGE_COL_WIDTH[stage])}
+        >
+          <StageCell stage={stage} onDrop={onDropStage(stage)} {...cellProps} />
+        </div>
+      ))}
     </div>
   );
 }

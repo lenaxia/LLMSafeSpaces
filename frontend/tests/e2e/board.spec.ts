@@ -1459,11 +1459,12 @@ test.describe("2026-10-28 board declutter — capped epic list, mobile columns/w
     await expect(cell.locator("[data-task-card]")).toHaveCount(10);
   });
 
-  test("mobile: 2-column grid, long titles wrap INSIDE the card, action buttons never bleed", async ({ page }) => {
-    // Ruling 5: 4 columns cannot wrap cleanly at mobile widths — the
-    // grid collapses to 2 columns on small screens (4 from md up), the
-    // card wraps its own content, and the kebab/start cluster is
-    // shrink-0 (contained inside the card's bounds).
+  test("mobile: 1x4 rail — active trio at 95%, done edge-peek at 5%; long titles wrap INSIDE the card, buttons never bleed", async ({ page }) => {
+    // Owner direction 2026-11-15: a board is a pipeline — state reads
+    // left-to-right on ONE row (scroll-snap per column), never the old
+    // 2x2 grid whose second row destroyed the flow axis. PORTRAIT: the
+    // three active columns share 95% of the rail; done's leading 5%
+    // stays visible as the continuation affordance (edge-peek).
     await page.setViewportSize({ width: 375, height: 667 });
     const longTitle =
       "Implement the reconciliation sweep for the lease-busy guard with a deliberately long unbroken token " +
@@ -1475,25 +1476,54 @@ test.describe("2026-10-28 board declutter — capped epic list, mobile columns/w
     }));
     await openBoard(page, { tasks: base.tasks });
 
-    const grid = page.getByTestId(`stage-grid-${PROJECT_A}`);
-    await expect(grid).toBeVisible();
+    const rail = page.getByTestId(`stage-grid-${PROJECT_A}`);
+    await expect(rail).toBeVisible();
 
-    // 2 columns at 375px …
-    const colsMobile = await grid.evaluate((el) => getComputedStyle(el).gridTemplateColumns.split(" ").length);
-    expect(colsMobile).toBe(2);
-    // … and 4 from md up (768px).
-    await page.setViewportSize({ width: 768, height: 900 });
-    await expect(grid).toBeVisible();
-    const colsMd = await grid.evaluate((el) => getComputedStyle(el).gridTemplateColumns.split(" ").length);
-    expect(colsMd).toBe(4);
-    await page.setViewportSize({ width: 375, height: 667 });
+    // One row: the rail is a horizontal scroll container whose scroll
+    // width exceeds the viewport (the 4th column genuinely scrolls)…
+    const railMetrics = await rail.evaluate((el) => {
+      const railBox = el.getBoundingClientRect();
+      const cols = Array.from(el.querySelectorAll("[data-stage-col]"));
+      const byStage = (s: string) => cols.find((c) => c.getAttribute("data-stage-col") === s)!;
+      const backlog = byStage("backlog").getBoundingClientRect();
+      const review = byStage("in_review").getBoundingClientRect();
+      const done = byStage("done").getBoundingClientRect();
+      const cs = getComputedStyle(el);
+      const pad = parseFloat(cs.paddingLeft) + parseFloat(cs.paddingRight);
+      const contentWidth = railBox.width - pad;
+      return {
+        contentWidth,
+        scrolls: el.scrollWidth > el.clientWidth,
+        display: cs.display,
+        snapType: cs.scrollSnapType,
+        activeTrioFill: (review.right - backlog.left) / contentWidth,
+        donePeek: (railBox.right - parseFloat(cs.paddingRight) - done.left) / contentWidth,
+        doneRightOfReview: done.left >= review.right,
+        colCount: cols.length,
+      };
+    });
+    expect(railMetrics.display).toBe("flex");
+    expect(railMetrics.colCount).toBe(4);
+    expect(railMetrics.snapType).toContain("x mandatory");
+    expect(railMetrics.scrolls).toBe(true);
+    // …the active trio fills ~95% of the content width (class weights
+    // 29/36/30 + gutters; tolerances absorb sub-pixel rounding)…
+    expect(railMetrics.activeTrioFill).toBeGreaterThan(0.9);
+    expect(railMetrics.activeTrioFill).toBeLessThan(0.985);
+    // …and done's edge peeks in the remaining ~5% — discoverable, not
+    // dedicating real estate (the terminal-reference column).
+    expect(railMetrics.donePeek).toBeGreaterThan(0.015);
+    expect(railMetrics.donePeek).toBeLessThan(0.1);
+    expect(railMetrics.doneRightOfReview).toBe(true);
 
-    // No horizontal page overflow at the narrow width.
+    // No horizontal page overflow at the narrow width (the rail owns
+    // the scroll, never the document).
     const docOverflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
     expect(docOverflow).toBeLessThanOrEqual(1);
 
     // The long-title card: the title WRAPS (multi-line height) and
-    // stays inside the card, the card inside its column cell.
+    // stays inside the card, the card inside its column cell — the
+    // portrait readability verification at the cramped target widths.
     const card = page.getByTestId("task-card-tsk-long0001");
     await expect(card).toBeVisible();
     const title = card.getByTestId("card-title-tsk-long0001");
@@ -1512,8 +1542,8 @@ test.describe("2026-10-28 board declutter — capped epic list, mobile columns/w
         cellRight: cellBox.right, cellLeft: cellBox.left,
       };
     });
-    // Title wraps to multiple lines (a 170+ char title in a ~160px
-    // column cannot fit one line) — wrapped, not clipped/overflowed.
+    // Title wraps to multiple lines (a 170+ char title in a ~100px
+    // portrait column cannot fit one line) — wrapped, not clipped.
     expect(boxes.titleHeight).toBeGreaterThan(32);
     // Containment: title, kebab and the card itself all stay inside the
     // column cell's bounds (no bleed into the neighbor column).
@@ -1522,6 +1552,152 @@ test.describe("2026-10-28 board declutter — capped epic list, mobile columns/w
     expect(boxes.cardLeft).toBeGreaterThanOrEqual(boxes.cellLeft - 0.5);
     expect(boxes.kebabRight).toBeLessThanOrEqual(boxes.cardRight + 0.5);
     expect(boxes.kebabLeft).toBeGreaterThanOrEqual(boxes.cardLeft - 0.5);
+  });
+});
+
+// --- Owner direction 2026-11-15: the 1x4 pipeline rail -----------------------------
+
+test.describe("1x4 pipeline rail — snap navigation, keyboard parity (#2021), landscape", () => {
+  test("scroll-snap: the snap points land per column (swipe-equivalent settles column-aligned)", async ({ page }) => {
+    await page.setViewportSize({ width: 375, height: 667 });
+    await openBoard(page);
+
+    const rail = page.getByTestId(`stage-grid-${PROJECT_A}`);
+    const railId = `stage-grid-${PROJECT_A}`;
+    // Nudge the rail mid-column, then let snap-mandatory settle: the
+    // resting scrollLeft is a column start (the in_progress start —
+    // snap points are the navigation).
+    await rail.evaluate((el) => {
+      const cols = Array.from(el.querySelectorAll("[data-stage-col]"));
+      el.scrollTo({ left: cols[1]!.getBoundingClientRect().width * 0.75 });
+    });
+    await page.waitForFunction((railTestId) => {
+      const railEl = document.querySelector(`[data-testid="${railTestId}"]`) as HTMLElement | null;
+      if (!railEl) return false;
+      const cols = Array.from(railEl.querySelectorAll("[data-stage-col]"));
+      const target = cols[1] as HTMLElement;
+      // Column 1's start aligned to the rail's content start (padding
+      // excluded) — snap-start + snap-mandatory.
+      const railStyle = getComputedStyle(railEl);
+      const expected = target.offsetLeft - railEl.offsetLeft - parseFloat(railStyle.paddingLeft);
+      return Math.abs(railEl.scrollLeft - expected) < 1;
+    }, railId);
+    // And the done column snaps the same way from a deep scroll.
+    await rail.evaluate((el) => {
+      el.scrollTo({ left: el.scrollWidth });
+    });
+    await page.waitForFunction((railTestId) => {
+      const railEl = document.querySelector(`[data-testid="${railTestId}"]`) as HTMLElement | null;
+      if (!railEl) return false;
+      const cols = Array.from(railEl.querySelectorAll("[data-stage-col]"));
+      const target = cols[3] as HTMLElement;
+      const railStyle = getComputedStyle(railEl);
+      const expected = target.offsetLeft - railEl.offsetLeft - parseFloat(railStyle.paddingLeft);
+      return Math.abs(railEl.scrollLeft - expected) < 1;
+    }, railId);
+  });
+
+  test("keyboard parity (#2021): arrow keys move focus column-to-column and scroll the target into view", async ({ page }) => {
+    await page.setViewportSize({ width: 375, height: 667 });
+    await openBoard(page);
+
+    const rail = page.getByTestId(`stage-grid-${PROJECT_A}`);
+    const railId = `stage-grid-${PROJECT_A}`;
+    // Column locators scope INSIDE lane A's rail — every swimlane
+    // renders its own stage-col-* set.
+    const backlog = rail.getByTestId("stage-col-backlog");
+    const inProgress = rail.getByTestId("stage-col-in_progress");
+
+    // The roving tab stop starts at backlog; ArrowRight focuses the
+    // next column AND snap-scrolls it to the rail's leading edge.
+    await backlog.focus();
+    await expect(backlog).toBeFocused();
+    await page.keyboard.press("ArrowRight");
+    await expect(inProgress).toBeFocused();
+    await page.waitForFunction((railTestId) => {
+      const railEl = document.querySelector(`[data-testid="${railTestId}"]`) as HTMLElement | null;
+      return railEl !== null && railEl.scrollLeft > 5;
+    }, railId);
+    // ArrowLeft walks back; focus never leaves the rail's columns.
+    await page.keyboard.press("ArrowLeft");
+    await expect(backlog).toBeFocused();
+    await page.waitForFunction((railTestId) => {
+      const railEl = document.querySelector(`[data-testid="${railTestId}"]`) as HTMLElement | null;
+      return railEl !== null && railEl.scrollLeft <= 1;
+    }, railId);
+  });
+
+  test("landscape/desktop: all four columns visible in one row (the landscape rule doubles as the desktop rule)", async ({ page }) => {
+    // 844×390: a landscape phone width ≥ md — four columns, no rail
+    // scroll; the same holds at desktop widths (1280 default).
+    await page.setViewportSize({ width: 844, height: 390 });
+    await openBoard(page);
+
+    const rail = page.getByTestId(`stage-grid-${PROJECT_A}`);
+    const metrics = await rail.evaluate((el) => {
+      const railBox = el.getBoundingClientRect();
+      const cs = getComputedStyle(el);
+      const visibleRight = railBox.right - parseFloat(cs.paddingRight);
+      const cols = Array.from(el.querySelectorAll("[data-stage-col]"));
+      const boxes = cols.map((c) => {
+        const b = c.getBoundingClientRect();
+        return { stage: c.getAttribute("data-stage-col"), left: b.left, right: b.right, width: b.width };
+      });
+      return { boxes, visibleRight, scrolls: el.scrollWidth > el.clientWidth + 1 };
+    });
+    expect(metrics.boxes).toHaveLength(4);
+    expect(metrics.scrolls).toBe(false);
+    for (const col of metrics.boxes) {
+      // Fully inside the rail's visible span, left-to-right in
+      // MAIN_STAGES order.
+      expect(col.left).toBeGreaterThanOrEqual(0);
+      expect(col.right).toBeLessThanOrEqual(metrics.visibleRight + 0.5);
+    }
+    expect(metrics.boxes.map((b) => b.stage)).toEqual(["backlog", "in_progress", "in_review", "done"]);
+    // The flow axis: strictly increasing column starts.
+    for (let i = 1; i < metrics.boxes.length; i++) {
+      expect(metrics.boxes[i]!.left).toBeGreaterThan(metrics.boxes[i - 1]!.left);
+    }
+  });
+
+  test("empty columns keep their width across drain states (no layout jump)", async ({ page }) => {
+    // The all-done board: the three active columns drain to skeleton
+    // cells yet hold their exact portrait widths (measured against a
+    // normally-loaded sibling board's proportions).
+    await page.setViewportSize({ width: 375, height: 667 });
+    const base = freshState();
+    const drained = base.tasks
+      .filter((t) => t.project_id !== PROJECT_A || t.stage === "done")
+      .map((t) => ({ ...t, project_id: PROJECT_A, stage: "done" }));
+    await openBoard(page, { tasks: base.tasks.filter((t) => t.project_id === PROJECT_B).concat(drained) });
+
+    const rail = page.getByTestId(`stage-grid-${PROJECT_A}`);
+    await expect(rail.getByTestId("stage-col-done").locator("[data-task-card]").first()).toBeVisible();
+    const widths = await rail.evaluate((el) => {
+      const cs = getComputedStyle(el);
+      const pad = parseFloat(cs.paddingLeft) + parseFloat(cs.paddingRight);
+      const contentWidth = el.getBoundingClientRect().width - pad;
+      const cols = Array.from(el.querySelectorAll("[data-stage-col]"));
+      const byStage = (s: string) => cols.find((c) => c.getAttribute("data-stage-col") === s)!;
+      return {
+        backlog: byStage("backlog").getBoundingClientRect().width / contentWidth,
+        inProgress: byStage("in_progress").getBoundingClientRect().width / contentWidth,
+        inReview: byStage("in_review").getBoundingClientRect().width / contentWidth,
+        done: byStage("done").getBoundingClientRect().width / contentWidth,
+      };
+    });
+    // The same fixed-basis weights as the loaded board (29/36/30/30
+    // minus each column's 0.375rem gutter cede; tolerances cover the
+    // rem term at 375px) — drained columns did not collapse.
+    expect(widths.backlog).toBeGreaterThan(0.24);
+    expect(widths.backlog).toBeLessThan(0.31);
+    expect(widths.inProgress).toBeGreaterThan(0.31);
+    expect(widths.inProgress).toBeLessThan(0.38);
+    expect(widths.inReview).toBeGreaterThan(0.25);
+    expect(widths.inReview).toBeLessThan(0.32);
+    // Done keeps its full-page portrait width even when it is the only
+    // occupied column — the drained trio did not steal its space.
+    expect(widths.done).toBeGreaterThan(0.95);
   });
 });
 
@@ -1777,3 +1953,4 @@ test.describe("2026-10-30 help drawer — Learn more: how the sprint board works
     await expect(page.getByTestId("board-help-drawer")).toHaveCount(0);
   });
 });
+
