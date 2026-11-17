@@ -3154,6 +3154,16 @@ external actors hold no claim tokens.</p>
 <td>Record a structured review verdict on a story (#1832 item 5 — the forge-agnostic core). <code>verdict</code> is <code>approve</code> or <code>fail</code>; approve → <code>done</code> still passes the Done guard (all criteria + <code>evidence_url</code>), a refusal is a RECORDED outcome (<code>applied=false</code>, <code>transition="refused:&lt;code&gt;"</code>); fail → <code>in_progress</code> rides the bounce with attempts UNCHANGED (an iteration in the verdict chain, never a failure entry). <code>findings</code> <code>[{severity blocker\|major\|minor, pointer, criterionIndex?}]</code> required on fail. Optional: <code>findings</code>, <code>evidence_url</code>, <code>request_id</code></td>
 </tr>
 <tr>
+<td><code>board_record_wrapup_verdict</code></td>
+<td><code>story_id</code>, <code>verdict</code>, <code>report_url</code>, <code>reviewer</code></td>
+<td>Close an epic's wrap-up review (the epic wrap-up review's engine-owned close verb — the ONLY sanctioned close; a plain <code>move_stage</code>→<code>done</code> on a wrap-up row runs NO settle and parks the epic until <code>board_ack_epic_wrapup</code>). <code>verdict</code> is <code>pass</code> or <code>gaps</code> (a story verdict's <code>approve</code>|<code>fail</code> refuses); <code>pass</code> completes the epic iff still drained (atomically — never a fresh mint); <code>gaps</code> holds the epic open — the non-done gap stories filed FIRST via <code>board_create_story</code> (tag <code>gap</code>, deduped) are what hold it (no bounce, no re-dispatch). The schema is closed: <code>report_url</code> required on BOTH verdicts (the close's evidence), <code>gap_refs</code> required non-empty iff gaps (same epic, gap-tagged, filed since the review's mint), <code>notes</code> size-capped. THE CLOSE IS THE REVIEWER'S ACT: the engine requires the wrap-up row's LIVE claim token on every surface — this external surface carries NO claim-token parameter (§4.3b), so a call here renders the engine's loud <code>claim_token</code> refusal; the owner's levers are reading the row, the manager raw-done posture (parks until ack), and <code>board_ack_epic_wrapup</code>. Optional: <code>gap_refs</code>, <code>notes</code>, <code>request_id</code></td>
+</tr>
+<tr>
+<td><code>board_ack_epic_wrapup</code></td>
+<td><code>epic_id</code></td>
+<td>The epic wrap-up review's human ack (manager verb — the recursion cap's exit): reset the consecutive-close ledger, clear the ack-wait flag and any parked in-flight pointer, and re-drain — an acked, still-drained epic mints its next wrap-up immediately (the human said keep going). Also un-wedges a PARKED pointer (a wrap-up row closed by a raw manager <code>move_stage</code>→<code>done</code> runs no settle; the pointer parks, fail-visible, until this ack clears it). Acking an epic with nothing to ack is the original echo (200, no event, the live review untouched). Optional: <code>request_id</code></td>
+</tr>
+<tr>
 <td><code>board_story_verdicts</code></td>
 <td><code>story_id</code></td>
 <td>The story's ordered verdict chain (#1832 item 5): every recorded verdict with findings, reviewer, and whether its transition applied — the record the next claimant's charter embeds after a fail-bounce</td>
@@ -3472,7 +3482,7 @@ ready set and creation order serves it.</p>
     <span class="md-icon" title="Last update">
       <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M21 13.1c-.1 0-.3.1-.4.2l-1 1 2.1 2.1 1-1c.2-.2.2-.6 0-.8l-1.3-1.3c-.1-.1-.2-.2-.4-.2m-1.9 1.8-6.1 6V23h2.1l6.1-6.1zM12.5 7v5.2l4 2.4-1 1L11 13V7zM11 21.9c-5.1-.5-9-4.8-9-9.9C2 6.5 6.5 2 12 2c5.3 0 9.6 4.1 10 9.3-.3-.1-.6-.2-1-.2s-.7.1-1 .2C19.6 7.2 16.2 4 12 4c-4.4 0-8 3.6-8 8 0 4.1 3.1 7.5 7.1 7.9l-.1.2z"/></svg>
     </span>
-    <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-timeago" title="November 14, 2026 04:28:41 UTC"><span class="timeago" datetime="2026-11-14T04:28:41+00:00" locale="en"></span></span><span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-iso_date" title="November 14, 2026 04:28:41 UTC">2026-11-14</span>
+    <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-timeago" title="November 17, 2026 18:39:49 UTC"><span class="timeago" datetime="2026-11-17T18:39:49+00:00" locale="en"></span></span><span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-iso_date" title="November 17, 2026 18:39:49 UTC">2026-11-17</span>
   </span>
 
     
