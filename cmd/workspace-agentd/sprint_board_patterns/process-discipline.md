@@ -16,15 +16,31 @@ Everything below applies to every story regardless of use case.
   ORCHESTRATOR merges after APPROVED. Pushing and handing off is the end of
   the worker's merge involvement.
 
-## Push and turn discipline
+## Turn budget, waits, and push discipline
+
+- **A turn is a unit of WORK, not progress.** Do not end your turn
+  while actionable next steps remain — turn-end is for completion,
+  blockage, or a DECLARED external wait; never a checkpoint or a
+  "natural pause point". Report as you go (what was done, the artifact
+  URL, what is next); **stopping after the report while work remains is
+  the anti-pattern** — the report is an update, not a stopping point.
+- **What you are waiting on decides the move:**
+
+  | Waiting on | The move |
+  | --- | --- |
+  | a USER decision | `board_move_stage {toStage: "pending_input"}` with the question stated in the move and your report — never pending_input for events |
+  | an EVENT (CI run, review verdict, PR state) | keep the turn alive with a bounded watch (`gh pr checks --watch`, cap ~12 min) OR end the turn declaring the event-wait and its condition (what you wait on, where it lands, how you resume) |
+  | nothing | keep working |
 
 - **`make fmt-check` before every push.** A red format check never leaves
   your machine.
-- **Push, verify the run started, END the turn.** After pushing: confirm the
-  verification run actually started (the check run / suite run appears on
-  the branch), then END your turn with a report. **No sleep-polling** — do
-  not sit in the turn waiting on the run or the review; the board wakes the
-  right session when there is something to do.
+- **Push, verify the run started, then watch or declare — never
+  sleep-poll.** After pushing, confirm the verification run actually
+  started (the check run appears on the branch), then either bounded-
+  watch it in this turn or end the turn DECLARING the event-wait and its
+  condition. **No sleep-polling** — sleep-then-check loops are banned; a
+  capped watch command or a declared wait is the discipline. The board
+  wakes the right session when there is something to do.
 - One report per turn: what was done, the artifact URL, what is next (if
   anything). The report is the audit humans read.
 
@@ -50,8 +66,12 @@ vendors. Whatever stack the workspace runs on, these shapes hold.
 
 - The claim token in your charter envelope authorizes YOUR in-flight writes
   on THIS story only.
-- A BOARD LEASE NUDGE gets ONE `board_heartbeat` immediately, then continue
-  working. No periodic heartbeat — liveness is platform-observed.
+- A BOARD LEASE NUDGE gets ONE `board_heartbeat` immediately — FIRST,
+  before any other action — then continue working, advance the stage, or
+  declare failure with reason. Never speculate about heartbeats: they
+  answer nudges only; there is no periodic heartbeat (liveness is
+  platform-observed). This contract rides the charter itself at claim
+  time, not just the nudge text.
 - A 409 `claim_token` anywhere means the claim is gone: STOP, `board_read`
   the story, follow what you find (see `lifecycle-salvage.md` if a prior
   attempt's work exists).
@@ -62,9 +82,13 @@ vendors. Whatever stack the workspace runs on, these shapes hold.
 
 Reference this file instead of copying its rules: a charter needs only the
 work-specific parts (background, scope, where, deliverable) plus criteria.
-Each use case — writing code, research, creative writing, data analytics,
-data post-processing, batch content operations — has a worked charter in
-this directory; grep '^Description:' for the catalog.
+The charter template the board renders at claim time already carries the
+wait-lifecycle core (turn budget, the wait-type decision table, the nudge
+contract, the report-then-stop anti-pattern) — do not hand-copy it into
+descriptions; this file holds the full rules and rationale. Each use case —
+writing code, research, creative writing, data analytics, data
+post-processing, batch content operations — has a worked charter in this
+directory; grep '^Description:' for the catalog.
 
 The canonical example payloads live in the sibling files; the shape
 patterns (single story, epic+plan, reviewer-checkable) are worked in

@@ -178,11 +178,51 @@ func TestCharterPrompt_PersonaCharterDropsImplementerTrailer(t *testing.T) {
 		t.Fatalf("persona-bearing charters close on the persona outcome, not the implementer loop:\n%s", arbitrary)
 	}
 
-	// The persona-less charter keeps the implementer trailer verbatim
-	// (today's bytes — the existing byte-identity pins hold).
+	// The persona-less charter keeps the implementer trailer's opening
+	// phrase (the wait-lifecycle block below the trailer is shared —
+	// see TestCharterPrompt_RendersWaitLifecycle).
 	worker := boardCharterPrompt(&board.Claim{ShortID: "tsk-ffff0006", ClaimToken: "tk6"})
 	if !strings.Contains(worker, "Work the task to completion") {
-		t.Fatalf("persona-less charter keeps today's trailer:\n%s", worker)
+		t.Fatalf("persona-less charter keeps the implementer trailer:\n%s", worker)
+	}
+}
+
+// TestCharterPrompt_RendersWaitLifecycle — the wait lifecycle taught at
+// claim time (tsk-petite-seasoning-wiggles, the teaching half): the
+// turn-budget rule, the wait-type decision table, the nudge contract,
+// and the report-then-stop anti-pattern ride EVERY charter (persona and
+// worker arms alike — a persona worker fails these rules exactly as an
+// implementer does), stated in the charter itself, not just the nudge
+// text the worker sees only after going quiet.
+func TestCharterPrompt_RendersWaitLifecycle(t *testing.T) {
+	for name, c := range map[string]*board.Claim{
+		"worker":  {ShortID: "tsk-wait0001", ClaimToken: "tk-w"},
+		"persona": {ShortID: "tsk-wait0002", ClaimToken: "tk-p", Persona: &board.PersonaConfig{RoleID: "implementer"}},
+	} {
+		got := boardCharterPrompt(c)
+		for _, want := range []string{
+			"TURN BUDGET & WAITS",                    // the block's title
+			"unit of WORK, not progress",             // the turn-budget rule
+			"never a checkpoint",                     // …nor a 'natural pause point'
+			"pending_input with the question stated", // user decisions, never events
+			"bounded watch",                          // event waits: watch in-turn, capped
+			"declaring the event-wait",               // …or end the turn declaring it
+			"stopping after the report",              // the report-then-stop anti-pattern, named
+			"board_heartbeat ONCE, FIRST",            // the nudge contract at claim time
+			"they answer nudges only",                // never speculate about heartbeats
+		} {
+			if !strings.Contains(got, want) {
+				t.Fatalf("%s charter missing wait-lifecycle fragment %q:\n%s", name, want, got)
+			}
+		}
+	}
+	// The persona charter still drops the implementer loop's opening
+	// phrase (the shared block is discipline, not the implementer loop).
+	persona := boardCharterPrompt(&board.Claim{
+		ShortID: "tsk-wait0003", ClaimToken: "tk-p2", Persona: &board.PersonaConfig{RoleID: "reviewer"},
+	})
+	if strings.Contains(persona, "Work the task to completion") {
+		t.Fatalf("persona charter must keep dropping the implementer loop:\n%s", persona)
 	}
 }
 
