@@ -151,6 +151,18 @@ var boardParityMatrix = []parityRow{
 	{action: "record_verdict", restMethods: []string{"RecordTaskVerdict"}, rest: liveCell,
 		externalMCP: liveCell, extTools: []string{"board_record_verdict"},
 		agent: liveCell, agentTools: []string{"board_record_verdict"}}, // #1832 item 5: reviewers are manager surfaces — the verdict core is forge-agnostic, adapters map INTO it. #1947: the SPAWNED reviewer persona (the stage-persona claim-then-spawn) is a worker session — its verdict rides the agent seam, claim-token-guarded (the in_review row's live token)
+	// Epic wrap-up review: the engine-owned close verb + the recursion
+	// cap's human ack — three live columns (the close is the SPAWNED
+	// wrap-up reviewer persona's act on the agent seam, claim-token-
+	// guarded like record_verdict; the ack is a manager verb). The
+	// schema is engine-owned and closed on every surface (D6).
+	{action: "record_wrapup_verdict", restMethods: []string{"RecordTaskWrapUpVerdict"}, rest: liveCell,
+		externalMCP: liveCell, extTools: []string{"board_record_wrapup_verdict"},
+		agent: liveCell, agentTools: []string{"board_record_wrapup_verdict"},
+		denyErr: &board.GuardError{Code: board.GuardClaimToken, Detail: "a wrap-up verdict requires the row's live claim token"}, denyCode: http.StatusConflict},
+	{action: "ack_epic_wrapup", restMethods: []string{"AckEpicWrapUp"}, rest: liveCell,
+		externalMCP: liveCell, extTools: []string{"board_ack_epic_wrapup"},
+		agent: liveCell, agentTools: []string{"board_ack_epic_wrapup"}},
 	{action: "task_verdicts", restMethods: []string{"ListTaskVerdicts"}, rest: liveCell,
 		externalMCP: liveCell, extTools: []string{"board_story_verdicts", "board_task_verdicts"}, agent: absentCell}, // #1832 item 5: the ordered verdict chain (B2's envelope input)
 	{action: "board_story_events", restMethods: []string{"TaskEvents"}, rest: liveCell,
@@ -397,6 +409,11 @@ func boardParityRESTCall(t *testing.T, r *gin.Engine, action string) *httptest.R
 	case "record_verdict":
 		return doBoardREST(t, r, http.MethodPost, "/api/v1/me/tasks/tsk-cccc3333/verdict",
 			`{"verdict":"fail","reviewer":"rev","findings":[{"severity":"blocker","pointer":"c1"}]}`)
+	case "record_wrapup_verdict":
+		return doBoardREST(t, r, http.MethodPost, "/api/v1/me/tasks/tsk-cccc3333/wrapup-verdict",
+			`{"verdict":"pass","reportUrl":"https://ev.test/w","reviewer":"wrapup-reviewer"}`)
+	case "ack_epic_wrapup":
+		return doBoardREST(t, r, http.MethodPost, "/api/v1/me/epics/epc-bbbb2222/ack-wrapup", `{}`)
 	case "create_epic":
 		return doBoardREST(t, r, http.MethodPost, "/api/v1/me/projects/prj-aaaa1111/epics", `{"title":"E"}`)
 	case "update_epic":
@@ -481,6 +498,7 @@ func TestBoardParity_AgentColumn(t *testing.T) {
 		"PATCH /internal/v1/automation/board/epics/:id",
 		"PATCH /internal/v1/automation/board/projects/:id",
 		"PATCH /internal/v1/automation/board/tasks/:id",
+		"POST /internal/v1/automation/board/epics/:id/ack-wrapup", // epic wrap-up review: the recursion cap's human ack (manager verb)
 		"POST /internal/v1/automation/board/epics/:id/activate",
 		"POST /internal/v1/automation/board/epics/:id/archive",
 		"POST /internal/v1/automation/board/epics/:id/pause",
@@ -506,8 +524,9 @@ func TestBoardParity_AgentColumn(t *testing.T) {
 		"POST /internal/v1/automation/board/tasks/move-stage-bulk",
 		"POST /internal/v1/automation/board/tasks/set-criteria-met", // #1946: the reviewer-persona claim's scoped criteria-flags write
 		"POST /internal/v1/automation/board/tasks/throttle",
-		"POST /internal/v1/automation/board/tasks/verdict", // #1947: the spawned reviewer persona's verdict channel (token-guarded)
-		"PUT /internal/v1/automation/board/config",         // board_set_config: tier-selected REPLACE write (manager set)
+		"POST /internal/v1/automation/board/tasks/verdict",        // #1947: the spawned reviewer persona's verdict channel (token-guarded)
+		"POST /internal/v1/automation/board/tasks/wrapup-verdict", // epic wrap-up review: the reviewer persona's close (engine-owned schema, token-guarded)
+		"PUT /internal/v1/automation/board/config",                // board_set_config: tier-selected REPLACE write (manager set)
 	}, seamBoardRoutes(t),
 		"agent seam route table: worker + manager (#1747) routes + resource-pressure telemetry; claim_next/task_start never route")
 
@@ -857,6 +876,13 @@ func boardParityExtToolArgs(action string) (string, map[string]any, bool) {
 			"story_id": "tsk-cccc3333", "verdict": "fail", "reviewer": "rev",
 			"findings": []map[string]any{{"severity": "blocker", "pointer": "c1"}},
 		}, true
+	case "record_wrapup_verdict":
+		return "board_record_wrapup_verdict", map[string]any{
+			"story_id": "tsk-cccc3333", "verdict": "pass",
+			"report_url": "https://ev.test/w", "reviewer": "wrapup-reviewer",
+		}, true
+	case "ack_epic_wrapup":
+		return "board_ack_epic_wrapup", map[string]any{"epic_id": "epc-bbbb2222"}, true
 	case "create_epic":
 		return "board_create_epic", map[string]any{"project_id": "prj-aaaa1111", "title": "E"}, true
 	case "update_epic":
@@ -1047,6 +1073,7 @@ func TestBoardParity_RestRouteTable(t *testing.T) {
 		"PATCH /api/v1/me/epics/:id",
 		"PATCH /api/v1/me/projects/:id",
 		"PATCH /api/v1/me/tasks/:id",
+		"POST /api/v1/me/epics/:id/ack-wrapup",
 		"POST /api/v1/me/epics/:id/activate",
 		"POST /api/v1/me/epics/:id/archive",
 		"POST /api/v1/me/epics/:id/pause",
@@ -1067,6 +1094,7 @@ func TestBoardParity_RestRouteTable(t *testing.T) {
 		"POST /api/v1/me/tasks/:id/resume",
 		"POST /api/v1/me/tasks/:id/start",
 		"POST /api/v1/me/tasks/:id/verdict",
+		"POST /api/v1/me/tasks/:id/wrapup-verdict",
 		"POST /api/v1/me/tasks/bulk-delete",
 		"POST /api/v1/me/tasks/bulk-move-stage",
 		"POST /api/v1/me/tasks/bulk-start",
@@ -1256,6 +1284,11 @@ func boardParityRESTCallReqID(t *testing.T, r *gin.Engine, action, requestID str
 		return doBoardREST(t, r, http.MethodPost, "/api/v1/me/tasks/tsk-cccc3333/move-stage", `{"toStage":"done","requestId":`+q(requestID)+`}`)
 	case "record_verdict":
 		return doBoardREST(t, r, http.MethodPost, "/api/v1/me/tasks/tsk-cccc3333/verdict", `{"verdict":"approve","reviewer":"rev","requestId":`+q(requestID)+`}`)
+	case "record_wrapup_verdict":
+		return doBoardREST(t, r, http.MethodPost, "/api/v1/me/tasks/tsk-cccc3333/wrapup-verdict",
+			`{"verdict":"pass","reportUrl":"https://ev.test/w","reviewer":"wrapup-reviewer","requestId":`+q(requestID)+`}`)
+	case "ack_epic_wrapup":
+		return doBoardREST(t, r, http.MethodPost, "/api/v1/me/epics/epc-bbbb2222/ack-wrapup", body)
 	case "archive_project":
 		return doBoardREST(t, r, http.MethodPost, "/api/v1/me/projects/prj-aaaa1111/archive", body)
 	case "unarchive_project":

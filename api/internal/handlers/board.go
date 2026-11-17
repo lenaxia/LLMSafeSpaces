@@ -67,6 +67,14 @@ type boardManager interface {
 	UpdateTask(ctx context.Context, actor board.Actor, taskID, shortIDOrID string, in board.TaskInput, requestID string) (*board.Task, error)
 	MoveStage(ctx context.Context, actor board.Actor, taskID, shortIDOrID, toStage, evidenceURL, requestID string) (*board.Task, error)
 	RecordVerdict(ctx context.Context, actor board.Actor, taskID, shortIDOrID string, in board.VerdictInput, requestID string) (*board.Task, *board.Verdict, error)
+	// RecordWrapUpVerdict is the epic wrap-up review's close verb (the
+	// engine-owned schema: pass|gaps, reportUrl both, gapRefs iff gaps;
+	// the live claim token rides the actor on every surface).
+	RecordWrapUpVerdict(ctx context.Context, actor board.Actor, taskID, shortIDOrID string, in board.WrapUpVerdictInput, requestID string) (*board.Task, *board.Epic, error)
+	// AckWrapUp is board_ack_epic_wrapup: the wrap-up recursion cap's
+	// human exit (manager verb) — reset the ledger, clear the flag and
+	// any parked pointer, re-drain.
+	AckWrapUp(ctx context.Context, actor board.Actor, epicID, shortIDOrID, requestID string) (*board.Epic, error)
 	TaskVerdicts(ctx context.Context, actor board.Actor, taskID, shortIDOrID string) ([]board.Verdict, error)
 	TaskStart(ctx context.Context, actor board.Actor, taskID, shortIDOrID, requestID string) (*board.Claim, error)
 	RearmTask(ctx context.Context, actor board.Actor, taskID, shortIDOrID, requestID string) (*board.Task, error)

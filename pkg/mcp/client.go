@@ -130,6 +130,11 @@ type APIClient interface {
 	BoardUpdateStory(ctx context.Context, taskID string, body BoardStoryBody) (json.RawMessage, error)
 	BoardMoveStage(ctx context.Context, taskID, toStage, evidenceURL, requestID string) (json.RawMessage, error)
 	BoardRecordVerdict(ctx context.Context, taskID string, body BoardVerdictBody) (json.RawMessage, error)
+	// BoardRecordWrapUpVerdict closes an epic's wrap-up review (the
+	// engine-owned schema: pass|gaps; the live claim token rides the body).
+	BoardRecordWrapUpVerdict(ctx context.Context, taskID string, body BoardWrapUpVerdictBody) (json.RawMessage, error)
+	// BoardAckEpicWrapUp is the wrap-up recursion cap's human exit.
+	BoardAckEpicWrapUp(ctx context.Context, epicID, requestID string) (json.RawMessage, error)
 	BoardStoryVerdicts(ctx context.Context, taskID string) (json.RawMessage, error)
 	BoardStartStory(ctx context.Context, taskID, requestID string) (json.RawMessage, error)
 	// #1836: the bulk claim/complete batches (per-item result arrays).
@@ -1497,6 +1502,42 @@ func (c *HTTPClient) BoardRecordVerdict(ctx context.Context, taskID string, body
 		return nil, err
 	}
 	return c.doRaw(ctx, http.MethodPost, "/api/v1/me/tasks/"+taskID+"/verdict", body)
+}
+
+// BoardWrapUpVerdictBody is the POST /me/tasks/:id/wrapup-verdict payload
+// (the epic wrap-up review's engine-owned close schema).
+type BoardWrapUpVerdictBody struct {
+	Verdict    string   `json:"verdict"`
+	ReportURL  string   `json:"reportUrl"`
+	GapRefs    []string `json:"gapRefs,omitempty"`
+	Notes      string   `json:"notes,omitempty"`
+	Reviewer   string   `json:"reviewer"`
+	ClaimToken string   `json:"claimToken,omitempty"`
+	RequestID  string   `json:"requestId,omitempty"`
+}
+
+func (c *HTTPClient) BoardRecordWrapUpVerdict(ctx context.Context, taskID string, body BoardWrapUpVerdictBody) (json.RawMessage, error) {
+	if err := validateID(taskID, "task_id"); err != nil {
+		return nil, err
+	}
+	return c.doRaw(ctx, http.MethodPost, "/api/v1/me/tasks/"+taskID+"/wrapup-verdict", body)
+}
+
+func (c *HTTPClient) BoardAckEpicWrapUp(ctx context.Context, epicID, requestID string) (json.RawMessage, error) {
+	if err := validateID(epicID, "epic_id"); err != nil {
+		return nil, err
+	}
+	var body any
+	if requestID != "" {
+		body = boardAckBody{RequestID: requestID}
+	}
+	return c.doRaw(ctx, http.MethodPost, "/api/v1/me/epics/"+epicID+"/ack-wrapup", body)
+}
+
+// boardAckBody is the POST /me/epics/:id/ack-wrapup payload (the
+// idempotency key alone — the verb takes no content).
+type boardAckBody struct {
+	RequestID string `json:"requestId,omitempty"`
 }
 
 func (c *HTTPClient) BoardStoryVerdicts(ctx context.Context, taskID string) (json.RawMessage, error) {

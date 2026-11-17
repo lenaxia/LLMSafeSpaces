@@ -54,6 +54,10 @@ type fakeBoardManager struct {
 	lastVerdictInput board.VerdictInput
 	verdicts         []board.Verdict
 
+	// The wrap-up close + ack capture arms (board_wrapup_rest_test.go).
+	lastWrapUpVerdict *board.WrapUpVerdictInput
+	lastEpicRef       string
+
 	// #1832 WS2: the manager move-stage capture arms.
 	lastMoveStageTo       string
 	lastMoveStageEvidence string
@@ -561,6 +565,36 @@ func (f *fakeBoardManager) RecordVerdict(_ context.Context, actor board.Actor, _
 		&board.Verdict{Verdict: in.Verdict, Reviewer: in.Reviewer, Applied: true, Transition: "done"}, nil
 }
 
+// RecordWrapUpVerdict is the wrap-up close verb's capture arm (the
+// board_wrapup_rest_test.go pins).
+func (f *fakeBoardManager) RecordWrapUpVerdict(_ context.Context, actor board.Actor, taskID, idOrShort string, in board.WrapUpVerdictInput, requestID string) (*board.Task, *board.Epic, error) {
+	f.call("record_wrapup_verdict")
+	f.lastActor, f.lastRequestID = actor, requestID
+	wu := in
+	f.lastWrapUpVerdict = &wu
+	_ = taskID
+	_ = idOrShort
+	if err := f.errFor["record_wrapup_verdict"]; err != nil {
+		return nil, nil, err
+	}
+	return &board.Task{ID: "t1", ShortID: "tsk-wwww1111", ProjectID: "p1", EpicID: "e1", Stage: board.StageDone, Tags: []string{}},
+		&board.Epic{ID: "e1", ShortID: "epc-eeee3333", ProjectID: "p1", Status: board.EpicCompleted}, nil
+}
+
+// AckWrapUp is the human ack's capture arm.
+func (f *fakeBoardManager) AckWrapUp(_ context.Context, actor board.Actor, epicID, idOrShort, requestID string) (*board.Epic, error) {
+	f.call("ack_epic_wrapup")
+	f.lastActor, f.lastRequestID = actor, requestID
+	f.lastEpicRef = epicID
+	if idOrShort != "" {
+		f.lastEpicRef = idOrShort
+	}
+	if err := f.errFor["ack_epic_wrapup"]; err != nil {
+		return nil, err
+	}
+	return &board.Epic{ID: "e1", ShortID: "epc-eeee3333", ProjectID: "p1", Status: board.EpicActive}, nil
+}
+
 func (f *fakeBoardManager) TaskVerdicts(_ context.Context, actor board.Actor, _, idOrShort string) ([]board.Verdict, error) {
 	f.call("task_verdicts")
 	f.lastActor = actor
@@ -639,6 +673,7 @@ func newBoardRESTRouter(t *testing.T, svc *fakeBoardManager) *gin.Engine {
 	e.GET("/:id", h.GetEpic)
 	e.PATCH("/:id", h.UpdateEpic)
 	e.POST("/:id/activate", h.ActivateEpic)
+	e.POST("/:id/ack-wrapup", h.AckEpicWrapUp)
 	e.POST("/:id/pause", h.PauseEpic)
 	e.POST("/:id/archive", h.ArchiveEpic)
 	e.POST("/:id/unarchive", h.UnarchiveEpic)
@@ -650,6 +685,7 @@ func newBoardRESTRouter(t *testing.T, svc *fakeBoardManager) *gin.Engine {
 	k.PATCH("/:id", h.UpdateTask)
 	k.POST("/:id/move-stage", h.MoveStageTask)
 	k.POST("/:id/verdict", h.RecordTaskVerdict)
+	k.POST("/:id/wrapup-verdict", h.RecordTaskWrapUpVerdict)
 	k.GET("/:id/verdicts", h.ListTaskVerdicts)
 	k.POST("/:id/start", h.StartTask)
 	k.POST("/:id/rearm", h.RearmTask)

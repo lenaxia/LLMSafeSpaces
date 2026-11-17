@@ -37,6 +37,10 @@ type boardService interface {
 	ReportThrottle(ctx context.Context, actor board.Actor, taskID, shortIDOrID string, retryAfter time.Duration, requestID string) (*board.Task, error)
 	MoveStage(ctx context.Context, actor board.Actor, taskID, shortIDOrID, toStage, evidenceURL, requestID string) (*board.Task, error)
 	RecordVerdict(ctx context.Context, actor board.Actor, taskID, shortIDOrID string, in board.VerdictInput, requestID string) (*board.Task, *board.Verdict, error)
+	// RecordWrapUpVerdict is the wrap-up reviewer persona's close (the
+	// epic wrap-up review's engine-owned verb — token-guarded on every
+	// surface; PASS completes, GAPS holds via the drain predicate).
+	RecordWrapUpVerdict(ctx context.Context, actor board.Actor, taskID, shortIDOrID string, in board.WrapUpVerdictInput, requestID string) (*board.Task, *board.Epic, error)
 	SetCriteriaMet(ctx context.Context, actor board.Actor, taskID, shortIDOrID string, check board.CriteriaCheck, requestID string) (*board.Task, error)
 	GetTaskInWorkspace(ctx context.Context, workspaceID, taskID, shortIDOrID string) (*board.Task, error)
 }

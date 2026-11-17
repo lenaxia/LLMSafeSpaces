@@ -71,6 +71,7 @@ const INJECTED_SESSION_TOOLS = new Set([
   "llmsafespaces_board_epic_archive",
   "llmsafespaces_board_epic_unarchive",
   "llmsafespaces_board_delete_epic",
+  "llmsafespaces_board_ack_epic_wrapup",
   "llmsafespaces_board_create_story",
   "llmsafespaces_board_update_story",
   "llmsafespaces_board_add_dependency",
