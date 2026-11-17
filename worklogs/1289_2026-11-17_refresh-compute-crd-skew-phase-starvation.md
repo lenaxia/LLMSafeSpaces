@@ -19,11 +19,11 @@ That assumption is false on a **normally-upgraded cluster**: helm never upgrades
 
 - `handleActive` never observes the refresh-compute `restartGeneration` bump → no pod recycle → the POST returns 202 and nothing happens ("refreshing compute no longer works");
 - no phase transitions → `onPhaseChange` never fires → no `workspace.phase` SSE events → both the live updates and the mutation's own invalidation refetch the SAME stale phase forever ("workspaces are not refreshing");
-- side damage: no suspend/resume handling, no health checks, no auto-suspend — every legacy workspace is a zombie; the backfill also becomes a hot write loop (10 writes in 10 reconciles in the fixture), racing every API-tier CRD write.
+- side damage: STARTING workspaces never complete (owner-confirmed 2026-11-17 — `handleCreating` is starved the same way, no pod is ever built); no suspend/resume handling, no health checks, no auto-suspend — every legacy workspace is a zombie; the backfill also becomes a hot write loop (10 writes in 10 reconciles in the fixture), racing every API-tier CRD write.
 
 Why nothing caught it: the controller test seam `SetDefaults_Workspace` still stamps `Harness: opencode` into every fixture (`defaults.go`, the M5-b mirror of the OLD schema default the .15 lane removed from the CRD), so the entire controller suite exercises BOUND workspaces — the legacy arm had no coverage of its failure shape. (Production never calls `SetDefaults_Workspace`; only tests do.)
 
-Born-red evidence (captired verbatim on unfixed main, `controller/internal/workspace/harness_binding_skew_test.go`): `expected phase "Creating", actual "Active"`, generation 7 never observed, `RequeueAfter 0s` (no drain — `handleActive` never ran), and `"10" is not less than or equal to "1"` harness writes in 10 reconciles.
+Born-red evidence (captured verbatim on unfixed main, `controller/internal/workspace/harness_binding_skew_test.go`): `expected phase "Creating", actual "Active"`, generation 7 never observed, `RequeueAfter 0s` (no drain — `handleActive` never ran), and `"10" is not less than or equal to "1"` harness writes in 10 reconciles.
 
 ## The fix (root cause, no polling band-aid)
 
@@ -46,6 +46,7 @@ API-tier companions (`api/internal/services/workspace/`):
   - SKEW-2 — backfill write cadence bounded: ≤1 write per window in 10 reconciles.
   - SKEW-3 — convergence: once the interceptor stops pruning (operator applied the CRD), the next window's attempt lands the explicit stamp.
   - SKEW-4 — healthy cluster unchanged: stamp-then-proceed contract kept.
+  - SKEW-5 (owner confirmation 2026-11-17, the WIDENED symptom): a legacy workspace still STARTING (provisioning, phase Creating, no pod) completes start under the same skew — `handleCreating` builds the pod (leg 1) and the Creating→Active transition fires once the pod runs (leg 2). Born-red on unfixed main: "handleCreating must build the pod — start does not stall on the skew."
   - Fixture: `pruningCRDInterceptor` — fake-client interceptor zeroing `Spec.Harness` on workspace Update, the byte-exact semantics of structural pruning.
 - `api/internal/services/workspace/harness_binding_test.go`: `TestBindWorkspaceHarness_NotPersistedFailsLoudly` (born-red: pre-fix returns silent success).
 - `api/internal/services/workspace/workspace_refresh_test.go`: `TestRefreshWorkspaceCompute_ConflictRetries` (born-red: pre-fix 500s on the first conflict).
