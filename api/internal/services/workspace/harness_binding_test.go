@@ -13,7 +13,10 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
+	k8serrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/util/validation/field"
 
 	apierrors "github.com/lenaxia/llmsafespaces/api/internal/errors"
 	apiinterfaces "github.com/lenaxia/llmsafespaces/api/internal/interfaces"
@@ -264,6 +267,92 @@ func TestBindWorkspaceHarness(t *testing.T) {
 			assert.Equal(t, "harness_immutable", apiErr.Code, tc.name)
 			assert.Equal(t, "harness is immutable once bound for this workspace", apiErr.Message, tc.name)
 		}
+	})
+
+	// Review r3 (reread-verdict-immutable-mislabel): a Forbidden or
+	// Invalid update denial whose re-read is STILL UNBOUND was not a
+	// binding race — surfacing it as 409 harness_immutable with
+	// current="" claimed an unbound workspace was immutable. The
+	// original denial's class and text must come through instead.
+	t.Run("non-binding denial on an unbound workspace surfaces the original class, never harness_immutable", func(t *testing.T) {
+		for _, tc := range []struct {
+			name   string
+			denial error
+			// wantCode/wantMessage pin the surfaced API class; the
+			// denial's own text must ride the message (Error() wraps
+			// Err for Forbidden/Validation shapes).
+			wantCode   int
+			wantType   apierrors.ErrorType
+			wantTextIn string
+		}{
+			{
+				name: "Forbidden (RBAC update-refusal)",
+				denial: k8serrors.NewForbidden(
+					schema.GroupResource{Group: "llmsafespaces.io", Resource: "workspaces"},
+					"ws-1",
+					errors.New("User \"system:serviceaccount:api\" cannot update resource \"workspaces\"")),
+				wantCode:   403,
+				wantType:   apierrors.ErrorTypeForbidden,
+				wantTextIn: "cannot update resource",
+			},
+			{
+				name: "Invalid (CRD schema rejection)",
+				denial: k8serrors.NewInvalid(
+					schema.GroupKind{Group: "llmsafespaces.io", Kind: "Workspace"},
+					"ws-1",
+					field.ErrorList{field.Invalid(field.NewPath("spec", "harness"), "pi", "spec.harness: Invalid value: schema rejected")}),
+				wantCode:   422,
+				wantType:   apierrors.ErrorTypeValidation,
+				wantTextIn: "schema rejected",
+			},
+		} {
+			f := newHarnessFixture(t, true)
+			// Get #1: the endpoint's own fetch; Get #2: the
+			// conflict-retry's fresh read; Get #3: the verdict's
+			// re-read. Each returns a FRESH object (sequential .Once
+			// stubs, not .Times): bindUnboundWorkspace mutates #2 in
+			// place (spec.Harness = pi, marker removed) before the
+			// denied write, and a shared pointer would make the #3
+			// re-read see that local mutation as a binding — the
+			// verdict must observe the cluster's truth (still
+			// unbound), not the rejected write.
+			f.ws.On("Get", mock.Anything, "ws-1", mock.Anything).Return(bornUnboundCRD(), nil).Once()
+			f.ws.On("Get", mock.Anything, "ws-1", mock.Anything).Return(bornUnboundCRD(), nil).Once()
+			f.ws.On("Get", mock.Anything, "ws-1", mock.Anything).Return(bornUnboundCRD(), nil).Once()
+			f.ws.On("Update", mock.Anything, mock.Anything).Return(nil, tc.denial).Once()
+
+			_, err := f.svc.BindWorkspaceHarness(ctx, "user-1", "ws-1", "pi")
+			apiErr := harnessAPIError(t, err)
+			assert.NotEqual(t, "harness_immutable", apiErr.Code, tc.name,
+				"an unbound workspace has nothing immutable — the mislabel is the bug")
+			assert.NotEqual(t, 409, apiErr.StatusCode(), tc.name)
+			assert.Equal(t, tc.wantCode, apiErr.StatusCode(), tc.name)
+			assert.Equal(t, tc.wantType, apiErr.Type, tc.name)
+			assert.Contains(t, apiErr.Error(), tc.wantTextIn, tc.name,
+				"the original denial's text rides the surfaced error")
+		}
+	})
+
+	// The race twin: the SAME denial shape with a re-read that DID
+	// bind (someone won the race) still converges on the binding
+	// verdict — 409 harness_immutable with the winner's current.
+	t.Run("binding-race denial with a bound re-read converges on 409 harness_immutable", func(t *testing.T) {
+		f := newHarnessFixture(t, true)
+		// Get #1 and #2: unbound; Get #3 (the verdict re-read): the
+		// winner's binding.
+		unbound := bornUnboundCRD()
+		f.ws.On("Get", mock.Anything, "ws-1", mock.Anything).Return(unbound, nil).Twice()
+		f.ws.On("Get", mock.Anything, "ws-1", mock.Anything).Return(boundCRD(v1.HarnessOpencode), nil).Once()
+		f.ws.On("Update", mock.Anything, mock.Anything).Return(nil, k8serrors.NewForbidden(
+			schema.GroupResource{Group: "llmsafespaces.io", Resource: "workspaces"},
+			"ws-1",
+			errors.New("admission webhook denied the request"))).Once()
+
+		_, err := f.svc.BindWorkspaceHarness(ctx, "user-1", "ws-1", "pi")
+		apiErr := harnessAPIError(t, err)
+		assert.Equal(t, 409, apiErr.StatusCode())
+		assert.Equal(t, "harness_immutable", apiErr.Code)
+		assert.Equal(t, "opencode", apiErr.Details["current"])
 	})
 
 	t.Run("disabled harness on an unbound workspace is 422", func(t *testing.T) {

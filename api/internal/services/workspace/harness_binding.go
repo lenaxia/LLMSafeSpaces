@@ -240,8 +240,10 @@ func (s *Service) bindUnboundWorkspace(ctx context.Context, workspaceID, harness
 			}
 			if k8serrors.IsForbidden(err) || k8serrors.IsInvalid(err) {
 				// The webhook denied us (admission denial surfaces as
-				// Forbidden/Invalid): re-read once for the verdict.
-				return s.rereadBindingVerdict(ctx, workspaceID, harness)
+				// Forbidden/Invalid): re-read once for the verdict,
+				// handing it the original denial so a non-binding
+				// refusal is surfaced in its own class.
+				return s.rereadBindingVerdict(ctx, workspaceID, harness, err)
 			}
 			return apierrors.NewInternalError("harness_bind_failed", err)
 		}
@@ -252,8 +254,13 @@ func (s *Service) bindUnboundWorkspace(ctx context.Context, workspaceID, harness
 // rereadBindingVerdict converts a webhook denial into the API's
 // binding verdict: re-read; bound-same → nil (idempotent), bound-
 // different → 409 harness_immutable, still unbound → the denial was
-// about something else (surface the original class honestly).
-func (s *Service) rereadBindingVerdict(ctx context.Context, workspaceID, harness string) error {
+// about something else (RBAC update-refusal, CRD schema rejection)
+// — surface the ORIGINAL denial's class and text (Forbidden → 403,
+// Invalid → 422) so a non-binding refusal never masquerades as
+// harness immutability: an unbound workspace has nothing immutable,
+// and a 409 with current="" would be a false statement about its
+// state.
+func (s *Service) rereadBindingVerdict(ctx context.Context, workspaceID, harness string, denial error) error {
 	fresh, err := func() (*v1.Workspace, error) {
 		wsClient, wErr := s.workspaceCRDClient()
 		if wErr != nil {
@@ -271,9 +278,19 @@ func (s *Service) rereadBindingVerdict(ctx context.Context, workspaceID, harness
 		}
 		return apierrors.NewHarnessImmutableError(workspaceID, current, harness)
 	}
-	// Still unbound: the denial was not a binding race. Report as a
-	// conflict with the webhook's shape (the message names the rule).
-	return apierrors.NewHarnessImmutableError(workspaceID, "", harness)
+	// Still unbound: the denial was not a binding race. The webhook's
+	// own denial text rides the error (the message names the rule).
+	switch {
+	case k8serrors.IsForbidden(denial):
+		return apierrors.NewForbiddenError(
+			fmt.Sprintf("harness bind denied for workspace %s", workspaceID), denial)
+	case k8serrors.IsInvalid(denial):
+		return apierrors.NewValidationError(
+			fmt.Sprintf("harness bind rejected for workspace %s", workspaceID),
+			map[string]interface{}{"workspaceId": workspaceID, "attempted": harness}, denial)
+	default:
+		return apierrors.NewInternalError("harness_bind_failed", denial)
+	}
 }
 
 // resolveSessionHarness settles the harness for a session-create on
