@@ -41,10 +41,14 @@
  *  any model-supplied copy. The session idle-subscription trio (design
  *  /workspace/reports/session-subscription-design.md §5) carries the
  *  caller as the SUBSCRIBER identity (#1849 posture — agentd refuses
- *  an unattested origin), and create_session carries it for the
- *  optional subscribe flag's caller→child watch edge. Kept in
- *  lockstep with the agentd registry by
- *  TestMCPBoard_ManagerInjectionSupply (both directions). */
+ * agentd refuses an unattested origin), and create_session carries it for the
+ * optional subscribe flag's caller→child watch edge. board_move_stage and
+ * board_record_verdict (#2061/#2064 story 1) carry it additionally as the
+ * ADVANCE-STAMP key: agentd's MCP choke point derives the board turn-end
+ * advance flag from lsp_injected_session — same audit-attribution posture,
+ * a second consumer. Kept in
+ * lockstep with the agentd registry by
+ * TestMCPBoard_ManagerInjectionSupply (both directions). */
 const INJECTED_SESSION_TOOLS = new Set([
   "llmsafespaces_send_message",
   "llmsafespaces_session_metadata",
@@ -73,6 +77,7 @@ const INJECTED_SESSION_TOOLS = new Set([
   "llmsafespaces_board_add_dependency",
   "llmsafespaces_board_remove_dependency",
   "llmsafespaces_board_delete_story",
+  "llmsafespaces_board_move_stage",
   "llmsafespaces_board_move_stage_bulk",
   "llmsafespaces_board_delete_stories",
   "llmsafespaces_board_get_config",
@@ -81,6 +86,7 @@ const INJECTED_SESSION_TOOLS = new Set([
   "llmsafespaces_board_resume_story",
   "llmsafespaces_board_rearm_story",
   "llmsafespaces_board_depose_story",
+  "llmsafespaces_board_record_verdict",
   "llmsafespaces_board_import_plan",
   "llmsafespaces_board_list",
   "llmsafespaces_board_health",

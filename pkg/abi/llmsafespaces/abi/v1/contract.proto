@@ -209,6 +209,18 @@ enum EventType {
   EVENT_TYPE_INPUT_REQUEST = 8;
   EVENT_TYPE_INPUT_RESOLVED = 9;
   EVENT_TYPE_ERROR = 10;
+  // #2061/#2064: the board turn-end publication for claim-holder
+  // sessions — a NEW type, never a SESSION_STATUS overload. Carries the
+  // board-advance flag (did the turn advance the worker's claim?) and
+  // NOTHING the model or the liveness plane can mistake for worker
+  // activity: under the #2042 evidence contract it lands the opaque
+  // class (workerActivityStampsEvidence does not name it — pinned), so
+  // it holds due-marking signal for the board consumer (story #2065)
+  // and ZERO renewal/liveness authority. Emission-site rule (#2040
+  // remediation): only the harness-attested turn-end observation path
+  // (transport truth / the delivery FSM, per harness) may emit it —
+  // agentd's reconcile/settle/reseed paths never do.
+  EVENT_TYPE_BOARD_TURN_END = 11;
 }
 
 // InputKind unifies questions and permissions: both are "the agent needs a
@@ -272,4 +284,29 @@ message Event {
   // one space. Absent on ingest-path events and on un-refreshed
   // emitters (heal window) — consumers must not require it.
   string internal_session_id = 13;
+  // #2061/#2064: present only on EVENT_TYPE_BOARD_TURN_END. The raw
+  // session id rides session_id/internal_session_id exactly as every
+  // other event (one identity space); the board facts ride here.
+  BoardTurnEnd board_turn_end = 14;
+}
+
+// BoardTurnEnd is the #2061/#2064 turn-end publication's payload: the
+// board-advance verdict for one observed turn of a claim-holder
+// session. The emitter derives `advanced` from its own seam-local
+// observation of the advance-class board tool calls
+// (board_record_progress | board_move_stage | board_record_verdict)
+// inside the turn window — presence tools (board_read/list/health) and
+// heartbeats deliberately do NOT advance (the keystone lesson), and no
+// productivity detection beyond that narrow set exists here.
+// `epoch` is the EMITTER's 1-based per-session ordinal of observed
+// turn ends (process/journal lifetime): a consecutive-no-advance
+// counter and redelivery-dedupe key for the consumer — the board binds
+// to the raw session id, not to any DB epoch. `turn_duration_ms` is
+// the turn window's length (busy-mark to settle). #2042 contract: the
+// event is management-class — zero liveness/renewal authority; never
+// stamped into worker-activity evidence.
+message BoardTurnEnd {
+  bool advanced = 1;
+  uint64 epoch = 2;
+  int64 turn_duration_ms = 3;
 }

@@ -67,6 +67,14 @@ export interface WorkspaceListItem {
   agentNeedsRefresh?: boolean;
   credentialsPendingSince?: string;
   devPreviewEnabled?: boolean;
+  /** Bound coding-agent harness (bind-once, owner ruling 2026-11-16):
+   * "opencode" | "pi" when bound; ABSENT = UNBOUND (created without a
+   * choice — the first-session picker binds it). Workspaces never
+   * switch harnesses; this field is read-only badge context. */
+  harness?: string;
+  /** The instance's enabled harness set (the picker's offer list;
+   * opencode always present). Read-only context. */
+  harnessOptions?: string[];
 }
 
 export interface WorkspaceListResponse {

@@ -946,7 +946,9 @@ func translateV2Tool(cp V2ContentPart) *session.ToolPart {
 		State:  session.ToolState{Status: session.ToolStatusPending},
 	}
 	if cp.State != nil {
-		tp.Input = cp.State.Input
+		// #2030a hygiene: served tool args carry no identity stamps
+		// (byte-stable passthrough when clean); storage keeps them.
+		tp.Input = stripIdentityStampsJSON(cp.State.Input)
 		if len(cp.State.Content) > 0 {
 			texts := make([]string, 0, len(cp.State.Content))
 			for _, c := range cp.State.Content {

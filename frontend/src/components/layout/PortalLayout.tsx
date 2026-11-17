@@ -40,7 +40,14 @@ export function PortalLayout({
     <div
       ref={sidebar.containerRef}
       className="flex h-dvh flex-col bg-background overflow-hidden overscroll-none"
-      style={{ touchAction: "pan-y" }}
+      // pan-x pan-y (was pan-y until the 2026-11-17 rail fix): the
+      // ancestor-chain intersection rule made pan-y here forbid
+      // horizontal touch panning for every nested scroller under this
+      // layout. The shell never scrolls horizontally (overflow-hidden
+      // h-dvh), so pan-x only un-restricts nested scrollers; pinch/double
+      // -tap zoom stay disabled; swipe-back stays dead via
+      // overscroll-behavior-x: none (index.css). See AppShell.tsx.
+      style={{ touchAction: "pan-x pan-y" }}
     >
       {/* Top padding composes the base with the safe-area inset: viewport-fit=cover extends under the notch — the header is the topmost row (#1623). */}
       <header className="flex items-center justify-between border-b border-border px-6 pb-3 pt-[calc(0.75rem+env(safe-area-inset-top,0px))]">

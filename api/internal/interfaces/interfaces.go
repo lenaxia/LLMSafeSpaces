@@ -204,7 +204,17 @@ type WorkspaceService interface {
 	RefreshWorkspaceCompute(ctx context.Context, userID, workspaceID string) (*types.RefreshWorkspaceResult, error)
 	GetWorkspaceStatus(ctx context.Context, userID, workspaceID string) (*types.WorkspaceStatusResult, error)
 	ActivateWorkspace(ctx context.Context, userID, workspaceID string) (*types.ActivateWorkspaceResponse, error)
-	EnsureSession(ctx context.Context, userID, workspaceID string) (*types.EnsureSessionResponse, error)
+	// EnsureSession's harness param is the bind-once first-session
+	// binding (owner ruling 2026-11-16): the frontend picker's submit
+	// on an unbound workspace — omitted binds the bound harness, or
+	// opencode (the non-interactive default) when still unbound; a
+	// mismatch on a bound workspace is a 409 harness_immutable.
+	EnsureSession(ctx context.Context, userID, workspaceID, harness string) (*types.EnsureSessionResponse, error)
+	// BindWorkspaceHarness is PUT /workspaces/:id/harness — the
+	// explicit bind-while-null (idempotent same-value 200 on a bound
+	// workspace; 409 harness_immutable on any other value; there is
+	// no switch or recreate path).
+	BindWorkspaceHarness(ctx context.Context, userID, workspaceID, harness string) (*types.BindHarnessResult, error)
 	ListWorkspaceSessions(ctx context.Context, userID, workspaceID string) ([]types.SessionListItem, error)
 	RenameSession(ctx context.Context, userID, workspaceID, sessionID, title string) error
 	MarkSessionSeen(ctx context.Context, userID, workspaceID, sessionID string) error

@@ -2,10 +2,12 @@ package com.llmsafespaces.sdk.services;
 
 import com.google.gson.reflect.TypeToken;
 import com.llmsafespaces.sdk.LLMSafeSpacesClient;
+import com.llmsafespaces.sdk.models.BindHarnessResult;
 import com.llmsafespaces.sdk.models.FileUpload;
 import com.llmsafespaces.sdk.models.Workspace;
 import com.llmsafespaces.sdk.models.EnsureSessionResponse;
 
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -14,10 +16,38 @@ public class WorkspacesService {
 
     public WorkspacesService(LLMSafeSpacesClient c) { this.c = c; }
 
+    /** Creates a workspace UNBOUND (owner ruling 2026-11-16: bind-once) —
+     *  bind it (first session with harness or {@link #bindHarness}) before
+     *  first use. DEFAULT CHANGE (2026-11-16): omitted harness no longer
+     *  means opencode implicitly. */
     public Workspace create(String name, String runtime, String storageSize) {
-        return c.request("POST", "/workspaces",
-                Map.of("name", name, "runtime", runtime, "storageSize", storageSize),
-                Workspace.class);
+        return create(name, runtime, storageSize, null);
+    }
+
+    /** Creates a workspace, optionally binding the harness at create
+     *  (owner ruling 2026-11-16: bind-once; must be in the instance's
+     *  enabled set). A null/empty harness creates the workspace UNBOUND. */
+    public Workspace create(String name, String runtime, String storageSize, String harness) {
+        Map<String, Object> body = new HashMap<>();
+        body.put("name", name);
+        body.put("runtime", runtime);
+        body.put("storageSize", storageSize);
+        if (harness != null && !harness.isEmpty()) {
+            body.put("harness", harness);
+        }
+        return c.request("POST", "/workspaces", body, Workspace.class);
+    }
+
+    /**
+     * Binds an UNBOUND workspace's harness exactly once (PUT
+     * /workspaces/{id}/harness; owner ruling 2026-11-16: workspaces do
+     * NOT switch harnesses). Same value on a bound workspace is the
+     * idempotent already-bound path; any other value is a 409
+     * harness_immutable. There is no switch or recreate path.
+     */
+    public BindHarnessResult bindHarness(String id, String harness) {
+        return c.request("PUT", "/workspaces/" + id + "/harness",
+                Map.of("harness", harness), BindHarnessResult.class);
     }
 
     public Workspace get(String id) {

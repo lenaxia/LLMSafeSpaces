@@ -63,6 +63,16 @@ var (
 	KeyInstanceMOTD = register(Key{"instance.motd", "instance", ""})
 )
 
+// Harness settings (owner ruling 2026-11-16: bind-once harness —
+// workspaces do NOT switch harnesses). The enabled set is the
+// instance-level offer list: which harnesses this deployment lets
+// workspaces bind. opencode is ALWAYS enabled (union-enforced at the
+// consumer — the platform's default harness cannot be withdrawn); pi
+// is opt-in, added when the second harness is deployed.
+var (
+	KeyHarnessEnabled = register(Key{"harness.enabled", "harness", []string{"opencode"}})
+)
+
 // Workflow settings (Epic 64)
 var (
 	KeyWorkflowsMaxPerUser             = register(Key{"workflows.maxPerUser", "workflows", 50})

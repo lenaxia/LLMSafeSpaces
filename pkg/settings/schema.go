@@ -60,7 +60,14 @@ package settings
 // (TestCanary_SchemaVersion_TwinParity).
 // Bumped to 15 (2026-09-16): added the user `timezone` key (IANA name
 // from the browser; pushed live to workspace pods for user-local time).
-const SchemaVersion = 15
+// Bumped to 16 (2026-11-16): added harness.enabled (TypeStrings) — the
+// instance-level harness enablement set for the bind-once harness
+// model (owner ruling 2026-11-16): which harnesses this deployment
+// offers to workspace creation/binding. opencode is always enabled
+// (consumer-side union); pi is opt-in. New key; admin UI schema cache
+// must refresh. Canary twins updated in lockstep
+// (TestCanary_SchemaVersion_TwinParity).
+const SchemaVersion = 16
 
 // SettingType defines the data type of a setting.
 type SettingType string
@@ -190,6 +197,16 @@ func InstanceSettings() []SettingDef {
 		{Key: "devPreview.enabled", Tier: 2, Type: TypeBool, Default: true, Category: "Dev Preview", Label: "Enable Dev Preview", Description: "ON: workspaces that also enable Dev Preview in their own settings can serve live previews of in-workspace dev servers. OFF: every preview URL returns 503 platform-wide. Takes effect after an API restart."},
 		{Key: "devPreview.maxResponseBytes", Tier: 2, Type: TypeInt, Default: 52428800, Min: intPtr(1024), Max: intPtr(1073741824), Category: "Dev Preview", Label: "Max Response (bytes)", Description: "Per-response body cap on the dev-preview proxy (default 50 MiB)"},
 		{Key: "devPreview.maxConnsPerWorkspace", Tier: 2, Type: TypeInt, Default: 50, Min: intPtr(1), Max: intPtr(1000), Category: "Dev Preview", Label: "Max Conns Per Workspace", Description: "Concurrent dev-preview connections per workspace (separate from the agent-session budget)"},
+
+		// Harness (owner ruling 2026-11-16: bind-once harness — no
+		// switching, ever). The instance-level enablement set: which
+		// harnesses this deployment offers at workspace create/bind.
+		// opencode is ALWAYS enabled regardless of this list (the
+		// consumer unions it in — the platform's default harness
+		// cannot be withdrawn); add "pi" when the second harness is
+		// deployed. Changes affect only NEW binds: a bound workspace
+		// keeps its harness for life (immutability protects it).
+		{Key: "harness.enabled", Tier: 2, Type: TypeStrings, Default: []string{"opencode"}, Category: "Harness", Label: "Enabled Harnesses", Description: "Harnesses offered for NEW workspace binds (e.g. [\"opencode\", \"pi\"]). opencode is always enabled; pi only when listed AND deployed. Bound workspaces are unaffected by later changes — harness is bind-once, immutable forever."},
 	}
 }
 

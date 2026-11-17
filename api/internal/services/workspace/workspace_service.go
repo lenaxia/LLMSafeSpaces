@@ -23,6 +23,7 @@ import (
 	"github.com/lenaxia/llmsafespaces/api/internal/imagefactory"
 	apiinterfaces "github.com/lenaxia/llmsafespaces/api/internal/interfaces"
 	"github.com/lenaxia/llmsafespaces/api/internal/services/sessionindex"
+	agent "github.com/lenaxia/llmsafespaces/pkg/agent"
 	v1 "github.com/lenaxia/llmsafespaces/pkg/apis/llmsafespaces/v1"
 	pkginterfaces "github.com/lenaxia/llmsafespaces/pkg/interfaces"
 	"github.com/lenaxia/llmsafespaces/pkg/settings"
@@ -93,7 +94,12 @@ type Service struct {
 	imageFactoryStore LaunchableConfigResolver
 	userSettings      UserDefaultReader
 	devPreviewPusher  DevPreviewStatePusher
-	config            *Config
+	// agentAdapter is the platform Agent Adapter (the harness router,
+	// wired via SetAgentAdapter) used by EnsureSession's pi arm — the
+	// opencode arm keeps its raw pod path. Nil = opencode-only (the
+	// pre-binding shape).
+	agentAdapter agent.Adapter
+	config       *Config
 }
 
 // DevPreviewStatePusher delivers the absolute dev-preview state to a
@@ -337,6 +343,20 @@ func (s *Service) CreateWorkspace(ctx context.Context, userID string, req types.
 		)
 	}
 
+	// Bind-once harness (owner ruling 2026-11-16): an explicit create
+	// param binds immediately — validated against the instance's
+	// enabled set HERE (the same seam as the other two bind entrances:
+	// PUT /harness and first-session), so a disabled or unknown value
+	// is a 422 before any CRD write, never a later 500. Omitted =
+	// UNBOUND — bound at first session (the frontend picker path) or
+	// via the bind endpoint. The default CHANGE (implicit opencode →
+	// unbound) is documented on the DTO.
+	if req.Harness != "" {
+		if err := s.validateHarnessForBind(ctx, req.Harness); err != nil {
+			return nil, err
+		}
+	}
+
 	// D4: workspace auto-attribution. When the user is in an org and did not
 	// supply OrgID, auto-attribute the workspace to their org. Users cannot
 	// create personal workspaces while part of an org. Non-org users get
@@ -518,14 +538,16 @@ func (s *Service) CreateWorkspace(ctx context.Context, userID string, req types.
 	// boot. No action needed here.
 
 	ws := &types.Workspace{
-		ID:          meta.ID,
-		Name:        meta.Name,
-		UserID:      meta.UserID,
-		Runtime:     meta.Runtime,
-		StorageSize: meta.StorageSize,
-		Phase:       string(created.Status.Phase),
-		CreatedAt:   meta.CreatedAt,
-		UpdatedAt:   meta.UpdatedAt,
+		ID:             meta.ID,
+		Name:           meta.Name,
+		UserID:         meta.UserID,
+		Runtime:        meta.Runtime,
+		StorageSize:    meta.StorageSize,
+		Phase:          string(created.Status.Phase),
+		CreatedAt:      meta.CreatedAt,
+		UpdatedAt:      meta.UpdatedAt,
+		Harness:        harnessPtr(req.Harness),
+		HarnessOptions: s.EnabledHarnesses(ctx),
 	}
 
 	return ws, nil
@@ -606,7 +628,15 @@ func (s *Service) GetWorkspace(ctx context.Context, userID, workspaceID string) 
 		if crd.Spec.NetworkAccess != nil {
 			ws.DevPreviewEnabled = crd.Spec.NetworkAccess.DevPreview
 		}
+		// Bind-once harness: nil only on a born-unbound workspace
+		// (marker present); legacy marker-less empties read as
+		// opencode (effectiveBoundHarness) — the old default, and the
+		// controller backfill converges them to explicit shortly.
+		if h, bound := effectiveBoundHarness(crd); bound {
+			ws.Harness = harnessPtr(h)
+		}
 	}
+	ws.HarnessOptions = s.EnabledHarnesses(ctx)
 
 	return ws, nil
 }
@@ -638,15 +668,16 @@ func (s *Service) ListWorkspaces(ctx context.Context, userID string, opts types.
 	// kube-apiserver too) so there's nothing meaningful to fall back to.
 
 	items := make([]types.WorkspaceListItem, 0, len(metas))
-	phases := s.fetchUserWorkspacePhases(ctx, userID)
+	states := s.fetchUserWorkspaceStates(ctx, userID)
 	for _, m := range metas {
-		items = append(items, types.WorkspaceListItem{
+		st := states[m.ID]
+		item := types.WorkspaceListItem{
 			ID:                      m.ID,
 			Name:                    m.Name,
 			UserID:                  m.UserID,
 			Runtime:                 m.Runtime,
 			StorageSize:             m.StorageSize,
-			Phase:                   phases[m.ID],
+			Phase:                   string(st.Phase),
 			ImageTag:                m.ImageTag,
 			AgentVersion:            m.AgentVersion,
 			CreatedAt:               m.CreatedAt,
@@ -662,7 +693,12 @@ func (s *Service) ListWorkspaces(ctx context.Context, userID string, opts types.
 			// surfaces (dashboard, pickers, board refs — #1792) can
 			// address workspaces without the UUID.
 			PhraseID: m.PhraseID,
-		})
+		}
+		// Bind-once harness: nil only on born-unbound workspaces.
+		if st.HarnessBound {
+			item.Harness = harnessPtr(st.Harness)
+		}
+		items = append(items, item)
 	}
 
 	return &types.WorkspaceListResult{Items: items, Pagination: pagination}, nil
@@ -690,6 +726,12 @@ func (s *Service) fetchUserWorkspacePhases(ctx context.Context, userID string) m
 type workspaceState struct {
 	Phase          v1.WorkspacePhase
 	LastActivityAt time.Time // zero if no annotation or pre-US-23.3 workspace
+	// HarnessBound/Harness carry the bind-once harness (owner ruling
+	// 2026-11-16): HarnessBound=false only on a born-unbound workspace
+	// (marker present, no pod yet); legacy marker-less empties read as
+	// bound opencode (effectiveBoundHarness).
+	Harness      string
+	HarnessBound bool
 }
 
 // fetchUserWorkspaceStates lists CRDs for a user and returns id -> state
@@ -723,6 +765,7 @@ func (s *Service) fetchUserWorkspaceStates(ctx context.Context, userID string) m
 		if t := v1.GetLastActivityAt(w); t != nil {
 			st.LastActivityAt = t.Time
 		}
+		st.Harness, st.HarnessBound = effectiveBoundHarness(w)
 		out[w.Name] = st
 	}
 	return out
@@ -995,28 +1038,66 @@ func (s *Service) RefreshWorkspaceCompute(ctx context.Context, userID, workspace
 
 	wasSuspended := crd.Status.Phase == v1.WorkspacePhaseSuspended
 
-	s.reapplyComputeDefaults(ctx, crd)
-	crd.Spec.RestartGeneration++
-	// #1505: refresh-compute is the USER-consented force path (the UI
-	// warning is the consent). Stamp the generation-keyed force marker so
-	// the controller's recycle bypasses the #761 session drain — on a
-	// multi-agent pod with perpetually busy sessions the drain would
-	// never find quiet and the refresh would hang. In-flight turns die
-	// by design. The controller clears the marker in the same reconcile
-	// that observes this generation — the Active recycle honors it; the
-	// Creating / Failed-recovery observes clear it as hygiene.
-	if crd.Annotations == nil {
-		crd.Annotations = map[string]string{}
-	}
-	crd.Annotations[v1.AnnotationForceRecycle] = strconv.FormatInt(crd.Spec.RestartGeneration, 10)
+	// Conflict-retried (the bindUnboundWorkspace shape): the write is a
+	// GET-mutate-UPDATE on a live object, and concurrent writers (the
+	// controller's legacy harness backfill, an activity-tracker touch)
+	// can bump resourceVersion between the GET and the UPDATE — a lost
+	// race must retry from a fresh read, not 500 the user's refresh
+	// (each attempt re-derives generation+marker together, so the pair
+	// stays consistent no matter how many retries fire).
+	// bumpedGeneration carries the FINAL attempt's written value — the
+	// response contract is the generation that triggers the rebuild
+	// (openapi: "The bumped restart generation"), never the pre-loop
+	// snapshot a retried attempt superseded (review r1: the mock
+	// suites' same-pointer Gets masked the stale read-back).
+	bumpedGeneration := crd.Spec.RestartGeneration
+	if err := retry.RetryOnConflict(retry.DefaultBackoff, func() error {
+		fresh, err := func() (*v1.Workspace, error) {
+			wsClient, wErr := s.workspaceCRDClient()
+			if wErr != nil {
+				return nil, wErr
+			}
+			return wsClient.Get(ctx, workspaceID, metav1.GetOptions{})
+		}()
+		if err != nil {
+			return err
+		}
+		if fresh.Status.Phase == v1.WorkspacePhaseTerminating || fresh.Status.Phase == v1.WorkspacePhaseTerminated {
+			return apierrors.NewConflictError(
+				"workspace",
+				workspaceID,
+				fmt.Errorf("cannot refresh compute for workspace in phase %q", fresh.Status.Phase),
+			)
+		}
+		s.reapplyComputeDefaults(ctx, fresh)
+		fresh.Spec.RestartGeneration++
+		// #1505: refresh-compute is the USER-consented force path (the UI
+		// warning is the consent). Stamp the generation-keyed force marker so
+		// the controller's recycle bypasses the #761 session drain — on a
+		// multi-agent pod with perpetually busy sessions the drain would
+		// never find quiet and the refresh would hang. In-flight turns die
+		// by design. The controller clears the marker in the same reconcile
+		// that observes this generation — the Active recycle honors it; the
+		// Creating / Failed-recovery observes clear it as hygiene.
+		if fresh.Annotations == nil {
+			fresh.Annotations = map[string]string{}
+		}
+		fresh.Annotations[v1.AnnotationForceRecycle] = strconv.FormatInt(fresh.Spec.RestartGeneration, 10)
+		bumpedGeneration = fresh.Spec.RestartGeneration
 
-	if _, err := func() (*v1.Workspace, error) {
 		wsClient, wErr := s.workspaceCRDClient()
 		if wErr != nil {
-			return nil, wErr
+			return wErr
 		}
-		return wsClient.Update(ctx, crd)
-	}(); err != nil {
+		_, err = wsClient.Update(ctx, fresh)
+		return err
+	}); err != nil {
+		// A terminal phase observed mid-retry is the same verdict the
+		// pre-write check delivers — the 409, not an internal 500.
+		var apiErr *apierrors.APIError
+		if errors.As(err, &apiErr) {
+			return nil, apiErr
+		}
 		s.logger.Error("Failed to refresh workspace compute", err, "workspaceID", workspaceID)
 		return nil, apierrors.NewInternalError("workspace_refresh_failed", err)
 	}
@@ -1034,9 +1115,9 @@ func (s *Service) RefreshWorkspaceCompute(ctx context.Context, userID, workspace
 
 	s.logger.Info("Workspace compute refresh initiated",
 		"workspaceID", workspaceID, "userID", userID,
-		"restartGeneration", crd.Spec.RestartGeneration, "fromPhase", string(crd.Status.Phase),
+		"restartGeneration", bumpedGeneration, "fromPhase", string(crd.Status.Phase),
 		"resumed", wasSuspended)
-	return &types.RefreshWorkspaceResult{RestartGeneration: crd.Spec.RestartGeneration}, nil
+	return &types.RefreshWorkspaceResult{RestartGeneration: bumpedGeneration}, nil
 }
 
 // reapplyComputeDefaults overwrites the compute-oriented spec fields with the
@@ -1326,22 +1407,33 @@ func buildWorkspaceCRD(workspaceID, userID string, req types.CreateWorkspaceRequ
 		},
 		Runtime: req.Runtime,
 	}
+	// Bind-once harness (owner ruling 2026-11-16): explicit param
+	// binds at create; omitted leaves the workspace UNBOUND — the
+	// marker annotation is the born-unbound discriminator (webhook 7a
+	// + the controller's unbound gate + legacy backfill all key on
+	// it), removed at bind.
+	annotations := map[string]string{
+		"llmsafespaces.dev/created-by": userID,
+		"llmsafespaces.dev/name":       req.Name,
+		// AnnotationRequestedAt records the exact moment the API
+		// received the create request. The controller reads this to
+		// anchor WorkspaceCreateDurationSeconds from the user's
+		// perspective rather than the controller's first reconcile.
+		v1.AnnotationRequestedAt: time.Now().UTC().Format(time.RFC3339Nano),
+	}
+	if req.Harness != "" {
+		spec.Harness = v1.HarnessType(req.Harness)
+	} else {
+		annotations[v1.AnnotationHarnessUnbound] = "true"
+	}
 
 	return &v1.Workspace{
 		TypeMeta: metav1.TypeMeta{APIVersion: "llmsafespaces.dev/v1", Kind: "Workspace"},
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      workspaceID,
-			Namespace: namespace,
-			Labels:    labels,
-			Annotations: map[string]string{
-				"llmsafespaces.dev/created-by": userID,
-				"llmsafespaces.dev/name":       req.Name,
-				// AnnotationRequestedAt records the exact moment the API
-				// received the create request. The controller reads this to
-				// anchor WorkspaceCreateDurationSeconds from the user's
-				// perspective rather than the controller's first reconcile.
-				v1.AnnotationRequestedAt: time.Now().UTC().Format(time.RFC3339Nano),
-			},
+			Name:        workspaceID,
+			Namespace:   namespace,
+			Labels:      labels,
+			Annotations: annotations,
 		},
 		Spec: spec,
 	}
@@ -1603,8 +1695,11 @@ func (s *Service) applyWorkspaceDefaults(ctx context.Context, crd *v1.Workspace)
 // EnsureSession guarantees the workspace has a Running sandbox and creates a
 // new session on it. If the workspace is suspended it resumes it; if no sandbox
 // exists it creates one. Blocks until the sandbox reaches Running, then creates
-// the session via opencode's POST /session endpoint.
-func (s *Service) EnsureSession(ctx context.Context, userID, workspaceID string) (*types.EnsureSessionResponse, error) {
+// the session on the workspace's BOUND harness (owner ruling 2026-11-16:
+// bind-once — an unbound workspace binds atomically with this call; the
+// request's harness is the frontend picker's submit, and an omitted harness on
+// an unbound workspace binds opencode, the non-interactive default).
+func (s *Service) EnsureSession(ctx context.Context, userID, workspaceID, harness string) (*types.EnsureSessionResponse, error) {
 	if err := s.verifyOwner(ctx, userID, workspaceID); err != nil {
 		return nil, err
 	}
@@ -1618,6 +1713,15 @@ func (s *Service) EnsureSession(ctx context.Context, userID, workspaceID string)
 	}()
 	if err != nil {
 		return nil, apierrors.NewInternalError("workspace_get_failed", err)
+	}
+
+	// First-session binding: settle the harness BEFORE the pod wait —
+	// an unbound workspace has no pod (the controller's unbound gate),
+	// and the bind's spec write is what releases Creating to build
+	// one. On a bound workspace a mismatched harness is a 409 here.
+	boundHarness, err := s.resolveSessionHarness(ctx, crd, workspaceID, harness)
+	if err != nil {
+		return nil, err
 	}
 
 	resumed := false
@@ -1644,29 +1748,50 @@ func (s *Service) EnsureSession(ctx context.Context, userID, workspaceID string)
 		return nil, err
 	}
 
-	// Create session directly on workspace pod.
-	sessionID, err := s.createSessionOnWorkspace(ctx, workspaceID, podIP)
-	if err != nil {
-		return nil, err
+	// Create the session on the workspace's bound harness. The
+	// opencode arm keeps the raw pod path (MCP-wait + POST /session,
+	// unchanged legacy behavior); the pi arm goes through the
+	// platform Agent Adapter (the harness router dispatches to the pi
+	// adapter's transport, which dials the pod's bridge).
+	var sessionID string
+	if boundHarness == string(v1.HarnessPi) {
+		if s.agentAdapter == nil {
+			return nil, apierrors.NewInternalError("pi_session_create_unavailable",
+				fmt.Errorf("workspace %s is bound to pi but the agent adapter is not wired", workspaceID))
+		}
+		ses, cerr := s.agentAdapter.CreateSession(ctx, userID, workspaceID, "")
+		if cerr != nil {
+			return nil, apierrors.NewInternalError("session_create_failed", cerr)
+		}
+		sessionID = ses.ID
+	} else {
+		// opencode (and any future harness defaulting to the raw path).
+		var cerr error
+		sessionID, cerr = s.createSessionOnWorkspace(ctx, workspaceID, podIP)
+		if cerr != nil {
+			return nil, cerr
+		}
 	}
 
 	// Design 0066 §4.2: POST /sessions/new registers before returning
 	// — the mint point for the short id (idempotent seam; failure
 	// degrades to a short-id-less response, the backfill sweep
-	// converges). The harness type is the adapter that served the
-	// create: opencode, the only live adapter today.
+	// converges). The harness type is the BOUND harness that served
+	// the create (owner ruling 2026-11-16: one harness per workspace,
+	// so the row can never disagree with the workspace's class).
 	// #1756 §1: the response's identifier IS the phrase; the harness
 	// id leaves default output (it degrades into
 	// DeprecatedSessionId only when the seam could not mint).
 	shortID := ""
 	if s.sessionIndex != nil {
-		shortID = s.sessionIndex.Register(ctx, workspaceID, sessionID, "opencode")
+		shortID = s.sessionIndex.Register(ctx, workspaceID, sessionID, boundHarness)
 	}
 	resp := &types.EnsureSessionResponse{
 		WorkspaceID:    workspaceID,
 		WorkspacePhase: "Active",
 		SessionID:      sessionID,
 		Resumed:        resumed,
+		Harness:        boundHarness,
 	}
 	if shortID != "" {
 		resp.SessionID = shortID
