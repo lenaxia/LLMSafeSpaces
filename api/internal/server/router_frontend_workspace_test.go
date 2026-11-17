@@ -259,6 +259,40 @@ func TestRenameWorkspace_NotFound(t *testing.T) {
 
 // --- POST /api/v1/workspaces/:id/sessions/new ---
 
+// Review r3 (sessions-new-harness-body-decode-untested): the router
+// tier's only well-formed-body pin. The mock expects EnsureSession to
+// receive "pi" EXACTLY — a json-tag typo in
+// parseSessionsNewHarnessBody's body struct would decode every picker
+// submit to "" (silently binding opencode permanently under bind-once
+// immutability) and fail here on the unexpected-call/assert mismatch.
+// This is the one seam the service-tier tests cannot lock (they call
+// EnsureSession directly, bypassing the gin JSON decode).
+func TestEnsureSession_Route_HarnessBodyReachesService(t *testing.T) {
+	router, svc := newRouterFixture(t)
+
+	svc.workspace.On("EnsureSession", mock.Anything, "test-user", "ws-1", "pi").Return(
+		&types.EnsureSessionResponse{
+			WorkspaceID:    "sb-1",
+			WorkspacePhase: "Active",
+			SessionID:      "sess-pi",
+			Resumed:        false,
+			Harness:        "pi",
+		}, nil).Once()
+
+	body, _ := json.Marshal(map[string]string{"harness": "pi"})
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/workspaces/ws-1/sessions/new", bytes.NewReader(body))
+	req.Header.Set("Authorization", "Bearer token")
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	assert.Equal(t, http.StatusOK, rec.Code)
+	var resp types.EnsureSessionResponse
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+	assert.Equal(t, "sess-pi", resp.SessionID)
+	assert.Equal(t, "pi", resp.Harness)
+}
+
 func TestEnsureSession_Route_Success(t *testing.T) {
 	router, svc := newRouterFixture(t)
 

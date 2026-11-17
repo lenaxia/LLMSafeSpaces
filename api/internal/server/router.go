@@ -1816,14 +1816,6 @@ func registerWorkspaceRoutes(rg *gin.RouterGroup, idGroup *gin.RouterGroup, serv
 		// non-interactive default for a still-unbound workspace) is
 		// used; a mismatched harness on a bound workspace 409s in the
 		// service.
-		// parseSessionsNewHarnessBody reads the optional sessions/new body
-		// (the picker's harness submit). Only the ABSENT body is fine
-		// (io.EOF from the empty read — the legacy frontend sends no body
-		// at all). A MALFORMED body (form-encoded harness=pi via curl's
-		// default content type, typo'd JSON) must NOT be silently dropped:
-		// under bind-once immutability a swallowed harness choice binds
-		// opencode permanently (review r1 F2) — the helper writes the loud
-		// 400 and reports !ok.
 		harness, ok := parseSessionsNewHarnessBody(c)
 		if !ok {
 			return
