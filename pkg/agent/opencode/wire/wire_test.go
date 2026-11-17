@@ -276,8 +276,10 @@ func TestGoldenFixture_MessageLevelProgress_CompletionAnchor(t *testing.T) {
 	}{
 		{"../testdata/sse_events_1_18_10_live.jsonl", 19, 38, 18},
 		{"../testdata/sse_events_1_18_15_live.jsonl", 3, 2, 1},
+		{"../testdata/sse_events_1_19_5_live.jsonl", 4, 4, 2},
 		{"../testdata/event_store_1_18_10.jsonl", 78, 59, 118},
 		{"../testdata/event_store_1_18_15.jsonl", 3, 1, 2},
+		{"../testdata/event_store_1_19_5.jsonl", 4, 2, 4},
 	} {
 		t.Run(tt.fixture, func(t *testing.T) {
 			data, err := os.ReadFile(tt.fixture)
@@ -358,7 +360,7 @@ func TestGoldenFixture_MessageLevelProgress_CompletionAnchor(t *testing.T) {
 // If either test fails on main without a seam change, opencode drifted —
 // re-capture the fixture before touching the parser.
 func TestGoldenFixtureTaxonomy_LiveWire(t *testing.T) {
-	for _, fixture := range []string{"../testdata/sse_events_1_18_10_live.jsonl", "../testdata/sse_events_1_18_15_live.jsonl"} {
+	for _, fixture := range []string{"../testdata/sse_events_1_18_10_live.jsonl", "../testdata/sse_events_1_18_15_live.jsonl", "../testdata/sse_events_1_19_5_live.jsonl"} {
 		t.Run(fixture, func(t *testing.T) {
 			taxonomyLiveWireFixture(t, fixture)
 		})
@@ -433,7 +435,7 @@ func taxonomyLiveWireFixture(t *testing.T, fixture string) {
 }
 
 func TestGoldenFixtureTaxonomy_EventStore(t *testing.T) {
-	for _, fixture := range []string{"../testdata/event_store_1_18_10.jsonl", "../testdata/event_store_1_18_15.jsonl"} {
+	for _, fixture := range []string{"../testdata/event_store_1_18_10.jsonl", "../testdata/event_store_1_18_15.jsonl", "../testdata/event_store_1_19_5.jsonl"} {
 		t.Run(fixture, func(t *testing.T) {
 			taxonomyEventStoreFixture(t, fixture)
 		})
@@ -570,7 +572,7 @@ func TestParseSessionUpdatedNotUsageOrIncomplete(t *testing.T) {
 // the metering path — billing verified against verbatim wire, not just
 // hand-written shapes. Runs against every pinned live capture.
 func TestGoldenFixture_SessionUpdatedAllDecode(t *testing.T) {
-	for _, fixture := range []string{"../testdata/sse_events_1_18_10_live.jsonl", "../testdata/sse_events_1_18_15_live.jsonl"} {
+	for _, fixture := range []string{"../testdata/sse_events_1_18_10_live.jsonl", "../testdata/sse_events_1_18_15_live.jsonl", "../testdata/sse_events_1_19_5_live.jsonl"} {
 		t.Run(fixture, func(t *testing.T) {
 			sessionUpdatedAllDecode(t, fixture)
 		})
@@ -647,6 +649,7 @@ func TestGoldenFixture_EventStore_SessionUpdatedAllDecode(t *testing.T) {
 	}{
 		{"../testdata/event_store_1_18_10.jsonl", 81},
 		{"../testdata/event_store_1_18_15.jsonl", 5},
+		{"../testdata/event_store_1_19_5.jsonl", 6},
 	} {
 		t.Run(tc.fixture, func(t *testing.T) {
 			eventStoreSessionUpdatedAllDecode(t, tc.fixture, tc.pinned)
@@ -730,6 +733,8 @@ func TestIsKnownEventType_CoversBothFixtures(t *testing.T) {
 		"../testdata/event_store_1_18_10.jsonl",
 		"../testdata/sse_events_1_18_15_live.jsonl",
 		"../testdata/event_store_1_18_15.jsonl",
+		"../testdata/sse_events_1_19_5_live.jsonl",
+		"../testdata/event_store_1_19_5.jsonl",
 		// The #1291 captures: the now-first-class session.next.reasoning.*
 		// and session.next.tool.* families (fixtures are SSE `data: ` lines).
 		"../testdata/events-text-turn.txt",
