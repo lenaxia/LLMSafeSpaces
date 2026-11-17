@@ -454,7 +454,7 @@ func (sup *piSupervisor) shutdown(ctx context.Context, grace time.Duration, sigC
 	case <-sigCh:
 		sup.log.Warn("supervise-pi: second signal — immediate exit (pending work abandoned)")
 		cancel()
-		<-done // ladders collapse: EOF→TERM→KILL with no waits
+		_ = <-done // ladders collapse: EOF→TERM→KILL with no waits
 		return nil
 	}
 }

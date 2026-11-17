@@ -144,7 +144,12 @@ jobs:
       - name: golangci-lint
         uses: golangci/golangci-lint-action@v9
         with:
-          version: latest
+          # Pinned to match ci.yml (was `latest`): v2.15.0's errcheck flagged
+          # a pre-existing deliberate-discard mid-release (2026-11-16, the
+          # ci.yml US-68.2 class — a linter release must never break the
+          # release train). Bump deliberately alongside ci.yml, with a
+          # full-repo lint run in the same PR.
+          version: v2.13.1
           args: --timeout=5m
       - name: helm-render
         run: |
