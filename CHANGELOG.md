@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.44.16] - 2026-11-17
+
 ### Fixed — board: the portrait rail swipes again — the app-wide touch-pan suppression lifted (v0.44.15 owner report, 2026-11-16)
 
 - **The symptom (owner, on a real phone)**: the portrait 1x4 rail rendered correctly (trio at 95%, done peeking at 5%) but a horizontal swipe did NOTHING — done could never be scrolled into view, swiping never moved anything, the focus-column lens never engaged via swipe transit. "The rail is visually right and functionally dead."
