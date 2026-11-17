@@ -240,9 +240,8 @@ describe("Sidebar — workspace refresh compute", () => {
     (await screen.findByRole("menuitem", { name: "Refresh compute" })).click();
     (await screen.findByRole("button", { name: "Refresh compute" })).click();
 
-    // the post-refresh refetch renders the workspace's new phase without a manual reload
     expect(await screen.findByText("Creating")).toBeInTheDocument();
-    // the mutation's onSuccess invalidation refetched the workspaces list
+    // the post-refresh refetch renders the workspace's new phase without a manual reload
     expect(list.mock.calls.length).toBeGreaterThanOrEqual(2);
   });
 
