@@ -452,6 +452,11 @@ func boardManagerWireCall(ctx context.Context, client *opencode.Client, name, sa
 		return client.BoardManagerEpicAction(ctx, saToken, workspaceID, sessionID, boardRefArg(args, "epicId"), "archive", wire)
 	case "board_epic_unarchive":
 		return client.BoardManagerEpicAction(ctx, saToken, workspaceID, sessionID, boardRefArg(args, "epicId"), "unarchive", wire)
+	case "board_ack_epic_wrapup":
+		// The wrap-up recursion cap's human ack (epic wrap-up review §8):
+		// manager verb — reset the ledger, clear the flag and any parked
+		// pointer, re-drain. The requestID rides the wire body verbatim.
+		return client.BoardManagerEpicAction(ctx, saToken, workspaceID, sessionID, boardRefArg(args, "epicId"), "ack-wrapup", wire)
 	case "board_delete_epic":
 		return client.BoardDeleteEpic(ctx, saToken, workspaceID, sessionID, boardRefArg(args, "epicId"), boardBoolArg(args, "force"))
 	case "board_create_story":

@@ -791,6 +791,29 @@ func mcpToolCatalog() []mcpTool {
 			}, "required": []string{"claimToken", "verdict", "reviewer"}},
 		},
 		{
+			Name:        "board_record_wrapup_verdict",
+			Description: "Close an EPIC's wrap-up review (the REST wire term is 'task'; the epic wrap-up review's engine-owned close verb — your ONE epic-level write as the wrap-up reviewer). PASS completes the epic iff still drained (atomically — no fresh review mints); GAPS holds the epic open: the non-done gap stories you filed FIRST via board_create_story (tag \"gap\", deduped via board_list) are what hold it — no bounce, no implementer re-dispatch. The schema is ENGINE-OWNED and closed: verdict pass|gaps (approve|fail is the story verb and refuses), reportUrl required on BOTH verdicts (the wrap-up report), gapRefs required non-empty iff gaps (same epic, gap-tagged, filed since the review's mint), notes size-capped. Requires the wrap-up row's live claim token from your charter envelope AND all its acceptance criteria met (board_update_story {setCriteriaMet} on your own claimed row — the Done guard applies regardless of reviewer role). A replay on an already-closed row is 200-with-original, never an error.",
+			InputSchema: map[string]any{"type": "object", "properties": map[string]any{
+				"claimToken": map[string]any{"type": "string", "description": "The claim token from your charter envelope (the in-flight guard — required)"},
+				"verdict":    map[string]any{"type": "string", "description": "pass or gaps (approve|fail is the STORY verb — it refuses here)"},
+				"reportUrl":  map[string]any{"type": "string", "description": "The wrap-up report URL (required on both verdicts — the close's evidence)"},
+				"reviewer":   map[string]any{"type": "string", "description": "Your reviewer identity (session name or phrase)"},
+				"gapRefs":    map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "gaps only: the gap stories' short ids (filed via board_create_story with tag \"gap\" BEFORE the verdict); required non-empty iff verdict=gaps"},
+				"requestId":  map[string]any{"type": "string", "description": "Optional idempotency key (UUID): reuse it on retry of the SAME logical verdict"},
+				"sessionId":  map[string]any{"type": "string", "description": "Optional: your own session id — self-identification for the assignee-stamp back-fill (RC-B), same as board_heartbeat's"},
+				"shortId":    map[string]any{"type": "string", "description": "The wrap-up row's short id (word-phrase form) — alternative to storyId"},
+				"storyId":    map[string]any{"type": "string", "description": "The wrap-up row's UUID — alternative to shortId"},
+			}, "required": []string{"claimToken", "verdict", "reportUrl", "reviewer"}},
+		},
+		{
+			Name:        "board_ack_epic_wrapup",
+			Description: "The epic wrap-up review's human ack (manager verb — the recursion cap's exit): reset the epic's consecutive-close ledger, clear the ack-wait flag and any parked in-flight pointer, and re-drain — an acked, still-drained epic mints its next wrap-up immediately (the human said keep going). Also un-wedges a PARKED pointer: a wrap-up row closed by a raw manager move_stage→done runs no settle, and the epic waits visibly until this ack clears it. Acking an epic with nothing to ack is the original echo (200, no event, the live review untouched). The epic's wrap-up state rides epic reads (wrapup count/cap/ack_pending/in-flight) and board_health's ack_waits section.",
+			InputSchema: map[string]any{"type": "object", "properties": map[string]any{
+				"epicId":    map[string]any{"type": "string", "description": "Epic short id (epc-…, phrase or legacy form) or UUID"},
+				"requestId": map[string]any{"type": "string", "description": "Optional idempotency key (UUID): reuse it on retry of the SAME logical ack"},
+			}, "required": []string{"epicId"}},
+		},
+		{
 			Name:        "abort_session",
 			Annotations: annot(false, true, false),
 			Description: "Stop a session's current turn (IDs from session_list / session_metadata — the busy ones). The turn ends immediately; the session's history and recorded work are kept — only the in-flight generation is cut. Use for cross-session management: a runaway or wrong-direction session you started (create_session / send_message), or stopping work that is no longer needed so it stops consuming tokens. Abort stops the in-flight turn DESTRUCTIVELY: any message queued for the target (e.g. a send_message still waiting for its turn to end) may be dropped — after aborting, re-send anything that mattered. Aborting an idle session is a harmless no-op. Sending another message afterwards (send_message) starts a new turn as usual. Not for: your own current session (you cannot abort your way out of this turn — finish it), or deleting history (compact summarizes; deleting is delete_session's job — abort never removes anything).",
@@ -1353,7 +1376,9 @@ func callMCPTool(ctx context.Context, password, name string, args map[string]any
 		"board_move_stage_bulk",
 		"board_delete_stories",
 		"board_import_plan",
-		"board_record_verdict": // #1947: the spawned reviewer persona's verdict channel
+		"board_record_verdict",        // #1947: the spawned reviewer persona's verdict channel
+		"board_record_wrapup_verdict", // the wrap-up reviewer persona's close (engine-owned schema, token-guarded)
+		"board_ack_epic_wrapup":       // the wrap-up recursion cap's human ack (manager verb)
 		// #1701: the board worker tools ride the same automation seam
 		// (pod SA token, verbatim passthrough, platform-validated).
 		// #1747: the manager set joins them — open to any in-workspace

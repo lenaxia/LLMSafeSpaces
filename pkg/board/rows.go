@@ -74,6 +74,12 @@ type Epic struct {
 	WrapUpCount      int        `json:"wrapup_count,omitempty"`
 	WrapUpTaskID     *string    `json:"wrapup_task_id,omitempty"`
 	WrapUpAckPending bool       `json:"wrapup_ack_pending,omitempty"`
+	// WrapUpCap renders the engine's consecutive-close cap beside the
+	// count (§8's read surface: wrapup {count, cap, ack_pending,
+	// in_flight_short_id, last_wrapped_at} — the flat fields above
+	// render the rest; the cap is config-derived, decorated at the read
+	// edge on wrap-up-enabled epics only).
+	WrapUpCap int `json:"wrapup_cap,omitempty"`
 	// Backpressure (derived, informational — see Project.Backpressure).
 	Backpressure string `json:"backpressure,omitempty"`
 	// Derived progress (never stored, ruling R2): Done over ALL tasks
@@ -339,6 +345,26 @@ type Health struct {
 	PendingInputByOrigin map[string]int          `json:"pending_input_by_origin"`
 	RecentReclaims       []HealthReclaim         `json:"recent_reclaims"`
 	ProjectSlots         []HealthProjectSlots    `json:"project_slots"`
+	// AckWaits is the wrap-up recursion circuit-breaker's surface (§8):
+	// every epic parked in ack-wait (wrapup_ack_pending — the human
+	// holds the gate) or carrying a PARKED in-flight pointer (a
+	// manager-override close, §4's fail-visible tail). A healthy
+	// in-flight review rides the epic read, not this list.
+	AckWaits []HealthAckWait `json:"ack_waits"`
+}
+
+// HealthAckWait is one epic awaiting the human's wrap-up ack.
+type HealthAckWait struct {
+	EpicID      string `json:"epic_id"`
+	EpicShortID string `json:"epic_short_id"`
+	ProjectID   string `json:"project_id"`
+	EpicTitle   string `json:"epic_title"`
+	WrapUpCount int    `json:"wrapup_count"`
+	Cap         int    `json:"cap"`
+	AckPending  bool   `json:"ack_pending"`
+	// InFlightShortID names the wrap-up row the (parked) pointer names —
+	// "" when the epic is in plain ack-wait (no pointer).
+	InFlightShortID string `json:"in_flight_short_id,omitempty"`
 }
 
 // HeartbeatResult reports the nudge-response channel's decision (item 6
