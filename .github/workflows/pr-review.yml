@@ -58,20 +58,17 @@ jobs:
     with:
       version: v0.2.29
       project_name: LLMSafeSpaces
-      # opencode-version-bump.yml authors its bump PRs as github-actions[bot]
-      # (GITHUB_TOKEN). Without this entry every bump PR is skipped by the
-      # reusable workflow's default bot-skip list — yet the bump's pin change
-      # is exactly the high-blast-radius surface the fixture-gate runbook
-      # exists for (REFRESH.md; #942). PR #2083 shipped 1.18.15 → 1.19.5 with
-      # NO review possible for exactly this reason. Deliberate per-bot trust
-      # decision (the ai-workflows-sanctioned lever, not a wildcard):
-      # github-actions[bot] in THIS repo authors only workflow-automation PRs
-      # (the bump bot); renovate/dependabot/release-please remain skipped.
-      trusted_app_bots: '["github-actions[bot]"]'
       # Trusted app-bot authors (ai-workflows #51): app bots can never be
       # collaborators, so the CLI assert refuses their PRs pre-LLM without
       # this. Must match canonicalTrustedAppBots (gha_callers_test.go).
-      trusted_app_bots: '["agentic-actor-coder[bot]","ai-workflows-propagation[bot]"]'
+      # github-actions[bot] (added for PR #2083): opencode-version-bump.yml
+      # authors its bump PRs with GITHUB_TOKEN — without this entry every
+      # automated runtime-pin bump ships with the review gate skipped,
+      # and the pin change is exactly the high-blast-radius surface the
+      # fixture-gate runbook exists for (REFRESH.md, #942). In this repo
+      # that login authors only workflow-templated PRs (the bump bot);
+      # renovate/dependabot/release-please/mergify stay skipped.
+      trusted_app_bots: '["agentic-actor-coder[bot]","ai-workflows-propagation[bot]","github-actions[bot]"]'
 
   dispatch-recovery:
     # The #1844 outage lever (manual arm; the automated sweep lives in

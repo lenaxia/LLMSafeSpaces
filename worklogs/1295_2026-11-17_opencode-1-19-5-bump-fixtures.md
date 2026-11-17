@@ -79,3 +79,19 @@ continuation convention), >120-char strings → 60 chars + `…[trimmed]`
 
 None found. The 1.18.15-limitation note in REFRESH.md updated (tool parts
 now pinned current).
+
+## CI follow-ups on the same PR (same session)
+
+- **Trivy**: CVE-2026-112366 (picomatch) landed in the Trivy DB mid-flight
+  (main and every open branch went red 2026-11-17 19:15–19:51Z). Accepted
+  in `.trivyignore` per convention: transitive dev-dep of build tooling
+  (vite/vitest), never shipped (frontend runtime copies only dist/), no
+  fixed release yet.
+- **Review gate**: the bump bot authors PRs as `github-actions[bot]`, which
+  sits in ai-workflows' default bot-skip list — bump PRs were structurally
+  reviewless (a `synchronize` event is not enough). Extended
+  `canonicalTrustedAppBots` (#1710 single-source) with `github-actions[bot]`
+  across all four copies (gha_callers_test.go, ai-comment.yml arm + input,
+  pr-review.yml input). An intermediate commit accidentally introduced a
+  duplicate `trusted_app_bots` key (invalid workflow, jobless run failure)
+  — fixed by merging into the single canonical entry; drift tests green.
