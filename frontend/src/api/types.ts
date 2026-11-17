@@ -75,6 +75,14 @@ export interface WorkspaceListItem {
   /** The instance's enabled harness set (the picker's offer list;
    * opencode always present). Read-only context. */
   harnessOptions?: string[];
+  /** #2092: true while this unbound workspace's binds are FAILING to
+   * persist (HarnessBindingPending condition reason BindNotPersisted —
+   * the cluster's Workspace CRD predates the harness field, so the
+   * apiserver prunes every bind write). Drives the degraded hint
+   * ("blocked on cluster CRD — operator action required") instead of
+   * the unbounded Creating state; clears once a bind lands after the
+   * operator applies the CRD. */
+  bindBlocked?: boolean;
 }
 
 export interface WorkspaceListResponse {

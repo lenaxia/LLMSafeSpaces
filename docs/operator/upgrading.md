@@ -168,6 +168,68 @@ kubectl get crd inferencerelays.llmsafespaces.dev -o jsonpath='{.spec.versions[*
 
 The controller supports the latest served version; older versions are served with a conversion webhook if present.
 
+### CRD skew recovery (issue #2092)
+
+A **CRD-skewed** cluster serves a Workspace CRD older than the platform
+release (missing a spec field the platform writes — the 2026-11-17
+incident: `spec.harness`, added in 0.44.15). Because `helm upgrade` never
+touches `crds/`, this is the default outcome on Flux-managed clusters
+whose CRD kustomization was not bumped with the release train. The
+structural apiserver **silently prunes** the unknown field on every write
+and returns success, so:
+
+- workspaces created **without** an explicit harness (the frontend-picker
+  path) wedge in `Creating` forever — `HarnessBindingPending=True`, no
+  pod, and every bind attempt fails with `harness_bind_not_persisted`;
+- the legacy fleet degrades loudly-but-safely (the controller's backfill
+  error, once per 10m per workspace; the phase machine is never blocked);
+- new harness-less creates are **refused at the gate** (`crd_missing_harness_capability`
+  — pass an explicit harness or upgrade the CRD), so no new wedged
+  workspaces are created while the skew persists.
+
+**Detection:** the `LLMSafeSpacesCRDSkew` alert (critical) fires within
+15 minutes of a conclusive skew verdict — from boot, via the controller's
+dry-run capability probe, not from a user failing first. The
+`LLMSafeSpacesHarnessBindNotPersisted` warning is the user-impact echo
+(binds actively failing). The gauge
+(`llmsafespaces_crd_skew{crd,field}`) heals to 0 — both alerts
+auto-resolve — the moment a write verifies after the CRD lands.
+
+**Recovery (operator):**
+
+1. Apply the current CRD — the Flux path bump (this repo tracks the
+   mirror in `deploy/flux/crds/`; the release checklist's CRD-apply step
+   carries it into the ops repo), or directly:
+
+   ```bash
+   kubectl apply -f helm/crds/workspace.yaml
+   ```
+
+2. Sweep the wedged born-unbound workspaces (one shot, with read-back
+   verify on every bind):
+
+   ```bash
+   ./local/crd-skew-rebind.sh            # enumerate only (always safe)
+   ./local/crd-skew-rebind.sh --rebind   # re-bind → opencode (confirm prompt)
+   ```
+
+   The script lists workspaces with `spec.harness==""` + the
+   `llmsafespaces.dev/harness-unbound` marker, re-drives the bind
+   (`--rebind=pi` for pi), removes the waiting marker, and **fails
+   loudly** on any bind that reads back empty (the CRD is still stale).
+   The controller builds each pod on its next reconcile after the bind.
+
+**Recovery (user):** no operator needed if the CRD has landed — re-run
+the first-session picker or `PUT /workspaces/{id}/harness`; the bind
+persists and the workspace converges. While the CRD is still stale the
+picker/sidebar shows the degraded hint ("blocked on cluster CRD —
+operator action required") instead of an unbounded Creating spinner.
+
+**Prevention:** the release-train CRD guard — repolint fails any PR that
+changes a CRD under `helm/crds/` without the byte-identical mirror bump
+in `deploy/flux/crds/` (`make flux-sync-crds`). Schema change = train
+gate on CRD apply (see `docs/release-bump-checklist.md` §6).
+
 ---
 
 ## The KEK rotation window

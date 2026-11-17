@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"testing"
 
+	"github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
@@ -579,11 +580,11 @@ func TestBindWorkspaceHarness_NotPersistedFailsLoudly(t *testing.T) {
 
 	unbound := bornUnboundCRD()
 	// Get serves the shared object every read (endpoint fetch, the
-	// bind's fresh read, the verify read). The Update hook IS the
-	// pruning apiserver: the write is accepted, and the field the
-	// object carries afterwards is dropped — so the verify read-back
-	// sees spec.harness == "" (marker gone too: annotations, being
-	// schema-known, DO persist the deletion).
+	// bind's fresh read, the verify read, the condition write's read).
+	// The Update hook IS the pruning apiserver: the write is accepted,
+	// and the field the object carries afterwards is dropped — so the
+	// verify read-back sees spec.harness == "" (marker gone too:
+	// annotations, being schema-known, DO persist the deletion).
 	f.ws.On("Get", mock.Anything, "ws-1", mock.Anything).Return(unbound, nil)
 	f.ws.On("Update", mock.Anything, mock.Anything).
 		Run(func(args mock.Arguments) {
@@ -591,7 +592,12 @@ func TestBindWorkspaceHarness_NotPersistedFailsLoudly(t *testing.T) {
 			stored.Spec.Harness = "" // pruned by the harness-less CRD
 		}).
 		Return(nil, nil).Once()
+	// #2092 ruling 3: the degraded condition write (best-effort; the
+	// condition surfaces in the picker/sidebar as the CRD-blocked hint).
+	f.ws.On("UpdateStatus", mock.Anything, mock.AnythingOfType("*v1.Workspace")).
+		Return(unbound, nil).Maybe()
 
+	before := testutil.ToFloat64(harnessBindNotPersistedTotal.WithLabelValues(bindNotPersistedSurfaceBindVerify))
 	_, err := f.svc.BindWorkspaceHarness(ctx, "user-1", "ws-1", "pi")
 	apiErr := harnessAPIError(t, err)
 	assert.Equal(t, 500, apiErr.StatusCode())
@@ -600,4 +606,20 @@ func TestBindWorkspaceHarness_NotPersistedFailsLoudly(t *testing.T) {
 	require.NotNil(t, apiErr.Err, "the remediation rides the wrapped error")
 	assert.Contains(t, apiErr.Err.Error(), "CRD predates 0.44.15",
 		"the error names the operator remediation (apply helm/crds/workspace.yaml)")
+
+	// #2092 ruling 2: the verdict ticks the counter the alert rides.
+	assert.Equal(t, before+1, testutil.ToFloat64(harnessBindNotPersistedTotal.WithLabelValues(bindNotPersistedSurfaceBindVerify)),
+		"the failed verify increments the bind_verify surface")
+	// #2092 ruling 3: the degraded condition landed on the object the
+	// status write carried (the shared fixture object).
+	var degraded *v1.WorkspaceCondition
+	for i := range unbound.Status.Conditions {
+		if unbound.Status.Conditions[i].Type == v1.WorkspaceConditionHarnessBindingPending {
+			degraded = &unbound.Status.Conditions[i]
+		}
+	}
+	require.NotNil(t, degraded, "the BindNotPersisted condition must be written")
+	assert.Equal(t, "True", string(degraded.Status))
+	assert.Equal(t, v1.WorkspaceReasonBindNotPersisted, degraded.Reason)
+	assert.Contains(t, degraded.Message, "operator action required")
 }

@@ -1,0 +1,207 @@
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: inferencerelays.llmsafespaces.dev
+spec:
+  group: llmsafespaces.dev
+  names:
+    kind: InferenceRelay
+    plural: inferencerelays
+    singular: inferencerelay
+    shortNames:
+      - irelay
+  scope: Cluster
+  versions:
+    - name: v1
+      served: true
+      storage: true
+      subresources:
+        status: {}
+      additionalPrinterColumns:
+        - name: Healthy
+          type: integer
+          jsonPath: .status.healthyReplicas
+        - name: Upstream
+          type: string
+          jsonPath: .spec.upstreamURL
+        - name: Age
+          type: date
+          jsonPath: .metadata.creationTimestamp
+      schema:
+        openAPIV3Schema:
+          type: object
+          properties:
+            spec:
+              type: object
+              required:
+                - upstreamURL
+                - providers
+              properties:
+                upstreamURL:
+                  type: string
+                  description: "LLM provider endpoint the relays proxy to. Defaults to opencode.ai/zen/v1 so a default deploy produces working free-model inference via the anonymous `public` key (authorizes inference for any model Zen flags `allowAnonymous` — verified 2026-06-20, worklog 0420 correction). Operators pointing the fleet at a paid gateway or non-Zen upstream should override this and configure upstreamAuth.keySecret if that upstream requires a real key. The earlier default to ai.thekao.cloud (PR #298) was based on the now-disproven A23 premise; reverted."
+                  default: "https://opencode.ai/zen/v1"
+                providers:
+                  type: array
+                  description: "Relay VM cloud providers. Default fleet: 1 AWS (paid primary) + 1 OCI (free secondary). GCP optional paid tertiary."
+                  minItems: 1
+                  items:
+                    type: object
+                    required:
+                      - provider
+                      - region
+                      - credentialsRef
+                    properties:
+                      provider:
+                        type: string
+                        enum:
+                          - aws
+                          - oci
+                          - gcp
+                      region:
+                        type: string
+                        description: "Provider region (e.g. us-east-1, us-ashburn-1, us-central1-a)."
+                      credentialsRef:
+                        type: object
+                        description: "K8s Secret containing provider credentials."
+                        required:
+                          - name
+                        properties:
+                          name:
+                            type: string
+                            minLength: 1
+                      shape:
+                        type: string
+                        description: "Override default shape. aws: t4g.micro, oci: VM.Standard.A1.Flex, gcp: e2-micro."
+                healthCheck:
+                  type: object
+                  description: "Active health-checking of relay VMs."
+                  properties:
+                    interval:
+                      type: string
+                      default: "15s"
+                    timeout:
+                      type: string
+                      default: "5s"
+                    unhealthyThreshold:
+                      type: integer
+                      default: 3
+                      description: "Consecutive failures before marking unhealthy."
+                    replacementTimeout:
+                      type: string
+                      default: "15m"
+                      description: "Time to stay unhealthy before destroy + reprovision."
+                rotation:
+                  type: object
+                  description: "Automatic destroy-and-recreate on 429 detection."
+                  properties:
+                    enabled:
+                      type: boolean
+                      default: true
+                    max429Rate:
+                      type: number
+                      default: 0.5
+                      description: "429 fraction of total responses that triggers rotation."
+                    detectionWindow:
+                      type: string
+                      default: "5m"
+                      description: "Rolling window for counting 429s."
+                    cooldown:
+                      type: string
+                      default: "30m"
+                      description: "Minimum time between rotations on the same provider slot."
+                fallback:
+                  type: object
+                  description: "Direct-to-upstream routing when all relays are unhealthy. Rate-limited."
+                  properties:
+                    enabled:
+                      type: boolean
+                      default: true
+                    rate:
+                      type: number
+                      default: 0.5
+                      description: "Max request rate in fallback mode (req/s, global)."
+                    maxConcurrent:
+                      type: integer
+                      default: 1
+                      description: "Max in-flight requests in fallback mode."
+            status:
+              type: object
+              properties:
+                instances:
+                  type: array
+                  description: "Observed state of all managed relay VMs."
+                  items:
+                    type: object
+                    required:
+                      - id
+                      - provider
+                      - region
+                      - publicIP
+                      - state
+                      - healthy
+                    properties:
+                      id:
+                        type: string
+                      provider:
+                        type: string
+                      region:
+                        type: string
+                      publicIP:
+                        type: string
+                      state:
+                        type: string
+                      healthy:
+                        type: boolean
+                      lastCheck:
+                        type: string
+                        format: date-time
+                        nullable: true
+                      "429Count":
+                        type: integer
+                      totalRequests:
+                        type: integer
+                      egressBytes:
+                        type: integer
+                        format: int64
+                      provisioningAttempts:
+                        type: integer
+                      lastProvisionError:
+                        type: string
+                healthyReplicas:
+                  type: integer
+                  description: "Count of instances passing health checks."
+                conditions:
+                  type: array
+                  description: "Overall relay fleet health conditions."
+                  items:
+                    type: object
+                    required:
+                      - type
+                      - status
+                      - lastTransitionTime
+                      - reason
+                    properties:
+                      type:
+                        type: string
+                      status:
+                        type: string
+                        enum:
+                          - "True"
+                          - "False"
+                          - Unknown
+                      observedGeneration:
+                        type: integer
+                        format: int64
+                      lastTransitionTime:
+                        type: string
+                        format: date-time
+                      reason:
+                        type: string
+                      message:
+                        type: string
+                lastRotation:
+                  type: string
+                  format: date-time
+                  nullable: true
+                  description: "Time of the most recent destroy-and-recreate."

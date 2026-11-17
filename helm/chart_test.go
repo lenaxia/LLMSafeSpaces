@@ -2612,6 +2612,13 @@ func TestMonitoring_PrometheusRule_ContainsAllAlerts(t *testing.T) {
 		// N-1 for hours is the OnRefresh posture; 2h+ persistence means
 		// the roll runbook has not been run).
 		"LLMSafeSpacesAgentdVersionSkew",
+		// #2092: the CRD-skew pair — the controller gauge PAGES while
+		// the cluster's CRD predates the platform (binds pruned,
+		// born-unbound workspaces wedged in Creating); the API counter
+		// is the user-impact echo (binds verifies failing / creates
+		// refused).
+		"LLMSafeSpacesCRDSkew",
+		"LLMSafeSpacesHarnessBindNotPersisted",
 	}
 	for _, expectedName := range expected {
 		require.True(t, alertNames[expectedName],
@@ -2656,6 +2663,61 @@ func TestMonitoring_PrometheusRule_ContainsAllAlerts(t *testing.T) {
 		require.NotContains(t, string(rendered), gone,
 			"retired metric %q must not appear in any PrometheusRule (#760)", gone)
 	}
+}
+
+// TestMonitoring_PrometheusRule_CRDSkewAlerts pins the #2092 alert pair's
+// SHAPE, not just its existence: the gauge alert is the PAGER (critical,
+// controller job, `for: 15m` fatigue gate, max() so a fleet-wide wedge is
+// one series) and the counter alert is the user-impact echo (warning, api
+// job, increase() so it only fires while users are actively blocked).
+// Drift on any of these (a severity demotion, a per-workspace label
+// explosion, a `for:` removal) must redden here, not in production.
+func TestMonitoring_PrometheusRule_CRDSkewAlerts(t *testing.T) {
+	docs := helmTemplate(t, "monitoring:\n  enabled: true\n")
+	var rule map[string]any
+	for _, d := range docs {
+		if d["kind"] == "PrometheusRule" {
+			rule = d
+			break
+		}
+	}
+	require.NotNil(t, rule, "PrometheusRule must be rendered")
+	spec, ok := rule["spec"].(map[string]any)
+	require.True(t, ok, "spec must be top-level")
+	groups, _ := spec["groups"].([]any)
+
+	findAlert := func(name string) map[string]any {
+		for _, g := range groups {
+			gm, _ := g.(map[string]any)
+			rules, _ := gm["rules"].([]any)
+			for _, r := range rules {
+				rm, _ := r.(map[string]any)
+				if rm["alert"] == name {
+					return rm
+				}
+			}
+		}
+		return nil
+	}
+
+	gaugeAlert := findAlert("LLMSafeSpacesCRDSkew")
+	require.NotNil(t, gaugeAlert, "LLMSafeSpacesCRDSkew must render")
+	require.Contains(t, gaugeAlert["expr"], "llmsafespaces_crd_skew",
+		"the skew alert must query the controller gauge")
+	labels, _ := gaugeAlert["labels"].(map[string]any)
+	require.Equal(t, "critical", labels["severity"],
+		"a stale CRD wedges every new picker-path workspace — it pages")
+	require.Equal(t, "15m", gaugeAlert["for"],
+		"the fatigue gate rides out inconclusive blips (the gauge moves only on conclusive verdicts)")
+
+	echoAlert := findAlert("LLMSafeSpacesHarnessBindNotPersisted")
+	require.NotNil(t, echoAlert, "LLMSafeSpacesHarnessBindNotPersisted must render")
+	require.Contains(t, echoAlert["expr"], "llmsafespaces_harness_bind_not_persisted_total",
+		"the echo alert must query the API counter")
+	echoLabels, _ := echoAlert["labels"].(map[string]any)
+	require.Equal(t, "warning", echoLabels["severity"],
+		"the counter is the user-impact echo; the critical gauge alert is the pager")
+	require.Equal(t, "5m", echoAlert["for"])
 }
 
 // TestMonitoring_DatasourceConfigMap_RendersWithLabel verifies the

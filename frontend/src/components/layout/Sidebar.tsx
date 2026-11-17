@@ -515,7 +515,21 @@ function WorkspaceGroup({
             {workspace.harness && <HarnessBadge harness={workspace.harness} className="ml-1" />}
             {activating && <Spinner size="sm" />}
             {!activating && workspace.phase && !isActive && !isSuspended && (
-              <span className="text-xs text-muted-foreground">{workspace.phase}</span>
+              workspace.bindBlocked ? (
+                // #2092: binds on this unbound workspace are failing to
+                // persist (cluster CRD predates the harness field) — the
+                // honest state is the operator-actionable hint, never an
+                // unbounded "Creating" that reads as progress.
+                <span
+                  className="text-xs text-amber-600 dark:text-amber-400"
+                  title="Harness bind attempts are failing to persist: the cluster's Workspace CRD predates the harness field. An operator must apply the chart CRD (helm upgrade never touches crds/); your harness choice is kept and will bind once it lands."
+                  data-testid="bind-blocked-hint"
+                >
+                  blocked on cluster CRD — operator action required
+                </span>
+              ) : (
+                <span className="text-xs text-muted-foreground">{workspace.phase}</span>
+              )
             )}
             {!expanded && busyCount > 0 && !hung && (
               <BusyIndicator size="sm" />

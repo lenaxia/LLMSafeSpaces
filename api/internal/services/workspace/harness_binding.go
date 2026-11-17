@@ -266,6 +266,16 @@ func (s *Service) bindUnboundWorkspace(ctx context.Context, workspaceID, harness
 			return apierrors.NewInternalError("workspace_get_failed", err)
 		}
 		if after.Spec.Harness == "" {
+			// #2092: the verdict is now OBSERVABLE, not just returned —
+			// the counter (LLMSafeSpacesHarnessBindNotPersisted alert
+			// rides it), the create-probe cache invalidation (the next
+			// harness-less create re-probes instead of trusting a stale
+			// "supported"), and the degraded condition the picker/sidebar
+			// surfaces ("blocked on cluster CRD — operator action
+			// required") instead of an unbounded Creating spinner.
+			countBindNotPersisted(bindNotPersistedSurfaceBindVerify)
+			s.harnessCapability.invalidate()
+			s.markBindNotPersisted(ctx, workspaceID)
 			return apierrors.NewInternalError("harness_bind_not_persisted", fmt.Errorf(
 				"the harness bind for workspace %s was accepted but did not persist (spec.harness reads back empty) — the cluster's Workspace CRD predates 0.44.15 (helm does not upgrade crds/; the operator must `kubectl apply -f helm/crds/workspace.yaml`); retry the bind after the CRD lands",
 				workspaceID,
@@ -273,6 +283,70 @@ func (s *Service) bindUnboundWorkspace(ctx context.Context, workspaceID, harness
 		}
 		return nil
 	})
+}
+
+// markBindNotPersisted writes the DEGRADED verdict on the workspace
+// itself: HarnessBindingPending=True/BindNotPersisted (#2092 ruling 3),
+// the surface the picker/sidebar reads to replace the unbounded
+// "waiting for harness selection" Creating state with the operator-
+// actionable hint. Best-effort by design: the named error above is the
+// primary surface — a condition-write failure (conflict exhaustion,
+// transient apiserver error) logs and never masks the bind verdict. The
+// condition heals on the next SUCCESSFUL bind: the controller's bound
+// path (clearHarnessBindingPending) flips any True
+// HarnessBindingPending to False/HarnessBound regardless of reason.
+func (s *Service) markBindNotPersisted(ctx context.Context, workspaceID string) {
+	wsClient, err := s.workspaceCRDClient()
+	if err != nil {
+		s.logger.Warn("bind-not-persisted condition write skipped: no workspace client", "workspaceID", workspaceID)
+		return
+	}
+	err = retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		current, err := wsClient.Get(ctx, workspaceID, metav1.GetOptions{})
+		if err != nil {
+			return err
+		}
+		if !upsertBindNotPersistedCondition(current) {
+			return nil // already standing — idempotent
+		}
+		_, err = wsClient.UpdateStatus(ctx, current)
+		return err
+	})
+	if err != nil {
+		// Never mask the bind verdict; the next failed bind re-attempts.
+		s.logger.Warn("bind-not-persisted condition write failed (non-fatal; the bind error remains the verdict)",
+			"workspaceID", workspaceID, "error", err.Error())
+	}
+}
+
+// upsertBindNotPersistedCondition sets
+// HarnessBindingPending=True/WorkspaceReasonBindNotPersisted on the
+// in-memory object. Returns false when it is already standing (skip the
+// UpdateStatus — the message is static, so a repeat write is pure
+// churn).
+func upsertBindNotPersistedCondition(ws *v1.Workspace) bool {
+	const degradedMessage = "bind attempts are failing to persist: the cluster's Workspace CRD predates the harness field — blocked on cluster CRD, operator action required (apply helm/crds/workspace.yaml); the harness choice is kept and will bind once the CRD lands"
+	for i := range ws.Status.Conditions {
+		c := &ws.Status.Conditions[i]
+		if c.Type == v1.WorkspaceConditionHarnessBindingPending {
+			if c.Status == "True" && c.Reason == v1.WorkspaceReasonBindNotPersisted {
+				return false
+			}
+			c.Status = "True"
+			c.Reason = v1.WorkspaceReasonBindNotPersisted
+			c.Message = degradedMessage
+			c.LastTransitionTime = metav1.Now()
+			return true
+		}
+	}
+	ws.Status.Conditions = append(ws.Status.Conditions, v1.WorkspaceCondition{
+		Type:               v1.WorkspaceConditionHarnessBindingPending,
+		Status:             "True",
+		Reason:             v1.WorkspaceReasonBindNotPersisted,
+		Message:            degradedMessage,
+		LastTransitionTime: metav1.Now(),
+	})
+	return true
 }
 
 // rereadBindingVerdict converts a webhook denial into the API's

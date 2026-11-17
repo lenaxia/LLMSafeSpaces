@@ -490,6 +490,34 @@ spec:
               absent arm). Parked user-visible errors will not re-arm or resolve until
               the API outbox Run loop recovers.
 
+        # Bind-not-persisted (#2092): the USER-IMPACT echo of the
+        # controller's LLMSafeSpacesCRDSkew page — every tick is a real
+        # bind attempt (picker submit or PUT /harness) that verified
+        # UN-PERSISTED against the skewed CRD, or a harness-less create
+        # refused by the capability probe. Warning tier (the critical
+        # gauge alert is the pager); fatigue posture: increase() over
+        # 15m held 5m — it only fires while users are actively blocked
+        # and self-resolves the moment the CRD lands (binds verify
+        # clean, rate drops to zero); no absent() arm (a healthy
+        # cluster legitimately never ticks it).
+        - alert: LLMSafeSpacesHarnessBindNotPersisted
+          expr: |
+            sum(increase(llmsafespaces_harness_bind_not_persisted_total{job=~"{{ $apiJob }}"}[15m])) > 0
+          for: 5m
+          labels:
+            severity: warning
+            component: api
+          annotations:
+            summary: "Harness binds are failing to persist (cluster CRD predates bind-once)"
+            description: >-
+              {{ `{{ $value }}` }} harness bind/create attempt(s) in the last 15m verified
+              un-persisted — the cluster's Workspace CRD lacks spec.harness and the
+              apiserver prunes every bind write (surface label: bind_verify = live
+              binds failing, create_probe = harness-less creates refused at the gate).
+              Apply the chart CRD (kubectl apply -f helm/crds/ or bump the Flux crds
+              path), then re-bind wedged workspaces (local/crd-skew-rebind.sh).
+              Runbook: docs/operator/upgrading.md — CRD skew recovery.
+
     - name: llmsafespaces.controller
       rules:
         # #863: page-on-any. The counter increments once per failure
@@ -561,6 +589,43 @@ spec:
               the workspace status fields agentdVersion/agentdCommit/agentdBuildTime.
               Roll runbook: docs/operator/agentd-delivery.md — Version visibility &
               skew detection (updatePolicy Rolling / forceRoll, or natural refresh).
+
+        # CRD skew (#2092): the cluster's Workspace CRD predates the
+        # running platform (missing a spec field the controller writes —
+        # today spec.harness; helm NEVER upgrades crds/, so a normally
+        # upgraded cluster can serve a stale CRD). The apiserver PRUNES
+        # the field on every write and returns success: binds never
+        # land, born-unbound workspaces wedge in Creating forever, and
+        # before this gauge existed the only evidence was a 10-minute
+        # ERROR cadence in controller logs that nothing paged on.
+        # Fatigue posture (#2047 discipline): ONE series per (crd,
+        # field) — a fleet-wide wedge is ONE page, never a
+        # per-workspace storm; `for: 15m` rides out any single
+        # inconclusive blip (the gauge only moves on CONCLUSIVE
+        # verdicts: a pruned read-back or a conclusive dry-run probe);
+        # resolution on heal is automatic — the gauge flips to 0 the
+        # moment a verify lands after the operator applies the CRD
+        # (backfill read-back, bind verify, or the 10m re-probe), so
+        # the alert never needs a manual clear and cannot dangle after
+        # recovery. This PAGES (critical): every new picker-path
+        # workspace on the cluster is wedging while it fires.
+        - alert: LLMSafeSpacesCRDSkew
+          expr: |
+            max(llmsafespaces_crd_skew{job=~"{{ $ctrlJob }}"}) > 0
+          for: 15m
+          labels:
+            severity: critical
+            component: controller
+          annotations:
+            summary: "Cluster CRD predates the platform ({{ `{{ $labels.crd }}` }} lacks {{ `{{ $labels.field }}` }})"
+            description: >-
+              The cluster's {{ `{{ $labels.crd }}` }} CRD is missing {{ `{{ $labels.field }}` }}:
+              the apiserver silently prunes every write of that field, so binds never
+              persist and born-unbound workspaces wedge in Creating forever. Apply the
+              chart CRD (`kubectl apply -f helm/crds/` or bump the Flux crds path —
+              helm upgrade never touches crds/), then re-bind wedged workspaces
+              (local/crd-skew-rebind.sh). Runbook: docs/operator/upgrading.md —
+              CRD skew recovery.
 
         - alert: LLMSafeSpacesReconciliationErrors
           expr: |

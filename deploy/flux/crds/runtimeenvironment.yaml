@@ -1,0 +1,95 @@
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: runtimeenvironments.llmsafespaces.dev
+spec:
+  group: llmsafespaces.dev
+  names:
+    kind: RuntimeEnvironment
+    plural: runtimeenvironments
+    singular: runtimeenvironment
+    shortNames:
+      - rte
+  scope: Cluster
+  versions:
+    - name: v1
+      served: true
+      storage: true
+      schema:
+        openAPIV3Schema:
+          type: object
+          required:
+            - spec
+          properties:
+            spec:
+              type: object
+              required:
+                - image
+                - language
+              properties:
+                image:
+                  type: string
+                  description: "Container image for this runtime"
+                language:
+                  type: string
+                  description: "Programming language (e.g., python, nodejs)"
+                version:
+                  type: string
+                  description: "Version of the language runtime"
+                tags:
+                  type: array
+                  items:
+                    type: string
+                  description: "Tags for categorizing runtimes"
+                preInstalledPackages:
+                  type: array
+                  items:
+                    type: string
+                  description: "Packages pre-installed in this runtime"
+                packageManager:
+                  type: string
+                  description: "Default package manager (e.g., pip, npm)"
+                securityFeatures:
+                  type: array
+                  items:
+                    type: string
+                  description: "Security features supported by this runtime"
+                resourceRequirements:
+                  type: object
+                  properties:
+                    minCpu:
+                      type: string
+                    minMemory:
+                      type: string
+                    recommendedCpu:
+                      type: string
+                    recommendedMemory:
+                      type: string
+                requiresCredentials:
+                  type: boolean
+                  description: "True if this runtime requires LLM provider credentials. Workspace creation rejects requests with no credential secret set when true."
+            status:
+              type: object
+              properties:
+                available:
+                  type: boolean
+                  description: "Whether this runtime is available"
+                lastValidated:
+                  type: string
+                  format: date-time
+                  description: "Last time this runtime was validated"
+      additionalPrinterColumns:
+        - name: Language
+          type: string
+          jsonPath: .spec.language
+        - name: Version
+          type: string
+          jsonPath: .spec.version
+        - name: Available
+          type: boolean
+          jsonPath: .status.available
+        - name: Age
+          type: date
+          jsonPath: .metadata.creationTimestamp
+      subresources:
+        status: {}
