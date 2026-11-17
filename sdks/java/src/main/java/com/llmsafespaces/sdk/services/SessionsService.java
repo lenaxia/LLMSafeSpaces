@@ -17,9 +17,27 @@ public class SessionsService {
 
     public SessionsService(LLMSafeSpacesClient c) { this.c = c; }
 
+    /**
+     * Creates a session. The workspace's BOUND harness serves the create;
+     * on an unbound workspace this binds opencode, the non-interactive
+     * default (owner ruling 2026-11-16: bind-once).
+     */
     public EnsureSessionResponse ensure(String workspaceId) {
         return c.request("POST", "/workspaces/" + workspaceId + "/sessions/new",
                 null, EnsureSessionResponse.class);
+    }
+
+    /**
+     * Creates a session with an explicit harness choice — the frontend
+     * picker's submit on an UNBOUND workspace: the harness binds
+     * atomically with the session (owner ruling 2026-11-16: bind-once).
+     * On a bound workspace the harness must match or be empty (mismatch:
+     * 409 harness_immutable).
+     */
+    public EnsureSessionResponse ensureWithHarness(String workspaceId, String harness) {
+        return c.request("POST", "/workspaces/" + workspaceId + "/sessions/new",
+                Map.of("harness", harness == null ? "" : harness),
+                EnsureSessionResponse.class);
     }
 
     /** Sends synchronously; returns the completed assistant Message (contract shape). */

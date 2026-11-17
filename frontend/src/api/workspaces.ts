@@ -74,8 +74,16 @@ export const workspacesApi = {
     }),
   createWorkspace: (workspaceId: string, runtime = "base") =>
     api.post<{ id: string }>("/workspaces", { runtime, workspaceRef: workspaceId }),
-  ensureSession: (workspaceId: string) =>
-    api.post<EnsureSessionResponse>(`/workspaces/${workspaceId}/sessions/new`),
+  // First-session harness binding (bind-once, owner ruling
+  // 2026-11-16): the picker's submit sends the chosen harness in the
+  // sessions/new body — the API binds it atomically with the session.
+  // Omitted on an unbound workspace binds opencode (the non-interactive
+  // default); on a bound workspace it must match (mismatch: 409
+  // harness_immutable — there is no switch path).
+  ensureSession: (workspaceId: string, opts?: { harness?: string }) =>
+    api.post<EnsureSessionResponse>(`/workspaces/${workspaceId}/sessions/new`, {
+      ...(opts?.harness ? { harness: opts.harness } : {}),
+    }),
   getStatus: (id: string) => api.get<WorkspaceStatus>(`/workspaces/${id}/status`),
   activate: (id: string) => api.post<ActivateWorkspaceResponse>(`/workspaces/${id}/activate`),
   suspend: (id: string) => api.post<void>(`/workspaces/${id}/suspend`),

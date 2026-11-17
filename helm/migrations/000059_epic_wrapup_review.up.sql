@@ -1,9 +1,14 @@
 -- 000059_epic_wrapup_review — the wrap-up engine's row-shape migration
 -- (epic wrap-up review, low-level design §1b; the design named this
--- migration 000056 at design time — main took 000055 for
--- task_last_renewed_at in #2067 and 000056 for the wrapUpReviewer
--- config key in #2071, so this file takes the next free number per the
--- duplicate-version class pin in api/migrations/migration_set_unit_test.go).
+-- migration 000056 at design time — main then took every number in
+-- sequence while this lane flew: 000055 for task_last_renewed_at
+-- (#2067), 000056 for the wrapUpReviewer config key (#2071), 000057
+-- for the no-advance heartbeat budget (#2044/#2072), and 000058 for
+-- the session_alerts payload (#2047/#2074) — the last one colliding
+-- with this lane's own 000058 (main's duplicate-version race, seen
+-- both ways), resolved by renumber there too — so this file takes the
+-- next free number per the duplicate-version class pin in
+-- api/migrations/migration_set_unit_test.go).
 --
 -- tasks.kind is the engine-owned row-class marker: 'story' is the
 -- default and the only value user-created rows can hold (the service

@@ -12,6 +12,9 @@ import type { SessionDisplayStatus } from "../../providers/SessionActivityProvid
 import { RenameWorkspaceDialog } from "../workspace/RenameWorkspaceDialog";
 import { NewWorkspaceSplitButton } from "../workspace/NewWorkspaceSplitButton";
 import { WorkspaceSettingsDrawer } from "../workspace/WorkspaceSettingsDrawer";
+import { HarnessPickerDialog } from "../workspace/HarnessPickerDialog";
+import { HarnessBadge } from "../workspace/HarnessBadge";
+import { FALLBACK_HARNESS_OPTIONS } from "../workspace/harnessMeta";
 import { RenameSessionDialog } from "../session/RenameSessionDialog";
 import { KebabMenu } from "../ui/KebabMenu";
 import type { KebabMenuItem } from "../ui/KebabMenu";
@@ -114,12 +117,25 @@ export function Sidebar({ onNavigate }: Props) {
     },
   });
 
+  // First-session picker wiring (bind-once, 2026-11-16): the optional
+  // harness rides the sessions/new body; the API binds it atomically
+  // with the session. ["workspaces"] is invalidated on BOTH outcomes —
+  // on success the badge replaces the picker forever; on failure the
+  // binding persisted server-side (the choice survives the retry), so
+  // the refetch keeps the sidebar honest instead of re-offering a
+  // decision the workspace has already made.
   const newSessionMutation = useMutation({
-    mutationFn: (wsId: string) => workspacesApi.ensureSession(wsId),
-    onSuccess: (data, wsId) => {
-      queryClient.invalidateQueries({ queryKey: ["sessions", wsId] });
-      navigate(`/chat/${wsId}/${data.sessionId}`);
+    mutationFn: ({ wsId, harness }: { wsId: string; harness?: string }) =>
+      workspacesApi.ensureSession(wsId, { harness }),
+    onSuccess: (data, vars) => {
+      queryClient.invalidateQueries({ queryKey: ["workspaces"] });
+      queryClient.invalidateQueries({ queryKey: ["sessions", vars.wsId] });
+      navigate(`/chat/${vars.wsId}/${data.sessionId}`);
       onNavigate?.();
+    },
+    onError: () => {
+      queryClient.invalidateQueries({ queryKey: ["workspaces"] });
+      try { window.alert("Failed to create session."); } catch { /* blocked */ }
     },
   });
 
@@ -246,10 +262,10 @@ export function Sidebar({ onNavigate }: Props) {
               selectedWorkspaceId={workspaceId}
               selectedSessionId={sessionId}
               activating={activateMutation.isPending && activateMutation.variables === ws.id}
-              creatingSession={newSessionMutation.isPending && newSessionMutation.variables === ws.id}
+              creatingSession={newSessionMutation.isPending && newSessionMutation.variables?.wsId === ws.id}
               onToggle={() => handleWorkspaceClick(ws)}
               onSelectSession={(sid) => handleSessionClick(ws.id, sid)}
-              onNewSession={() => newSessionMutation.mutate(ws.id)}
+              onNewSession={(harness) => newSessionMutation.mutate({ wsId: ws.id, harness })}
               isRenaming={renamingWs === ws.id}
               onRenameClick={() => setRenamingWs(ws.id)}
               onRenameCancel={() => setRenamingWs(null)}
@@ -353,7 +369,9 @@ interface WorkspaceGroupProps {
   creatingSession: boolean;
   onToggle: () => void;
   onSelectSession: (sessionId: string) => void;
-  onNewSession: () => void;
+  /** Harness rides along only when the workspace is unbound (the
+   * first-session picker's one-time decision; bind-once, 2026-11-16). */
+  onNewSession: (harness?: string) => void;
   isRenaming: boolean;
   onRenameClick: () => void;
   onRenameCancel: () => void;
@@ -406,8 +424,33 @@ function WorkspaceGroup({
   const busyCount = useWorkspaceBusyCount(workspace.id);
   const hung = useWorkspaceHung(workspace.id);
 
+  // Bind-once harness state (owner ruling 2026-11-16): an unbound
+  // workspace has never had a session (the API binds BEFORE creating
+  // one), so "first session on an unbound workspace" is exactly
+  // "session creation while unbound". The offer list degrades to
+  // opencode-only when the listing predates harnessOptions.
+  const harnessUnbound = !workspace.harness;
+  const harnessOptions =
+    workspace.harnessOptions && workspace.harnessOptions.length > 0
+      ? workspace.harnessOptions
+      : FALLBACK_HARNESS_OPTIONS;
+
   const [showSettings, setShowSettings] = useState(false);
   const [showRefreshConfirm, setShowRefreshConfirm] = useState(false);
+  const [showHarnessPicker, setShowHarnessPicker] = useState(false);
+
+  const handleNewSession = () => {
+    if (harnessUnbound) {
+      // One enabled harness: no decision to make — bind silently, no modal.
+      if (harnessOptions.length <= 1) {
+        onNewSession(harnessOptions[0]);
+        return;
+      }
+      setShowHarnessPicker(true);
+      return;
+    }
+    onNewSession();
+  };
 
   const versionFooter: string[] = [
     ...(workspace.agentVersion ? [`opencode v${workspace.agentVersion}`] : []),
@@ -469,6 +512,7 @@ function WorkspaceGroup({
               )}
             />
             <span className="flex-1 truncate">{workspace.name}</span>
+            {workspace.harness && <HarnessBadge harness={workspace.harness} className="ml-1" />}
             {activating && <Spinner size="sm" />}
             {!activating && workspace.phase && !isActive && !isSuspended && (
               <span className="text-xs text-muted-foreground">{workspace.phase}</span>
@@ -495,9 +539,12 @@ function WorkspaceGroup({
               <Play className="h-3 w-3" />
             </button>
           )}
-          {isActive && (
+          {/* Unbound workspaces are parked in Creating (no pod until the
+           * bind), so the first-session trigger must render for them
+           * too — it IS the bind's entrance. */}
+          {(isActive || harnessUnbound) && (
             <button
-              onClick={onNewSession}
+              onClick={handleNewSession}
               disabled={creatingSession}
               className="rounded p-1 text-muted-foreground hover:bg-accent hover:text-foreground disabled:opacity-50 transition-opacity"
               aria-label="New chat"
@@ -517,9 +564,10 @@ function WorkspaceGroup({
           workspaceId={workspace.id}
           selectedSessionId={selectedSessionId}
           onSelectSession={onSelectSession}
-          onNewSession={onNewSession}
+          onNewSession={handleNewSession}
           creatingSession={creatingSession}
           isSuspended={isSuspended || isResuming}
+          harnessUnbound={harnessUnbound}
           onRenameSession={onRenameSession}
           onArchiveSession={onArchiveSession}
           onDeleteSession={onDeleteSession}
@@ -533,6 +581,22 @@ function WorkspaceGroup({
         workspace={workspace}
         open={showSettings}
         onOpenChange={setShowSettings}
+      />
+      {/* The first-session picker: opened only by handleNewSession on
+       * an unbound multi-option workspace; the submit rides the
+       * sessions/new call (atomic bind + create). Cancel creates
+       * nothing — the workspace stays unbound and the next attempt
+       * re-offers the same one-time decision. */}
+      <HarnessPickerDialog
+        open={showHarnessPicker}
+        onOpenChange={setShowHarnessPicker}
+        workspaceName={workspace.name}
+        options={harnessOptions}
+        submitting={creatingSession}
+        onSubmit={(harness) => {
+          setShowHarnessPicker(false);
+          onNewSession(harness);
+        }}
       />
       <ConfirmDialog
         open={showRefreshConfirm}
@@ -553,6 +617,10 @@ function WorkspaceGroup({
 interface SessionListProps {
   workspaceId: string;
   selectedSessionId?: string;
+  /** Unbound-workspace hint context (bind-once, 2026-11-16): an
+   * unbound workspace with zero sessions renders the "choose a
+   * harness" hint under the empty state. */
+  harnessUnbound?: boolean;
   onSelectSession: (sessionId: string) => void;
   onNewSession: () => void;
   creatingSession: boolean;
@@ -569,6 +637,7 @@ interface SessionListProps {
 function WorkspaceSessionList({
   workspaceId,
   selectedSessionId,
+  harnessUnbound,
   onSelectSession,
   onNewSession: _onNewSession,
   creatingSession: _creatingSession,
@@ -855,7 +924,17 @@ function WorkspaceSessionList({
       )}
 
       {!isLoading && (!mergedSessions || mergedSessions.length === 0) && (
-        <div className="px-2 py-1 text-xs text-muted-foreground">No sessions yet</div>
+        <div className="px-2 py-1">
+          <div className="text-xs text-muted-foreground">No sessions yet</div>
+          {harnessUnbound && (
+            <div
+              className="mt-0.5 text-xs text-muted-foreground/80"
+              data-testid="harness-unbound-hint"
+            >
+              Choose a harness when starting your first session
+            </div>
+          )}
+        </div>
       )}
 
       {mergedSessions && mergedSessions.length > 0 && (

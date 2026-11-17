@@ -94,23 +94,31 @@ var boardStampSetTools = map[string]bool{
 	"board_epic_archive":      true,
 	"board_epic_unarchive":    true,
 	"board_delete_epic":       true,
+	"board_ack_epic_wrapup":   true,
 	"board_create_story":      true,
 	"board_update_story":      true,
 	"board_add_dependency":    true,
 	"board_remove_dependency": true,
 	"board_delete_story":      true,
-	"board_move_stage_bulk":   true,
-	"board_delete_stories":    true,
-	"board_get_config":        true,
-	"board_set_config":        true,
-	"board_pause_story":       true,
-	"board_resume_story":      true,
-	"board_rearm_story":       true,
-	"board_depose_story":      true,
-	"board_import_plan":       true,
-	"board_list":              true,
-	"board_health":            true,
-	"board_validate_file":     true,
+	// #2061/#2064 story 1: board_move_stage + board_record_verdict
+	// joined the plugin's stamp set — the board turn-end ADVANCE stamp
+	// keys on lsp_injected_session (board_record_progress joins the
+	// day #2044 lands it). Admitting them here keeps strict mode from
+	// rejecting the very stamp the advance flag derives from.
+	"board_move_stage":      true,
+	"board_move_stage_bulk": true,
+	"board_delete_stories":  true,
+	"board_get_config":      true,
+	"board_set_config":      true,
+	"board_pause_story":     true,
+	"board_resume_story":    true,
+	"board_rearm_story":     true,
+	"board_depose_story":    true,
+	"board_record_verdict":  true,
+	"board_import_plan":     true,
+	"board_list":            true,
+	"board_health":          true,
+	"board_validate_file":   true,
 }
 
 // boardIdentityStampErrorText is the teaching error for an emitted

@@ -23,6 +23,26 @@ var ErrNoAgentStateRow = &APIError{
 	Message: "workspace has no pending credentials to reload",
 }
 
+// NewHarnessImmutableError is the bind-once harness violation (owner
+// ruling 2026-11-16: workspaces do NOT switch harnesses — one harness
+// per workspace, bound once, immutable forever; there is no switch or
+// recreate path at any tier). Returned by workspace create/bind and
+// session-create surfaces whenever a caller attempts to change (or
+// unbind) an already-bound harness; maps to HTTP 409. The webhook's
+// admission denial is the CRD-tier twin of this message.
+func NewHarnessImmutableError(workspaceID, current, attempted string) *APIError {
+	return &APIError{
+		Type:    ErrorTypeConflict,
+		Code:    "harness_immutable",
+		Message: "harness is immutable once bound for this workspace",
+		Details: map[string]interface{}{
+			"workspaceId": workspaceID,
+			"current":     current,
+			"attempted":   attempted,
+		},
+	}
+}
+
 // ErrorType defines the type of error
 type ErrorType string
 

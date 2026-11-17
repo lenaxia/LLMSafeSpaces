@@ -78,7 +78,7 @@ func TestEnsureSession_TerminatedWorkspace_ReturnsError(t *testing.T) {
 	f.ws.On("Get", mock.Anything, "ws-1", mock.Anything).Return(crd, nil)
 	f.db.On("GetWorkspace", mock.Anything, "ws-1").Return(&types.WorkspaceMetadata{UserID: "user-1"}, nil)
 
-	_, err := f.svc.EnsureSession(context.Background(), "user-1", "ws-1")
+	_, err := f.svc.EnsureSession(context.Background(), "user-1", "ws-1", "")
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "not usable")
 }
@@ -94,7 +94,7 @@ func TestEnsureSession_FailedWorkspace_ReturnsError(t *testing.T) {
 	f.ws.On("Get", mock.Anything, "ws-1", mock.Anything).Return(crd, nil)
 	f.db.On("GetWorkspace", mock.Anything, "ws-1").Return(&types.WorkspaceMetadata{UserID: "user-1"}, nil)
 
-	_, err := f.svc.EnsureSession(context.Background(), "user-1", "ws-1")
+	_, err := f.svc.EnsureSession(context.Background(), "user-1", "ws-1", "")
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "not usable")
 }
@@ -104,7 +104,7 @@ func TestEnsureSession_WrongOwner_ReturnsForbidden(t *testing.T) {
 
 	f.db.On("GetWorkspace", mock.Anything, "ws-1").Return(&types.WorkspaceMetadata{UserID: "other-user"}, nil)
 
-	_, err := f.svc.EnsureSession(context.Background(), "user-1", "ws-1")
+	_, err := f.svc.EnsureSession(context.Background(), "user-1", "ws-1", "")
 	assert.Error(t, err)
 }
 
@@ -113,7 +113,7 @@ func TestEnsureSession_WorkspaceNotFound_ReturnsError(t *testing.T) {
 
 	f.db.On("GetWorkspace", mock.Anything, "ws-1").Return(nil, fmt.Errorf("not found"))
 
-	_, err := f.svc.EnsureSession(context.Background(), "user-1", "ws-1")
+	_, err := f.svc.EnsureSession(context.Background(), "user-1", "ws-1", "")
 	assert.Error(t, err)
 }
 
@@ -165,7 +165,7 @@ func TestEnsureSession_ActiveWorkspace_ReturnsSession(t *testing.T) {
 
 	f.svc.config.OpencodePort = port
 
-	resp, err := f.svc.EnsureSession(ctx, "user-1", "ws-1")
+	resp, err := f.svc.EnsureSession(ctx, "user-1", "ws-1", "")
 	require.NoError(t, err)
 	require.NotNil(t, resp)
 	assert.Equal(t, "ws-1", resp.WorkspaceID)
@@ -195,7 +195,7 @@ func TestEnsureSession_MintedPath_SessionIDIsThePhrase(t *testing.T) {
 	f, _ := newEnsureSessionBackend(t)
 	f.svc.SetSessionIndex(&fakeEnsureIndex{shortID: "amber-falcon-glides"})
 
-	resp, err := f.svc.EnsureSession(context.Background(), "user-1", "ws-1")
+	resp, err := f.svc.EnsureSession(context.Background(), "user-1", "ws-1", "")
 	require.NoError(t, err)
 	require.NotNil(t, resp)
 	assert.Equal(t, "amber-falcon-glides", resp.SessionID,
@@ -211,7 +211,7 @@ func TestEnsureSession_DegradedPath_CarriesDeprecatedSessionID(t *testing.T) {
 	f, _ := newEnsureSessionBackend(t)
 	f.svc.SetSessionIndex(&fakeEnsureIndex{shortID: ""})
 
-	resp, err := f.svc.EnsureSession(context.Background(), "user-1", "ws-1")
+	resp, err := f.svc.EnsureSession(context.Background(), "user-1", "ws-1", "")
 	require.NoError(t, err)
 	require.NotNil(t, resp)
 	assert.Equal(t, "sess-abc-123", resp.SessionID,

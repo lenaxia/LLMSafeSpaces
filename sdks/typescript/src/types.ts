@@ -23,6 +23,14 @@ export interface Workspace {
   updatedAt: string;
   /** #1757 workspace phrase (2 words + 1 digit, fleet-unique) — the display address. */
   phraseId?: string;
+  /**
+   * The bound coding-agent harness (owner ruling 2026-11-16: bind-once,
+   * immutable forever). null/absent = unbound — no pod until the bind
+   * (first session or bindWorkspaceHarness).
+   */
+  harness?: string | null;
+  /** The instance's enabled harness set (picker context; opencode always present). */
+  harnessOptions?: string[];
 }
 
 export interface CreateWorkspaceRequest {
@@ -31,6 +39,15 @@ export interface CreateWorkspaceRequest {
   storageSize?: string;
   storageClass?: string;
   labels?: Record<string, string>;
+  /**
+   * Bind the harness at create (owner ruling 2026-11-16: bind-once; must
+   * be in the instance's enabled set). DEFAULT CHANGE (2026-11-16):
+   * omitted no longer means opencode implicitly — the workspace is
+   * created UNBOUND; bind it (first session or bindWorkspaceHarness)
+   * before first use. Existing workspaces were backfilled to explicit
+   * opencode.
+   */
+  harness?: string;
 }
 
 export interface WorkspaceListResult {
@@ -50,6 +67,8 @@ export interface WorkspaceListItem {
   updatedAt: string;
   /** #1757 workspace phrase — the display address (surfaces in list responses as of #1757 r2). */
   phraseId?: string;
+  /** The bound harness (owner ruling 2026-11-16: bind-once, immutable forever); null/absent = unbound. */
+  harness?: string | null;
 }
 
 export interface PaginationMetadata {
@@ -138,6 +157,19 @@ export interface EnsureSessionResponse {
   workspacePhase: string;
   sessionId: string;
   resumed: boolean;
+  /**
+   * The bound harness (owner ruling 2026-11-16: bind-once). On an
+   * unbound workspace, the request's harness (or the opencode default
+   * when omitted) bound atomically with this session.
+   */
+  harness?: string;
+}
+
+/** PUT /workspaces/{id}/harness response (owner ruling 2026-11-16: bind-once). */
+export interface BindHarnessResult {
+  harness: string;
+  alreadyBound?: boolean;
+  harnessOptions?: string[];
 }
 
 export interface SessionListItem {

@@ -24,6 +24,7 @@ package board
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strconv"
@@ -237,12 +238,27 @@ func (s *Service) wrapUpAwareEpicCompletion(ctx context.Context, tx pgx.Tx, epic
 			return false, "", err
 		}
 		if tag.RowsAffected() > 0 {
+			// Cycle-discriminate the arm event's deterministic id: the
+			// ledger value alone REPEATS (every post-ack arm fires at
+			// count==cap again), and recordEventTx's ON CONFLICT DO
+			// NOTHING would silently swallow the later cycles' audit
+			// rows + SSE events. The epic's TOTAL minted wrap-up rows is
+			// monotonic across ack cycles (each cycle mints at least the
+			// ack's own immediate re-drain row) and frozen within one
+			// (the engine mints nothing while the flag holds) — the
+			// discriminator.
+			var mintedTotal int
+			if err := tx.QueryRow(ctx,
+				`SELECT COUNT(*) FROM tasks WHERE epic_id=$1 AND kind='wrapup'`, epicID).
+				Scan(&mintedTotal); err != nil {
+				return false, "", err
+			}
 			sys := Actor{Kind: ActorSystem, Surface: "engine"}
 			if _, err := recordEventTx(ctx, tx, projectID,
-				"wrapup:ackreq:"+epicID+":"+itoa(wrapupCount), "wrapup_ack_required",
+				"wrapup:ackreq:"+epicID+":"+itoa(wrapupCount)+":"+itoa(mintedTotal), "wrapup_ack_required",
 				"epic", epicID, sys,
 				map[string]any{"epic_id": epicID, "wrapup_count": wrapupCount,
-					"cap": s.cfg.WrapUpConsecutiveCap}); err != nil {
+					"cap": s.cfg.WrapUpConsecutiveCap, "wrapup_rows_minted": mintedTotal}); err != nil {
 				return false, "", err
 			}
 			slog.WarnContext(ctx, "board: epic wrap-up review at the consecutive cap — human ack required before another mints",
@@ -493,3 +509,422 @@ func clearWrapUpPointerTx(ctx context.Context, tx pgx.Tx, projectID, taskID stri
 	}
 	return epicID, nil
 }
+
+// --- §4: the close verb — RecordWrapUpVerdict --------------------------------
+//
+// The wrap-up review's ONLY sanctioned close (D6: a plain move_stage→done
+// on a wrap-up row cannot distinguish "approved" from "filed gaps", so the
+// close is an explicit engine verb with an ENGINE-OWNED, closed wire
+// schema — a custom reviewer role cannot opt out of the procedure; the
+// story verdict's approve|fail is a different object's vocabulary and
+// refuses here). Both verdicts close the row done with the report as
+// evidence; GAPS is NOT a fail-verdict — no bounce, no implementer
+// re-dispatch (the non-done gap rows hold the epic open by the ordinary
+// drain predicate alone, zero new holding machinery).
+
+// WrappingVerdict is the wrap-up close's two-value outcome.
+type WrappingVerdict string
+
+const (
+	WrapUpVerdictPass WrappingVerdict = "pass"
+	WrapUpVerdictGaps WrappingVerdict = "gaps"
+)
+
+// MaxWrapUpNotesBytes caps WrapUpVerdictInput.Notes (the textguard
+// posture — audit prose, not a charter).
+const MaxWrapUpNotesBytes = 8 << 10
+
+// WrapUpVerdictInput is the wire payload the wrap-up reviewer closes with
+// (§4): Verdict pass|gaps (closed enum), ReportURL required on BOTH
+// verdicts (the →done transition's evidence), GapRefs required non-empty
+// IFF gaps (short ids or UUIDs of gap-tagged stories in this epic filed
+// since mint), Notes size-capped, Reviewer the display identity.
+type WrapUpVerdictInput struct {
+	Verdict   WrappingVerdict `json:"verdict"`
+	ReportURL string          `json:"reportUrl"`
+	GapRefs   []string        `json:"gapRefs,omitempty"`
+	Notes     string          `json:"notes,omitempty"`
+	Reviewer  string          `json:"reviewer"`
+}
+
+// ValidateWrapUpVerdictInput is the engine-owned schema check (§4's guard
+// zero): the enum, the report, the iff rule, the notes cap.
+func ValidateWrapUpVerdictInput(in WrapUpVerdictInput) error {
+	if in.Verdict != WrapUpVerdictPass && in.Verdict != WrapUpVerdictGaps {
+		return &GuardError{Code: GuardInput, Detail: fmt.Sprintf(
+			"wrap-up verdict must be %q or %q (the story verdict's approve|fail is a different verb)",
+			WrapUpVerdictPass, WrapUpVerdictGaps)}
+	}
+	if in.Reviewer == "" {
+		return &GuardError{Code: GuardInput, Detail: "reviewer identity is required"}
+	}
+	if in.ReportURL == "" {
+		return &GuardError{Code: GuardInput, Detail: "reportUrl is required on both verdicts (the close's evidence)"}
+	}
+	if in.Verdict == WrapUpVerdictGaps && len(in.GapRefs) == 0 {
+		return &GuardError{Code: GuardInput, Detail: "a gaps verdict requires at least one gapRef (required non-empty iff gaps)"}
+	}
+	if in.Verdict == WrapUpVerdictPass && len(in.GapRefs) > 0 {
+		return &GuardError{Code: GuardInput, Detail: "a pass verdict files no gaps (gapRefs are required non-empty iff gaps)"}
+	}
+	return validateTextField("notes", in.Notes, MaxWrapUpNotesBytes)
+}
+
+// errWrapUpStaleReplay is the in-transaction sentinel for a row that left
+// in_review under the lock (a raced verdict converged) — the caller maps
+// it to the 200-with-original stale-replay return, never an error.
+var errWrapUpStaleReplay = errors.New("board: wrap-up row is no longer in_review (stale replay)")
+
+// RecordWrapUpVerdict validates + records the wrap-up close and applies
+// its epic-level effects, ALL in one transaction (§4; D4): the row's →done
+// (the completeReviewTask statement shape, evidence=ReportURL), the
+// watermark settle (advanceWatermarkTx — mint-time snapshot, ledger +1,
+// pointer cleared), the deterministic wrapup:verdict:<taskID> audit row
+// (one verdict per row, ever — replay converges), and on PASS the DIRECT
+// guarded epic completion (never a seam re-run, §2 step-3's note: the
+// seam's enabled branch has NO completion path — it mints/defers/arms —
+// so a drained enabled epic re-run through it would mint an empty-delta
+// wrap-up; the verdict's transaction owns the epic's logical turn and
+// completes it here). GAPS does nothing further — the epic stays open by
+// the drain predicate alone.
+//
+// Guard order (each failure a loud GuardError, §4): payload schema →
+// kind='wrapup' → stage=in_review (anything else is a stale replay:
+// 200-with-original) → claim token (the row's LIVE token — the reviewer
+// holds the claim; UNCONDITIONAL on every surface, the criteria_met.go
+// pattern) → Done-guard parity (criteriaAllMet + ReportURL — the reviewer
+// checks its own criteria via the #1946 grant) → GAPS refs (same epic,
+// gap-tagged, filed since mint).
+func (s *Service) RecordWrapUpVerdict(ctx context.Context, actor Actor, taskID, shortIDOrID string, in WrapUpVerdictInput, requestID string) (*Task, *Epic, error) {
+	t, err := s.resolveTaskForActor(ctx, actor, pick(taskID, shortIDOrID))
+	if err != nil {
+		return nil, nil, err
+	}
+	p, err := s.store.resolveProject(ctx, s.q(), "", t.ProjectID)
+	if err != nil {
+		return nil, nil, err
+	}
+	if err := requireOwner(actor, p.UserID); err != nil {
+		return nil, nil, err
+	}
+	if err := ValidateWrapUpVerdictInput(in); err != nil {
+		return nil, nil, err
+	}
+	if t.Kind != TaskKindWrapup {
+		return nil, nil, &GuardError{Code: GuardInput, Detail: "board_record_wrapup_verdict closes kind='wrapup' rows only — this row is not a wrap-up review (story verdicts ride board_record_verdict)"}
+	}
+	if t.Stage != StageInReview {
+		return s.wrapUpVerdictStaleReplay(ctx, t)
+	}
+	if actor.ClaimToken == "" || t.ClaimToken == "" || actor.ClaimToken != t.ClaimToken {
+		return nil, nil, &GuardError{Code: GuardClaimToken, Detail: "a wrap-up verdict requires the row's live claim token (the wrap-up reviewer's own claim, from its charter envelope)"}
+	}
+	if !criteriaAllMet(t) {
+		return nil, nil, &GuardError{Code: GuardDone, Detail: "every acceptance criterion must be met before the verdict (board_update_story {setCriteriaMet} on your own claimed row — the Done guard applies regardless of reviewer role)"}
+	}
+	if in.Verdict == WrapUpVerdictGaps {
+		if _, err := s.resolveGapRefs(ctx, t, in.GapRefs); err != nil {
+			return nil, nil, err
+		}
+	}
+
+	_, dup, err := (&eventWriter{svc: s, projectID: p.ID, requestID: requestID,
+		action: "wrapup_verdict", itemKind: "task", itemID: t.ID, actor: actor}).run(ctx, func(tx pgx.Tx) (map[string]any, error) {
+		// Server arbitration under the row lock (the criteria_met
+		// discipline): the claim may have lapsed, the row bounced, or a
+		// raced verdict landed since the read above.
+		cur, err := s.store.taskForUpdate(ctx, tx, t.ID)
+		if err != nil {
+			return nil, err
+		}
+		if cur.Kind != TaskKindWrapup {
+			return nil, &GuardError{Code: GuardInput, Detail: "not a wrap-up row"}
+		}
+		if cur.Stage != StageInReview {
+			return nil, errWrapUpStaleReplay
+		}
+		if actor.ClaimToken == "" || cur.ClaimToken == "" || actor.ClaimToken != cur.ClaimToken {
+			return nil, &GuardError{Code: GuardClaimToken, Detail: "the claim lapsed or moved — server-arbitrated refusal"}
+		}
+		if !criteriaAllMet(cur) {
+			return nil, &GuardError{Code: GuardDone, Detail: "the criteria moved — server-arbitrated refusal"}
+		}
+
+		// The row's →done (the completeReviewTask statement shape,
+		// review.go:113-120): evidence is the report URL.
+		tag, err := tx.Exec(ctx, `
+			UPDATE tasks SET stage='done', stage_entered_at=now(),
+				claim_token=NULL, lease_expires_at=NULL, claim_incremented_attempts=false, claim_persona=NULL,
+				failure_count=0, last_attempt_failed=false, last_failure_at=NULL,
+				pending_origin=NULL, pending_input=false,
+				nudge_id=NULL, nudged_at=NULL, last_heartbeat_at=NULL
+			WHERE id=$1 AND NOT paused AND stage='in_review' AND claim_token=$2`,
+			cur.ID, actor.ClaimToken)
+		if err != nil {
+			return nil, err
+		}
+		if tag.RowsAffected() == 0 {
+			return nil, errWrapUpStaleReplay
+		}
+
+		// The crash-between-close-and-settle fault seam (§6): a fault
+		// here aborts the →done AND the epic effects together — the
+		// single-transaction pin's subject.
+		if s.failpoint != nil {
+			if ferr := s.failpoint("wrapup_verdict.settle"); ferr != nil {
+				return nil, ferr
+			}
+		}
+
+		if err := writeTransition(ctx, txQ{tx}, cur.ID, StageInReview, StageDone, in.ReportURL, actor); err != nil {
+			return nil, err
+		}
+		// The covered window, captured BEFORE the settle rewrites the
+		// watermark: from = coalesce(last_wrapped_at, epic.created_at)
+		// (D5's diff range), to = the closing row's mint moment.
+		windowTo := cur.CreatedAt
+		windowFrom := cur.CreatedAt
+		var prevWrapped *time.Time
+		if err := tx.QueryRow(ctx,
+			`SELECT last_wrapped_at, created_at FROM epics WHERE id=$1`, cur.EpicID).
+			Scan(&prevWrapped, &windowFrom); err != nil && err != pgx.ErrNoRows {
+			return nil, err
+		}
+		if prevWrapped != nil {
+			windowFrom = *prevWrapped
+		}
+		settled, err := advanceWatermarkTx(ctx, tx, cur.EpicID, cur.ID)
+		if err != nil {
+			return nil, err
+		}
+
+		// The canonical verdict record: deterministic id, one verdict
+		// per row, ever (ON CONFLICT inert — the replay converges here).
+		_, err = recordEventTx(ctx, tx, p.ID, "wrapup:verdict:"+cur.ID, "wrapup_verdict",
+			"task", cur.ID, actor, map[string]any{
+				"verdict": string(in.Verdict), "report_url": in.ReportURL,
+				"gap_refs": in.GapRefs, "notes": in.Notes, "reviewer": in.Reviewer,
+				"settled": settled, "epic_id": cur.EpicID,
+				"window": map[string]any{"from": windowFrom, "to": windowTo},
+			})
+		if err != nil {
+			return nil, err
+		}
+
+		// PASS completes DIRECTLY — never a seam re-run (§4): the
+		// guarded completion UPDATE against the enabled-epic drain
+		// predicate, in this same transaction. 0 rows = a story reopened
+		// under the verdict — the epic stays open by the ordinary
+		// predicate; the honest outcome. The cap does NOT gate the
+		// terminus (it bounds the mint loop).
+		epicCompleted := false
+		if in.Verdict == WrapUpVerdictPass {
+			epicCompleted, err = completeWrapUpEpicTx(ctx, tx, p.ID, cur.EpicID, cur.ID)
+			if err != nil {
+				return nil, err
+			}
+		}
+		return map[string]any{
+			"verdict": string(in.Verdict), "report_url": in.ReportURL,
+			"gap_refs": in.GapRefs, "notes": in.Notes, "reviewer": in.Reviewer,
+			"settled": settled, "epic_completed": epicCompleted,
+			"task_id": cur.ID, "epic_id": cur.EpicID,
+		}, nil
+	})
+	if err != nil {
+		if errors.Is(err, errWrapUpStaleReplay) {
+			return s.wrapUpVerdictStaleReplay(ctx, t)
+		}
+		return nil, nil, err
+	}
+	if dup != nil {
+		// 200-with-original: the requestID replay renders the recorded
+		// outcome; the row is done — the stale-replay return shape.
+		return s.wrapUpVerdictStaleReplay(ctx, t)
+	}
+
+	slog.InfoContext(ctx, "board: epic wrap-up review closed",
+		"epic_id", t.EpicID, "task", t.ShortID, "verdict", in.Verdict)
+	out, err := s.store.resolveTask(ctx, s.q(), p.ID, t.ID)
+	if err != nil {
+		return nil, nil, err
+	}
+	s.translateTaskReads(ctx, out)
+	epic, err := s.GetEpic(ctx, t.EpicID, "")
+	if err != nil {
+		return out, nil, nil // the epic read is decorative; the close already committed
+	}
+	return out, epic, nil
+}
+
+// wrapUpVerdictStaleReplay renders the 200-with-original shape for a row
+// that is no longer in_review: the current row + the current epic (a
+// closed verdict is not an error, and a FAILED/parked row reports itself
+// the same way — the caller reads the state it got).
+func (s *Service) wrapUpVerdictStaleReplay(ctx context.Context, t *Task) (*Task, *Epic, error) {
+	out, err := s.store.resolveTask(ctx, s.q(), "", t.ID)
+	if err != nil {
+		out = t
+	}
+	s.translateTaskReads(ctx, out)
+	epic, err := s.GetEpic(ctx, t.EpicID, "")
+	if err != nil {
+		return out, nil, nil
+	}
+	return out, epic, nil
+}
+
+// resolveGapRefs validates every GAPS ref (§4 guard 5): each must resolve
+// (did-you-mean on a miss) to a kind='story' row in the SAME epic with
+// 'gap' = ANY(tags), created_at >= the wrap-up row's created_at (filed
+// since mint — D6's belt behind the charter's dedup discipline).
+func (s *Service) resolveGapRefs(ctx context.Context, w *Task, refs []string) ([]*Task, error) {
+	out := make([]*Task, 0, len(refs))
+	for _, ref := range refs {
+		row, err := s.store.resolveTask(ctx, s.q(), w.ProjectID, ref)
+		if err != nil {
+			var nf *NotFoundError
+			reason := err.Error()
+			if errors.As(err, &nf) && len(nf.Suggestions) > 0 {
+				reason = fmt.Sprintf("%s (did you mean: %v?)", reason, nf.Suggestions)
+			}
+			return nil, &GuardError{Code: GuardInput, Detail: fmt.Sprintf(
+				"gapRef %q does not resolve to a gap story: %s", ref, reason)}
+		}
+		switch {
+		case row.EpicID != w.EpicID:
+			return nil, s.gapRefGuard(ref, row, "it belongs to a different epic")
+		case row.Kind == TaskKindWrapup:
+			return nil, s.gapRefGuard(ref, row, "it is not a story row (a wrap-up review cannot be a gap)")
+		case !slicesContains(row.Tags, "gap"):
+			return nil, s.gapRefGuard(ref, row, "it is not tagged 'gap' (file gap stories via the normal create path, tag \"gap\")")
+		case row.CreatedAt.Before(w.CreatedAt):
+			return nil, s.gapRefGuard(ref, row, "it predates this wrap-up's mint (gaps are filed since mint)")
+		}
+		out = append(out, row)
+	}
+	return out, nil
+}
+
+func (s *Service) gapRefGuard(ref string, row *Task, reason string) error {
+	return &GuardError{Code: GuardInput, Detail: fmt.Sprintf(
+		"gapRef %q (%s) refuses: %s", ref, row.ShortID, reason)}
+}
+
+// completeWrapUpEpicTx is the PASS branch's DIRECT guarded completion
+// (§4): the explicit UPDATE against the enabled-epic drain predicate —
+// status active, wrap_up_review on, pointer cleared, no ack pending, at
+// least one done story, zero non-done stories (kind='story' only — a
+// wrap-up row never counts). 0 rows = a story reopened under the verdict
+// (or a raced pointer): the epic stays open, no mint — the verdict path
+// NEVER re-runs wrapUpAwareEpicCompletion. The deterministic
+// wrapup:epic_complete:<epicID>:<wrapUpTaskID> event rides the same
+// transaction — the closing row's id discriminates ack/reopen cycles (a
+// reopened-and-recompleted epic completes through a LATER wrap-up row;
+// the epic-id-only form would collide and ON CONFLICT DO NOTHING would
+// swallow the second completion's audit row + SSE event).
+func completeWrapUpEpicTx(ctx context.Context, tx pgx.Tx, projectID, epicID, wrapUpTaskID string) (bool, error) {
+	tag, err := tx.Exec(ctx, `
+		UPDATE epics SET status='completed'
+		WHERE id=$1 AND status='active' AND wrap_up_review
+		  AND wrapup_task_id IS NULL AND NOT wrapup_ack_pending
+		  AND EXISTS(SELECT 1 FROM tasks t WHERE t.epic_id=epics.id AND t.kind='story' AND t.stage='done')
+		  AND NOT EXISTS(SELECT 1 FROM tasks t WHERE t.epic_id=epics.id AND t.kind='story' AND t.stage<>'done')`,
+		epicID)
+	if err != nil {
+		return false, err
+	}
+	if tag.RowsAffected() == 0 {
+		return false, nil
+	}
+	sys := Actor{Kind: ActorSystem, Surface: "engine"}
+	_, err = recordEventTx(ctx, tx, projectID, "wrapup:epic_complete:"+epicID+":"+wrapUpTaskID,
+		"wrapup_epic_complete", "epic", epicID, sys,
+		map[string]any{"epic_id": epicID, "wrapup_task_id": wrapUpTaskID})
+	return true, err
+}
+
+// --- §8: the human ack — AckWrapUp --------------------------------------------
+//
+// The recursion circuit-breaker's exit (D7): a dedicated EPIC-LEVEL state
+// + manager verb — never a pending_input flag (epics have none; the
+// task-level flag vocabulary stays closed). Armed by the drain seam at
+// wrapup_count >= cap (wrapup_ack_required — engine story), cleared only
+// here: the guarded reset zeroes the ledger (fresh, the rearm precedent),
+// clears the flag AND the in-flight pointer (a parked manager-override
+// pointer un-wedges here too — fail-visible, never wedged), and re-runs
+// the drain check in the SAME transaction: an acked, still-drained epic
+// mints immediately — the human said "keep going". 0 rows (nothing to
+// ack) is the original echo: 200, no event, the live pointer untouched.
+
+// AckWrapUp is board_ack_epic_wrapup (manager authz): reset the
+// consecutive-close ledger, clear the ack-wait flag and any parked
+// in-flight pointer, and re-drain the epic in one transaction.
+func (s *Service) AckWrapUp(ctx context.Context, actor Actor, epicID, shortIDOrID, requestID string) (*Epic, error) {
+	e, err := s.store.resolveEpic(ctx, s.q(), "", pick(epicID, shortIDOrID))
+	if err != nil {
+		return nil, err
+	}
+	p, err := s.store.resolveProject(ctx, s.q(), "", e.ProjectID)
+	if err != nil {
+		return nil, err
+	}
+	if err := requireOwner(actor, p.UserID); err != nil {
+		return nil, err
+	}
+	// The #1747 manager-action scope on the agent surfaces: a pod manages
+	// ITS OWN workspace's board only. REST/external-MCP scope by ownership.
+	if err := requireManagerAction(actor, p); err != nil {
+		return nil, err
+	}
+
+	var pendingNudge nudge
+	_, dup, err := (&eventWriter{svc: s, projectID: p.ID, requestID: requestID,
+		action: "wrapup_ack", itemKind: "epic", itemID: e.ID, actor: actor}).run(ctx, func(tx pgx.Tx) (map[string]any, error) {
+		tag, err := tx.Exec(ctx, `
+			UPDATE epics SET wrapup_count=0, wrapup_ack_pending=false, wrapup_task_id=NULL
+			WHERE id=$1
+			  AND (wrapup_ack_pending
+			       OR (wrapup_task_id IS NOT NULL AND EXISTS(
+			             SELECT 1 FROM tasks t WHERE t.id = epics.wrapup_task_id
+			               AND t.stage <> 'in_review')))`, e.ID)
+		if err != nil {
+			return nil, err
+		}
+		if tag.RowsAffected() == 0 {
+			// Nothing to ack: the original echo — NO event row, no
+			// re-drain. The guard's stage clause is the live-review
+			// protection: a pointer naming an in_review row (a healthy
+			// wrap-up the ack's own re-drain minted, or any live
+			// review) is NEVER acked out from under its reviewer —
+			// only an armed ack-wait or a PARKED pointer (a
+			// manager-override close, §4's tail) is ackable state.
+			return nil, errWrapUpAckNoop
+		}
+		// The re-drain (the human said continue): an acked, still-drained
+		// epic mints immediately — same transaction, the seam's own
+		// serialization. The mint's spawn rides the post-commit nudge.
+		_, _, err = s.wrapUpAwareEpicCompletion(ctx, tx, e.ID, &pendingNudge)
+		if err != nil {
+			return nil, err
+		}
+		return map[string]any{"epic_id": e.ID, "acknowledged": true}, nil
+	})
+	if err != nil {
+		if errors.Is(err, errWrapUpAckNoop) {
+			return s.GetEpic(ctx, e.ID, "")
+		}
+		return nil, err
+	}
+	if dup != nil {
+		return s.GetEpic(ctx, e.ID, "") // 200-with-original
+	}
+	pendingNudge.fire(ctx, s)
+	slog.InfoContext(ctx, "board: epic wrap-up ack — ledger reset, drain re-run",
+		"epic_id", e.ID)
+	return s.GetEpic(ctx, e.ID, "")
+}
+
+// errWrapUpAckNoop is the ack's nothing-to-ack sentinel: the guarded
+// UPDATE matched 0 rows (nothing pending, no pointer) — the original echo.
+var errWrapUpAckNoop = errors.New("board: nothing to ack (echo)")

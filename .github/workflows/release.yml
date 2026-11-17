@@ -144,7 +144,12 @@ jobs:
       - name: golangci-lint
         uses: golangci/golangci-lint-action@v9
         with:
-          version: latest
+          # Pinned to match ci.yml (was `latest`): v2.15.0's errcheck flagged
+          # a pre-existing deliberate-discard mid-release (2026-11-16, the
+          # ci.yml US-68.2 class — a linter release must never break the
+          # release train). Bump deliberately alongside ci.yml, with a
+          # full-repo lint run in the same PR.
+          version: v2.13.1
           args: --timeout=5m
       - name: helm-render
         run: |
@@ -1005,9 +1010,18 @@ jobs:
         id: meta
         with:
           images: ${{ env.REGISTRY }}/${{ env.PI_IMAGE }}
+          # semver pattern from the tag ref — the v0.44.15 first-pi-release
+          # cut used type=raw,value=${{ needs.prepare.outputs.version }},
+          # but prepare outputs only `timestamp`; the raw value rendered
+          # empty and pi:<version> was never pushed (sign/scan/SBOM all
+          # died on MANIFEST_UNKNOWN). Same shape as merge-agentd now.
           tags: |
             type=sha,prefix=sha-
-            type=raw,value=${{ needs.prepare.outputs.version }}
+            type=raw,value=ts-${{ needs.prepare.outputs.timestamp }}
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=semver,pattern={{major}}
+            type=raw,value=latest
 
       - name: Download digests
         uses: actions/download-artifact@v8

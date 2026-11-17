@@ -86,7 +86,14 @@ func (h *boardLivenessHub) AssigneeQuiet(ctx context.Context, refs []string) map
 	now := time.Now()
 	for _, row := range rows {
 		if !row.present || row.deleted {
-			continue // unknown here, or provably gone: nil
+			// Present in the answer set with nil figures — unknown (or
+			// provably gone) is an ANSWER, never an omission: the caller
+			// distinguishes "resolved to silence" from "never asked" by
+			// membership (#2047's contract — the review-r1 fix; the old
+			// bare continue contradicted the comment above it and left
+			// dead sessions missing from the map entirely).
+			out[row.ref] = board.AssigneeQuietAnswer{}
+			continue
 		}
 		ans := board.AssigneeQuietAnswer{QuietSeconds: nil, BusySeconds: nil}
 		// The quiet clock: whichever identity key moved latest (the

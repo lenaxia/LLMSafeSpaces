@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -37,6 +38,15 @@ func TestMain(m *testing.M) {
 	// the CI ambient; tests that exercise the projection itself pin it
 	// via t.Setenv (the #1580 family does).
 	os.Unsetenv("WORKSPACE_DEV_PREVIEW_ENABLED")
+	// #2061/#2064 story 1: the board turn-end advance ledger's
+	// shared-volume tail — redirect for the whole test binary BEFORE
+	// the lazy singleton's first use (boardAdvanceLedgerInst): no test
+	// stamp appends into the pod's real shared file. The pi leg's
+	// journal and registry reads resolve their env paths per-call
+	// (those tests t.Setenv their own redirects).
+	if d, err := os.MkdirTemp("", "agentd-2064-advances-*"); err == nil {
+		_ = os.Setenv("LLMSAFESPACES_BOARD_ADVANCES_PATH", filepath.Join(d, "advances.jsonl"))
+	}
 	code := m.Run()
 	// Drain the shared test-binary temp dir recorded by buildAgentdBinary
 	// (secrets_test.go). Runs after all tests so the once-per-process

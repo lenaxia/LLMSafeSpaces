@@ -967,6 +967,15 @@ func (c *Client) BoardRecordVerdict(ctx context.Context, saToken, workspaceID st
 	return c.boardWorkerPost(ctx, saToken, workspaceID, "/internal/v1/automation/board/tasks/verdict", body)
 }
 
+// BoardRecordWrapUpVerdict is board_record_wrapup_verdict (the epic
+// wrap-up review's close): the wrap-up reviewer persona's engine-owned
+// verb — pass completes the epic iff still drained, gaps holds it open
+// via the ordinary drain predicate. Claim-token-guarded on every
+// surface; the platform arbitrates every guard.
+func (c *Client) BoardRecordWrapUpVerdict(ctx context.Context, saToken, workspaceID string, body json.RawMessage) (*AutomationResponse, error) {
+	return c.boardWorkerPost(ctx, saToken, workspaceID, "/internal/v1/automation/board/tasks/wrapup-verdict", body)
+}
+
 // BoardSetCriteriaMet is the #1946 scoped grant's worker call: the
 // reviewer persona records one criterion's met flag on its OWN claimed
 // row (claim-token-guarded; persona provenance arbitrated at the

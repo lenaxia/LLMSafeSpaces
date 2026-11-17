@@ -6,6 +6,7 @@ import { secretsApi, type SecretResponse } from "../../api/secrets";
 import { api } from "../../api/client";
 import { promptsApi } from "../../api/prompts";
 import { getEnv } from "../../env";
+import { HarnessBadge } from "./HarnessBadge";
 
 interface Props {
   workspace: WorkspaceListItem;
@@ -113,6 +114,27 @@ export function WorkspaceSettingsDrawer({ workspace, open, onOpenChange }: Props
           </Dialog.Description>
 
           <p className="text-xs text-muted-foreground mb-6 truncate">{workspace.name}</p>
+
+          {/* Harness (bind-once, owner ruling 2026-11-16): read-only
+             badge context only — one harness per workspace, bound at
+             the first session, immutable forever. This surface never
+             offers harness CONTROLS (no switch, no rebind); the badge
+             is the entire post-binding harness UI. */}
+          <div className="border-t border-border pt-4 mb-5" data-testid="harness-settings-row">
+            <label className="text-sm font-medium">Harness</label>
+            {workspace.harness ? (
+              <div className="mt-2 flex items-center gap-2">
+                <HarnessBadge harness={workspace.harness} />
+                <p className="text-xs text-muted-foreground">
+                  Bound when the first session started — permanent for this workspace.
+                </p>
+              </div>
+            ) : (
+              <p className="mt-2 text-xs text-muted-foreground" data-testid="harness-unbound-settings">
+                Not chosen yet — you'll pick a harness when starting this workspace's first session.
+              </p>
+            )}
+          </div>
 
           <div className="space-y-5">
             {/* Custom Agent Instructions */}

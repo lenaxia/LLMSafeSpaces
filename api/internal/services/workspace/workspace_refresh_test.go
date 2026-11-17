@@ -10,6 +10,14 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
+	"github.com/stretchr/testify/require"
+	k8serrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+
+	imocks "github.com/lenaxia/llmsafespaces/api/internal/mocks"
+	kmocks "github.com/lenaxia/llmsafespaces/mocks/kubernetes"
+	lmocks "github.com/lenaxia/llmsafespaces/mocks/logger"
 
 	v1 "github.com/lenaxia/llmsafespaces/pkg/apis/llmsafespaces/v1"
 	"github.com/lenaxia/llmsafespaces/pkg/types"
@@ -374,4 +382,138 @@ func TestSuspendWorkspace_NeverStampsForceMarker(t *testing.T) {
 	err := f.svc.SuspendWorkspace(ctx, "user1", "ws-1")
 	assert.NoError(t, err)
 	f.ws.AssertExpectations(t)
+}
+
+// TestRefreshWorkspaceCompute_ConflictRetries (CRD-skew companion, owner
+// report 2026-11-16): the refresh write is a GET-mutate-UPDATE on a live
+// object; a concurrent writer (the controller's legacy harness-backfill
+// stamp among them) can bump resourceVersion between the read and the
+// write. A lost race must retry from a fresh read — the pre-fix shape
+// returned the conflict straight through as workspace_refresh_failed
+// (a silent dead click in the UX: the mutation has no error surface).
+func TestRefreshWorkspaceCompute_ConflictRetries(t *testing.T) {
+	f := newDefaultsFixture(t, nil)
+	ctx := context.Background()
+
+	crd := crdWorkspace("ws-1", "default", "user1", "10Gi")
+	crd.Status.Phase = v1.WorkspacePhaseActive
+	crd.Spec.RestartGeneration = 4
+
+	f.db.On("GetWorkspace", ctx, "ws-1").Return(dbWorkspace("ws-1", "user1", "my-ws", "10Gi"), nil)
+	// Every Get hands back a FRESH copy (the ordinal does not matter —
+	// each attempt re-derives generation+marker from its own read).
+	f.ws.On("Get", mock.Anything, "ws-1", mock.Anything).
+		Run(func(args mock.Arguments) {}).
+		Return(crd, nil)
+	// First Update loses a resourceVersion race; the retry's Update lands.
+	conflict := k8serrors.NewConflict(
+		schema.GroupResource{Group: "llmsafespaces.dev", Resource: "workspaces"},
+		"ws-1", errors.New("the object has been modified; please apply your changes to the latest version and try again"))
+	updates := 0
+	f.ws.On("Update", mock.Anything, mock.Anything).
+		Run(func(args mock.Arguments) { updates++ }).
+		Return(nil, conflict).Once()
+	f.ws.On("Update", mock.Anything, mock.Anything).
+		Run(func(args mock.Arguments) { updates++ }).
+		Return(crd, nil).Once()
+
+	res, err := f.svc.RefreshWorkspaceCompute(ctx, "user1", "ws-1")
+	assert.NoError(t, err, "a single lost resourceVersion race must retry, not 500 the refresh")
+	assert.NotNil(t, res)
+	assert.Equal(t, 2, updates, "exactly the conflicted write and its retry")
+}
+
+// freshGetWorkspaceClient serves a FRESH COPY per Get (the seam-fidelity
+// fixture review r1 asked for: the suite's same-pointer mocks masked the
+// stale pre-loop generation read-back). Updates and every other method
+// forward to the embedded mock untouched.
+type freshGetWorkspaceClient struct {
+	*kmocks.MockWorkspaceInterface
+	snapshot *v1.Workspace
+}
+
+func (m *freshGetWorkspaceClient) Get(_ context.Context, _ string, _ metav1.GetOptions) (*v1.Workspace, error) {
+	return m.snapshot.DeepCopy(), nil
+}
+
+// newFreshGetFixture builds the standard service fixture but wires the
+// workspace client through freshGetWorkspaceClient from the START (the
+// v1iface mock serves exactly one Workspaces registration — re-pointing
+// an existing fixture's registration trips testify's duplicate-On
+// matching, so the fresh-copy view is wired at construction).
+func newFreshGetFixture(t *testing.T, snapshot *v1.Workspace) *fixture {
+	t.Helper()
+
+	log := lmocks.NewMockLogger()
+	log.On("Info", mock.Anything, mock.Anything).Maybe()
+	log.On("Debug", mock.Anything, mock.Anything).Maybe()
+	log.On("Warn", mock.Anything, mock.Anything).Maybe()
+	log.On("Error", mock.Anything, mock.Anything, mock.Anything).Maybe()
+	log.On("With", mock.Anything).Return(log).Maybe()
+	log.On("Sync").Return(nil).Maybe()
+
+	k8s := kmocks.NewMockKubernetesClient()
+	v1i := kmocks.NewMockLLMSafespacesV1Interface()
+	db := &imocks.MockDatabaseService{}
+	db.On("EnsureWorkspacePhraseRegistered", mock.Anything, mock.Anything).Return("amber-river-7", nil).Maybe()
+	cache := &imocks.MockCacheService{}
+	met := &imocks.MockMetricsService{}
+	met.On("RecordRequest", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Maybe()
+
+	ws := kmocks.NewMockWorkspaceInterface()
+	fresh := &freshGetWorkspaceClient{MockWorkspaceInterface: ws, snapshot: snapshot}
+	k8s.On("LlmsafespacesV1").Return(v1i, nil)
+	v1i.On("Workspaces", "default").Return(fresh)
+
+	svc, err := New(log, k8s, db, cache, met, &Config{Namespace: "default"})
+	require.NoError(t, err)
+	return &fixture{svc: svc, k8s: k8s, v1iface: v1i, ws: ws, db: db, cache: cache, metrics: met, log: log}
+}
+
+// TestRefreshWorkspaceCompute_ReturnsBumpedGeneration (review r1,
+// correctness): the response contract is the generation that triggers
+// the rebuild (openapi: "The bumped restart generation"). With
+// fresh-copy-per-Get reads, the pre-refactor shape returned and logged
+// the PRE-bump snapshot (4, want 5) — masked in the suite by same-pointer
+// mocks; this pin is the unmasked probe.
+func TestRefreshWorkspaceCompute_ReturnsBumpedGeneration(t *testing.T) {
+	crd := crdWorkspace("ws-1", "default", "user1", "10Gi")
+	crd.Status.Phase = v1.WorkspacePhaseActive
+	crd.Spec.RestartGeneration = 4
+
+	f := newFreshGetFixture(t, crd)
+	ctx := context.Background()
+	f.db.On("GetWorkspace", ctx, "ws-1").Return(dbWorkspace("ws-1", "user1", "my-ws", "10Gi"), nil)
+	f.ws.On("Update", mock.Anything, mock.Anything).Return(crd, nil).Once()
+
+	res, err := f.svc.RefreshWorkspaceCompute(ctx, "user1", "ws-1")
+	require.NoError(t, err)
+	require.NotNil(t, res)
+	assert.Equal(t, int64(5), res.RestartGeneration,
+		"the endpoint returns the generation the final attempt WROTE (4+1), not the pre-loop snapshot")
+}
+
+// TestRefreshWorkspaceCompute_ConflictRetries_ReturnsFinalGeneration:
+// the conflict pin's value half — under a lost race the response still
+// carries the retried attempt's written generation (fresh copies: every
+// attempt reads 4 and writes 5).
+func TestRefreshWorkspaceCompute_ConflictRetries_ReturnsFinalGeneration(t *testing.T) {
+	crd := crdWorkspace("ws-1", "default", "user1", "10Gi")
+	crd.Status.Phase = v1.WorkspacePhaseActive
+	crd.Spec.RestartGeneration = 4
+
+	f := newFreshGetFixture(t, crd)
+	ctx := context.Background()
+	f.db.On("GetWorkspace", ctx, "ws-1").Return(dbWorkspace("ws-1", "user1", "my-ws", "10Gi"), nil)
+	conflict := k8serrors.NewConflict(
+		schema.GroupResource{Group: "llmsafespaces.dev", Resource: "workspaces"},
+		"ws-1", errors.New("the object has been modified; please apply your changes to the latest version and try again"))
+	f.ws.On("Update", mock.Anything, mock.Anything).Return(nil, conflict).Once()
+	f.ws.On("Update", mock.Anything, mock.Anything).Return(crd, nil).Once()
+
+	res, err := f.svc.RefreshWorkspaceCompute(ctx, "user1", "ws-1")
+	require.NoError(t, err)
+	require.NotNil(t, res)
+	assert.Equal(t, int64(5), res.RestartGeneration,
+		"each attempt re-derives from its own fresh read (4→5); the response is the generation that landed")
 }

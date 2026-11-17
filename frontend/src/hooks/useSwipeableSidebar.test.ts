@@ -270,7 +270,15 @@ describe("useSwipeableSidebar", () => {
       expect(moveEvent.defaultPrevented).toBe(true);
     });
 
-    it("prevents default on horizontal swipe outside the edge zone too (blanket horizontal claim — no scoping)", () => {
+    it("does NOT prevent default on a horizontal swipe outside the edge zone (2026-11-17 rail fix — the claim is scoped)", () => {
+      // Until the rail fix this pinned the OPPOSITE: a blanket
+      // preventDefault on every horizontal-dominant move app-wide. That
+      // canceled the browser's native pan everywhere — the sprint
+      // board's 1x4 rail was swipe-dead under real fingers (v0.44.15
+      // owner report) while mouse/keyboard/programmatic scrolls kept
+      // working. The claim is now scoped to the sidebar's own gestures;
+      // this is the same pin as "claim scoping" above, kept at the old
+      // anchor so the contract flip is greppable.
       const { dom } = setupHook(false);
 
       dispatchTouch(dom.container, "touchstart", [{ clientX: 100, clientY: 200 }]);
@@ -278,7 +286,7 @@ describe("useSwipeableSidebar", () => {
         { clientX: 200, clientY: 200 },
       ]);
 
-      expect(moveEvent.defaultPrevented).toBe(true);
+      expect(moveEvent.defaultPrevented).toBe(false);
     });
 
     it("does not prevent default on vertical gesture", () => {
@@ -461,6 +469,66 @@ describe("useSwipeableSidebar", () => {
       dispatchTouch(dom.container, "touchend", [], [{ clientX: 130, clientY: 200 }]);
 
       expect(setIsOpen).not.toHaveBeenCalled();
+    });
+  });
+
+  // ── The rail fix (2026-11-17, owner report on v0.44.15) ──────────────
+  //
+  // onMove used to preventDefault EVERY horizontal-dominant touchmove on
+  // the shell root — claimed or not. That canceled the browser's native
+  // pan for the whole app: the sprint board's 1x4 rail (and any nested
+  // horizontal scroller) was swipe-dead under real fingers — measured on
+  // main, every horizontal touchmove arrived defaultPrevented and
+  // scrollLeft never left 0 (mouse/keyboard/programmatic scrolls don't
+  // run through touchmove, which is why CI stayed green). The claim is
+  // now scoped to the two gestures the sidebar owns; everything else
+  // passes through uncanceled so the default pan can run. The end-to-end
+  // behavior is pinned with trusted touchscreen input in
+  // board-rail-touch.spec.ts; these are the unit pins.
+  describe("claim scoping (the rail's native pan must survive)", () => {
+    it("does NOT cancel horizontal-dominant moves outside the edge zone (native pan — the rail's swipe)", () => {
+      const { dom } = setupHook(false);
+
+      dispatchTouch(dom.container, "touchstart", [{ clientX: 150, clientY: 200 }]);
+      const move = dispatchTouch(dom.container, "touchmove", [{ clientX: 60, clientY: 200 }]);
+
+      expect(move.defaultPrevented).toBe(false);
+    });
+
+    it("does NOT cancel rightward moves while the drawer is closed away from the edge", () => {
+      const { dom } = setupHook(false);
+
+      dispatchTouch(dom.container, "touchstart", [{ clientX: 200, clientY: 200 }]);
+      const move = dispatchTouch(dom.container, "touchmove", [{ clientX: 280, clientY: 200 }]);
+
+      expect(move.defaultPrevented).toBe(false);
+    });
+
+    it("does NOT cancel rightward moves while the drawer is OPEN (nothing to drag right)", () => {
+      const { dom } = setupHook(true);
+
+      dispatchTouch(dom.container, "touchstart", [{ clientX: 200, clientY: 200 }]);
+      const move = dispatchTouch(dom.container, "touchmove", [{ clientX: 300, clientY: 200 }]);
+
+      expect(move.defaultPrevented).toBe(false);
+    });
+
+    it("still cancels the edge-zone rightward drag (the open gesture)", () => {
+      const { dom } = setupHook(false);
+
+      dispatchTouch(dom.container, "touchstart", [{ clientX: 10, clientY: 200 }]);
+      const move = dispatchTouch(dom.container, "touchmove", [{ clientX: 130, clientY: 200 }]);
+
+      expect(move.defaultPrevented).toBe(true);
+    });
+
+    it("still cancels the leftward drag while open (the close gesture)", () => {
+      const { dom } = setupHook(true);
+
+      dispatchTouch(dom.container, "touchstart", [{ clientX: 200, clientY: 200 }]);
+      const move = dispatchTouch(dom.container, "touchmove", [{ clientX: 100, clientY: 200 }]);
+
+      expect(move.defaultPrevented).toBe(true);
     });
   });
 

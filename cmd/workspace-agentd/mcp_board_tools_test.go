@@ -56,14 +56,14 @@ func TestMCPBoard_RegistryShape(t *testing.T) {
 		// Worker tools (#1701, design 0067 §4.3c). board_record_verdict
 		// (#1947): the spawned reviewer persona's ONE authorized write —
 		// claim-token-required, worker projection only.
-		"board_heartbeat", "board_move_stage", "board_read", "board_record_verdict", "board_report_throttle",
+		"board_heartbeat", "board_move_stage", "board_read", "board_record_verdict", "board_record_wrapup_verdict", "board_report_throttle",
 		// Manager set (#1747): projects.
 		"board_create_project", "board_update_project", "board_project_archive",
 		"board_project_unarchive", "board_project_pause", "board_project_resume",
 		// Manager set (#1747): epics.
 		"board_create_epic", "board_update_epic", "board_epic_activate",
 		"board_epic_pause", "board_epic_archive", "board_epic_unarchive",
-		"board_delete_epic",
+		"board_delete_epic", "board_ack_epic_wrapup",
 		// Manager set (#1747): tasks + dependencies + plan.
 		"board_create_story", "board_update_story", "board_add_dependency",
 		"board_remove_dependency", "board_delete_story", "board_pause_story",
@@ -119,7 +119,7 @@ func TestMCPBoard_RegistryShape(t *testing.T) {
 func TestMCPBoard_ClaimTokenSchema(t *testing.T) {
 
 	tools := mcpToolsList(t)
-	for _, name := range []string{"board_heartbeat", "board_report_throttle", "board_record_verdict"} {
+	for _, name := range []string{"board_heartbeat", "board_report_throttle", "board_record_verdict", "board_record_wrapup_verdict"} {
 		tool, ok := tools[name]
 		require.True(t, ok, "%s in tools/list", name)
 		schema := tool["inputSchema"].(map[string]any)

@@ -6,6 +6,7 @@ package server
 import (
 	"context"
 	"errors"
+	"io"
 	"log"
 	"net/http"
 	"net/http/pprof"
@@ -1379,7 +1380,8 @@ func registerInternalAutomationRoutes(router *gin.Engine, cfg RouterConfig) {
 		b.PUT("/config", h.BoardSetConfig)                    // board_set_config: tier-selected REPLACE write (manager set)
 		b.POST("/tasks/heartbeat", h.BoardHeartbeat)
 		b.POST("/tasks/throttle", h.BoardReportThrottle)
-		b.POST("/tasks/verdict", h.BoardRecordVerdict) // #1947: the spawned reviewer persona's verdict channel (token-guarded)
+		b.POST("/tasks/verdict", h.BoardRecordVerdict)              // #1947: the spawned reviewer persona's verdict channel (token-guarded)
+		b.POST("/tasks/wrapup-verdict", h.BoardRecordWrapUpVerdict) // epic wrap-up review: the reviewer persona's close (engine-owned schema, token-guarded)
 		b.POST("/tasks/move-stage", h.BoardMoveStage)
 		b.POST("/tasks/set-criteria-met", h.BoardSetCriteriaMet)      // #1946: the reviewer-persona claim's scoped criteria-flags write (claim-token-guarded; persona-provenance-guarded at the engine)
 		b.POST("/tasks/move-stage-bulk", h.BoardManagerMoveStageBulk) // #1836: bulk complete (claim stays owner-surface only, round-3 #2)
@@ -1396,6 +1398,7 @@ func registerInternalAutomationRoutes(router *gin.Engine, cfg RouterConfig) {
 
 		b.PATCH("/epics/:id", h.BoardUpdateEpic)
 		b.POST("/epics/:id/activate", h.BoardEpicActivate)
+		b.POST("/epics/:id/ack-wrapup", h.BoardAckEpicWrapUp) // epic wrap-up review: the recursion cap's human ack (manager verb)
 		b.POST("/epics/:id/pause", h.BoardEpicPause)
 		b.POST("/epics/:id/archive", h.BoardEpicArchive)
 		b.POST("/epics/:id/unarchive", h.BoardEpicUnarchive)
@@ -1527,6 +1530,26 @@ func sessionRefMiddleware(services interfaces.Services) gin.HandlerFunc {
 		return middleware.SessionRefResolution(db)
 	}
 	return middleware.SessionRefResolution(nil)
+}
+
+// parseSessionsNewHarnessBody reads the optional sessions/new body (the
+// picker's harness submit). Only the ABSENT body is fine (io.EOF from the
+// empty read — the legacy frontend sends no body at all). A MALFORMED body
+// (form-encoded harness=pi via curl's default content type, typo'd JSON)
+// must NOT be silently dropped: under bind-once immutability a swallowed
+// harness choice binds opencode permanently (review r1 F2) — the helper
+// writes the loud 400 and reports !ok.
+func parseSessionsNewHarnessBody(c *gin.Context) (harness string, ok bool) {
+	var body struct {
+		Harness string `json:"harness"`
+	}
+	if c.Request.Body != nil {
+		if err := c.ShouldBindJSON(&body); err != nil && !errors.Is(err, io.EOF) {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "request body must be JSON with an optional harness field"})
+			return "", false
+		}
+	}
+	return body.Harness, true
 }
 
 func registerWorkspaceRoutes(rg *gin.RouterGroup, idGroup *gin.RouterGroup, services interfaces.Services, proxyHandler *handlers.ProxyHandler, cfg RouterConfig, refMW gin.HandlerFunc) {
@@ -1788,12 +1811,52 @@ func registerWorkspaceRoutes(rg *gin.RouterGroup, idGroup *gin.RouterGroup, serv
 			c.JSON(http.StatusUnauthorized, gin.H{"error": "authentication required"})
 			return
 		}
-		resp, err := wsSvc.EnsureSession(c.Request.Context(), userID, c.Param("id"))
+		// Bind-once harness (owner ruling 2026-11-16): the optional
+		// body carries the picker's submit on an unbound workspace
+		// (binds atomically with the session). Empty body and empty
+		// harness are legal — the bound harness (or the opencode
+		// non-interactive default for a still-unbound workspace) is
+		// used; a mismatched harness on a bound workspace 409s in the
+		// service.
+		harness, ok := parseSessionsNewHarnessBody(c)
+		if !ok {
+			return
+		}
+		resp, err := wsSvc.EnsureSession(c.Request.Context(), userID, c.Param("id"), harness)
 		if err != nil {
 			respondWithError(c, err)
 			return
 		}
 		c.JSON(http.StatusOK, resp)
+	})
+
+	// PUT /harness — the explicit bind of an UNBOUND workspace's
+	// harness (owner ruling 2026-11-16: bind-once, immutable forever).
+	// Same value on a bound workspace: idempotent 200; any other
+	// value: 409 harness_immutable. There is deliberately NO switch
+	// or recreate endpoint anywhere (pinned by
+	// TestHarnessNoSwitchOrRecreateEndpointExists).
+	idGroup.PUT("/harness", func(c *gin.Context) {
+		userID := authSvc.GetUserID(c)
+		if userID == "" {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "authentication required"})
+			return
+		}
+		var req types.BindHarnessRequest
+		if err := c.ShouldBindJSON(&req); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "request body must be JSON with a harness field"})
+			return
+		}
+		// An empty harness flows to the service: on a BOUND workspace
+		// it is the unbind attempt (the loud 409 harness_immutable);
+		// on an unbound workspace the 422 required-field error. Only
+		// malformed JSON 400s here.
+		result, err := wsSvc.BindWorkspaceHarness(c.Request.Context(), userID, c.Param("id"), req.Harness)
+		if err != nil {
+			respondWithError(c, err)
+			return
+		}
+		c.JSON(http.StatusOK, result)
 	})
 
 	idGroup.PUT("/sessions/:sessionId/title", refMW, func(c *gin.Context) {
@@ -2382,6 +2445,7 @@ func registerWorkflowRoutes(router *gin.Engine, services interfaces.Services, cf
 		e.GET("/:id", b.GetEpic)
 		e.PATCH("/:id", b.UpdateEpic)
 		e.POST("/:id/activate", b.ActivateEpic)
+		e.POST("/:id/ack-wrapup", b.AckEpicWrapUp)
 		e.POST("/:id/pause", b.PauseEpic)
 		e.POST("/:id/archive", b.ArchiveEpic)
 		e.POST("/:id/unarchive", b.UnarchiveEpic)
@@ -2395,6 +2459,7 @@ func registerWorkflowRoutes(router *gin.Engine, services interfaces.Services, cf
 		k.PATCH("/:id", b.UpdateTask)
 		k.POST("/:id/move-stage", b.MoveStageTask)
 		k.POST("/:id/verdict", b.RecordTaskVerdict)
+		k.POST("/:id/wrapup-verdict", b.RecordTaskWrapUpVerdict) // epic wrap-up review: the engine-owned close (claim token rides the body's actor)
 		k.GET("/:id/verdicts", b.ListTaskVerdicts)
 		k.POST("/:id/start", b.StartTask)
 		k.POST("/:id/rearm", b.RearmTask)

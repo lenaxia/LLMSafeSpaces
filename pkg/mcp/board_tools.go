@@ -121,14 +121,49 @@ var boardHealthTool = mcp.NewTool("board_health",
 	mcp.WithReadOnlyHintAnnotation(true),
 )
 
-var boardRecordVerdictTool = mcp.NewTool("board_record_verdict",
-	mcp.WithDescription("Record a structured review verdict on a story (the REST wire term is 'task') and "+
-		"apply its transition through the guarded stage machine (#1832 item 5 — the forge-agnostic "+
-		"verdict core; forge adapters map "+
-		"INTO it, never re-implement it). approve → done STILL passes the Done guard (ALL criteria met + "+
-		"evidence_url); a refused transition is a RECORDED outcome (applied=false, transition=\"refused:"+
-		"<code>\"), not an error. fail → in_progress rides the bounce: fresh claim minted, attempts "+
-		"UNCHANGED (a bounce is an iteration inside the verdict chain, never a failure-ledger entry)."),
+var boardRecordWrapUpVerdictTool = mcp.NewTool("board_record_wrapup_verdict",
+	mcp.WithDescription("Close an epic's wrap-up review (the REST wire term is 'task'; the epic wrap-up "+
+		"review's engine-owned close verb — the ONLY sanctioned close; a plain move_stage→done on a "+
+		"wrap-up row runs NO settle and parks the epic until board_ack_epic_wrapup). PASS completes the "+
+		"epic iff still drained (atomically — never a fresh mint); GAPS references gap stories filed "+
+		"FIRST via board_create_story (tag \"gap\", deduped against existing rows) and the epic stays "+
+		"open — the non-done gap rows hold it. The schema is closed: verdict pass|gaps (a story verdict's "+
+		"approve|fail refuses), report_url required on BOTH (the close's evidence), gap_refs required "+
+		"non-empty iff gaps (same epic, gap-tagged, filed since the wrap-up's mint), notes size-capped. "+
+		"THE CLOSE IS THE REVIEWER'S ACT: the engine requires the wrap-up row's LIVE claim token on "+
+		"every surface (the spawned wrap-up reviewer persona's own claim — the in-workspace agent tool "+
+		"carries it), and this external surface carries no claim-token parameter (§4.3b: external actors "+
+		"hold no claims) — a call here without the reviewer's claim renders the engine's loud refusal. "+
+		"The owner's levers on this surface: read the wrap-up row + its report, the manager raw-done "+
+		"posture (parks until ack), and board_ack_epic_wrapup."),
+	mcp.WithString("story_id", mcp.Required(), mcp.Description("The wrap-up row's short id (tsk-XXXXXXXX)")),
+	mcp.WithString("verdict", mcp.Required(), mcp.Description("pass or gaps")),
+	mcp.WithString("report_url", mcp.Required(), mcp.Description("The wrap-up report URL (required on both verdicts — the close's evidence)")),
+	mcp.WithString("reviewer", mcp.Required(), mcp.Description("Your reviewer identity (the record's author)")),
+	mcp.WithArray("gap_refs", mcp.WithStringItems(),
+		mcp.Description("gaps only: the gap stories' short ids (filed via board_create_story with tag \"gap\" BEFORE the verdict); required non-empty iff verdict=gaps")),
+	mcp.WithString("notes", mcp.Description("Optional prose (size-capped)")),
+	mcp.WithString("request_id", mcp.Description("Idempotency key (one per logical operation)")),
+)
+
+var boardAckEpicWrapUpTool = mcp.NewTool("board_ack_epic_wrapup",
+	mcp.WithDescription("The epic wrap-up review's human ack (manager verb — the recursion cap's exit): "+
+		"reset the consecutive-close ledger, clear the ack-wait flag and any parked in-flight pointer, "+
+		"and re-drain the epic — an acked, still-drained epic mints its next wrap-up immediately (the "+
+		"human said keep going). Also un-wedges a PARKED pointer (a wrap-up row closed by a raw manager "+
+		"move_stage→done runs no settle — the pointer parks, fail-visible, until this ack clears it). "+
+		"Acking an epic with nothing to ack is the original echo (200, no event)."),
+	mcp.WithString("epic_id", mcp.Required(), mcp.Description("Epic short id (epc-…, phrase or legacy form)")),
+	mcp.WithString("request_id", mcp.Description("Idempotency key (one per logical operation)")),
+)
+
+var boardRecordVerdictTool = mcp.NewTool("board_record_verdict", mcp.WithDescription("Record a structured review verdict on a story (the REST wire term is 'task') and "+
+	"apply its transition through the guarded stage machine (#1832 item 5 — the forge-agnostic "+
+	"verdict core; forge adapters map "+
+	"INTO it, never re-implement it). approve → done STILL passes the Done guard (ALL criteria met + "+
+	"evidence_url); a refused transition is a RECORDED outcome (applied=false, transition=\"refused:"+
+	"<code>\"), not an error. fail → in_progress rides the bounce: fresh claim minted, attempts "+
+	"UNCHANGED (a bounce is an iteration inside the verdict chain, never a failure-ledger entry)."),
 	mcp.WithString("story_id", mcp.Required(), mcp.Description("Story short id (tsk-XXXXXXXX)")),
 	mcp.WithString("verdict", mcp.Required(), mcp.Description("approve or fail")),
 	mcp.WithString("reviewer", mcp.Required(), mcp.Description("Reviewer identity (the record's author)")),
@@ -939,6 +974,77 @@ func verdictFindingsArg(args map[string]any) ([]BoardVerdictFinding, error) {
 	return out, nil
 }
 
+// boardStringArrayArg decodes a []string argument (gap_refs' shape).
+func boardStringArrayArg(args map[string]any, key string) ([]string, error) {
+	raw, ok := args[key]
+	if !ok || raw == nil {
+		return nil, nil
+	}
+	arr, ok := raw.([]any)
+	if !ok {
+		return nil, fmt.Errorf("%s must be an array of strings", key)
+	}
+	out := make([]string, 0, len(arr))
+	for i, e := range arr {
+		s, ok := e.(string)
+		if !ok {
+			return nil, fmt.Errorf("%s[%d] must be a string", key, i)
+		}
+		out = append(out, s)
+	}
+	return out, nil
+}
+
+func (h *handlers) boardRecordWrapUpVerdict(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	args := req.GetArguments()
+	taskID := storyRefArg(args)
+	verdict := strArg(args, "verdict")
+	reviewer := strArg(args, "reviewer")
+	if taskID == "" || verdict == "" || reviewer == "" {
+		return mcp.NewToolResultError("story_id, verdict, and reviewer are required"), nil
+	}
+	if verdict != "pass" && verdict != "gaps" {
+		return mcp.NewToolResultError("verdict must be pass or gaps (the story verdict's approve|fail is a different verb)"), nil
+	}
+	reportURL := strArg(args, "report_url")
+	if reportURL == "" {
+		return mcp.NewToolResultError("report_url is required on both verdicts (the close's evidence)"), nil
+	}
+	gapRefs, err := boardStringArrayArg(args, "gap_refs")
+	if err != nil {
+		return mcp.NewToolResultError(err.Error()), nil
+	}
+	if verdict == "gaps" && len(gapRefs) == 0 {
+		return mcp.NewToolResultError("a gaps verdict requires at least one gap_ref (file gap stories FIRST via board_create_story, tag \"gap\")"), nil
+	}
+	if verdict == "pass" && len(gapRefs) > 0 {
+		return mcp.NewToolResultError("a pass verdict files no gaps (gap_refs are required non-empty iff gaps)"), nil
+	}
+	resp, err := h.client.BoardRecordWrapUpVerdict(ctx, taskID, BoardWrapUpVerdictBody{
+		Verdict: verdict, ReportURL: reportURL,
+		GapRefs: gapRefs,
+		Notes:   strArg(args, "notes"), Reviewer: reviewer,
+		RequestID: strArg(args, "request_id"),
+	})
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("failed to record wrap-up verdict: %v", err)), nil
+	}
+	return mcp.NewToolResultText(string(resp)), nil
+}
+
+func (h *handlers) boardAckEpicWrapUp(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	args := req.GetArguments()
+	epicID := strArg(args, "epic_id")
+	if epicID == "" {
+		return mcp.NewToolResultError("epic_id is required"), nil
+	}
+	resp, err := h.client.BoardAckEpicWrapUp(ctx, epicID, strArg(args, "request_id"))
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("failed to ack epic wrap-up: %v", err)), nil
+	}
+	return mcp.NewToolResultText(string(resp)), nil
+}
+
 func (h *handlers) boardRecordVerdict(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	args := req.GetArguments()
 	taskID := storyRefArg(args)
@@ -1471,6 +1577,8 @@ func AddBoardTools(srv *server.MCPServer, h *handlers) {
 		server.ServerTool{Tool: boardUpdateItemTool, Handler: h.boardUpdateItem},
 		server.ServerTool{Tool: boardMoveStageTool, Handler: h.boardMoveStage},
 		server.ServerTool{Tool: boardRecordVerdictTool, Handler: h.boardRecordVerdict},
+		server.ServerTool{Tool: boardRecordWrapUpVerdictTool, Handler: h.boardRecordWrapUpVerdict},
+		server.ServerTool{Tool: boardAckEpicWrapUpTool, Handler: h.boardAckEpicWrapUp},
 		server.ServerTool{Tool: boardStoryVerdictsTool, Handler: h.boardStoryVerdicts},
 		server.ServerTool{Tool: boardStartStoryTool, Handler: h.boardStartStory},
 		server.ServerTool{Tool: boardStartStoriesTool, Handler: h.boardStartStories},
