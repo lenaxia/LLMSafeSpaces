@@ -212,6 +212,39 @@ describe("Sidebar — workspace refresh compute", () => {
     expect(workspacesApi.refreshCompute).toHaveBeenCalledWith("ws-1");
   });
 
+  it("a confirmed refresh invalidates the workspaces list and renders the fresh phase (pin d)", async () => {
+    // The owner-facing half of the refresh contract: the mutation's
+    // onSuccess invalidation refetches ["workspaces"], and the fresh
+    // phase (here: the recycle's Creating) renders without a manual
+    // reload. The .15 incident's silent half was backend-side (the
+    // starved phase machine never transitioned); this pin guards the
+    // frontend half of the loop end-to-end.
+    const list = workspacesApi.list as unknown as ReturnType<typeof vi.fn>;
+    list.mockResolvedValueOnce({
+      items: [
+        { id: "ws-1", name: "alpha", phase: "Active", userId: "u1", runtime: "python", storageSize: "5Gi", createdAt: "", updatedAt: "" },
+      ],
+      pagination: { limit: 20, offset: 0, total: 1 },
+    }).mockResolvedValueOnce({
+      items: [
+        { id: "ws-1", name: "alpha", phase: "Creating", userId: "u1", runtime: "python", storageSize: "5Gi", createdAt: "", updatedAt: "" },
+      ],
+      pagination: { limit: 20, offset: 0, total: 1 },
+    });
+
+    renderSidebar();
+    await screen.findByText("alpha");
+
+    const kebabButtons = await screen.findAllByLabelText("Actions");
+    kebabButtons[0]!.click();
+    (await screen.findByRole("menuitem", { name: "Refresh compute" })).click();
+    (await screen.findByRole("button", { name: "Refresh compute" })).click();
+
+    expect(await screen.findByText("Creating")).toBeInTheDocument();
+    // the post-refresh refetch renders the workspace's new phase without a manual reload
+    expect(list.mock.calls.length).toBeGreaterThanOrEqual(2);
+  });
+
   it("does not refresh compute when the confirm dialog is cancelled", async () => {
     renderSidebar();
     await screen.findByText("alpha");

@@ -15,6 +15,12 @@ owner-question costume. A pod memory-reap reclaimed all four in-flight rows at t
 microsecond on wall-clock with no session-death evidence. The lease fix and the failed-stage fix
 were themselves among the eaten rows — the board cannot land its own rescue.
 
+> **Companion document:** `claim-lifecycle-design.md` (#2060's port, records lane #2066) owns
+> the lifecycle state LEXICON (alert-surface vocabulary), the epoch-evidence model, and the
+> event-driven ENTRY the ladder above accelerates into (#2061/#2065: a turn-end(no-advance)
+> marks the claim lease-due; every arm in this document then runs unchanged). This doc keeps
+> the ladder semantics. Cross-linked both ways.
+
 ## Part 1 — the seamless lease
 
 ### The loop (final form)

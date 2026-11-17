@@ -1038,28 +1038,66 @@ func (s *Service) RefreshWorkspaceCompute(ctx context.Context, userID, workspace
 
 	wasSuspended := crd.Status.Phase == v1.WorkspacePhaseSuspended
 
-	s.reapplyComputeDefaults(ctx, crd)
-	crd.Spec.RestartGeneration++
-	// #1505: refresh-compute is the USER-consented force path (the UI
-	// warning is the consent). Stamp the generation-keyed force marker so
-	// the controller's recycle bypasses the #761 session drain — on a
-	// multi-agent pod with perpetually busy sessions the drain would
-	// never find quiet and the refresh would hang. In-flight turns die
-	// by design. The controller clears the marker in the same reconcile
-	// that observes this generation — the Active recycle honors it; the
-	// Creating / Failed-recovery observes clear it as hygiene.
-	if crd.Annotations == nil {
-		crd.Annotations = map[string]string{}
-	}
-	crd.Annotations[v1.AnnotationForceRecycle] = strconv.FormatInt(crd.Spec.RestartGeneration, 10)
+	// Conflict-retried (the bindUnboundWorkspace shape): the write is a
+	// GET-mutate-UPDATE on a live object, and concurrent writers (the
+	// controller's legacy harness backfill, an activity-tracker touch)
+	// can bump resourceVersion between the GET and the UPDATE — a lost
+	// race must retry from a fresh read, not 500 the user's refresh
+	// (each attempt re-derives generation+marker together, so the pair
+	// stays consistent no matter how many retries fire).
+	// bumpedGeneration carries the FINAL attempt's written value — the
+	// response contract is the generation that triggers the rebuild
+	// (openapi: "The bumped restart generation"), never the pre-loop
+	// snapshot a retried attempt superseded (review r1: the mock
+	// suites' same-pointer Gets masked the stale read-back).
+	bumpedGeneration := crd.Spec.RestartGeneration
+	if err := retry.RetryOnConflict(retry.DefaultBackoff, func() error {
+		fresh, err := func() (*v1.Workspace, error) {
+			wsClient, wErr := s.workspaceCRDClient()
+			if wErr != nil {
+				return nil, wErr
+			}
+			return wsClient.Get(ctx, workspaceID, metav1.GetOptions{})
+		}()
+		if err != nil {
+			return err
+		}
+		if fresh.Status.Phase == v1.WorkspacePhaseTerminating || fresh.Status.Phase == v1.WorkspacePhaseTerminated {
+			return apierrors.NewConflictError(
+				"workspace",
+				workspaceID,
+				fmt.Errorf("cannot refresh compute for workspace in phase %q", fresh.Status.Phase),
+			)
+		}
+		s.reapplyComputeDefaults(ctx, fresh)
+		fresh.Spec.RestartGeneration++
+		// #1505: refresh-compute is the USER-consented force path (the UI
+		// warning is the consent). Stamp the generation-keyed force marker so
+		// the controller's recycle bypasses the #761 session drain — on a
+		// multi-agent pod with perpetually busy sessions the drain would
+		// never find quiet and the refresh would hang. In-flight turns die
+		// by design. The controller clears the marker in the same reconcile
+		// that observes this generation — the Active recycle honors it; the
+		// Creating / Failed-recovery observes clear it as hygiene.
+		if fresh.Annotations == nil {
+			fresh.Annotations = map[string]string{}
+		}
+		fresh.Annotations[v1.AnnotationForceRecycle] = strconv.FormatInt(fresh.Spec.RestartGeneration, 10)
+		bumpedGeneration = fresh.Spec.RestartGeneration
 
-	if _, err := func() (*v1.Workspace, error) {
 		wsClient, wErr := s.workspaceCRDClient()
 		if wErr != nil {
-			return nil, wErr
+			return wErr
 		}
-		return wsClient.Update(ctx, crd)
-	}(); err != nil {
+		_, err = wsClient.Update(ctx, fresh)
+		return err
+	}); err != nil {
+		// A terminal phase observed mid-retry is the same verdict the
+		// pre-write check delivers — the 409, not an internal 500.
+		var apiErr *apierrors.APIError
+		if errors.As(err, &apiErr) {
+			return nil, apiErr
+		}
 		s.logger.Error("Failed to refresh workspace compute", err, "workspaceID", workspaceID)
 		return nil, apierrors.NewInternalError("workspace_refresh_failed", err)
 	}
@@ -1077,9 +1115,9 @@ func (s *Service) RefreshWorkspaceCompute(ctx context.Context, userID, workspace
 
 	s.logger.Info("Workspace compute refresh initiated",
 		"workspaceID", workspaceID, "userID", userID,
-		"restartGeneration", crd.Spec.RestartGeneration, "fromPhase", string(crd.Status.Phase),
+		"restartGeneration", bumpedGeneration, "fromPhase", string(crd.Status.Phase),
 		"resumed", wasSuspended)
-	return &types.RefreshWorkspaceResult{RestartGeneration: crd.Spec.RestartGeneration}, nil
+	return &types.RefreshWorkspaceResult{RestartGeneration: bumpedGeneration}, nil
 }
 
 // reapplyComputeDefaults overwrites the compute-oriented spec fields with the

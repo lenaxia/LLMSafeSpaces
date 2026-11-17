@@ -86,11 +86,27 @@ export function useSwipeableSidebar({
 
       if (dy > Math.abs(dx)) return;
 
-      e.preventDefault();
-
       const side = sidebarRef.current;
       const over = overlayRef.current;
       const open = isOpenRef.current;
+
+      // The rail fix (2026-11-17, owner report on v0.44.15): claim (and
+      // so cancel the default for) ONLY the gestures the sidebar owns —
+      // an edge-zone rightward drag opening a closed drawer, or a
+      // leftward drag closing an open one. Every other horizontal-dominant
+      // touchmove passes through UNCANCELED so the browser's native pan
+      // can run: the sprint board's 1x4 rail (and any other sanctioned
+      // horizontal scroller) is swiped dead by a blanket preventDefault
+      // here — measured on main: every horizontal touchmove app-wide
+      // arrived defaultPrevented, scrollLeft never left 0. History
+      // swipe-back stays dead regardless: overscroll-behavior-x: none on
+      // html/body (index.css) owns that, and edge-zone touches were
+      // already claimed at touchstart.
+      const claimed =
+        (isEdgeSwipe.current && dx > 0 && !open) || (open && dx < 0);
+      if (!claimed) return;
+
+      e.preventDefault();
 
       if (isEdgeSwipe.current && dx > 0 && !open) {
         isSwiping.current = true;

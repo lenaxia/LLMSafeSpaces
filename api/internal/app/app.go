@@ -1895,6 +1895,21 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 			if podAutomationHandler != nil {
 				podAutomationHandler.SetBoardService(boardSvc)
 			}
+			// #2061/#2065 story 2: the turn-end(no-advance) consumer —
+			// the usagestream fold's second observer beside the liveness
+			// hub's stamp (SetFrameObserver is late-bound by design, so
+			// the composite re-installs over the hub-only observer wired
+			// earlier: hub stamps FIRST, byte-identical to today for
+			// every frame the consumer ignores; pods cannot stream
+			// before serving starts). A turn-end(no-advance) for a
+			// claim-holder marks the row's lease due (one guarded write
+			// — Service.ConsumeTurnEnd); the NEXT sweep runs the
+			// existing quiet arms. Degraded stream ⇒ no dispatches ⇒
+			// today's sweep semantics verbatim (the accelerator-never-
+			// dependency posture, epic R5).
+			boardTurnEnds := newBoardTurnEndConsumer(boardSvc.ConsumeTurnEnd, log)
+			go boardTurnEnds.Run(ctx)
+			proxyHandler.SetFrameObserver(chainFrameObservers(boardLivenessHub.ObserveFrame, boardTurnEnds.ObserveFrame))
 			// REST projection (design 0067 §4.3a, #1699 Lane 2): a thin
 			// adapter over the same canonical service — the manager
 			// surface at /api/v1/me/projects|epics|tasks (user-level,

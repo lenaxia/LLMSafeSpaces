@@ -412,7 +412,10 @@ func AcpToolCallFromNative(t *ocTool) *AcpToolCall {
 		tc.CompletedAt = t.State.CompletedAt
 	}
 	if len(t.Input) > 0 {
-		tc.RawInput = t.Input
+		// #2030a hygiene: the SERVED view of tool args carries no
+		// identity stamps (byte-stable passthrough when clean); the
+		// stored record keeps them for attribution.
+		tc.RawInput = stripIdentityStampsJSON(t.Input)
 	}
 	if len(t.Output) > 0 {
 		tc.RawOutput = t.Output

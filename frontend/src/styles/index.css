@@ -69,10 +69,23 @@ body {
   /* #1629: explicit x/y longhands (not the shorthand) — the x longhand
    * is the load-bearing declaration that disables the browser's
    * horizontal swipe-back navigation at the CSS level, which is what
-   * lets the app own the full left edge for the sidebar gesture. */
+   * lets the app own the full left edge for the sidebar gesture.
+   *
+   * pan-x pan-y (was pan-y until the 2026-11-17 rail fix): touch-action
+   * intersects along the ANCESTOR chain — a pan-y here forbids
+   * horizontal touch panning for every descendant, and a descendant can
+   * never re-enable what an ancestor disabled. That killed the sprint
+   * board's 1x4 rail (and any nested horizontal scroller) under real
+   * fingers: mouse/keyboard/programmatic scrolls ignore touch-action,
+   * so CI never saw it. The document itself never scrolls horizontally
+   * (the h-dvh overflow-hidden shell), so pan-x at this level changes
+   * nothing about the viewport — it only un-restricts sanctioned nested
+   * scrollers. History swipe-back stays dead via overscroll-behavior-x
+   * above; pinch-zoom and double-tap-zoom stay disabled (any non-auto
+   * touch-action value disables them — pan-x pan-y is not auto). */
   overscroll-behavior-x: none;
   overscroll-behavior-y: none;
-  touch-action: pan-y;
+  touch-action: pan-x pan-y;
 }
 
 /* Dark-mode-safe native <select> dropdowns. Browsers default <option>
@@ -86,10 +99,15 @@ body {
 
 html {
   /* Root scroller — see the body rule (#1629): the root is where the
-   * viewport-level swipe-navigation gesture is actually suppressed. */
+   * viewport-level swipe-navigation gesture is actually suppressed.
+   * pan-x pan-y — same rationale as the body rule (the 2026-11-17 rail
+   * fix): the intersection rule made the root's pan-y forbid horizontal
+   * touch panning for the whole app; the document never scrolls
+   * horizontally, so pan-x only un-restricts nested scrollers (the
+   * board rail). Swipe-back stays dead via overscroll-behavior-x. */
   overscroll-behavior-x: none;
   overscroll-behavior-y: none;
-  touch-action: pan-y;
+  touch-action: pan-x pan-y;
 }
 
 /* #1648 — dvh fallback. The shell roots are h-dvh/min-h-dvh (100dvh =

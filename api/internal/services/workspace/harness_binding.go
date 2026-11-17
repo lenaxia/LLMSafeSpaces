@@ -247,6 +247,30 @@ func (s *Service) bindUnboundWorkspace(ctx context.Context, workspaceID, harness
 			}
 			return apierrors.NewInternalError("harness_bind_failed", err)
 		}
+		// VERIFY (CRD-skew seam, owner report 2026-11-16): a structural
+		// apiserver serving the pre-.15 Workspace CRD PRUNES spec.harness
+		// and returns success — reporting a bind that never landed parks
+		// the born-unbound workspace in Creating forever (no pod, no
+		// error, no event). Read back; an unlanded bind is a LOUD
+		// internal error naming the operator action, never a silent
+		// no-op. (Also collapses the benign re-entrancy: a concurrent
+		// same-value bind reads back bound and returns clean.)
+		after, err := func() (*v1.Workspace, error) {
+			wsClient, wErr := s.workspaceCRDClient()
+			if wErr != nil {
+				return nil, wErr
+			}
+			return wsClient.Get(ctx, workspaceID, metav1.GetOptions{})
+		}()
+		if err != nil {
+			return apierrors.NewInternalError("workspace_get_failed", err)
+		}
+		if after.Spec.Harness == "" {
+			return apierrors.NewInternalError("harness_bind_not_persisted", fmt.Errorf(
+				"the harness bind for workspace %s was accepted but did not persist (spec.harness reads back empty) — the cluster's Workspace CRD predates 0.44.15 (helm does not upgrade crds/; the operator must `kubectl apply -f helm/crds/workspace.yaml`); retry the bind after the CRD lands",
+				workspaceID,
+			))
+		}
 		return nil
 	})
 }
