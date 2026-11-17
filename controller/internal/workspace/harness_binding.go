@@ -129,7 +129,9 @@ func (r *WorkspaceReconciler) reconcileHarnessBinding(ctx context.Context, ws *v
 		}
 		// Within the retry window of an unlandable stamp (or just
 		// pruned above): proceed — the legacy workspace is effectively
-		// opencode (effectiveBoundHarness) with or without the stamp.
+		// opencode with or without the stamp (`workspaceHarness`,
+		// harness_delivery.go: "" defaults to opencode for every
+		// controller-side consumer).
 		return false, ctrl.Result{}, nil
 	}
 
@@ -182,10 +184,25 @@ func (r *WorkspaceReconciler) backfillLegacyHarness(ctx context.Context, ws *v1.
 		if err := r.Get(ctx, nn, &after); err != nil {
 			return err
 		}
+		// STALE-READ GATE (review r1, robustness): the verify rides the
+		// informer-cache client, and a cache not yet caught up with the
+		// watch event serves the PRE-write object — on a HEALTHY
+		// cluster that shape must never read as a skew verdict (a
+		// false operator ERROR with the wrong remediation, a 10m
+		// suppression, a stale ResourceVersion). A read-back that is
+		// not the object this pass wrote is INCONCLUSIVE, not
+		// evidence: proceed as landed (the caller's requeue re-reads;
+		// a genuinely pruned stamp re-presents on the next attempt
+		// path once the read is fresh).
+		if after.ResourceVersion != fresh.ResourceVersion {
+			ws.ResourceVersion = fresh.ResourceVersion
+			landed = true
+			return nil
+		}
 		ws.ResourceVersion = after.ResourceVersion
-		// landed only on a BOUND read-back: a still-unbound shape (the
-		// marker surviving our deletion — a stale-cache read) is NOT a
-		// landed stamp; the window retry converges.
+		// landed only on a BOUND read-back of the object we wrote: the
+		// pruned shape (harness still empty at our own RV) is the skew
+		// verdict the caller reports.
 		landed = after.Spec.Harness != ""
 		return nil
 	})

@@ -1045,6 +1045,12 @@ func (s *Service) RefreshWorkspaceCompute(ctx context.Context, userID, workspace
 	// race must retry from a fresh read, not 500 the user's refresh
 	// (each attempt re-derives generation+marker together, so the pair
 	// stays consistent no matter how many retries fire).
+	// bumpedGeneration carries the FINAL attempt's written value — the
+	// response contract is the generation that triggers the rebuild
+	// (openapi: "The bumped restart generation"), never the pre-loop
+	// snapshot a retried attempt superseded (review r1: the mock
+	// suites' same-pointer Gets masked the stale read-back).
+	bumpedGeneration := crd.Spec.RestartGeneration
 	if err := retry.RetryOnConflict(retry.DefaultBackoff, func() error {
 		fresh, err := func() (*v1.Workspace, error) {
 			wsClient, wErr := s.workspaceCRDClient()
@@ -1077,6 +1083,7 @@ func (s *Service) RefreshWorkspaceCompute(ctx context.Context, userID, workspace
 			fresh.Annotations = map[string]string{}
 		}
 		fresh.Annotations[v1.AnnotationForceRecycle] = strconv.FormatInt(fresh.Spec.RestartGeneration, 10)
+		bumpedGeneration = fresh.Spec.RestartGeneration
 
 		wsClient, wErr := s.workspaceCRDClient()
 		if wErr != nil {
@@ -1108,9 +1115,9 @@ func (s *Service) RefreshWorkspaceCompute(ctx context.Context, userID, workspace
 
 	s.logger.Info("Workspace compute refresh initiated",
 		"workspaceID", workspaceID, "userID", userID,
-		"restartGeneration", crd.Spec.RestartGeneration, "fromPhase", string(crd.Status.Phase),
+		"restartGeneration", bumpedGeneration, "fromPhase", string(crd.Status.Phase),
 		"resumed", wasSuspended)
-	return &types.RefreshWorkspaceResult{RestartGeneration: crd.Spec.RestartGeneration}, nil
+	return &types.RefreshWorkspaceResult{RestartGeneration: bumpedGeneration}, nil
 }
 
 // reapplyComputeDefaults overwrites the compute-oriented spec fields with the

@@ -328,3 +328,65 @@ func ageBackfillWindow(r *WorkspaceReconciler, key string) {
 		r.harnessBackfillAttemptAt[key] = time.Now().Add(-harnessBackfillRetryInterval - time.Minute)
 	}
 }
+
+// SKEW-6 (review r1, robustness): the persistence verify rides the
+// informer-cache client; a cache not yet caught up with the write's
+// watch event serves the PRE-write object. On a HEALTHY cluster that
+// shape must never read as a skew verdict — no false operator ERROR,
+// no 10m window suppression. The stale-read gate (read-back RV must
+// match the write's RV) treats it as inconclusive: landed semantics,
+// the pass holds for the re-read (phase machine withheld exactly one
+// pass), and the attempt record is CLEARED. The next reconcile reads
+// the caught-up cache and proceeds bound.
+func TestBackfillVerifySurvivesCacheLag(t *testing.T) {
+	ws := legacyActiveWorkspace("ws-skew-cachelag")
+	ws.Status.Phase = v1.WorkspacePhaseCreating
+	ws.Status.PVCName = "workspace-ws-skew-cachelag"
+	pvc := makeBoundPVC("workspace-ws-skew-cachelag", "default", ws.UID)
+	pwSecret := makePasswordSecret("ws-skew-cachelag", "default")
+	rte := &v1.RuntimeEnvironment{
+		ObjectMeta: metav1.ObjectMeta{Name: "python-3.11"},
+		Spec:       v1.RuntimeEnvironmentSpec{Image: "ghcr.io/test/python:3.11", Language: "python", Version: "3.11"},
+	}
+	expectedPod := podName(ws.Name, string(ws.UID))
+
+	// The lagging-cache fixture: Get#1 (reconcile fetch) and Get#2 (the
+	// backfill's fresh read) serve the tracker; Get#3 (the verify read)
+	// serves the PRE-write snapshot — exactly one update behind.
+	gets := 0
+	var snapshot *v1.Workspace
+	lag := interceptor.Funcs{
+		Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+			if err := c.Get(ctx, key, obj, opts...); err != nil {
+				return err
+			}
+			gets++
+			if gets == 2 {
+				snapshot = obj.(*v1.Workspace).DeepCopy()
+			}
+			if gets == 3 && snapshot != nil {
+				snapshot.DeepCopyInto(obj.(*v1.Workspace))
+			}
+			return nil
+		},
+	}
+	r, _ := reconcilerWithInterceptor(t, lag, ws, pvc, pwSecret, rte)
+
+	// Pass 1 (the lag window): inconclusive verdict — landed semantics.
+	_, err := r.Reconcile(context.Background(), reqFor(ws.Name, "default"))
+	require.NoError(t, err)
+	assert.False(t, podExists(t, r, expectedPod),
+		"the inconclusive pass holds the phase machine for the re-read (landed semantics) — NOT the skew verdict's fall-through")
+	r.harnessBackfillMu.Lock()
+	_, suppressed := r.harnessBackfillAttemptAt[ws.Namespace+"/"+ws.Name]
+	r.harnessBackfillMu.Unlock()
+	assert.False(t, suppressed,
+		"no window suppression on a healthy landing write — the attempt record is cleared with the landed verdict")
+
+	// Pass 2 (cache caught up): bound short-circuit, phase machine
+	// proceeds, start continues.
+	_, err = r.Reconcile(context.Background(), reqFor(ws.Name, "default"))
+	require.NoError(t, err)
+	assert.True(t, podExists(t, r, expectedPod),
+		"once the cache catches up, the bound object proceeds — start completes, no skew verdict was ever logged")
+}

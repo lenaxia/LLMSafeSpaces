@@ -30,7 +30,7 @@ Born-red evidence (captured verbatim on unfixed main, `controller/internal/works
 `controller/internal/workspace/harness_binding.go`:
 
 - `backfillLegacyHarness` now **verifies persistence** (read-back after the write) and reports `landed` — an accepted-but-pruned write is distinguished from a landed stamp.
-- The legacy arm reserves `handled=true` for a write that PERSISTED. An unlandable stamp logs a loud once-per-window operator error (naming `kubectl apply -f helm/crds/workspace.yaml`) and **falls through to phase dispatch in the same pass** — the phase machine is never starved. The legacy workspace is effectively opencode with or without the stamp (`effectiveBoundHarness`), so proceeding is semantically exact.
+- The legacy arm reserves `handled=true` for a write that PERSISTED. An unlandable stamp logs a loud once-per-window operator error (naming `kubectl apply -f helm/crds/workspace.yaml`) and **falls through to phase dispatch in the same pass** — the phase machine is never starved. The legacy workspace is effectively opencode with or without the stamp (`workspaceHarness` — the controller-side seam, harness_delivery.go: "" defaults to opencode), so proceeding is semantically exact.
 - Re-attempts ride `harnessBackfillRetryInterval` (10m, var for tests): one write per window per workspace (no hot loop, crash-safe attempt stamping), converging within minutes of the operator applying the CRD. Bookkeeping: `harnessBackfillAttemptAt` map + mutex on the reconciler (concurrent reconciles).
 
 API-tier companions (`api/internal/services/workspace/`):
@@ -69,3 +69,7 @@ API-tier companions (`api/internal/services/workspace/`):
 
 - The CRD-upgrade footgun itself: the chart could gain a pre-upgrade job or the README step could become a chart gate (the pi/opencode mandatory-value `fail` gates already catch the values half — the CRD half is still manual).
 - `SetDefaults_Workspace` still mirroring the pre-ruling harness default is a fixture-only hazard; a follow-up could drop that default line now that the CRD has none (left alone here — it would churn every controller fixture for zero behavior gain).
+
+## Post-merge addendum (2026-11-17)
+
+PR #2088 was MERGED by the orchestrator at `ed484ea22` (2026-11-17T05:43Z) while the review-round-2 remediation commits were still in flight — the merge carries the root-cause fix, all six skew pins, and the widened docs, but NOT the three review findings' fixes, and main went red on Frontend/Build (the TS2554 matcher args, runtime-invisible locally). The remediation delta (bumpedGeneration response contract, the verify's stale-read gate, workspaceHarness symbol refs, the TS fix) rides the SAME branch as follow-up PR #2089, reviewed on its own head. GitHub's push events were also not firing for one push window (the #1844 class — zero runs for 75838cd9e); the empty tree-identical `ci: retrigger` commit (46189ad16) restored flow.
