@@ -176,9 +176,14 @@ func errCRDMissingHarnessCapability() error {
 			"(kubectl apply -f helm/crds/workspace.yaml, or bump the Flux crds path; see docs/operator/upgrading.md, CRD skew recovery)")
 }
 
-// ensureHarnessCapabilityCache lazily arms the service's probe cache
-// (constructor-shaped nil-safety: unwired/test services never panic).
-func (s *Service) ensureHarnessCapabilityCache() {
+// ArmCRDCapabilityProbe arms the create-time capability probe with
+// the production (dynamic-client dry-run) body — the SetAgentAdapter
+// house pattern: New() leaves the seam nil (inert — unwired tests and
+// degraded constructions never probe and never gate), the app wiring
+// (api/internal/services/services.go) calls this once after
+// construction. Idempotent (a second call is a no-op — tests that stub
+// the cache keep their stub).
+func (s *Service) ArmCRDCapabilityProbe() {
 	if s.harnessCapability != nil {
 		return
 	}

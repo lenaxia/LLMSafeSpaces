@@ -386,7 +386,15 @@ func (s *Service) CreateWorkspace(ctx context.Context, userID string, req types.
 			s.logger.Error("refusing harness-less create: the cluster's Workspace CRD predates bind-once (spec.harness)",
 				fmt.Errorf("cluster CRD predates bind-once; pass an explicit harness or upgrade the CRD"),
 				"operator_action", "kubectl apply -f helm/crds/workspace.yaml or bump the Flux crds path")
-			return nil, apierrors.NewInternalError("crd_missing_harness_capability", errCRDMissingHarnessCapability())
+			// 503, not 500 (review r1): the refusal is a NAMED, temporary
+			// server-side condition that clears without client change —
+			// the operator applies the CRD — with an immediate client-side
+			// exit (an explicit harness). An unexpected-error 500 would
+			// misclassify a deterministic verdict AND invite blind client
+			// retries that can never succeed while the condition stands.
+			return nil, apierrors.NewServiceUnavailableError("crd_missing_harness_capability",
+				"the cluster's Workspace CRD predates bind-once: pass an explicit harness or upgrade the CRD",
+				errCRDMissingHarnessCapability())
 		}
 	}
 

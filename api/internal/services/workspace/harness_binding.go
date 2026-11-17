@@ -325,7 +325,10 @@ func (s *Service) markBindNotPersisted(ctx context.Context, workspaceID string) 
 // UpdateStatus — the message is static, so a repeat write is pure
 // churn).
 func upsertBindNotPersistedCondition(ws *v1.Workspace) bool {
-	const degradedMessage = "bind attempts are failing to persist: the cluster's Workspace CRD predates the harness field — blocked on cluster CRD, operator action required (apply helm/crds/workspace.yaml); the harness choice is kept and will bind once the CRD lands"
+	// The message LEADS with the canonical hint phrase the sidebar
+	// renders (byte-consistent across both surfaces — the reviewer's
+	// wording-alignment finding), then the cause + remediation.
+	const degradedMessage = "blocked on cluster CRD — operator action required: harness bind attempts are failing to persist because the cluster's Workspace CRD predates the harness field (apply helm/crds/workspace.yaml or bump the Flux crds path); the harness choice is kept and will bind once the CRD lands"
 	for i := range ws.Status.Conditions {
 		c := &ws.Status.Conditions[i]
 		if c.Type == v1.WorkspaceConditionHarnessBindingPending {

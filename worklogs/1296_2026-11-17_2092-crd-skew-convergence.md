@@ -57,3 +57,11 @@
 - NO new controller re-attempt loop (ruling 5's softening): the 10m backfill cadence already retries; the alert brings the human; the helper is the sweep.
 - NO CRD-read RBAC anywhere: both probes ride the dry-run create (the verb both tiers already hold).
 - The v1 reason constant is a bare `string` const (the condition-reason vocabulary in `workspace_types.go` is stringly by existing convention).
+
+## Review round 1 (bounce 2026-11-17) — three findings, all remediated
+
+- **BLOCKER (production wiring was swallowed mid-flight)**: `New()` left `harnessCapability` nil with a comment citing an arm path that did not exist, and `ensureHarnessCapabilityCache` was dead code — the create-time gate was inert in production. Fixed: the dead helper became `ArmCRDCapabilityProbe()` (the SetAgentAdapter house-pattern doc restored) and `api/internal/services/services.go` calls it right after `workspace.New(...)`. The nil-seam safety for tests is unchanged; production now arms. (Root cause honest note: the two wiring edits were emitted during an echo-corrupted tool window — a lesson re-learned: verify every "applied" edit's bytes, especially the ones whose confirmations arrive garbled.)
+- **minor (wording drift between the two degraded surfaces)**: the condition's `degradedMessage` and the Sidebar's tooltip described the same verdict with different phrasings. Both now LEAD with the canonical hint phrase — `blocked on cluster CRD — operator action required:` — then the cause and remediation, byte-consistent across Go and TSX.
+- **minor (error class)**: the create-time refusal was a 500 `internal_error`. Added `ErrorTypeServiceUnavailable` (503) + `NewServiceUnavailableError` to the API error vocabulary and switched the gate: a named, temporary, server-side condition that clears without client change — the operator applies the CRD — with the immediate client-side exit (explicit harness) named in the message. Pins updated (503 + code + message).
+
+Re-run gates after remediation: full `api/internal/services/workspace` + `api/internal/errors` suites green; `Sidebar.harness.test.tsx` green; `tsc` clean; `make fmt-check` green.

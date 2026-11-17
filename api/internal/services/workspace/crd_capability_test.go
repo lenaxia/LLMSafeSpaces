@@ -72,8 +72,11 @@ func TestCreateWorkspace_SkewedCRD_RefusesHarnesslessCreate(t *testing.T) {
 		Name: "ws", Runtime: "python:3.10", StorageSize: "10Gi",
 	})
 	apiErr := harnessAPIError(t, err)
-	assert.Equal(t, 500, apiErr.StatusCode())
-	assert.Equal(t, "crd_missing_harness_capability", apiErr.Message)
+	assert.Equal(t, 503, apiErr.StatusCode(),
+		"503 service_unavailable (review r1): a named, temporary, server-side condition — never an unexpected 500")
+	assert.Equal(t, "crd_missing_harness_capability", apiErr.Code)
+	assert.Equal(t, "the cluster's Workspace CRD predates bind-once: pass an explicit harness or upgrade the CRD",
+		apiErr.Message, "the message names both exits")
 	require.NotNil(t, apiErr.Err)
 	assert.Contains(t, apiErr.Err.Error(), "pass an explicit harness or upgrade the CRD",
 		"the refusal names both exits (explicit harness / CRD apply)")
