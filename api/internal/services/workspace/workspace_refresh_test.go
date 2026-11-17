@@ -10,6 +10,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
+	k8serrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 
 	v1 "github.com/lenaxia/llmsafespaces/pkg/apis/llmsafespaces/v1"
 	"github.com/lenaxia/llmsafespaces/pkg/types"
@@ -374,4 +376,43 @@ func TestSuspendWorkspace_NeverStampsForceMarker(t *testing.T) {
 	err := f.svc.SuspendWorkspace(ctx, "user1", "ws-1")
 	assert.NoError(t, err)
 	f.ws.AssertExpectations(t)
+}
+
+// TestRefreshWorkspaceCompute_ConflictRetries (CRD-skew companion, owner
+// report 2026-11-16): the refresh write is a GET-mutate-UPDATE on a live
+// object; a concurrent writer (the controller's legacy harness-backfill
+// stamp among them) can bump resourceVersion between the read and the
+// write. A lost race must retry from a fresh read — the pre-fix shape
+// returned the conflict straight through as workspace_refresh_failed
+// (a silent dead click in the UX: the mutation has no error surface).
+func TestRefreshWorkspaceCompute_ConflictRetries(t *testing.T) {
+	f := newDefaultsFixture(t, nil)
+	ctx := context.Background()
+
+	crd := crdWorkspace("ws-1", "default", "user1", "10Gi")
+	crd.Status.Phase = v1.WorkspacePhaseActive
+	crd.Spec.RestartGeneration = 4
+
+	f.db.On("GetWorkspace", ctx, "ws-1").Return(dbWorkspace("ws-1", "user1", "my-ws", "10Gi"), nil)
+	// Every Get hands back a FRESH copy (the ordinal does not matter —
+	// each attempt re-derives generation+marker from its own read).
+	f.ws.On("Get", mock.Anything, "ws-1", mock.Anything).
+		Run(func(args mock.Arguments) {}).
+		Return(crd, nil)
+	// First Update loses a resourceVersion race; the retry's Update lands.
+	conflict := k8serrors.NewConflict(
+		schema.GroupResource{Group: "llmsafespaces.dev", Resource: "workspaces"},
+		"ws-1", errors.New("the object has been modified; please apply your changes to the latest version and try again"))
+	updates := 0
+	f.ws.On("Update", mock.Anything, mock.Anything).
+		Run(func(args mock.Arguments) { updates++ }).
+		Return(nil, conflict).Once()
+	f.ws.On("Update", mock.Anything, mock.Anything).
+		Run(func(args mock.Arguments) { updates++ }).
+		Return(crd, nil).Once()
+
+	res, err := f.svc.RefreshWorkspaceCompute(ctx, "user1", "ws-1")
+	assert.NoError(t, err, "a single lost resourceVersion race must retry, not 500 the refresh")
+	assert.NotNil(t, res)
+	assert.Equal(t, 2, updates, "exactly the conflicted write and its retry")
 }

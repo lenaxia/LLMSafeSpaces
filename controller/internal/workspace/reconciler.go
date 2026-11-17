@@ -182,6 +182,19 @@ type WorkspaceReconciler struct {
 	PiBinarySHA256AMD64 string
 	PiBinarySHA256ARM64 string
 
+	// Legacy harness-backfill skew bookkeeping (owner report
+	// 2026-11-16 — refresh-compute dead on .15): harnessBackfillAttemptAt
+	// records the LAST STAMP ATTEMPT per workspace (namespace/name) whose
+	// spec.harness=opencode write did not PERSIST — the pre-.15-CRD skew
+	// shape (helm never upgrades crds/; a structural apiserver silently
+	// prunes the unknown field and returns success). One attempt per
+	// harnessBackfillRetryInterval per workspace: no hot write loop
+	// against a pruning apiserver, and the phase machine keeps running
+	// while the stamp waits out the window (see harness_binding.go).
+	// Guarded by harnessBackfillMu (maxConcurrentReconciles > 1).
+	harnessBackfillMu        sync.Mutex
+	harnessBackfillAttemptAt map[string]time.Time
+
 	// AgentdSidecarEnabled (design 0051 US-2, chart-gated, default
 	// false): when true, buildPod appends the native agentd sidecar and
 	// switches the main container to supervise-opencode mode. Requires

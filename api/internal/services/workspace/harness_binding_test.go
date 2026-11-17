@@ -206,8 +206,10 @@ func TestBindWorkspaceHarness(t *testing.T) {
 		f := newHarnessFixture(t, true)
 		unbound := bornUnboundCRD()
 		// Get #1: the endpoint's own fetch; Get #2: bindUnboundWorkspace's
-		// fresh read under the conflict-retry (the write lane's contract).
-		f.ws.On("Get", mock.Anything, "ws-1", mock.Anything).Return(unbound, nil).Twice()
+		// fresh read under the conflict-retry (the write lane's contract);
+		// Get #3: the post-write VERIFY read (the CRD-skew seam — the
+		// same pointer reads back bound after the mutation below).
+		f.ws.On("Get", mock.Anything, "ws-1", mock.Anything).Return(unbound, nil).Times(3)
 		var updated *v1.Workspace
 		f.ws.On("Update", mock.Anything, mock.Anything).
 			Run(func(args mock.Arguments) { updated = args.Get(1).(*v1.Workspace) }).
@@ -351,7 +353,8 @@ func TestResolveSessionHarness(t *testing.T) {
 
 	t.Run("unbound + omitted binds opencode (the non-interactive default)", func(t *testing.T) {
 		f := newHarnessFixture(t, false)
-		f.ws.On("Get", mock.Anything, "ws-1", mock.Anything).Return(bornUnboundCRD(), nil).Once()
+		// Two reads: the bind's fresh read + the post-write verify read.
+		f.ws.On("Get", mock.Anything, "ws-1", mock.Anything).Return(bornUnboundCRD(), nil).Twice()
 		var updated *v1.Workspace
 		f.ws.On("Update", mock.Anything, mock.Anything).
 			Run(func(args mock.Arguments) { updated = args.Get(1).(*v1.Workspace) }).
@@ -366,7 +369,8 @@ func TestResolveSessionHarness(t *testing.T) {
 
 	t.Run("unbound + picker submit binds it (the frontend path)", func(t *testing.T) {
 		f := newHarnessFixture(t, true)
-		f.ws.On("Get", mock.Anything, "ws-1", mock.Anything).Return(bornUnboundCRD(), nil).Once()
+		// Two reads: the bind's fresh read + the post-write verify read.
+		f.ws.On("Get", mock.Anything, "ws-1", mock.Anything).Return(bornUnboundCRD(), nil).Twice()
 		var updated *v1.Workspace
 		f.ws.On("Update", mock.Anything, mock.Anything).
 			Run(func(args mock.Arguments) { updated = args.Get(1).(*v1.Workspace) }).
@@ -469,4 +473,42 @@ func TestCreateWorkspace_DisabledOrUnknownHarnessRejected(t *testing.T) {
 		// The CRD-create mock has NO expectations: reaching it fails
 		// the test — the validation must front every write.
 	}
+}
+
+// --- CRD-skew: an accepted-but-pruned bind must fail LOUDLY ----------------
+//
+// The .15 companion of the controller-side starvation fix (owner report
+// 2026-11-16): on a cluster whose Workspace CRD predates spec.harness
+// (helm never upgrades crds/), the apiserver PRUNES the field and
+// returns success. Pre-verify, BindWorkspaceHarness answered 200 while
+// the workspace stayed born-unbound forever — parked in Creating, no
+// pod, no error, no event. The post-write verify read converts the
+// silent wedge into an internal error naming the operator action.
+func TestBindWorkspaceHarness_NotPersistedFailsLoudly(t *testing.T) {
+	ctx := context.Background()
+	f := newHarnessFixture(t, true)
+
+	unbound := bornUnboundCRD()
+	// Get serves the shared object every read (endpoint fetch, the
+	// bind's fresh read, the verify read). The Update hook IS the
+	// pruning apiserver: the write is accepted, and the field the
+	// object carries afterwards is dropped — so the verify read-back
+	// sees spec.harness == "" (marker gone too: annotations, being
+	// schema-known, DO persist the deletion).
+	f.ws.On("Get", mock.Anything, "ws-1", mock.Anything).Return(unbound, nil)
+	f.ws.On("Update", mock.Anything, mock.Anything).
+		Run(func(args mock.Arguments) {
+			stored := args.Get(1).(*v1.Workspace)
+			stored.Spec.Harness = "" // pruned by the harness-less CRD
+		}).
+		Return(nil, nil).Once()
+
+	_, err := f.svc.BindWorkspaceHarness(ctx, "user-1", "ws-1", "pi")
+	apiErr := harnessAPIError(t, err)
+	assert.Equal(t, 500, apiErr.StatusCode())
+	assert.Equal(t, "harness_bind_not_persisted", apiErr.Message,
+		"an accepted-but-pruned bind is a named internal error, never a silent 200")
+	require.NotNil(t, apiErr.Err, "the remediation rides the wrapped error")
+	assert.Contains(t, apiErr.Err.Error(), "CRD predates 0.44.15",
+		"the error names the operator remediation (apply helm/crds/workspace.yaml)")
 }
