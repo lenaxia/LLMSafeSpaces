@@ -42,8 +42,10 @@ import (
 // model/tools/behavior, including the reviewer's verdict-channel
 // charter) rides the dispatch itself (see boardSpawnRequest), never
 // the charter: the board layer composes no behavior (owner ruling
-// 2026-10-29, role-only). A persona-less claim renders today's charter
-// byte-identically.
+// 2026-10-29, role-only). A persona-less claim renders the worker
+// trailer's opening line (the wait-lifecycle block below the arm
+// trailers is shared by both arms — see TestCharterPrompt_Renders-
+// WaitLifecycle).
 func boardCharterPrompt(c *board.Claim) string {
 	var b strings.Builder
 	stage := c.Stage

@@ -95,8 +95,10 @@ func TestCharterPrompt_NoSalvageNoSection(t *testing.T) {
 // Stage-persona claim-then-spawn, ROLE-ONLY (owner ruling 2026-10-29,
 // round 2): the charter renders the referenced agent role's identity
 // line — ONE line, no behavior prose (the role's system prompt rides
-// the dispatch, never the charter) — while a persona-less claim stays
-// byte-identical to today's worker charter.
+// the dispatch, never the charter) — while the wait-lifecycle block
+// below the trailers is shared by both arms and the worker arm keeps
+// its trailer's opening phrase (TestCharterPrompt_RendersWaitLifecycle
+// pins the shared shape).
 func TestCharterPrompt_PersonaRendering(t *testing.T) {
 	// The default reviewer persona (the built-in reviewer role
 	// reference): the charter names the role; the verdict contract
