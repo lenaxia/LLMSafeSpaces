@@ -301,6 +301,69 @@ async function expectSettledOn(rail: Locator, stage: string) {
   throw new Error(`rail did not settle on ${stage} within [${lo - 1}, ${hi + 1}] — last scrollLeft ${sl}`);
 }
 
+/** The rail's layout signature for orientation assertions: column
+ * widths as fractions of the rail's content width, plus the mode and
+ * whether the rail overflows. */
+async function layoutSignature(rail: Locator) {
+  return rail.evaluate((el) => {
+    const railEl = el as HTMLElement;
+    const cs = getComputedStyle(railEl);
+    const pad = parseFloat(cs.paddingLeft) + parseFloat(cs.paddingRight);
+    const contentW = railEl.getBoundingClientRect().width - pad;
+    const cols = Array.from(railEl.querySelectorAll("[data-stage-col]")) as HTMLElement[];
+    const fractions: Record<string, number> = {};
+    for (const c of cols) fractions[c.getAttribute("data-stage-col")!] = c.getBoundingClientRect().width / contentW;
+    return {
+      fractions,
+      mode: railEl.getAttribute("data-mode") ?? "",
+      overflow: railEl.scrollWidth - railEl.clientWidth,
+    };
+  });
+}
+
+/** Wait for the rail's layout to go STABLE after a viewport change (the
+ * portrait↔md reflow animates through transition-[width], and the
+ * epic-band/sidebar reflow shifts the box) — two identical signature
+ * reads 200ms apart. */
+async function stableLayout(page: Page, rail: Locator) {
+  const deadline = Date.now() + 8000;
+  let prev = JSON.stringify(await layoutSignature(rail));
+  while (Date.now() < deadline) {
+    await page.waitForTimeout(200);
+    const cur = JSON.stringify(await layoutSignature(rail));
+    if (cur === prev) return JSON.parse(cur) as Awaited<ReturnType<typeof layoutSignature>>;
+    prev = cur;
+  }
+  return (await layoutSignature(rail)) as Awaited<ReturnType<typeof layoutSignature>>;
+}
+
+/** The portrait rail geometry (owner direction 2026-11-15): the trio
+ * shares ~95% (29/36/30 class weights), done is a FULL content page
+ * (its 5% peek is viewport framing, never content width), and the rail
+ * overflows so the snap carousel is live. */
+function expectPortraitLayout(sig: Awaited<ReturnType<typeof layoutSignature>>) {
+  expect(sig.mode).toBe("overview");
+  expect(sig.overflow).toBeGreaterThan(100);
+  expect(sig.fractions.backlog!).toBeGreaterThan(0.24);
+  expect(sig.fractions.backlog!).toBeLessThan(0.31);
+  expect(sig.fractions.in_progress!).toBeGreaterThan(0.31);
+  expect(sig.fractions.in_progress!).toBeLessThan(0.38);
+  expect(sig.fractions.in_review!).toBeGreaterThan(0.25);
+  expect(sig.fractions.in_review!).toBeLessThan(0.32);
+  expect(sig.fractions.done!).toBeGreaterThan(0.95);
+}
+
+/** The md+ rail geometry: 24/28/24/24 splits the row — all four
+ * visible, no overflow, no lens. */
+function expectLandscapeLayout(sig: Awaited<ReturnType<typeof layoutSignature>>) {
+  expect(sig.mode).toBe("overview");
+  expect(sig.overflow).toBeLessThanOrEqual(1);
+  for (const stage of ["backlog", "in_progress", "in_review", "done"]) {
+    expect(sig.fractions[stage]!).toBeGreaterThan(0.2);
+    expect(sig.fractions[stage]!).toBeLessThan(0.31);
+  }
+}
+
 type RailGeom = {
   scrollLeft: number;
   mode: string;
@@ -503,5 +566,52 @@ test.describe("board rail touch scrolling (the v0.44.15 owner report)", () => {
     await touchSwipe(page, 400, 100, y);
     await page.waitForTimeout(300);
     expect(await rail.evaluate((el) => el.scrollLeft)).toBe(0);
+  });
+
+  test("orientation round-trips (owner report #2): portrait↔landscape restores the exact layout per class, rapid rotations converge, the lens resets", async ({ page }) => {
+    const rail = await openBoard(page);
+
+    // The portrait baseline (fresh mount).
+    const portrait0 = await stableLayout(page, rail);
+    expectPortraitLayout(portrait0);
+
+    // portrait → landscape: the md row.
+    await page.setViewportSize({ width: 844, height: 390 });
+    expectLandscapeLayout(await stableLayout(page, rail));
+
+    // landscape → portrait: the EXACT portrait layout returns (the
+    // owner report: the 95/3+peek layout "does not re-apply").
+    await page.setViewportSize({ width: 390, height: 844 });
+    const portrait1 = await stableLayout(page, rail);
+    expectPortraitLayout(portrait1);
+    for (const stage of ["backlog", "in_progress", "in_review", "done"]) {
+      expect(portrait1.fractions[stage]!).toBeCloseTo(portrait0.fractions[stage]!, 1);
+    }
+
+    // Rapid repeated rotations (the reflow animates each crossing — the
+    // final state must still converge to the correct layout).
+    for (const [w, h] of [
+      [844, 390], [390, 844], [844, 390], [390, 844],
+    ] as const) {
+      await page.setViewportSize({ width: w, height: h });
+      await page.waitForTimeout(60);
+    }
+    expectPortraitLayout(await stableLayout(page, rail));
+
+    // The lens resets across the viewport-class change: enter focus at
+    // portrait, rotate to md+ — overview, no focus widths anywhere —
+    // and back: STILL overview with the portrait layout (a lens that
+    // survives the rotation is the owner's wrong-sizes symptom).
+    await page.locator('[data-stage-col="in_progress"] [data-testid="col-focus-toggle-in_progress"]').tap();
+    await expect(rail).toHaveAttribute("data-mode", "focus");
+    await page.setViewportSize({ width: 844, height: 390 });
+    const landAfterLens = await stableLayout(page, rail);
+    expectLandscapeLayout(landAfterLens);
+    for (const stage of ["backlog", "in_progress", "in_review", "done"]) {
+      await expect(page.getByTestId(`col-focus-toggle-${stage}`)).toBeHidden();
+    }
+    await page.setViewportSize({ width: 390, height: 844 });
+    const portraitAfterLens = await stableLayout(page, rail);
+    expectPortraitLayout(portraitAfterLens);
   });
 });

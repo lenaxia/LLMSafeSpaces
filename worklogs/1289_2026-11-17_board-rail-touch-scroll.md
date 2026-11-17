@@ -115,6 +115,60 @@ was the first app surface that NEEDED horizontal touch panning.
 - `frontend/src/components/layout/AppShell.test.tsx` — the shell
   root's `pan-x pan-y` pinned (was `pan-y`).
 
+## Owner report #2, folded in (2026-11-17): rotation left the columns at wrong sizes
+
+"Rotating the phone landscape then back to portrait leaves the columns
+at the WRONG sizes — the portrait 95/3+peek layout does not re-apply."
+
+### Diagnosis
+
+- The rail's OVERVIEW widths were never the problem: they are pure
+  `md:` viewport media queries (verified: no `@custom-variant`/container
+  query in the Tailwind v4 setup, `md:` is `@media (width >= 48rem)`).
+  Pinned in Chromium viewport emulation: portrait→landscape→portrait
+  and rapid cycling all converge to fraction-identical portrait
+  layouts, overflow restored.
+- The hole was the md force-exit being EVENT-DEPENDENT: StageRail's
+  only orientation defense was ONE
+  `matchMedia("(min-width: 768px)").addEventListener("change")` with an
+  early return when `addEventListener` was unavailable — a missed or
+  unsupported change event left the portrait-only focus widths
+  (70/10/10/full-page, no `md:` variants) rendered at md+ widths and
+  back — exactly "focus-mode width state surviving the re-layout", the
+  wrong sizes at both orientations.
+- Secondary path: keyboard Enter could call `applyFocus` at md+ (the
+  chevrons are only CSS-hidden), stranding a lens that would SHOW on
+  the next portrait crossing.
+
+### Fix (the reset becomes structural, not event-dependent)
+
+- `mdPlus` is component state (initialized false per the codebase's
+  SSR-safe discipline, re-read on mount AND on every subscription
+  path, including the legacy `addListener` arm for pre-Safari-14).
+- The RENDER treats md+ as "no lens can show":
+  `effectiveFocused = mdPlus ? null : focusedIndex` drives every
+  focus-rendering site (columnMode, the width-class ternary, the
+  compressed floor, data-mode, the chevron wiring). Even a fully
+  missed event cannot render the lens at md+.
+- The crossing effect (`mdPlus && focusedRef.current !== null →
+  exitFocus()`) still syncs the state — the exit notice and the
+  re-centered re-snap behave exactly as 2079 specced.
+- `applyFocus` no-ops at md+ (guarded via a `mdPlusRef` mirror —
+  keyboard Enter mirrors the md:hidden chevron).
+
+### Pins
+
+- `board-rail-touch.spec.ts` gains the orientation test (the charter
+  names Playwright viewport emulation as the vehicle): portrait
+  baseline → landscape (md row, no overflow, chevrons hidden) →
+  portrait (fraction-identical to baseline, `toBeCloseTo(…, 1)`) →
+  rapid ×4 rotations converging → lens entered at portrait resets to
+  overview at md+ and STAYS overview back at portrait. 6/6, three
+  consecutive runs.
+- The existing component pin (the md crossing force-exits an open
+  lens) holds unmodified — 59/59 across the BoardPage focus/rail/
+  declutter/main suites.
+
 ## Evidence
 
 - `E2E_PORT=5199 npx playwright test tests/e2e/board-rail-touch.spec.ts`

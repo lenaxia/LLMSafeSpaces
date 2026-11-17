@@ -2160,6 +2160,9 @@ function StageRail({ laneShortId, cellProps, onDropStage }: StageRailProps) {
   // without re-subscribing — the ref mirrors focusedIndex.
   const focusedRef = useRef<number | null>(null);
   focusedRef.current = focusedIndex;
+  // mdPlus mirrored for the callbacks (enter guarded at md+ — the
+  // chevrons are md:hidden; keyboard Enter mirrors the affordance).
+  const mdPlusRef = useRef(false);
   const resnapTimer = useRef<number | undefined>(undefined);
   const pinchStartDist = useRef<number | null>(null);
 
@@ -2173,9 +2176,12 @@ function StageRail({ laneShortId, cellProps, onDropStage }: StageRailProps) {
    * already active (the same state write; both are one user action).
    * Discrete states, one transition: the width classes change here,
    * and the explicit re-snap is scheduled just past the transition so
-   * it targets the settled geometry. */
+   * it targets the settled geometry. Portrait-only: a no-op at md+
+   * (the mode does not exist there — keyboard Enter mirrors the
+   * md:hidden chevron, so it cannot strand a lens across a rotation). */
   const applyFocus = useCallback(
     (index: number) => {
+      if (mdPlusRef.current) return;
       setFocusedIndex(index);
       setActiveIndex(index);
       setModeNotice(`Focused ${STAGE_LABELS[MAIN_STAGES[index]!]} column`);
@@ -2246,18 +2252,38 @@ function StageRail({ laneShortId, cellProps, onDropStage }: StageRailProps) {
     return () => rail.removeEventListener("scrollend", onScrollEnd);
   }, [applyFocus]);
 
-  // Landscape/desktop has NO focus mode: crossing to md+ while the
-  // lens is open force-exits to overview (the chevrons are md:hidden —
-  // there is no way BACK into focus from md+).
+  // Landscape/desktop has NO focus mode — and the reset must not depend
+  // on a single change event arriving (owner report #2, 2026-11-17: a
+  // lens that survives the rotation leaves BOTH orientations at the
+  // wrong sizes — the portrait-only focus widths have no md: variants).
+  // Two layers: mdPlus is STATE (re-read on every subscription path,
+  // including the legacy addListener arm), and the RENDER treats md+
+  // as "no lens can show" — even if the change event is missed, the
+  // lens cannot render at md+; the effect below then syncs the state
+  // (and posts the exit notice) when the crossing IS observed.
+  const [mdPlus, setMdPlus] = useState(false);
   useEffect(() => {
     const mq = window.matchMedia?.("(min-width: 768px)");
-    if (!mq || typeof mq.addEventListener !== "function") return;
-    const onChange = () => {
-      if (mq.matches && focusedRef.current !== null) exitFocus();
-    };
-    mq.addEventListener("change", onChange);
-    return () => mq.removeEventListener("change", onChange);
-  }, [exitFocus]);
+    if (!mq) return;
+    const apply = () => setMdPlus(mq.matches);
+    apply();
+    if (typeof mq.addEventListener === "function") {
+      mq.addEventListener("change", apply);
+      return () => mq.removeEventListener("change", apply);
+    }
+    // Legacy Safari (< 14): the deprecated addListener path.
+    if (typeof mq.addListener === "function") {
+      mq.addListener(apply);
+      return () => mq.removeListener(apply);
+    }
+    return;
+  }, []);
+  // The render-level guard: at md+ the effective lens is ALWAYS null.
+  const effectiveFocused = mdPlus ? null : focusedIndex;
+  mdPlusRef.current = mdPlus;
+  useEffect(() => {
+    if (mdPlus && focusedRef.current !== null) exitFocus();
+  }, [mdPlus, exitFocus]);
 
   /** Pinch-out exits focus (zoom-out muscle memory): two touches whose
    * spread grows by >25% mid-gesture — once per gesture. */
@@ -2294,8 +2320,8 @@ function StageRail({ laneShortId, cellProps, onDropStage }: StageRailProps) {
   );
 
   const columnMode = (index: number): "overview" | "focused" | "compressed" | "periphery" => {
-    if (focusedIndex === null) return "overview";
-    if (index === focusedIndex) return "focused";
+    if (effectiveFocused === null) return "overview";
+    if (index === effectiveFocused) return "focused";
     // The non-focused done column keeps its full page (reachability)
     // — periphery: full geometry, cards visible, chevron transits.
     return MAIN_STAGES[index] === STAGE_DONE ? "periphery" : "compressed";
@@ -2314,7 +2340,7 @@ function StageRail({ laneShortId, cellProps, onDropStage }: StageRailProps) {
       className="flex snap-x snap-mandatory gap-2 overflow-x-auto scroll-px-2 p-2"
       data-testid={`stage-grid-${laneShortId}`}
       data-stage-rail="true"
-      data-mode={focusedIndex === null ? "overview" : "focus"}
+      data-mode={effectiveFocused === null ? "overview" : "focus"}
       role="region"
       aria-label="Pipeline stages — use the left and right arrow keys to move between columns; Enter focuses a column; Escape returns to overview"
       ref={railRef}
@@ -2360,9 +2386,9 @@ function StageRail({ laneShortId, cellProps, onDropStage }: StageRailProps) {
             onKeyDown={(e) => handleColumnKeyDown(e, index)}
             className={cn(
               STAGE_COL_BASE_CLASS,
-              focusedIndex === null
+              effectiveFocused === null
                 ? STAGE_COL_WIDTH[stage]
-                : index === focusedIndex
+                : index === effectiveFocused
                   ? stage === STAGE_DONE
                     ? STAGE_COL_FOCUS_WIDTH.focusedDone
                     : STAGE_COL_FOCUS_WIDTH.focused
@@ -2371,7 +2397,7 @@ function StageRail({ laneShortId, cellProps, onDropStage }: StageRailProps) {
                     : STAGE_COL_FOCUS_WIDTH.compressed,
               // The compressed floor replaces the 4.5rem overview floor
               // (cn is tailwind-merge): a compressed column is a stub.
-              focusedIndex !== null && index !== focusedIndex && stage !== STAGE_DONE && "min-w-[3rem]",
+              effectiveFocused !== null && index !== effectiveFocused && stage !== STAGE_DONE && "min-w-[3rem]",
             )}
           >
             <StageCell
@@ -2380,9 +2406,9 @@ function StageRail({ laneShortId, cellProps, onDropStage }: StageRailProps) {
               {...cellProps}
               colMode={colMode}
               onFocusToggle={
-                focusedIndex === null
+                effectiveFocused === null
                   ? () => applyFocus(index)
-                  : index === focusedIndex
+                  : index === effectiveFocused
                     ? exitFocus
                     : () => applyFocus(index)
               }
