@@ -40,8 +40,18 @@ export function AppShell() {
         // permanently off-screen on mobile. dvh does NOT cover the on-screen
         // keyboard — that lane is interactive-widget=resizes-content
         // (index.html) + the useOskViewportGuard override.
+        //
+        // pan-x pan-y (was pan-y until the 2026-11-17 rail fix): touch-action
+        // intersects along the ancestor chain, so this root's pan-y forbade
+        // horizontal touch panning for every screen it wraps — the sprint
+        // board's 1x4 rail was swipe-dead under real fingers (mouse/keyboard/
+        // programmatic scrolls ignore touch-action, which is why CI stayed
+        // green). The shell never scrolls horizontally (overflow-hidden
+        // h-dvh), so pan-x only un-restricts nested scrollers; pinch-zoom
+        // and double-tap-zoom stay disabled (non-auto value), and history
+        // swipe-back stays dead via overscroll-behavior-x: none (index.css).
         className="flex h-dvh overflow-hidden overscroll-none"
-        style={{ touchAction: "pan-y" }}
+        style={{ touchAction: "pan-x pan-y" }}
       >
         <a
           href="#main-content"

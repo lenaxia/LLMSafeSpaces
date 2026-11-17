@@ -225,14 +225,20 @@ describe("AppShell root gesture surface (#1629)", () => {
   // The CSS half of the fix: overscroll-behavior-x: none on the root
   // scroller (html/body — pinned in styles/index.test.ts) removes the
   // browser's swipe-back at the platform level; the container-level
-  // overscroll-none + pan-y (shipped since 77850fc9/#117) is the inner
-  // defense-in-depth layer. Pinned so it can't silently regress.
-  it("keeps the container's overscroll containment and pan-y touch-action", () => {
+  // overscroll-none + touch-action (shipped since 77850fc9/#117) is the
+  // inner defense-in-depth layer. Pinned so it can't silently regress.
+  // pan-x pan-y (2026-11-17 rail fix, owner report on v0.44.15): pan-y
+  // on this root intersected the whole subtree's touch-action and made
+  // every nested horizontal scroller — the sprint board's 1x4 rail —
+  // swipe-dead on real fingers; pan-x re-allows the pan (the shell
+  // itself never scrolls horizontally). Pin the pan-x half: losing it
+  // re-kills the rail.
+  it("keeps the container's overscroll containment and pan-x pan-y touch-action (the rail's horizontal touch pan)", () => {
     const spy = setMobileMatchMedia();
     renderWithDataRouter("/chat", <div>Chat</div>);
     const container = document.querySelector(".h-dvh.overscroll-none") as HTMLElement;
     expect(container).not.toBeNull();
-    expect(container.style.touchAction).toBe("pan-y");
+    expect(container.style.touchAction).toBe("pan-x pan-y");
     spy.mockRestore();
   });
 });

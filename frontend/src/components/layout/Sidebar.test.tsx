@@ -243,7 +243,6 @@ describe("Sidebar — workspace refresh compute", () => {
     expect(await screen.findByText("Creating")).toBeInTheDocument();
     // the post-refresh refetch renders the workspace's new phase without a manual reload
     expect(list.mock.calls.length).toBeGreaterThanOrEqual(2);
-    // the mutation's onSuccess invalidation refetched the workspaces list
   });
 
   it("does not refresh compute when the confirm dialog is cancelled", async () => {
