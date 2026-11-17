@@ -183,7 +183,10 @@ func (r *WorkspaceReconciler) backfillLegacyHarness(ctx context.Context, ws *v1.
 			return err
 		}
 		ws.ResourceVersion = after.ResourceVersion
-		landed = after.Spec.Harness != "" || after.Annotations[v1.AnnotationHarnessUnbound] == "true"
+		// landed only on a BOUND read-back: a still-unbound shape (the
+		// marker surviving our deletion — a stale-cache read) is NOT a
+		// landed stamp; the window retry converges.
+		landed = after.Spec.Harness != ""
 		return nil
 	})
 	return landed, err
