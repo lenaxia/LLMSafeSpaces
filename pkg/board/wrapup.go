@@ -238,12 +238,27 @@ func (s *Service) wrapUpAwareEpicCompletion(ctx context.Context, tx pgx.Tx, epic
 			return false, "", err
 		}
 		if tag.RowsAffected() > 0 {
+			// Cycle-discriminate the arm event's deterministic id: the
+			// ledger value alone REPEATS (every post-ack arm fires at
+			// count==cap again), and recordEventTx's ON CONFLICT DO
+			// NOTHING would silently swallow the later cycles' audit
+			// rows + SSE events. The epic's TOTAL minted wrap-up rows is
+			// monotonic across ack cycles (each cycle mints at least the
+			// ack's own immediate re-drain row) and frozen within one
+			// (the engine mints nothing while the flag holds) — the
+			// discriminator.
+			var mintedTotal int
+			if err := tx.QueryRow(ctx,
+				`SELECT COUNT(*) FROM tasks WHERE epic_id=$1 AND kind='wrapup'`, epicID).
+				Scan(&mintedTotal); err != nil {
+				return false, "", err
+			}
 			sys := Actor{Kind: ActorSystem, Surface: "engine"}
 			if _, err := recordEventTx(ctx, tx, projectID,
-				"wrapup:ackreq:"+epicID+":"+itoa(wrapupCount), "wrapup_ack_required",
+				"wrapup:ackreq:"+epicID+":"+itoa(wrapupCount)+":"+itoa(mintedTotal), "wrapup_ack_required",
 				"epic", epicID, sys,
 				map[string]any{"epic_id": epicID, "wrapup_count": wrapupCount,
-					"cap": s.cfg.WrapUpConsecutiveCap}); err != nil {
+					"cap": s.cfg.WrapUpConsecutiveCap, "wrapup_rows_minted": mintedTotal}); err != nil {
 				return false, "", err
 			}
 			slog.WarnContext(ctx, "board: epic wrap-up review at the consecutive cap — human ack required before another mints",
@@ -704,7 +719,7 @@ func (s *Service) RecordWrapUpVerdict(ctx context.Context, actor Actor, taskID, 
 		// terminus (it bounds the mint loop).
 		epicCompleted := false
 		if in.Verdict == WrapUpVerdictPass {
-			epicCompleted, err = completeWrapUpEpicTx(ctx, tx, p.ID, cur.EpicID)
+			epicCompleted, err = completeWrapUpEpicTx(ctx, tx, p.ID, cur.EpicID, cur.ID)
 			if err != nil {
 				return nil, err
 			}
@@ -803,8 +818,12 @@ func (s *Service) gapRefGuard(ref string, row *Task, reason string) error {
 // wrap-up row never counts). 0 rows = a story reopened under the verdict
 // (or a raced pointer): the epic stays open, no mint — the verdict path
 // NEVER re-runs wrapUpAwareEpicCompletion. The deterministic
-// wrapup:epic_complete:<epicID> event rides the same transaction.
-func completeWrapUpEpicTx(ctx context.Context, tx pgx.Tx, projectID, epicID string) (bool, error) {
+// wrapup:epic_complete:<epicID>:<wrapUpTaskID> event rides the same
+// transaction — the closing row's id discriminates ack/reopen cycles (a
+// reopened-and-recompleted epic completes through a LATER wrap-up row;
+// the epic-id-only form would collide and ON CONFLICT DO NOTHING would
+// swallow the second completion's audit row + SSE event).
+func completeWrapUpEpicTx(ctx context.Context, tx pgx.Tx, projectID, epicID, wrapUpTaskID string) (bool, error) {
 	tag, err := tx.Exec(ctx, `
 		UPDATE epics SET status='completed'
 		WHERE id=$1 AND status='active' AND wrap_up_review
@@ -819,8 +838,9 @@ func completeWrapUpEpicTx(ctx context.Context, tx pgx.Tx, projectID, epicID stri
 		return false, nil
 	}
 	sys := Actor{Kind: ActorSystem, Surface: "engine"}
-	_, err = recordEventTx(ctx, tx, projectID, "wrapup:epic_complete:"+epicID,
-		"wrapup_epic_complete", "epic", epicID, sys, map[string]any{"epic_id": epicID})
+	_, err = recordEventTx(ctx, tx, projectID, "wrapup:epic_complete:"+epicID+":"+wrapUpTaskID,
+		"wrapup_epic_complete", "epic", epicID, sys,
+		map[string]any{"epic_id": epicID, "wrapup_task_id": wrapUpTaskID})
 	return true, err
 }
 

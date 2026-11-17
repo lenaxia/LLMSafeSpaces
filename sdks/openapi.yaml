@@ -13935,6 +13935,63 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/BoardVerdict"
+    BoardWrapUpVerdictRequest:
+      type: object
+      required: [verdict, reviewer]
+      description: |
+        The epic wrap-up review's close verb body — ENGINE-OWNED and
+        closed (the story verdict's approve|fail vocabulary refuses
+        here): reportUrl required on BOTH verdicts by the engine guard,
+        gapRefs required non-empty iff verdict=gaps, notes size-capped.
+      properties:
+        verdict:
+          type: string
+          enum: [pass, gaps]
+          description: pass completes the epic iff still drained (atomically — never a fresh mint); gaps holds the epic open — the non-done gap rows hold it by the ordinary drain predicate
+        reportUrl:
+          type: string
+          description: The wrap-up report URL — the close's evidence (the engine requires it on both verdicts; the Done guard rides the →done transition it evidences)
+        gapRefs:
+          type: array
+          items:
+            type: string
+          description: gaps only — the gap stories' short ids (same epic, gap-tagged, filed since the wrap-up's mint; required non-empty iff verdict=gaps)
+        notes:
+          type: string
+          description: Optional prose (size-capped — the textguard posture; audit prose, not a charter)
+        reviewer:
+          type: string
+          description: Reviewer identity (the record's author — the wrap-up reviewer persona)
+        claimToken:
+          type: string
+          description: The wrap-up row's LIVE claim token — the engine's guard is UNCONDITIONAL on every surface (the reviewer persona's own claim from its charter envelope; a wrong or missing token is the loud claim_token refusal)
+        requestId:
+          $ref: "#/components/schemas/BoardRequestId"
+    BoardWrapUpVerdictResponse:
+      type: object
+      required: [task, epic]
+      properties:
+        task:
+          $ref: "#/components/schemas/BoardTask"
+          description: The closed wrap-up row (stage done; a replay on an already-closed row returns the original)
+        epic:
+          $ref: "#/components/schemas/BoardEpic"
+          description: The epic's resulting state (completed on a drained pass; active with the gap rows holding it on gaps)
+    BoardEpicAckWrapUpRequest:
+      type: object
+      description: |
+        The ack body — the verb itself takes no content (the human said
+        continue); only the idempotency key rides it.
+      properties:
+        requestId:
+          $ref: "#/components/schemas/BoardRequestId"
+    BoardEpicAckWrapUpResponse:
+      type: object
+      required: [epic]
+      properties:
+        epic:
+          $ref: "#/components/schemas/BoardEpic"
+          description: The epic's resulting state (ledger reset, flag cleared, a still-drained epic's fresh wrap-up already in flight)
     BoardDeleteResult:
       type: object
       required: [item_kind, id, short_id]

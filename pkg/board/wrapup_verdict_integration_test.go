@@ -636,6 +636,48 @@ func (s *BoardSuite) TestWrapUp_AckResetsLedgerAndRedrains() {
 	require.Equal(t, 1, s.countEvents("wrapup_ack"), "no no-op event spam")
 	require.Equal(t, *wLive.TaskID, *s.epicWrapup(e.ID).TaskID,
 		"the echo never touched the live in-flight pointer")
+
+	// --- The SECOND cap cycle: the ack-reset loop runs again, and the
+	// arm must fire a SECOND wrapup_ack_required event. The arm event's
+	// deterministic id is cycle-discriminated (the epic's total minted
+	// wrap-up rows rides the id): every post-ack arm fires at
+	// count==cap again, so the ledger value alone would collide and ON
+	// CONFLICT DO NOTHING would silently swallow this cycle's audit row
+	// + SSE event — the collision pin.
+	for i := capN; i < 2*capN; i++ {
+		w := s.liveWrapupTask(svc, e.ID)
+		s.Require().Equal(board.StageInReview, w.Stage, "cycle %d: the epic's live wrap-up", i)
+		g, err := svc.CreateTask(ctx, s.owner(), e.ID, "",
+			board.TaskInput{Title: fmt.Sprintf("gap-%d", i), Description: fmt.Sprintf("Cycle %d's gap story: pin the delta the wrap-up flagged.", i),
+				Tags:               []string{"gap"},
+				AcceptanceCriteria: []board.AcceptanceCriterion{{Text: "fix", Met: true}}}, "")
+		s.Require().NoError(err)
+		s.checkWrapupCriteria(svc, w)
+		_, _, err = svc.RecordWrapUpVerdict(ctx, s.reviewerActor(w), w.ID, "",
+			board.WrapUpVerdictInput{Verdict: board.WrapUpVerdictGaps,
+				ReportURL: fmt.Sprintf("https://ev.test/gaps-%d", i),
+				GapRefs:   []string{g.ShortID}, Reviewer: "wrapup-reviewer"}, "")
+		s.Require().NoError(err, "cycle %d: the gaps close", i)
+
+		c, err := svc.ClaimNext(ctx, "worker-"+ws, ws)
+		s.Require().NoError(err)
+		_, err = svc.MoveStage(ctx, s.agent(c.Assignee, c.ClaimToken), "", c.ShortID,
+			board.StageDone, fmt.Sprintf("https://ev.test/gap-%d-done", i), "")
+		s.Require().NoError(err)
+	}
+	require.Equal(t, capN, s.epicWrapup(e.ID).Count, "cycle 2's ledger stands at the cap again")
+	require.True(t, s.epicWrapup(e.ID).AckPending, "cycle 2 re-armed ack-wait")
+	require.Equal(t, 2*capN, s.countWrapupRows(), "cycle 2 minted its own cap-1 wrap-ups plus the ack's immediate row")
+	require.Equal(t, 2, s.countEvents("wrapup_ack_required"),
+		"the SECOND arm cycle's event — the cycle-discriminated id, not swallowed by ON CONFLICT")
+
+	// The second human ack lands its own event too (requestID-keyed ids
+	// never collide) and the loop keeps going — the cap bounds, the
+	// human decides, indefinitely.
+	_, err = svc.AckWrapUp(ctx, s.owner(), e.ID, "", "rq-ack-3")
+	s.Require().NoError(err)
+	require.Equal(t, 2, s.countEvents("wrapup_ack"), "each real ack carries its own event")
+	require.Equal(t, 0, s.epicWrapup(e.ID).Count, "cycle 2's ack reset the ledger again")
 }
 
 // TestWrapUp_AckClearsParkedManagerOverridePointer pins the §4 tail: a
@@ -672,4 +714,44 @@ func (s *BoardSuite) TestWrapUp_AckClearsParkedManagerOverridePointer() {
 	require.NotNil(t, fresh, "the acked, still-drained epic minted immediately")
 	require.NotEqual(t, w.ID, *fresh, "the PARKED pointer was cleared — this is the fresh review")
 	require.Equal(t, 2, s.countWrapupRows(), "the acked drain re-minted a fresh wrap-up")
+}
+
+// TestWrapUp_ReopenedEpicRecompleteFiresSecondCompletionEvent pins the
+// epic_complete id's cycle discrimination: a completed epic REOPENED
+// (EpicActivate completed→active, r13's exempt branch) and drained again
+// completes through a LATER wrap-up row — and the second completion's
+// audit event must LAND. The epic-id-only deterministic id would collide
+// with the first completion's and ON CONFLICT DO NOTHING would silently
+// swallow the audit row + SSE event — the collision pin (the id now
+// carries the closing wrap-up row's task id).
+func (s *BoardSuite) TestWrapUp_ReopenedEpicRecompleteFiresSecondCompletionEvent() {
+	t := s.T()
+	ctx := context.Background()
+	ws := s.seedWorkspace()
+	p := s.seedProject(ws, 2)
+	svc := s.wrapSvcFaultable(nil)
+	e := s.seedWrapEpic(svc, p, true)
+
+	// First life: drain → W1 → PASS → completed (completion event 1).
+	w1 := s.drainToMint(svc, ws, e, 1)
+	_, epic := s.passVerdict(svc, w1, "rq-pass-reopen-1")
+	require.Equal(t, board.EpicCompleted, epic.Status)
+	require.Equal(t, 1, s.countEvents("wrapup_epic_complete"), "first completion's event")
+
+	// The reopen (manager verb; the completed→active branch is exempt
+	// from the activation re-check — stays active until work lands).
+	reopened, err := svc.EpicActivate(ctx, s.owner(), e.ID, "", false, "rq-reopen-1")
+	s.Require().NoError(err)
+	require.Equal(t, board.EpicActive, reopened.Status, "the completed epic reopened")
+
+	// Second life: follow-up work lands and drains → a FRESH wrap-up
+	// (the ledger never reset — count=1 < cap) → PASS → completed again.
+	s2 := s.seedTask(e, "followup", nil, true)
+	s.claimAndComplete(svc, ws, s2.ShortID)
+	w2 := s.liveWrapupTask(svc, e.ID)
+	require.NotEqual(t, w1.ID, w2.ID, "the second completion rides a LATER wrap-up row")
+	_, epic2 := s.passVerdict(svc, w2, "rq-pass-reopen-2")
+	require.Equal(t, board.EpicCompleted, epic2.Status, "the reopened epic completed again")
+	require.Equal(t, 2, s.countEvents("wrapup_epic_complete"),
+		"the SECOND completion's event — the row-discriminated id, not swallowed by ON CONFLICT")
 }

@@ -184,6 +184,39 @@ func boardAllowCases() []boardToolCase {
 			},
 		},
 		{
+			name: "board_record_wrapup_verdict_pass", tool: "board_record_wrapup_verdict",
+			args: map[string]any{"story_id": "tsk-cccc3333", "verdict": "pass",
+				"report_url": "https://ev.test/wrapup", "reviewer": "wrapup-reviewer",
+				"request_id": "rq-wrap-1"},
+			mock: func(m *MockAPIClient) {
+				m.On("BoardRecordWrapUpVerdict", mock.Anything, "tsk-cccc3333",
+					BoardWrapUpVerdictBody{Verdict: "pass", ReportURL: "https://ev.test/wrapup",
+						Reviewer: "wrapup-reviewer", RequestID: "rq-wrap-1"}).
+					Return(`{"task":{"stage":"done"},"epic":{"status":"completed"}}`, nil)
+			},
+		},
+		{
+			name: "board_record_wrapup_verdict_gaps", tool: "board_record_wrapup_verdict",
+			args: map[string]any{"story_id": "tsk-cccc3333", "verdict": "gaps",
+				"report_url": "https://ev.test/wrapup", "reviewer": "wrapup-reviewer",
+				"gap_refs": toAnySlice([]string{"tsk-gaaa4444", "tsk-gbbb5555"}), "notes": "two seams"},
+			mock: func(m *MockAPIClient) {
+				m.On("BoardRecordWrapUpVerdict", mock.Anything, "tsk-cccc3333",
+					BoardWrapUpVerdictBody{Verdict: "gaps", ReportURL: "https://ev.test/wrapup",
+						GapRefs: []string{"tsk-gaaa4444", "tsk-gbbb5555"}, Notes: "two seams",
+						Reviewer: "wrapup-reviewer"}).
+					Return(`{"task":{"stage":"done"},"epic":{"status":"active"}}`, nil)
+			},
+		},
+		{
+			name: "board_ack_epic_wrapup", tool: "board_ack_epic_wrapup",
+			args: map[string]any{"epic_id": "epc-bbbb2222", "request_id": "rq-ack-1"},
+			mock: func(m *MockAPIClient) {
+				m.On("BoardAckEpicWrapUp", mock.Anything, "epc-bbbb2222", "rq-ack-1").
+					Return(`{"epic":{"status":"active"}}`, nil)
+			},
+		},
+		{
 			name: "board_story_verdicts", tool: "board_story_verdicts", args: map[string]any{"task_id": "tsk-cccc3333"},
 			mock: func(m *MockAPIClient) {
 				m.On("BoardStoryVerdicts", mock.Anything, "tsk-cccc3333").Return(`{"verdicts":[]}`, nil)
@@ -611,6 +644,120 @@ func TestBoardTools_RequestIDThreads(t *testing.T) {
 	m.AssertExpectations(t)
 }
 
+// TestBoardTools_WrapUpVerdictGuards: the close verb's adapter-owned
+// pre-checks (the engine-owned closed schema's FIRST render — a bad
+// envelope answers a tool error BEFORE any client call): verdict enum,
+// report_url on both verdicts, gap_refs required non-empty iff gaps, the
+// gap_refs string-array decode, and the client-error passthrough.
+func TestBoardTools_WrapUpVerdictGuards(t *testing.T) {
+	cases := []struct {
+		name     string
+		tool     string
+		args     map[string]any
+		wantText string
+	}{
+		{"bad_enum", "board_record_wrapup_verdict",
+			map[string]any{"story_id": "tsk-cccc3333", "verdict": "approve",
+				"report_url": "https://ev.test/w", "reviewer": "rev"},
+			"verdict must be pass or gaps"},
+		{"missing_report_url", "board_record_wrapup_verdict",
+			map[string]any{"story_id": "tsk-cccc3333", "verdict": "pass", "reviewer": "rev"},
+			"report_url is required on both verdicts"},
+		{"gaps_without_refs", "board_record_wrapup_verdict",
+			map[string]any{"story_id": "tsk-cccc3333", "verdict": "gaps",
+				"report_url": "https://ev.test/w", "reviewer": "rev"},
+			"a gaps verdict requires at least one gap_ref"},
+		{"pass_with_refs", "board_record_wrapup_verdict",
+			map[string]any{"story_id": "tsk-cccc3333", "verdict": "pass",
+				"report_url": "https://ev.test/w", "reviewer": "rev",
+				"gap_refs": toAnySlice([]string{"tsk-gaaa4444"})},
+			"a pass verdict files no gaps"},
+		{"non_string_gap_ref", "board_record_wrapup_verdict",
+			map[string]any{"story_id": "tsk-cccc3333", "verdict": "gaps",
+				"report_url": "https://ev.test/w", "reviewer": "rev",
+				"gap_refs": []any{"tsk-gaaa4444", 7}},
+			"gap_refs[1] must be a string"},
+		{"gap_refs_not_array", "board_record_wrapup_verdict",
+			map[string]any{"story_id": "tsk-cccc3333", "verdict": "gaps",
+				"report_url": "https://ev.test/w", "reviewer": "rev",
+				"gap_refs": "tsk-gaaa4444"},
+			"gap_refs must be an array of strings"},
+		{"missing_reviewer", "board_record_wrapup_verdict",
+			map[string]any{"story_id": "tsk-cccc3333", "verdict": "pass",
+				"report_url": "https://ev.test/w"},
+			"story_id, verdict, and reviewer are required"},
+		{"missing_story_id", "board_record_wrapup_verdict",
+			map[string]any{"verdict": "pass", "report_url": "https://ev.test/w", "reviewer": "rev"},
+			"story_id, verdict, and reviewer are required"},
+		{"ack_missing_epic_id", "board_ack_epic_wrapup",
+			map[string]any{},
+			"epic_id is required"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			m := &MockAPIClient{} // no expectations: any client call is a failure
+			h := &handlers{client: m, timeout: 30 * time.Second}
+			res, err := callBoardTool(t, h, tc.tool, tc.args)
+			require.NoError(t, err)
+			require.NotNil(t, res)
+			assert.True(t, res.IsError, "%s: the closed-schema pre-check must answer a tool error", tc.name)
+			assert.Contains(t, boardResultText(res), tc.wantText)
+			m.AssertNotCalled(t, "BoardRecordWrapUpVerdict", mock.Anything, mock.Anything, mock.Anything)
+			m.AssertNotCalled(t, "BoardAckEpicWrapUp", mock.Anything, mock.Anything, mock.Anything)
+		})
+	}
+
+	// The client-error passthrough: the REST tier's failure renders as a
+	// tool error, never a handler panic.
+	t.Run("client_error_passthrough", func(t *testing.T) {
+		m := &MockAPIClient{}
+		m.On("BoardRecordWrapUpVerdict", mock.Anything, "tsk-cccc3333", mock.Anything).
+			Return(``, fmt__error("409: a wrap-up verdict requires the row's live claim token")).Once()
+		h := &handlers{client: m, timeout: 30 * time.Second}
+		res, err := callBoardTool(t, h, "board_record_wrapup_verdict",
+			map[string]any{"story_id": "tsk-cccc3333", "verdict": "pass",
+				"report_url": "https://ev.test/w", "reviewer": "rev"})
+		require.NoError(t, err)
+		require.NotNil(t, res)
+		assert.True(t, res.IsError)
+		assert.Contains(t, boardResultText(res), "live claim token")
+		m.AssertExpectations(t)
+	})
+}
+
+// TestBoardTools_WrapUpExternalSchemaPins: §4.3b asserted BY NAME for
+// the wrap-up surfaces — the external registry's close verb carries NO
+// claim-token parameter (external actors hold no claims; the engine's
+// unconditional token guard renders the loud refusal instead) and the
+// schema is exactly the closed set (mirrors the engine-owned wire
+// schema; no freeform extras).
+func TestBoardTools_WrapUpExternalSchemaPins(t *testing.T) {
+	srv := NewServer(&MockAPIClient{}, 30*time.Second)
+	want := map[string]map[string]bool{
+		"board_record_wrapup_verdict": {
+			"story_id": true, "verdict": true, "report_url": true, "reviewer": true,
+			"gap_refs": true, "notes": true, "request_id": true,
+		},
+		"board_ack_epic_wrapup": {
+			"epic_id": true, "request_id": true,
+		},
+	}
+	for name, tool := range srv.ListTools() {
+		props, ok := want[name]
+		if !ok {
+			continue
+		}
+		delete(want, name)
+		got := map[string]bool{}
+		for key := range tool.Tool.InputSchema.Properties {
+			got[key] = true
+		}
+		assert.Equal(t, props, got,
+			"%s: the external schema is the closed set — no claim-token property, no extras (§4.3b)", name)
+	}
+	assert.Empty(t, want, "both wrap-up tools must be registered on the external server")
+}
+
 // --- helpers ---
 
 // callBoardTool dispatches to the (unexported) handler by tool name —
@@ -629,6 +776,10 @@ func callBoardTool(t *testing.T, h *handlers, name string, args map[string]any) 
 		return h.boardStoryEvents(ctx, makeReq(name, args))
 	case "board_record_verdict":
 		return h.boardRecordVerdict(ctx, makeReq(name, args))
+	case "board_record_wrapup_verdict":
+		return h.boardRecordWrapUpVerdict(ctx, makeReq(name, args))
+	case "board_ack_epic_wrapup":
+		return h.boardAckEpicWrapUp(ctx, makeReq(name, args))
 	case "board_story_verdicts":
 		return h.boardStoryVerdicts(ctx, makeReq(name, args))
 	case "board_health":
