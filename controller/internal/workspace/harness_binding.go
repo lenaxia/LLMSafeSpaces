@@ -5,6 +5,7 @@ package workspace
 
 import (
 	"context"
+	"time"
 
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/types"
@@ -41,6 +42,27 @@ import (
 //     retained (handlePending is harness-agnostic): storage is
 //     never stranded by the bind, and the bind itself never
 //     recreates anything (there was no pod to recreate).
+//
+// CRD-SKEW POSTURE (owner report 2026-11-16 — refresh-compute dead on
+// .15): helm never upgrades crds/ on `helm upgrade` (helm/README.md),
+// so a normally-upgraded cluster can run this controller against the
+// pre-.15 Workspace CRD — which has no spec.harness. A structural
+// apiserver PRUNES unknown fields and returns SUCCESS, so the backfill
+// write "lands" without landing. The stamp is an invariant-convergence
+// nicety; the phase machine is the critical path (it observes the
+// refresh-compute restartGeneration bump and every phase transition
+// the UI's live updates ride). The legacy arm therefore VERIFIES the
+// stamp persisted, holds off re-attempts for one retry window per
+// workspace when it did not (no hot write loop), and — critically —
+// NEVER lets an unlandable stamp stop the phase machine: handled=true
+// is reserved for a write that actually landed.
+
+// harnessBackfillRetryInterval bounds the legacy backfill's re-attempt
+// cadence once a stamp attempt has failed to persist: one write per
+// window per workspace. 10m converges within minutes of the operator
+// applying the .15 CRD while capping skew-era write pressure at
+// 6 writes/hour/workspace. Var for tests.
+var harnessBackfillRetryInterval = 10 * time.Minute
 
 // bornUnbound reports whether the workspace was intentionally created
 // unbound (the frontend-picker path): spec.harness == "" AND the
@@ -75,13 +97,40 @@ func (r *WorkspaceReconciler) reconcileHarnessBinding(ctx context.Context, ws *v
 		// only race is another writer — resolved by resourceVersion
 		// retry, and if the object is meanwhile bound the pass below
 		// re-reads and no-ops.
-		logger.Info("Legacy unbound workspace; backfilling spec.harness=opencode (bind-once invariant)")
-		if err := r.backfillLegacyHarness(ctx, ws); err != nil {
-			// Not a webhook denial in practice (only ""→opencode
-			// here); treat any failure as retryable.
-			return true, ctrl.Result{Requeue: true}, err
+		//
+		// CRD-SKEW (see the file header): the stamp write may be
+		// silently PRUNED by an apiserver serving the pre-.15 CRD.
+		// handled=true (stop the pass, requeue to re-read the bound
+		// object) is reserved for a write that PERSISTED — an
+		// unlandable stamp must never stop the phase machine, or every
+		// legacy workspace freezes (no recycle on the refresh-compute
+		// generation bump, no phase transitions, no live-update
+		// events). Re-attempts ride harnessBackfillRetryInterval: one
+		// write per window per workspace, never a hot loop.
+		key := ws.Namespace + "/" + ws.Name
+		if r.harnessBackfillRetryDue(key) {
+			r.recordHarnessBackfillAttempt(key)
+			logger.Info("Legacy unbound workspace; backfilling spec.harness=opencode (bind-once invariant)")
+			landed, err := r.backfillLegacyHarness(ctx, ws)
+			if err != nil {
+				// Not a webhook denial in practice (only ""→opencode
+				// here); treat any failure as retryable.
+				return true, ctrl.Result{Requeue: true}, err
+			}
+			if landed {
+				r.clearHarnessBackfillAttempt(key)
+				return true, ctrl.Result{Requeue: true}, nil
+			}
+			// Accepted-but-pruned: the cluster's Workspace CRD predates
+			// spec.harness. Loud once per window, with the operator
+			// action; the phase machine proceeds THIS pass.
+			logger.Error(nil, "spec.harness backfill write did not persist — the cluster's Workspace CRD predates 0.44.15 (helm does not upgrade crds/; apply `kubectl apply -f helm/crds/workspace.yaml`); the workspace stays on its legacy effective harness (opencode) and the phase machine is NOT blocked",
+				"workspace", key)
 		}
-		return true, ctrl.Result{Requeue: true}, nil
+		// Within the retry window of an unlandable stamp (or just
+		// pruned above): proceed — the legacy workspace is effectively
+		// opencode (effectiveBoundHarness) with or without the stamp.
+		return false, ctrl.Result{}, nil
 	}
 
 	// Born-unbound: wait for the bind. No pod is built in this state;
@@ -96,8 +145,17 @@ func (r *WorkspaceReconciler) reconcileHarnessBinding(ctx context.Context, ws *v
 // (the clearForceRecycleAnnotation shape): never writes from a stale
 // cache; a mid-flight bind by another writer wins and this pass
 // no-ops (bound is bound — the invariant holds either way).
-func (r *WorkspaceReconciler) backfillLegacyHarness(ctx context.Context, ws *v1.Workspace) error {
-	return retry.RetryOnConflict(retry.DefaultBackoff, func() error {
+//
+// Returns landed=true only when the object reads back BOUND after the
+// write: an apiserver serving the pre-.15 Workspace CRD PRUNES the
+// unknown field and returns success, and treating that shape as a
+// landed stamp starves the phase machine forever (owner report
+// 2026-11-16). The verify re-read costs one extra GET per workspace
+// per process on the healthy path.
+func (r *WorkspaceReconciler) backfillLegacyHarness(ctx context.Context, ws *v1.Workspace) (bool, error) {
+	landed := false
+	err := retry.RetryOnConflict(retry.DefaultBackoff, func() error {
+		landed = false
 		var fresh v1.Workspace
 		nn := types.NamespacedName{Name: ws.Name, Namespace: ws.Namespace}
 		if err := r.Get(ctx, nn, &fresh); err != nil {
@@ -108,17 +166,61 @@ func (r *WorkspaceReconciler) backfillLegacyHarness(ctx context.Context, ws *v1.
 		}
 		if fresh.Spec.Harness != "" || fresh.Annotations[v1.AnnotationHarnessUnbound] == "true" {
 			// Someone bound it (or it is born-unbound after all):
-			// nothing to stamp.
+			// nothing to stamp — the invariant already holds.
 			ws.ResourceVersion = fresh.ResourceVersion
+			landed = true
 			return nil
 		}
 		fresh.Spec.Harness = v1.HarnessOpencode
 		if err := r.Update(ctx, &fresh); err != nil {
 			return err
 		}
-		ws.ResourceVersion = fresh.ResourceVersion
+		// VERIFY (the skew seam): a structural apiserver serving a
+		// harness-less CRD accepts the write and silently drops the
+		// field. Read back and let the caller see the truth.
+		var after v1.Workspace
+		if err := r.Get(ctx, nn, &after); err != nil {
+			return err
+		}
+		ws.ResourceVersion = after.ResourceVersion
+		// landed only on a BOUND read-back: a still-unbound shape (the
+		// marker surviving our deletion — a stale-cache read) is NOT a
+		// landed stamp; the window retry converges.
+		landed = after.Spec.Harness != ""
 		return nil
 	})
+	return landed, err
+}
+
+// harnessBackfillRetryDue reports whether a NEW stamp attempt is
+// permitted for the workspace: no attempt on record (first observe, or
+// a process restart), or the last attempt older than the retry window.
+func (r *WorkspaceReconciler) harnessBackfillRetryDue(key string) bool {
+	r.harnessBackfillMu.Lock()
+	defer r.harnessBackfillMu.Unlock()
+	last, seen := r.harnessBackfillAttemptAt[key]
+	return !seen || time.Since(last) >= harnessBackfillRetryInterval
+}
+
+// recordHarnessBackfillAttempt stamps the attempt AT THE START of a
+// write (crash-safe: an attempt whose verdict never returns still
+// holds off the next one for a window).
+func (r *WorkspaceReconciler) recordHarnessBackfillAttempt(key string) {
+	r.harnessBackfillMu.Lock()
+	defer r.harnessBackfillMu.Unlock()
+	if r.harnessBackfillAttemptAt == nil {
+		r.harnessBackfillAttemptAt = make(map[string]time.Time)
+	}
+	r.harnessBackfillAttemptAt[key] = time.Now()
+}
+
+// clearHarnessBackfillAttempt drops the attempt record once the stamp
+// landed (converged — nothing retries; the bound short-circuit above
+// never reaches the bookkeeping again).
+func (r *WorkspaceReconciler) clearHarnessBackfillAttempt(key string) {
+	r.harnessBackfillMu.Lock()
+	defer r.harnessBackfillMu.Unlock()
+	delete(r.harnessBackfillAttemptAt, key)
 }
 
 // clearHarnessBindingPending flips a True HarnessBindingPending
