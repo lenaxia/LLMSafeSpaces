@@ -2252,15 +2252,20 @@ function StageRail({ laneShortId, cellProps, onDropStage }: StageRailProps) {
     return () => rail.removeEventListener("scrollend", onScrollEnd);
   }, [applyFocus]);
 
-  // Landscape/desktop has NO focus mode — and the reset must not depend
-  // on a single change event arriving (owner report #2, 2026-11-17: a
-  // lens that survives the rotation leaves BOTH orientations at the
-  // wrong sizes — the portrait-only focus widths have no md: variants).
-  // Two layers: mdPlus is STATE (re-read on every subscription path,
-  // including the legacy addListener arm), and the RENDER treats md+
-  // as "no lens can show" — even if the change event is missed, the
-  // lens cannot render at md+; the effect below then syncs the state
-  // (and posts the exit notice) when the crossing IS observed.
+  // Landscape/desktop has NO focus mode — and the reset must not
+  // depend on a single addEventListener change event (owner report #2,
+  // 2026-11-17: a lens that survives the rotation leaves BOTH
+  // orientations at the wrong sizes — the portrait-only focus widths
+  // have no md: variants). mdPlus is STATE, re-read at mount and on
+  // every delivered event across BOTH subscription arms (the modern
+  // addEventListener path and the legacy addListener arm for
+  // pre-Safari-14); the RENDER treats md+ as "no lens can show", which
+  // closes the inter-effect window (state set, render not yet
+  // corrected) and the unsupported-addEventListener hole; the effect
+  // below syncs the state (exit notice + re-center) when the crossing
+  // IS observed. Event-driven like the codebase's other media state
+  // (useIsMobile) — a genuinely UNDELIVERED event still leaves mdPlus
+  // stale; no poll.
   const [mdPlus, setMdPlus] = useState(false);
   useEffect(() => {
     const mq = window.matchMedia?.("(min-width: 768px)");

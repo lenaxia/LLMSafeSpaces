@@ -45,6 +45,26 @@ describe("root overscroll policy (#1629)", () => {
     expect(ruleFor("html")).not.toMatch(/overscroll-behavior:\s*[^;-]/);
     expect(ruleFor("body")).not.toMatch(/overscroll-behavior:\s*[^;-]/);
   });
+
+  // 2026-11-17 rail fix (owner report on v0.44.15): touch-action
+  // INTERSECTS along the ancestor chain — a bare pan-y on html/body
+  // forbids horizontal touch panning for every descendant, and no
+  // descendant can re-enable what an ancestor disabled. That made the
+  // sprint board's 1x4 rail (any nested horizontal scroller) swipe-dead
+  // on real fingers while mouse/keyboard/programmatic scrolls kept
+  // working (they ignore touch-action — why CI never saw it). pan-x
+  // pan-y keeps everything pan-y stood for here: the document never
+  // scrolls horizontally (h-dvh overflow-hidden shells), pinch-zoom and
+  // double-tap-zoom stay disabled (any non-auto value disables them),
+  // and swipe-back stays dead via overscroll-behavior-x above. The e2e
+  // (board-rail-touch.spec.ts) exercises the runtime behavior with
+  // trusted touchscreen input.
+  it("html/body declare touch-action: pan-x pan-y — horizontal touch panning is not forbidden app-wide (the rail's swipe)", () => {
+    expect(ruleFor("html")).toMatch(/touch-action:\s*pan-x pan-y/);
+    expect(ruleFor("body")).toMatch(/touch-action:\s*pan-x pan-y/);
+    expect(ruleFor("html")).not.toMatch(/touch-action:\s*pan-y\s*;/);
+    expect(ruleFor("body")).not.toMatch(/touch-action:\s*pan-y\s*;/);
+  });
 });
 
 // ── #1648 — dynamic-viewport fallback for the app shells ───────────────

@@ -126,8 +126,10 @@ at the WRONG sizes — the portrait 95/3+peek layout does not re-apply."
   `md:` viewport media queries (verified: no `@custom-variant`/container
   query in the Tailwind v4 setup, `md:` is `@media (width >= 48rem)`).
   Pinned in Chromium viewport emulation: portrait→landscape→portrait
-  and rapid cycling all converge to fraction-identical portrait
-  layouts, overflow restored.
+  and rapid cycling all restore the portrait layout fraction-identical
+  WITHIN THE PINNED TOLERANCE (`toBeCloseTo(…, 1)` per column fraction;
+  the rapid-rotation segment re-checks the class ranges), overflow
+  restored.
 - The hole was the md force-exit being EVENT-DEPENDENT: StageRail's
   only orientation defense was ONE
   `matchMedia("(min-width: 768px)").addEventListener("change")` with an
@@ -140,21 +142,28 @@ at the WRONG sizes — the portrait 95/3+peek layout does not re-apply."
   chevrons are only CSS-hidden), stranding a lens that would SHOW on
   the next portrait crossing.
 
-### Fix (the reset becomes structural, not event-dependent)
+### Fix (the reset becomes stateful + render-guarded, not event-single)
 
 - `mdPlus` is component state (initialized false per the codebase's
-  SSR-safe discipline, re-read on mount AND on every subscription
-  path, including the legacy `addListener` arm for pre-Safari-14).
+  SSR-safe discipline, re-read on mount AND on every delivered event
+  across BOTH subscription arms — the modern `addEventListener` path
+  and the legacy `addListener` arm for pre-Safari-14).
 - The RENDER treats md+ as "no lens can show":
   `effectiveFocused = mdPlus ? null : focusedIndex` drives every
   focus-rendering site (columnMode, the width-class ternary, the
-  compressed floor, data-mode, the chevron wiring). Even a fully
-  missed event cannot render the lens at md+.
+  compressed floor, data-mode, the chevron wiring) — closing the
+  inter-effect window and the unsupported-addEventListener hole.
 - The crossing effect (`mdPlus && focusedRef.current !== null →
   exitFocus()`) still syncs the state — the exit notice and the
   re-centered re-snap behave exactly as 2079 specced.
 - `applyFocus` no-ops at md+ (guarded via a `mdPlusRef` mirror —
   keyboard Enter mirrors the md:hidden chevron).
+- Delivered guarantee, stated exactly (review r2's docs-truth
+  finding): the two subscription arms + the mount read + the
+  same-render guard — strictly stronger than main's single listener,
+  but NOT missed-event-proof; there is no poll fallback (event-driven
+  like `useIsMobile`). A genuinely undelivered event leaves `mdPlus`
+  stale.
 
 ### Pins
 
