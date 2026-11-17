@@ -2096,6 +2096,28 @@ const STAGE_COL_FOCUS_WIDTH = {
   compressed: "w-[calc(10%-0.375rem)]",
 };
 
+/** The md: HALF of every focus width — the rail's CSS AUTHORITY over
+ * viewport class (owner report #3, 2026-11-17: "rotation leaves the
+ * columns at the wrong sizes — the portrait layout does not re-apply").
+ * The .16 guard made the lens exit depend on a DELIVERED matchMedia
+ * change event; an event lost to the renderer's rotation timing (the
+ * frozen/hidden-page window, WebKit's coalesced delivery) leaves
+ * mdPlus stale and the portrait-only focus widths rendered at md+ AND
+ * back — the exact symptom. These variants give the media query the
+ * final word INDEPENDENT of component state: at md+ every column
+ * renders its overview md width whether the lens state is stale or
+ * not (the md row is 24/28/24/24 by STAGE — the map values mirror
+ * STAGE_COL_WIDTH's md: halves exactly, min-width floors included, so
+ * tailwind-merge resolves focus and overview columns to the identical
+ * md geometry; the orientation test pins the equality so the two maps
+ * cannot drift). */
+const STAGE_COL_FOCUS_MD_WIDTH: Partial<Record<BoardStage, string>> = {
+  [STAGE_BACKLOG]: "md:w-[calc(24%-0.375rem)]",
+  [STAGE_IN_PROGRESS]: "md:min-w-[8rem] md:w-[calc(28%-0.375rem)]",
+  [STAGE_IN_REVIEW]: "md:w-[calc(24%-0.375rem)]",
+  [STAGE_DONE]: "md:w-[calc(24%-0.375rem)]",
+};
+
 /** One discrete transition per mode change: the width reflow animates
  * over FOCUS_TRANSITION_MS; the explicit re-snap that follows it (the
  * expanded column fully in view) is scheduled just past the transition
@@ -2255,40 +2277,101 @@ function StageRail({ laneShortId, cellProps, onDropStage }: StageRailProps) {
   // Landscape/desktop has NO focus mode — and the reset must not
   // depend on a single addEventListener change event (owner report #2,
   // 2026-11-17: a lens that survives the rotation leaves BOTH
-  // orientations at the wrong sizes — the portrait-only focus widths
-  // have no md: variants). mdPlus is STATE, re-read at mount and on
-  // every delivered event across BOTH subscription arms (the modern
-  // addEventListener path and the legacy addListener arm for
-  // pre-Safari-14); the RENDER treats md+ as "no lens can show", which
-  // closes the inter-effect window (state set, render not yet
-  // corrected) and the unsupported-addEventListener hole; the effect
-  // below syncs the state (exit notice + re-center) when the crossing
-  // IS observed. Event-driven like the codebase's other media state
-  // (useIsMobile) — a genuinely UNDELIVERED event still leaves mdPlus
-  // stale; no poll.
+  // orientations at the wrong sizes). mdPlus is STATE, re-read at
+  // mount and re-read again on EVERY clock that can observe a
+  // viewport-class crossing (owner report #3, same day: the .16
+  // single-clock shape still left the md row at the mercy of one
+  // DELIVERED matchMedia change — a rotation whose change event is
+  // lost to the renderer's timing (the frozen/hidden-page window,
+  // coalesced delivery on rotation) leaves mdPlus stale and the
+  // portrait layout stranded at md+ and back). Three clocks, one
+  // idempotent read: the modern addEventListener path, the legacy
+  // addListener arm (pre-Safari-14), AND window resize +
+  // orientationchange — every real rotation fires resize on both
+  // engines, so a lost mq event heals on the very next resize frame.
+  // The RENDER additionally treats md+ as "no lens can show"
+  // (effectiveFocused), and the focus widths carry their own md:
+  // variants (STAGE_COL_FOCUS_MD_WIDTH) so even a stale state cannot
+  // render portrait geometry at md+. No poll: the clocks are the
+  // events browsers guarantee alongside a viewport change.
   const [mdPlus, setMdPlus] = useState(false);
   useEffect(() => {
     const mq = window.matchMedia?.("(min-width: 768px)");
     if (!mq) return;
     const apply = () => setMdPlus(mq.matches);
     apply();
+    const offs: Array<() => void> = [];
     if (typeof mq.addEventListener === "function") {
       mq.addEventListener("change", apply);
-      return () => mq.removeEventListener("change", apply);
-    }
-    // Legacy Safari (< 14): the deprecated addListener path.
-    if (typeof mq.addListener === "function") {
+      offs.push(() => mq.removeEventListener("change", apply));
+    } else if (typeof mq.addListener === "function") {
+      // Legacy Safari (< 14): the deprecated addListener path.
       mq.addListener(apply);
-      return () => mq.removeListener(apply);
+      offs.push(() => mq.removeListener(apply));
     }
-    return;
+    // The rotation clocks (owner report #3): the viewport-class truth
+    // re-reads the media state on resize and orientationchange — the
+    // heal for an undelivered matchMedia change. addEventListener's
+    // passive default is fine (the handler only writes state).
+    window.addEventListener("resize", apply);
+    window.addEventListener("orientationchange", apply);
+    offs.push(() => {
+      window.removeEventListener("resize", apply);
+      window.removeEventListener("orientationchange", apply);
+    });
+    return () => {
+      offs.forEach((off) => off());
+    };
   }, []);
   // The render-level guard: at md+ the effective lens is ALWAYS null.
   const effectiveFocused = mdPlus ? null : focusedIndex;
   mdPlusRef.current = mdPlus;
+  // The crossing effect: flips only (the ref gates the mount run, and
+  // setMdPlus bails on unchanged values so this runs on crossings,
+  // not on every clock tick). Two arms:
+  //  - crossing INTO md+ exits an open lens (chevrons are md:hidden —
+  //    there is no way back into focus from md+);
+  //  - crossing INTO portrait RE-OWNERS the rail's scroll position:
+  //    the browser's rotation scroll-restoration replays the old
+  //    CONTENT offset against the CHANGED column widths (the md row
+  //    ran in between), which lands the snapport off every column's
+  //    valid snap range — nothing in CSS re-snaps a restored scroll.
+  //    The rail re-derives its snap target from live geometry once
+  //    the width transition has settled (FOCUS_RESNAP_DELAY_MS), the
+  //    same "target the settled geometry, never a moving snap area"
+  //    contract every other mode change honors.
+  const prevMdPlus = useRef(false);
   useEffect(() => {
-    if (mdPlus && focusedRef.current !== null) exitFocus();
-  }, [mdPlus, exitFocus]);
+    const crossed = prevMdPlus.current !== mdPlus;
+    prevMdPlus.current = mdPlus;
+    if (!crossed) return;
+    if (mdPlus) {
+      if (focusedRef.current !== null) exitFocus();
+      return;
+    }
+    window.clearTimeout(resnapTimer.current);
+    resnapTimer.current = window.setTimeout(() => {
+      const rail = railRef.current;
+      if (!rail) return;
+      const padLeft = parseFloat(getComputedStyle(rail).paddingLeft) || 0;
+      const snapportStart = rail.scrollLeft + padLeft;
+      let best = 0;
+      let bestDist = Infinity;
+      colRefs.current.forEach((el, i) => {
+        if (!el) return;
+        // Content offsets (layout-stable under scrolls, live after the
+        // re-layout — the same measurement the scrollend transit uses).
+        const start = el.offsetLeft - rail.offsetLeft;
+        const dist = Math.abs(start - snapportStart);
+        if (dist < bestDist) {
+          bestDist = dist;
+          best = i;
+        }
+      });
+      // Already on the column's start: nothing to correct.
+      if (bestDist > 1) scrollColumnToStart(best);
+    }, FOCUS_RESNAP_DELAY_MS);
+  }, [mdPlus, exitFocus, scrollColumnToStart]);
 
   /** Pinch-out exits focus (zoom-out muscle memory): two touches whose
    * spread grows by >25% mid-gesture — once per gesture. */
@@ -2400,6 +2483,12 @@ function StageRail({ laneShortId, cellProps, onDropStage }: StageRailProps) {
                   : stage === STAGE_DONE
                     ? STAGE_COL_WIDTH[STAGE_DONE]
                     : STAGE_COL_FOCUS_WIDTH.compressed,
+              // The CSS viewport-class authority: a column in ANY focus
+              // state still carries its overview md: width, so the md
+              // row renders correctly even when the mdPlus state behind
+              // effectiveFocused is stale (owner report #3 — the lens
+              // must never be able to hold portrait geometry at md+).
+              effectiveFocused !== null && STAGE_COL_FOCUS_MD_WIDTH[stage],
               // The compressed floor replaces the 4.5rem overview floor
               // (cn is tailwind-merge): a compressed column is a stub.
               effectiveFocused !== null && index !== effectiveFocused && stage !== STAGE_DONE && "min-w-[3rem]",
