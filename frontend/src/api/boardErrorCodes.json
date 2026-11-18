@@ -17,6 +17,7 @@
   "task_paused",
   "text_rejected",
   "validation",
+  "wait_already_declared",
   "workspace_binding",
   "wrapup_endpoint"
 ]

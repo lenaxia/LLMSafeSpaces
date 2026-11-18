@@ -28,13 +28,17 @@ import (
 
 // fakeBoardService records actors + calls; returns configured outcomes.
 type fakeBoardService struct {
-	lastActor     board.Actor
-	lastWorkspace string
-	lastTaskRef   string
-	lastShortID   string
-	lastToStage   string
-	lastCheck     *board.CriteriaCheck
-	calls         map[string]int
+	lastActor      board.Actor
+	lastWorkspace  string
+	lastTaskRef    string
+	lastShortID    string
+	lastToStage    string
+	lastCheck      *board.CriteriaCheck
+	calls          map[string]int
+	lastWaitOn     string // claim-wait lifecycle: the wait verb's args
+	lastWaitReason string
+	lastCondition  string
+	waitErr        error // the wait verb's guard-class arm
 
 	heartbeatErr  error
 	moveErr       error // board_parity_test.go: the shared-action guard-class arms
@@ -76,6 +80,16 @@ func (f *fakeBoardService) MoveStage(_ context.Context, actor board.Actor, taskI
 		return nil, f.moveErr
 	}
 	return &board.Task{ID: taskID, Stage: toStage}, nil
+}
+
+func (f *fakeBoardService) DeclareWait(_ context.Context, actor board.Actor, taskID, shortIDOrID, waitOn, waitReason, condition, _ string) (*board.Task, error) {
+	f.calls["wait"]++
+	f.lastActor, f.lastTaskRef, f.lastShortID = actor, taskID, shortIDOrID
+	f.lastWaitOn, f.lastWaitReason, f.lastCondition = waitOn, waitReason, condition
+	if f.waitErr != nil {
+		return nil, f.waitErr
+	}
+	return &board.Task{ID: taskID, Stage: board.StageInProgress, WaitOn: waitOn, WaitReason: waitReason}, nil
 }
 
 func (f *fakeBoardService) GetTaskInWorkspace(_ context.Context, workspaceID, taskID, shortIDOrID string) (*board.Task, error) {
@@ -156,6 +170,7 @@ func newBoardAutomationRouterWithManager(t *testing.T, svc *fakeBoardService, mg
 	b.PUT("/config", h.BoardSetConfig) // board_set_config: tier-selected REPLACE write
 	b.POST("/tasks/heartbeat", h.BoardHeartbeat)
 	b.POST("/tasks/throttle", h.BoardReportThrottle)
+	b.POST("/tasks/wait", h.BoardWait)                          // claim-wait lifecycle: the typed-wait entry verb
 	b.POST("/tasks/verdict", h.BoardRecordVerdict)              // #1947: the spawned reviewer's verdict channel
 	b.POST("/tasks/wrapup-verdict", h.BoardRecordWrapUpVerdict) // epic wrap-up review: the reviewer persona's close
 	b.POST("/tasks/move-stage", h.BoardMoveStage)

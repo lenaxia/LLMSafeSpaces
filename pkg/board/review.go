@@ -118,7 +118,7 @@ func (s *Service) completeReviewTask(ctx context.Context, tx pgx.Tx, cand, subje
 		UPDATE tasks SET stage='done', stage_entered_at=now(),
 			claim_token=NULL, lease_expires_at=NULL, claim_incremented_attempts=false, claim_persona=NULL,
 			failure_count=0, last_attempt_failed=false, last_failure_at=NULL,
-			pending_origin=NULL, pending_input=false,
+			pending_origin=NULL, pending_input=false, wait_on=NULL, wait_reason=NULL,
 			nudge_id=NULL, nudged_at=NULL, last_heartbeat_at=NULL
 		WHERE id=$1 AND NOT paused AND stage='in_review'`,
 		cand.ID)
@@ -161,7 +161,7 @@ func (s *Service) completeReviewTask(ctx context.Context, tx pgx.Tx, cand, subje
 // deterministic review_park event. Already-flagged rows are no-ops.
 func (s *Service) parkReviewTask(ctx context.Context, tx pgx.Tx, cand, subject *Task, evidence string, sys Actor) (*Event, error) {
 	tag, err := tx.Exec(ctx, `
-		UPDATE tasks SET pending_input=true, pending_origin='drift_review', updated_at=now()
+		UPDATE tasks SET pending_input=true, pending_origin='drift_review', wait_on='user', wait_reason=NULL, updated_at=now()
 		WHERE id=$1 AND NOT paused AND stage='in_review' AND NOT pending_input`, cand.ID)
 	if err != nil {
 		return nil, err

@@ -246,6 +246,27 @@ export function StoryCard({ task, projectTasks, pending, refused, dimmed, highli
             {PENDING_ORIGIN_LABELS[task.pending_origin] ?? task.pending_origin}
           </Badge>
         )}
+        {/* Typed wait (claim-wait lifecycle, migration 000060): the
+         * "what does this story need" badge — user=amber (a human
+         * holds the gate; ladder frozen), event=blue (a declarative
+         * condition the platform resolves; ladder keeps running).
+         * The composed prose is the badge text; the full reason rides
+         * the title. */}
+        {task.waitingOnTyped && (
+          <span
+            data-testid={`wait-badge-${task.short_id}`}
+            data-wait-on={task.waitOn === "event" ? "event" : "user"}
+            className={cn(
+              "rounded px-1.5 py-0 text-[10px] font-medium",
+              task.waitOn === "event"
+                ? "bg-sky-100 text-sky-800 dark:bg-sky-950 dark:text-sky-300"
+                : "bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-300",
+            )}
+            title={`Typed wait — waiting on: ${task.waitingOnTyped}${task.waitOn === "event" ? " (event: the platform resolves it; the lease ladder keeps running)" : " (user: a human holds the gate; the ladder is frozen)"}`}
+          >
+            waiting on: {task.waitingOnTyped}
+          </span>
+        )}
         {task.last_attempt_failed && (
           <Badge variant="destructive" className="px-1.5 py-0 text-[10px]" data-testid={`failed-${task.short_id}`}
             title={`Last attempt failed (${task.failure_count} consecutive — auto-return-to-ready behind doubling backoff). Never a stage: the row is ${task.stage}.`}

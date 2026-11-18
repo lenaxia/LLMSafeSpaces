@@ -65,6 +65,7 @@ func (s *Service) RearmTask(ctx context.Context, actor Actor, taskID, shortIDOrI
 			UPDATE tasks SET stage=$2, stage_entered_at=now(),
 				claim_token=NULL, lease_expires_at=NULL, assignee_session=NULL, implementer_session=NULL,
 				claim_incremented_attempts=false, claim_persona=NULL, pending_origin=NULL, pending_input=false,
+				wait_on=NULL, wait_reason=NULL,
 				nudge_id=NULL, nudged_at=NULL,
 				attempts=0, failure_count=0, last_attempt_failed=false, last_failure_at=NULL,
 				cooldown_until=NULL
