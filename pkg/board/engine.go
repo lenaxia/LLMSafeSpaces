@@ -235,7 +235,8 @@ func (s *Service) TaskStart(ctx context.Context, actor Actor, taskID, shortIDOrI
 		// retries should be failed status") — pending_origin='escalated'
 		// stays as provenance, but the STAGE is the failure terminus.
 		if _, err := tx.Exec(ctx, `
-			UPDATE tasks SET stage='failed', stage_entered_at=now(), pending_origin='escalated', pending_input=false
+			UPDATE tasks SET stage='failed', stage_entered_at=now(), pending_origin='escalated', pending_input=false,
+				wait_on=NULL, wait_reason=NULL
 			WHERE id=$1 AND stage='backlog'`, t.ID); err != nil {
 			return nil, err
 		}
@@ -270,8 +271,11 @@ func (s *Service) TaskStart(ctx context.Context, actor Actor, taskID, shortIDOrI
 			claim_incremented_attempts=true,
 			-- the claim mint RESETS the lease-episode slots: a prior
 			-- episode's nudge/heartbeat evidence must never inherit into
-			-- the fresh claim (the review's stale-slot finding).
-			nudge_id=NULL, nudged_at=NULL, last_heartbeat_at=NULL, busy_renews=0, no_advance_renews=0
+			-- the fresh claim (the review's stale-slot finding). The
+			-- typed wait clears with the mint too (migration 000060:
+			-- every mint clears wait_on/wait_reason — episode state).
+			nudge_id=NULL, nudged_at=NULL, last_heartbeat_at=NULL, busy_renews=0, no_advance_renews=0,
+			wait_on=NULL, wait_reason=NULL
 		WHERE t.id=$1
 		RETURNING t.id, t.short_id, t.project_id, t.epic_id, t.claim_token::text,
 		          (SELECT p.target_workspace_id::text FROM projects p WHERE p.id = t.project_id),
@@ -398,7 +402,7 @@ func (s *Service) claimOnce(ctx context.Context, workerID, workspaceID string) (
 		// costume.
 		tag, err := tx.Exec(ctx, `
 			UPDATE tasks SET stage='failed', stage_entered_at=now(),
-				pending_origin='escalated', pending_input=false
+				pending_origin='escalated', pending_input=false, wait_on=NULL, wait_reason=NULL
 			WHERE id=$1 AND stage='backlog'`, taskID)
 		if err != nil {
 			return nil, "", "", err
@@ -439,8 +443,10 @@ func (s *Service) claimOnce(ctx context.Context, workerID, workspaceID string) (
 			claim_incremented_attempts=true,
 			-- the claim mint RESETS the lease-episode slots: a prior
 			-- episode's nudge/heartbeat evidence must never inherit into
-			-- the fresh claim (the review's stale-slot finding).
-			nudge_id=NULL, nudged_at=NULL, last_heartbeat_at=NULL, busy_renews=0, no_advance_renews=0
+			-- the fresh claim (the review's stale-slot finding). The
+			-- typed wait clears with the mint too (migration 000060).
+			nudge_id=NULL, nudged_at=NULL, last_heartbeat_at=NULL, busy_renews=0, no_advance_renews=0,
+			wait_on=NULL, wait_reason=NULL
 		WHERE t.id=$1
 		RETURNING t.id, t.short_id, t.project_id, t.epic_id, t.claim_token::text,
 		          (SELECT p.target_workspace_id::text FROM projects p WHERE p.id = t.project_id),

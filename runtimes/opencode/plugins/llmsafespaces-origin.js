@@ -87,6 +87,7 @@ const INJECTED_SESSION_TOOLS = new Set([
   "llmsafespaces_board_rearm_story",
   "llmsafespaces_board_depose_story",
   "llmsafespaces_board_record_verdict",
+  "llmsafespaces_board_wait",
   "llmsafespaces_board_import_plan",
   "llmsafespaces_board_list",
   "llmsafespaces_board_health",
