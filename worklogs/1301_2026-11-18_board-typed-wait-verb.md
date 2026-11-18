@@ -81,4 +81,4 @@ None. (Local sandbox has no Postgres/Docker — DB-gated integration pins verifi
 - `pkg/board/wait_integration_test.go`, `wait_test.go` (new)
 - `runtimes/opencode/plugins/llmsafespaces-origin.js`
 - `sdks/openapi.yaml` (BoardTask waitOn/waitReason/waitingOn; BoardHealth waiting + BoardHealthWait)
-- `worklogs/NNNN_2026-11-18_board-typed-wait-verb.md` (this file)
+- `worklogs/1301_2026-11-18_board-typed-wait-verb.md` (this file)

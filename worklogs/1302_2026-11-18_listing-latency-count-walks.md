@@ -105,4 +105,4 @@ Tests re-run: handlers/server/sessionindex/app all ok; golangci-lint 0 issues; g
 - api/internal/handlers/models.go, models_handler.go (C)
 - api/internal/handlers/models_cache_ttl_test.go (new — TTL pin)
 - api/internal/app/board_liveness_test.go, board_bus_discovery_integration_test.go, board_phrase_bounce_integration_test.go (testharness conversion)
-- worklogs/NNNN_2026-11-18_listing-latency-count-walks.md (this file)
+- worklogs/1302_2026-11-18_listing-latency-count-walks.md (this file)
