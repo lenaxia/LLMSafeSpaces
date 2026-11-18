@@ -611,7 +611,7 @@ spec:
         # workspace on the cluster is wedging while it fires.
         - alert: LLMSafeSpacesCRDSkew
           expr: |
-            max(llmsafespaces_crd_skew{job=~"{{ $ctrlJob }}"}) > 0
+            max by (crd, field) (llmsafespaces_crd_skew{job=~"{{ $ctrlJob }}"}) > 0
           for: 15m
           labels:
             severity: critical

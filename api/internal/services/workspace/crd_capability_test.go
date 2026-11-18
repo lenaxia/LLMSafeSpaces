@@ -5,7 +5,10 @@ package workspace
 
 import (
 	"context"
+	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/stretchr/testify/assert"
@@ -48,6 +51,74 @@ func TestCapabilityCache_NilCacheIsUnknownAndNeverGates(t *testing.T) {
 	var c *capabilityCache
 	assert.Equal(t, crdCapabilityUnknown, c.get(context.Background()))
 	c.invalidate() // must not panic
+}
+
+// Review r2 (probe-inconclusive-uncached): an INCONCLUSIVE verdict must
+// be bounded too — pre-fix only conclusive verdicts were cached, so a
+// persistently failing probe (webhook refusal, apiserver degradation)
+// re-ran the dry-run create on EVERY harness-less create, per-request
+// cluster calls contradicting the file's own charter. Two pins: the
+// short window caps re-probes regardless of get() QPS, and a concurrent
+// burst single-flights (the probe runs under the cache mutex).
+func TestCapabilityCache_InconclusiveVerdictIsBounded(t *testing.T) {
+	t.Run("one probe per inconclusive window, not per request", func(t *testing.T) {
+		calls := 0
+		c := newCapabilityCache(func(_ context.Context) crdCapability {
+			calls++
+			return crdCapabilityUnknown
+		})
+		ctx := context.Background()
+
+		for i := 0; i < 25; i++ {
+			assert.Equal(t, crdCapabilityUnknown, c.get(ctx))
+		}
+		assert.Equal(t, 1, calls,
+			"25 harness-less creates against a degraded cluster: exactly ONE probe in the window")
+
+		// The window expires (backdated deterministically — no sleep):
+		// the next get re-probes, and the new window bounds again.
+		c.mu.Lock()
+		c.checkedAt = time.Now().Add(-capabilityInconclusiveCacheTTL - time.Second)
+		c.mu.Unlock()
+		assert.Equal(t, crdCapabilityUnknown, c.get(ctx))
+		assert.Equal(t, 2, calls, "the expired inconclusive window re-arms")
+		assert.Equal(t, crdCapabilityUnknown, c.get(ctx))
+		assert.Equal(t, 2, calls)
+	})
+
+	t.Run("concurrent burst single-flights the probe", func(t *testing.T) {
+		var calls atomic.Int32
+		release := make(chan struct{})
+		started := make(chan struct{})
+		c := newCapabilityCache(func(_ context.Context) crdCapability {
+			n := calls.Add(1)
+			if n == 1 {
+				close(started)
+				<-release // hold the first probe while the burst piles up
+			}
+			return crdCapabilityUnknown
+		})
+
+		const burst = 16
+		var wg sync.WaitGroup
+		results := make([]crdCapability, burst)
+		for i := 0; i < burst; i++ {
+			wg.Add(1)
+			go func(i int) {
+				defer wg.Done()
+				results[i] = c.get(context.Background())
+			}(i)
+		}
+		<-started      // the in-flight probe is holding the mutex
+		close(release) // let it finish; the pile-up reuses its verdict
+		wg.Wait()
+
+		assert.Equal(t, int32(1), calls.Load(),
+			"the probe runs under the cache mutex — a burst is ONE dry-run, never N parallel calls")
+		for _, r := range results {
+			assert.Equal(t, crdCapabilityUnknown, r)
+		}
+	})
 }
 
 // --- the create-time gate --------------------------------------------------

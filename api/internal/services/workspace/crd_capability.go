@@ -34,13 +34,19 @@ import (
 // disagree with the real pruning behavior the bind path verified (.16).
 //
 // Caching discipline (charter: "startup + on skew detection, not
-// per-request cluster calls"): the verdict is cached for
-// capabilityCacheTTL (60s — bounds post-heal staleness to a minute
-// while capping probe traffic at one call per window regardless of
-// create QPS), and INVALIDATED the moment a bind fails to persist (the
-// freshest skew evidence there is). Inconclusive probes (any error)
-// never gate creation — absence of evidence is not evidence (#1685
-// posture); the bind-verify remains the runtime authority.
+// per-request cluster calls"; review r2 tightened the inconclusive
+// case): a CONCLUSIVE verdict is cached for capabilityCacheTTL (60s —
+// bounds post-heal staleness to a minute), an INCONCLUSIVE one for
+// capabilityInconclusiveCacheTTL (5s — a persistently failing probe
+// re-arms quickly, but never degrades to per-request apiserver calls),
+// and the verdict is INVALIDATED the moment a bind fails to persist
+// (the freshest skew evidence there is). The probe runs UNDER the
+// cache mutex — single-flight by construction: a concurrent burst of
+// harness-less creates either reuses the verdict the in-flight probe
+// installs or blocks briefly behind it, never N parallel dry-runs.
+// Inconclusive probes never gate creation — absence of evidence is
+// not evidence (#1685 posture); the bind-verify remains the runtime
+// authority.
 
 // crdCapability is the probe's verdict for one spec field.
 type crdCapability int
@@ -62,6 +68,15 @@ const (
 // hostile caller cannot make the API probe per-request. Var for tests.
 var capabilityCacheTTL = 60 * time.Second
 
+// capabilityInconclusiveCacheTTL bounds how often an INCONCLUSIVE
+// probe re-runs (review r2, the probe-inconclusive-uncached finding):
+// pre-fix, an errored probe stored no usable verdict, so every
+// harness-less create on a degraded cluster re-ran the dry-run —
+// per-request apiserver calls contradicting the charter. 5s re-arms a
+// transient failure fast while capping probe traffic at one call per
+// window regardless of create QPS. Var for tests.
+var capabilityInconclusiveCacheTTL = 5 * time.Second
+
 // harnessCapabilityProbe is the probe body seam (dynamic-client
 // dry-run create by default; tests inject a stub). Returns the verdict.
 type harnessCapabilityProbe func(ctx context.Context) crdCapability
@@ -80,40 +95,44 @@ func newCapabilityCache(probe harnessCapabilityProbe) *capabilityCache {
 	return &capabilityCache{probe: probe}
 }
 
-// get returns the cached verdict, probing (at most once per TTL) when
-// stale or invalidated. A nil/absent probe yields unknown without
-// gating anything.
+// get returns the cached verdict, probing when stale or invalidated.
+// The window is verdict-classed: conclusive verdicts hold for
+// capabilityCacheTTL, inconclusive ones for the short
+// capabilityInconclusiveCacheTTL — a persistently failing probe never
+// degrades to per-request calls. The probe runs UNDER the mutex
+// (single-flight by construction: concurrent callers block briefly and
+// reuse the verdict the winner installs). A nil/absent probe yields
+// unknown without gating anything.
 func (c *capabilityCache) get(ctx context.Context) crdCapability {
 	if c == nil || c.probe == nil {
 		return crdCapabilityUnknown
 	}
 	c.mu.Lock()
-	fresh := c.verdict != crdCapabilityUnknown && time.Since(c.checkedAt) < capabilityCacheTTL
-	if fresh {
-		v := c.verdict
-		c.mu.Unlock()
-		return v
+	defer c.mu.Unlock()
+	ttl := capabilityCacheTTL
+	if c.verdict == crdCapabilityUnknown {
+		ttl = capabilityInconclusiveCacheTTL
 	}
-	c.mu.Unlock()
-
-	v := c.probe(ctx)
-
-	c.mu.Lock()
-	c.verdict = v
-	c.checkedAt = time.Now()
-	c.mu.Unlock()
-	return v
+	if c.checkedAt.IsZero() || time.Since(c.checkedAt) >= ttl {
+		v := c.probe(ctx)
+		c.verdict = v
+		c.checkedAt = time.Now()
+	}
+	return c.verdict
 }
 
 // invalidate drops the cached verdict — called on live skew evidence
 // (a bind that failed to persist) so the very next create re-probes
-// instead of trusting a stale "supported".
+// immediately instead of trusting a stale "supported" (checkedAt is
+// zeroed with it: an invalidated cache is stale regardless of which
+// window was running).
 func (c *capabilityCache) invalidate() {
 	if c == nil {
 		return
 	}
 	c.mu.Lock()
 	c.verdict = crdCapabilityUnknown
+	c.checkedAt = time.Time{}
 	c.mu.Unlock()
 }
 

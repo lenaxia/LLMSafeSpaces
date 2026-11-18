@@ -28,9 +28,13 @@
 #        kubectl apply -f helm/crds/workspace.yaml
 #      (rebinding before this step is harmless but cannot converge;
 #      the script's read-back verify will tell you).
-#   2. Run this script with --rebind. Each re-bind is one merge patch:
-#      spec.harness=<harness> + the marker annotation removed. The
-#      webhook admits ""→value on the marker (bind-once ruling 7a).
+#   2. Run this script with --rebind. Each re-bind is TWO patches in
+#      order (review r2, the marker-consumption finding): first
+#      spec.harness=<harness> ALONE — the marker stays (the webhook
+#      admits ""→value on it, bind-once ruling 7a) — then a read-back
+#      VERIFY, and only then the marker removal. A bind made against a
+#      still-stale CRD is pruned but leaves the workspace re-drivable
+#      (marker + empty harness), never the marker-less legacy-409 trap.
 #   3. The script VERIFIES every bind read back non-empty (the same
 #      discipline as the API's harness_bind_not_persisted check): a
 #      still-empty read-back means the CRD is still stale — exit 1 with
@@ -92,7 +96,18 @@ wedge_filter() {
 }
 
 echo "== wedged born-unbound workspaces (spec.harness empty + $MARKER_ANNOTATION marker) =="
-WEDGED="$("${KUBECTL[@]}" get workspaces.llmsafespaces.dev "${NAMESPACE_ARGS[@]}" -o json | wedge_filter || true)"
+# Enumeration failure is LOUD (review r2): the old `|| true` turned a
+# bad context / RBAC refusal / apiserver hiccup into "none" + exit 0 —
+# a false all-clear from the recovery runbook's own sweep. The kubectl
+# exit status is checked BEFORE the filter; either failure exits 1.
+RAW="$("${KUBECTL[@]}" get workspaces.llmsafespaces.dev "${NAMESPACE_ARGS[@]}" -o json)" || {
+  echo "ERROR: workspace enumeration failed (kubectl context / RBAC / apiserver?) — the wedged set is UNKNOWN, not empty; fix cluster access and re-run." >&2
+  exit 1
+}
+WEDGED="$(printf '%s' "$RAW" | wedge_filter)" || {
+  echo "ERROR: the wedge filter failed (jq missing or the script's jq program is broken) — inspect manually." >&2
+  exit 1
+}
 
 if [ -z "$WEDGED" ]; then
   echo "   none — no born-unbound workspaces are waiting on a bind."
@@ -124,10 +139,11 @@ while IFS=$'\t' read -r NS NAME _PHASE _REASON _MSG; do
   NS_ARGS=(-n "$NS")
   [ "$NS" = "-" ] && NS_ARGS=()
   echo "-- re-binding ${NS}/${NAME} → $HARNESS"
-  # One merge patch: the bind + the marker removal (the marker only ever
-  # marked the waiting state; the webhook admits ""→value on it).
+  # Patch 1 of 2 (review r2): the bind ALONE — the marker stays until
+  # the read-back verify proves the bind landed (a pruned bind must
+  # leave the workspace re-drivable, never marker-less-legacy).
   if ! "${KUBECTL[@]}" patch workspace "$NAME" "${NS_ARGS[@]}" --type=merge \
-      -p "{\"spec\":{\"harness\":\"$HARNESS\"},\"metadata\":{\"annotations\":{\"$MARKER_ANNOTATION\":null}}}" >/dev/null 2>&1; then
+      -p "{\"spec\":{\"harness\":\"$HARNESS\"}}" >/dev/null 2>&1; then
     echo "   ERROR: patch refused (webhook/RBAC?) — inspect manually:" >&2
     "${KUBECTL[@]}" patch workspace "$NAME" "${NS_ARGS[@]}" --type=merge \
       -p "{\"spec\":{\"harness\":\"$HARNESS\"}}" >/dev/null || true
@@ -136,13 +152,21 @@ while IFS=$'\t' read -r NS NAME _PHASE _REASON _MSG; do
   fi
   # VERIFY (the #2092 discipline): read the object back — a still-empty
   # spec.harness means the apiserver PRUNED the bind: the CRD is still
-  # stale. Never report success on a pruned write.
+  # stale. Never report success on a pruned write. The workspace still
+  # carries its marker here, so the re-drive stays possible.
   READBACK="$("${KUBECTL[@]}" get workspace "$NAME" "${NS_ARGS[@]}" -o jsonpath='{.spec.harness}' 2>/dev/null || true)"
   if [ -z "$READBACK" ]; then
     echo "   ERROR: bind did NOT persist (spec.harness reads back empty) — the cluster's Workspace CRD still predates 0.44.15." >&2
     echo "          Apply it first: kubectl apply -f helm/crds/workspace.yaml (or bump the Flux crds path), then re-run." >&2
     FAILED=$((FAILED+1))
     continue
+  fi
+  # Patch 2 of 2: the verified bind's cleanup — remove the waiting
+  # marker (inert on a bound workspace, but the discriminator must not
+  # outlive its purpose).
+  if ! "${KUBECTL[@]}" patch workspace "$NAME" "${NS_ARGS[@]}" --type=merge \
+      -p "{\"metadata\":{\"annotations\":{\"$MARKER_ANNOTATION\":null}}}" >/dev/null 2>&1; then
+    echo "   WARN: marker cleanup patch refused (non-fatal — the marker is inert on a bound workspace)" >&2
   fi
   echo "   bound (spec.harness=$READBACK); the controller builds the pod on the next reconcile."
   BOUND=$((BOUND+1))

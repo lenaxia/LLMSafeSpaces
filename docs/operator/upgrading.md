@@ -221,7 +221,10 @@ auto-resolve — the moment a write verifies after the CRD lands.
 
 **Recovery (user):** no operator needed if the CRD has landed — re-run
 the first-session picker or `PUT /workspaces/{id}/harness`; the bind
-persists and the workspace converges. While the CRD is still stale the
+persists and the workspace converges. A bind that failed against the
+stale CRD does NOT consume the choice: the workspace stays unbound (the
+failed attempt keeps the discriminator marker), so the same re-drive
+works. While the CRD is still stale the
 picker/sidebar shows the degraded hint ("blocked on cluster CRD —
 operator action required") instead of an unbounded Creating spinner.
 

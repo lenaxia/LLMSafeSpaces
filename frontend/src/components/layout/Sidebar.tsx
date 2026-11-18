@@ -522,7 +522,7 @@ function WorkspaceGroup({
                 // unbounded "Creating" that reads as progress.
                 <span
                   className="text-xs text-amber-600 dark:text-amber-400"
-                  title="blocked on cluster CRD — operator action required: harness bind attempts are failing to persist because the cluster's Workspace CRD predates the harness field (an operator must apply the chart CRD — helm upgrade never touches crds/); your harness choice is kept and will bind once it lands."
+                  title="blocked on cluster CRD — operator action required: harness bind attempts are failing to persist because the cluster's Workspace CRD predates the harness field (an operator must apply the chart CRD — helm upgrade never touches crds/); the bind did not land — the workspace remains unbound, so re-submit the harness choice after the CRD lands and it will bind."
                   data-testid="bind-blocked-hint"
                 >
                   blocked on cluster CRD — operator action required

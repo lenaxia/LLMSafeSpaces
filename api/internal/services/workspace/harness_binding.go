@@ -193,12 +193,22 @@ func (s *Service) BindWorkspaceHarness(ctx context.Context, userID, workspaceID,
 
 // bindUnboundWorkspace performs the one-time ""→value spec write on a
 // born-unbound workspace: fresh-read + conflict-retry (the
-// clearForceRecycleAnnotation shape), sets spec.harness, and REMOVES
-// the born-unbound marker (the marker only ever marks the waiting
-// state). A lost race (another writer bound first) re-reads as bound:
-// same value → clean return; different value → 409 harness_immutable
-// (the webhook denied the loser, which also surfaces here as a
-// conflict-shaped retry exit — both converge on the re-read verdict).
+// clearForceRecycleAnnotation shape), sets spec.harness, and VERIFIES
+// persistence (the read-back below). The born-unbound marker is
+// deliberately NOT touched by the bind write itself (review r2, the
+// pruned-bind marker-consumption finding): on a skewed cluster the
+// apiserver prunes the write's spec.harness while a marker deletion in
+// the SAME write would persist (annotations are schema-known) — the
+// workspace would then read as legacy-bound opencode
+// (effectiveBoundHarness's marker-less arm), un-re-drivable (PUT
+// harness_immutable, invisible to the recovery sweep's filter) while
+// the degraded hint promised the choice was kept. The marker is
+// removed only AFTER the verify confirms the bind landed
+// (clearUnboundMarkerAfterVerifiedBind). A lost race (another writer
+// bound first) re-reads as bound: same value → clean return; different
+// value → 409 harness_immutable (the webhook denied the loser, which
+// also surfaces here as a conflict-shaped retry exit — both converge
+// on the re-read verdict).
 func (s *Service) bindUnboundWorkspace(ctx context.Context, workspaceID, harness string) error {
 	return retry.RetryOnConflict(retry.DefaultBackoff, func() error {
 		fresh, err := func() (*v1.Workspace, error) {
@@ -226,10 +236,10 @@ func (s *Service) bindUnboundWorkspace(ctx context.Context, workspaceID, harness
 			}
 		}
 		fresh.Spec.Harness = v1.HarnessType(harness)
-		if fresh.Annotations == nil {
-			fresh.Annotations = map[string]string{}
-		}
-		delete(fresh.Annotations, v1.AnnotationHarnessUnbound)
+		// The marker STAYS on the bind write (review r2): it is the
+		// re-drive discriminator, and on a skewed cluster it is the only
+		// part of a pruned bind that must survive. Removal is deferred to
+		// clearUnboundMarkerAfterVerifiedBind below.
 		wsClient, err := s.workspaceCRDClient()
 		if err != nil {
 			return apierrors.NewInternalError("workspace_client_failed", err)
@@ -281,6 +291,10 @@ func (s *Service) bindUnboundWorkspace(ctx context.Context, workspaceID, harness
 				workspaceID,
 			))
 		}
+		// The bind LANDED: now, and only now, the waiting-state marker
+		// goes (still-unbound re-drives above never reach this line, so
+		// a skewed cluster can never consume the discriminator).
+		s.clearUnboundMarkerAfterVerifiedBind(ctx, workspaceID)
 		return nil
 	})
 }
@@ -319,6 +333,46 @@ func (s *Service) markBindNotPersisted(ctx context.Context, workspaceID string) 
 	}
 }
 
+// clearUnboundMarkerAfterVerifiedBind removes the born-unbound marker
+// from a workspace whose bind has VERIFIED landed (the deferred half of
+// the pruned-bind fix: the bind write itself never touches the marker,
+// so a pruned bind leaves the workspace re-drivable). Best-effort by
+// design: a leftover marker on a BOUND workspace is inert
+// (effectiveBoundHarness reads spec.harness first; the controller's
+// unbound gate, the legacy backfill, and the recovery sweep's filter
+// all key on spec.harness==""), so a conflict-exhausted cleanup logs
+// and never masks the bind result. Defensive guard: it never strips
+// the marker from an object that reads unbound — that state is always
+// re-read fresh here, and an unbound verdict aborts the cleanup.
+func (s *Service) clearUnboundMarkerAfterVerifiedBind(ctx context.Context, workspaceID string) {
+	wsClient, err := s.workspaceCRDClient()
+	if err != nil {
+		s.logger.Warn("born-unbound marker cleanup skipped: no workspace client", "workspaceID", workspaceID)
+		return
+	}
+	err = retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		current, err := wsClient.Get(ctx, workspaceID, metav1.GetOptions{})
+		if err != nil {
+			return err
+		}
+		if current.Annotations[v1.AnnotationHarnessUnbound] != "true" {
+			return nil // already clean
+		}
+		if current.Spec.Harness == "" {
+			// Unbound again (suspend/resume edge, or the bind was undone
+			// out-of-band): the marker is load-bearing — keep it.
+			return nil
+		}
+		delete(current.Annotations, v1.AnnotationHarnessUnbound)
+		_, err = wsClient.Update(ctx, current)
+		return err
+	})
+	if err != nil {
+		s.logger.Warn("born-unbound marker cleanup failed (non-fatal: the marker is inert on a bound workspace)",
+			"workspaceID", workspaceID, "error", err.Error())
+	}
+}
+
 // upsertBindNotPersistedCondition sets
 // HarnessBindingPending=True/WorkspaceReasonBindNotPersisted on the
 // in-memory object. Returns false when it is already standing (skip the
@@ -328,7 +382,7 @@ func upsertBindNotPersistedCondition(ws *v1.Workspace) bool {
 	// The message LEADS with the canonical hint phrase the sidebar
 	// renders (byte-consistent across both surfaces — the reviewer's
 	// wording-alignment finding), then the cause + remediation.
-	const degradedMessage = "blocked on cluster CRD — operator action required: harness bind attempts are failing to persist because the cluster's Workspace CRD predates the harness field (apply helm/crds/workspace.yaml or bump the Flux crds path); the harness choice is kept and will bind once the CRD lands"
+	const degradedMessage = "blocked on cluster CRD — operator action required: harness bind attempts are failing to persist because the cluster's Workspace CRD predates the harness field (apply helm/crds/workspace.yaml or bump the Flux crds path); the bind did not land — the workspace remains unbound, so re-submit the harness choice after the CRD lands and it will bind"
 	for i := range ws.Status.Conditions {
 		c := &ws.Status.Conditions[i]
 		if c.Type == v1.WorkspaceConditionHarnessBindingPending {

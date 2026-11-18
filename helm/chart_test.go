@@ -2704,6 +2704,12 @@ func TestMonitoring_PrometheusRule_CRDSkewAlerts(t *testing.T) {
 	require.NotNil(t, gaugeAlert, "LLMSafeSpacesCRDSkew must render")
 	require.Contains(t, gaugeAlert["expr"], "llmsafespaces_crd_skew",
 		"the skew alert must query the controller gauge")
+	// Review r2 (crd-skew-alert-labels-dropped): a bare max() drops ALL
+	// labels from the result series — the page would fire as
+	// "( lacks )" instead of naming the CRD and field. The grouping
+	// clause is load-bearing for the annotation templates.
+	require.Contains(t, gaugeAlert["expr"], "max by (crd, field)",
+		"the aggregation must KEEP the crd/field labels the summary/description render")
 	labels, _ := gaugeAlert["labels"].(map[string]any)
 	require.Equal(t, "critical", labels["severity"],
 		"a stale CRD wedges every new picker-path workspace — it pages")
