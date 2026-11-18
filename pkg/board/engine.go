@@ -229,6 +229,28 @@ func (s *Service) TaskStart(ctx context.Context, actor Actor, taskID, shortIDOrI
 
 	// The escalation check mirrors the claim (pre-increment attempts >= N).
 	if cur.Attempts >= s.cfg.AttemptsCap {
+		// Salvage-prefer terminal (§5.2): the manual dispatch's
+		// exhaustion arm rides the SAME shared policy as claimOnce —
+		// probe the seam under the row lock; differing salvage facts
+		// depose-with-salvage instead of failing. Inert source / no
+		// signals / identical facts ⇒ today's terminal below,
+		// byte-identical.
+		deposed, deposeEvt, deposedSession, err := s.salvageDeposeAtCap(ctx, tx, p.ID, cur, cur.Attempts)
+		if err != nil {
+			return nil, err
+		}
+		if deposed {
+			if err := s.commitPublishing(ctx, tx, deposeEvt); err != nil {
+				return nil, err
+			}
+			// The DEPOSED directive + drive poke: the claimOnce arm's
+			// post-commit posture, verbatim.
+			s.deliverDeposedDirective(ctx, p.ID, t.ID, t.ShortID, deposedSession)
+			s.pokeDrive(p.ID)
+			dt := s.mustTask(ctx, t.ID)
+			s.translateTaskReads(ctx, dt)
+			return &Claim{TaskID: t.ID, Escalated: true, Task: dt}, nil
+		}
 		// #1813 (r10): no overlay write here either — see claimOnce
 		// (the invariant is rc1's; exhaustion is its own signal).
 		// 000050: exhaustion lands FAILED (owner ruling: "exhausted
@@ -386,6 +408,34 @@ func (s *Service) claimOnce(ctx context.Context, workerID, workspaceID string) (
 	// lands pending_input/escalated instead (§4.4). No lease, no token,
 	// no spawn; attempts stay at N.
 	if attempts >= s.cfg.AttemptsCap {
+		// Salvage-prefer terminal (§5.2): before the failed terminal,
+		// consult the seam under the row lock — differing salvage facts
+		// depose-with-salvage (S5 pointer + rearm posture + backoff
+		// cooldown) instead of failing. Inert source / no signals /
+		// identical facts (the loop bound) ⇒ today's terminal below,
+		// byte-identical.
+		cur, err := s.store.taskForUpdate(ctx, tx, taskID)
+		if err != nil {
+			return nil, "", "", err
+		}
+		deposed, deposeEvt, deposedSession, err := s.salvageDeposeAtCap(ctx, tx, projectID, cur, attempts)
+		if err != nil {
+			return nil, "", "", err
+		}
+		if deposed {
+			if err := s.commitPublishing(ctx, tx, deposeEvt); err != nil {
+				return nil, "", "", err
+			}
+			// The DEPOSED directive rides the existing depose sender
+			// seam (best-effort, post-commit; the exhaustion row is
+			// typically identity-less — the reclaims cleared it — so
+			// this fires only when a last implementer survives).
+			s.deliverDeposedDirective(ctx, projectID, taskID, cur.ShortID, deposedSession)
+			// The re-pooled row is claimable behind its cooldown: feed
+			// the dispatch drive.
+			s.pokeDrive(projectID)
+			return &Claim{TaskID: taskID, Escalated: true, Task: s.mustTask(ctx, taskID)}, "escalated", projectID, nil
+		}
 		// #1813 (r10): the escalation writes NO overlay. The invariant
 		// last_attempt_failed == (failure_count > 0) is owned by rc1's
 		// reclaims and the reset sites alone — a marker SET here is
