@@ -24,12 +24,12 @@ package app
 
 import (
 	"context"
-	"os"
 	"sync"
 	"testing"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/lenaxia/llmsafespaces/api/internal/testharness"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -59,19 +59,11 @@ func (d *appRoleDirectory) AgentRolesForUser(context.Context, string) ([]board.A
 
 func phraseBouncePool(t *testing.T) *pgxpool.Pool {
 	t.Helper()
-	dsn := os.Getenv("TEST_DATABASE_URL")
-	if dsn == "" {
-		dsn = "postgres://postgres:testpass@localhost:5433/llmsafespaces_test?sslmode=disable"
-	}
-	pool, err := pgxpool.New(context.Background(), dsn)
-	if err != nil {
-		t.Skipf("Skipping PG integration test: %v", err)
-	}
-	if err := pool.Ping(context.Background()); err != nil {
-		t.Skipf("Skipping PG integration test: %v", err)
-	}
-	t.Cleanup(pool.Close)
-	return pool
+	// Through the testharness (the repo's integration-test contract):
+	// skips when Postgres is unreachable and migrates when the shared
+	// test DB's schema is not current (the livenessPool rationale).
+	h := testharness.New(t)
+	return h.Pool()
 }
 
 // recordingSpawner captures spawns (the fallback arm's observable).

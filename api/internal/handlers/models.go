@@ -27,6 +27,17 @@ type ModelSelectionRequest struct {
 
 // --- Model catalog cache ---
 
+// modelCacheTTL is the catalog cache's freshness window. The /models
+// endpoint proxies the workspace pod's opencode — ~840ms at the live
+// median — so the historical 5s TTL made nearly every picker open pay
+// the pod round trip. The invalidation seams cover every
+// catalog-mutation path: SetModel evicts, credential pushes evict
+// (agentpush.WithModelCache), and the #467 relay-transition guard
+// re-checks live relay state on every cache hit. What the TTL bounds
+// is the residual class — a pod restart mid-window — and that
+// self-heals within a minute.
+const modelCacheTTL = 60 * time.Second
+
 // ModelCache abstracts model catalog caching. Default: in-process map.
 type ModelCache interface {
 	Get(workspaceID string) []byte
@@ -71,7 +82,7 @@ func (c *inMemoryModelCache) Get(workspaceID string) []byte {
 func (c *inMemoryModelCache) Set(workspaceID string, data []byte) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.cache[workspaceID] = &modelCacheEntry{data: data, expiresAt: time.Now().Add(5 * time.Second)}
+	c.cache[workspaceID] = &modelCacheEntry{data: data, expiresAt: time.Now().Add(modelCacheTTL)}
 }
 
 func (c *inMemoryModelCache) Evict(workspaceID string) {

@@ -959,6 +959,14 @@ func (c *Client) BoardMoveStage(ctx context.Context, saToken, workspaceID string
 	return c.boardWorkerPost(ctx, saToken, workspaceID, "/internal/v1/automation/board/tasks/move-stage", body)
 }
 
+// BoardWait is board_wait (claim-wait lifecycle): the typed-wait entry
+// verb — waitOn 'user' (today's pending_input flag-op, plus dress) or
+// 'event' (the declarative park; grammar validated at the engine's verb
+// edge). Token-guarded on every arm; the platform arbitrates.
+func (c *Client) BoardWait(ctx context.Context, saToken, workspaceID string, body json.RawMessage) (*AutomationResponse, error) {
+	return c.boardWorkerPost(ctx, saToken, workspaceID, "/internal/v1/automation/board/tasks/wait", body)
+}
+
 // BoardRecordVerdict is board_record_verdict (#1947 — the verdict
 // channel): the spawned reviewer persona's ONE authorized write, keyed
 // to the in_review claim its charter carries. The platform arbitrates

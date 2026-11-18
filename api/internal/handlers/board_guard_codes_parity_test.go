@@ -51,6 +51,7 @@ var guardConstValues = map[string]string{
 	"GuardInput":            board.GuardInput,
 	"GuardClaimLive":        board.GuardClaimLive,    // S5: a live healthy claim refuses deposition
 	"GuardTextRejected":     board.GuardTextRejected, // #1837 P1b corruption class
+	"GuardWaitDeclared":     board.GuardWaitDeclared, // claim-wait lifecycle: ONE active event-wait per story
 }
 
 // codeExpr matches the Code field of a GuardError{...} or
