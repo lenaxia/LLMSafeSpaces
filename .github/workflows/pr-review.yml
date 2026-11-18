@@ -61,7 +61,14 @@ jobs:
       # Trusted app-bot authors (ai-workflows #51): app bots can never be
       # collaborators, so the CLI assert refuses their PRs pre-LLM without
       # this. Must match canonicalTrustedAppBots (gha_callers_test.go).
-      trusted_app_bots: '["agentic-actor-coder[bot]","ai-workflows-propagation[bot]"]'
+      # github-actions[bot] (added for PR #2083): opencode-version-bump.yml
+      # authors its bump PRs with GITHUB_TOKEN — without this entry every
+      # automated runtime-pin bump ships with the review gate skipped,
+      # and the pin change is exactly the high-blast-radius surface the
+      # fixture-gate runbook exists for (REFRESH.md, #942). In this repo
+      # that login authors only workflow-templated PRs (the bump bot);
+      # renovate/dependabot/release-please/mergify stay skipped.
+      trusted_app_bots: '["agentic-actor-coder[bot]","ai-workflows-propagation[bot]","github-actions[bot]"]'
 
   dispatch-recovery:
     # The #1844 outage lever (manual arm; the automated sweep lives in
