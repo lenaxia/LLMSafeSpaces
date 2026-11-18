@@ -172,12 +172,15 @@ board_file_params.go documents — a nested marker could never be platform-unlin
 proceed ONLY on transition into the satisfied state — mark-on-observation gives at-most-once
 fire per state change per declaration: a 2-min poll of a long-merged PR fires once, and a
 RE-DECLARED wait (new event id ⇒ new seed, fresh or updated trigger script) fires again even
-on an unchanged condition — never the fire-never stale-suppression shape. On proceed the
-script deletes its own marker (it runs in the workspace with fs access), so the happy path
-leaves nothing behind. Litter posture, stated honestly: the broker (API process) has no
-workspace filesystem access and CANNOT sweep markers; an orphaned marker (episode ended
-without a satisfying fire — wedge, claim-end, superseded declaration) is one ≤256 B flat
-file, bounded at one per episode, platform-unlinkable by name like every flat exchange file.
+on an unchanged condition — never the fire-never stale-suppression shape. The marker
+PERSISTS past proceed (canonical Pattern 3: write-on-observation, skip-on-match thereafter —
+deleting it would re-arm the transition predicate and fire every 2-min poll). Litter
+posture, stated honestly: the broker (API process) has no workspace filesystem access and
+CANNOT sweep markers; EVERY episode leaves exactly one flat ≤256 B marker file (satisfied
+path included — the marker is the dedupe state, so it outlives its fire), bounded at one
+per episode, platform-unlinkable by name like every flat exchange file. Pin:
+`TestGateTemplate_SatisfiedState_FiresOnce` — two polls, unchanged satisfied observation ⇒
+exactly one proceed (the wait_broker script pin suite).
 Belt: broker-side consume dedupe — `wait_resolved` is keyed on the fire id, so a re-delivered
 or repeated fire never re-sends the resume. Repo
 identity (`owner/repo`) resolves from the workspace's project facts at declaration time
