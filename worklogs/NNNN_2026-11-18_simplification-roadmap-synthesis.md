@@ -59,4 +59,6 @@ from their audit worktrees at the reviewed heads.
 
 ## Verification
 
-- Docs-only diff; `make fmt-check` green. No code changes.
+- Docs-only diff (exactly four files: the roadmap, this worklog, CHANGELOG.md, COORDINATE.md).
+- `make fmt-check` (the Makefile target: `gofmt -l .` over this repository's tree) **green at the reviewed head `a1279dea`** — exit 0, no files listed, go1.26.11; re-run after the round-1 remediation edits, still green.
+- Round-1 review context (recorded for reproducibility): the review lane's environment reported gofmt-red on two paths under `.ai-workflows/` — that directory does not exist in this PR's tree, its diff, or its merge-base `0aedbaf0a` (only root `ai-workflows.config.yml` exists here; the `.ai-workflows/` tree is the review lane's own composite checkout, introduced by the #2101 sync ride-along into that environment). The gate claim above is scoped to this repository's Makefile target and reproduces cleanly; the flagged files cannot originate in this docs-only diff.
