@@ -65,8 +65,11 @@ manager exits, escalation writes that set `pending_input=true`) stamp `wait_on='
 
 ### 2.3 Wire + surfaces
 
-- `GetTask` wire (reads.go + the REST/MCP adapters): `waitOn`, `waitReason` (camelCase,
-  the `pendingInput` precedent); `waitingOn` renders the composed prose for UIs
+- `GetTask` wire (reads.go + the REST/MCP adapters): `waitOn`, `waitReason` (camelCase for
+  NET-NEW wire fields — the `leaseExpiresAt`/`lastProgressAt` heartbeat-response and the
+  `assigneeQuietSeconds`/`assigneeBusySeconds` #2047 read-edge precedents; the legacy row
+  shape stays snake_case and `pendingInput` is NOT a precedent — no such field exists);
+  `waitingOn` renders the composed prose for UIs
   (`"PR 2083 merge"` / `"user: runtime bump scope"`).
 - `board_health` gains a `waiting` section: per-claimed-row `{short_id, wait_on,
   wait_reason, since}` — beside `active_leases`, the same projection pass (reads.go's
@@ -125,8 +128,9 @@ Run(ctx) — cadence 30s (SweepInterval); one pass:
   5. advance the watermark
 ```
 
-- **Trigger naming/ownership**: name `wait-broker/<short_id>/<claimTokenHash8>`, topics
-  `["board-wait"]`, cron `*/2 * * * *` (poll cadence ≥ 2 min, the storm guard).
+- **Trigger naming/ownership**: name `wait-broker/<short_id>/<claimTokenHash8>` (the name
+  IS the ownership label — the trigger row carries name/source/prompt/script/cron only; no
+  topics attribute exists), cron `*/2 * * * *` (poll cadence ≥ 2 min, the storm guard).
 - **No prompt leg**: `script` only — a script trigger with no prompt never calls the LLM;
   the trigger is a pure condition sensor and the broker is the only consumer of its fires.
 - **Failure posture**: a disabled (`autoDisableAfter`) or repeatedly-failing trigger is
@@ -145,15 +149,21 @@ unit-pinned byte shapes):
 
 - `pr_merged(N)`: GET `https://api.github.com/repos/<owner>/<repo>/pulls/N` — proceed iff
   `"merged": true` and `"merge_commit_sha"` non-null; vars carry the merge SHA.
-- `ci_green(pr:N)`: GET the PR (head SHA), then
+- `ci_green(<pr number>)`: GET the PR (head SHA), then
   `GET /repos/<owner>/<repo>/commits/<sha>/check-runs` — proceed iff total>0 and every
   check's conclusion is `success|skipped|neutral`; vars carry the SHA + counts.
 - `story_done(<short_id>)`: the platform's own board read (in-cluster service URL, the
   broker's env) — proceed iff the story's stage is `done`.
 
-State dedupe (each template): a fingerprint var (merge SHA / check-run total+sha / stage+updated_at)
-compared against the trigger's stored last-seen var — proceed only on CHANGE to the
-satisfied state, so a 2-min poll of a long-merged PR fires once, not every sweep. Repo
+State dedupe (each template): the #1812 **marker-file signature** pattern (gate-script-patterns.md
+Pattern 3 — the gate input envelope carries only `{source, received_at}` and trigger vars are
+NOT readable by the script, so the script's own marker file is the sanctioned state channel):
+build a signature of the observed state (merge SHA / head-SHA + conclusions digest /
+stage+updated_at), compare against the marker under a broker-owned exchange-dir path
+(`/exchange/wait-broker/<short_id>.marker`), and proceed ONLY on transition into the satisfied
+state — mark-on-observation gives at-most-once fire per state change, so a 2-min poll of a
+long-merged PR fires once. Belt: broker-side consume dedupe — `wait_resolved` is keyed on the
+fire id, so a re-delivered or repeated fire never re-sends the resume. Repo
 identity (`owner/repo`) resolves from the workspace's project facts at declaration time
 (rides the `wait_declared` payload); the broker never guesses.
 
@@ -189,10 +199,15 @@ workspace repo + the branch recorded in the row's existing pointer when present,
 charter's lane convention) and asks git/GitHub the three questions. **pkg/board imports
 nothing new** — the poverty line holds.
 
-### 5.2 The policy diff (BOTH exhaustion sites)
+### 5.2 The policy diff (the two WORKER-CLAIM exhaustion sites)
 
 `claimOnce` (engine.go:388) and `TaskStart` (engine.go:231) — the escalate arms
-(`attempts >= s.cfg.AttemptsCap`):
+(`attempts >= s.cfg.AttemptsCap`). A third exhaustion terminal exists — the persona
+claim-time escalation in the reconciler's persona re-claim pass (failures ≥ cap on an
+in_review/wrap-up reviewer row → `stage='failed', pending_origin='escalated'`,
+reconciler.go rc1PersonaClaims) — and is deliberately OUT OF SCOPE, like the wedge:
+reviewer rows carry no lane worktree, and their terminal stays byte-identical (pinned
+in §5.3):
 
 ```
 signals := s.salvage.SalvageFor(ctx, task)
@@ -223,7 +238,10 @@ if signals != nil && signals.DifferFrom(task.Salvage) {
 backlog + pointer + attempts 0, never `stage='failed'`);
 `TestPin_ExhaustionWithNothing_StaysFailed` (byte-identical today);
 `TestPin_SalvageSamePointer_Terminal` (the loop bound);
-`TestPin_NilSalvageSource_ByteIdentical` (inert contract).
+`TestPin_NilSalvageSource_ByteIdentical` (inert contract);
+`TestPin_PersonaEscalation_Unchanged` (the scoped-out third site: a persona claim-time
+escalation at the failures cap still lands the ordinary failed terminal byte-identical,
+no salvage probe consulted).
 
 ## 6. Test map (red-first, per story)
 

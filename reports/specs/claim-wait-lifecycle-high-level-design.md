@@ -111,7 +111,7 @@ primitive := "pr_merged" | "ci_green" | "story_done"
 arg       := <pr number> | <story short_id>
 ```
 
-`pr_merged(number)` — GitHub PR `number` is merged. `ci_green(pr:<number>)` — that PR's head
+`pr_merged(number)` — GitHub PR `number` is merged. `ci_green(<pr number>)` — that PR's head
 SHA has a completed, non-failing check run. `story_done(<short_id>)` — the referenced board
 story's stage is `done`. The grammar is closed at the verb edge (strict validation, refused
 loudly with the accepted vocabulary — the textguard discipline); **no worker-authored gate
@@ -155,9 +155,12 @@ orders converge; neither strand state.
 
 ## 4. Salvage-prefer terminal
 
-At BOTH attempts-exhaustion sites (the dispatch claim's escalate arm and the manual
-`task_start` escalate arm — the two places that write `stage='failed',
-pending_origin='escalated'` today), the policy changes from "always fail" to **"depose when
+At the two WORKER-CLAIM attempts-exhaustion sites (the dispatch claim's escalate arm and the manual
+`task_start` escalate arm — the two worker-claim places that write `stage='failed',
+pending_origin='escalated'` today; a THIRD exhaustion terminal exists, the persona claim-time
+escalation for in_review/wrap-up reviewer rows in the reconciler's persona re-claim pass, and is
+deliberately OUT OF SCOPE: reviewer rows carry no lane worktree and their terminal stays
+byte-identical, pinned), the policy changes from "always fail" to **"depose when
 there is something to deposit"**:
 
 - **Salvage signals** (any present ⇒ salvage path): unpushed commits on the lane's worktree
