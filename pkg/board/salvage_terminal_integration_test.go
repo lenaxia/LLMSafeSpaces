@@ -198,9 +198,13 @@ func (s *BoardSuite) TestPin_ExhaustionWithOpenPR_SalvageDeposes() {
 	// A SURVIVING implementer identity gets the directive: a later
 	// exhaustion (new cap reached) with a NEW head deposes again — one
 	// round per real change — and this time a stale implementer is on
-	// the row to notify.
+	// the row to notify. The forced re-pool mirrors the REAL exhausted
+	// shape: the reclaims cleared the assignee/claim, and only the
+	// forward exit's captured implementer identity survives.
 	s.clearTaskBackoff(t1.ID)
-	_, err = s.pool.Exec(ctx, `UPDATE tasks SET stage='backlog', attempts=$2, implementer_session='imp-stale-2064' WHERE id=$1`,
+	_, err = s.pool.Exec(ctx, `UPDATE tasks SET stage='backlog', attempts=$2,
+		assignee_session=NULL, claim_token=NULL, lease_expires_at=NULL,
+		implementer_session='imp-stale-2064' WHERE id=$1`,
 		t1.ID, s.cfg.AttemptsCap)
 	s.Require().NoError(err)
 	src.set(&board.SalvageSignals{Branch: "board/wait-salvage", Head: "cafebabe2100", OpenPR: "2064"})
