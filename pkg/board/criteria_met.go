@@ -98,8 +98,10 @@ func (s *Service) SetCriteriaMet(ctx context.Context, actor Actor, taskID, short
 			return nil, err
 		}
 		cur.AcceptanceCriteria[check.Index].Met = check.Met
+		// Typed wait: a token-bearing criteria write is a worker-anchored
+		// advance — the wait clears with it (migration 000060).
 		tag, err := tx.Exec(ctx, `
-			UPDATE tasks SET acceptance_criteria=$2
+			UPDATE tasks SET acceptance_criteria=$2, wait_on=NULL, wait_reason=NULL
 			WHERE id=$1 AND stage='in_review' AND claim_token=$3 AND claim_persona IS NOT NULL`,
 			t.ID, criteriaJSON(cur.AcceptanceCriteria), actor.ClaimToken)
 		if err != nil {

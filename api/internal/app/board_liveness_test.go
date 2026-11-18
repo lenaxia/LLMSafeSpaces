@@ -23,7 +23,6 @@ package app
 import (
 	"context"
 	"encoding/json"
-	"os"
 	"strings"
 	"sync"
 	"testing"
@@ -31,6 +30,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/lenaxia/llmsafespaces/api/internal/testharness"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -173,19 +173,15 @@ func TestLeaseNudger_ScopeErrorIsTheSeamError(t *testing.T) {
 
 func livenessPool(t *testing.T) *pgxpool.Pool {
 	t.Helper()
-	dsn := os.Getenv("TEST_DATABASE_URL")
-	if dsn == "" {
-		dsn = "postgres://postgres:testpass@localhost:5433/llmsafespaces_test?sslmode=disable"
-	}
-	pool, err := pgxpool.New(context.Background(), dsn)
-	if err != nil {
-		t.Skipf("Skipping PG integration test: %v", err)
-	}
-	if err := pool.Ping(context.Background()); err != nil {
-		t.Skipf("Skipping PG integration test: %v", err)
-	}
-	t.Cleanup(pool.Close)
-	return pool
+	// Through the testharness (the repo's integration-test contract):
+	// skips when Postgres is unreachable, and — the reason this helper
+	// no longer constructs its own pool — applies migrations when the
+	// shared test DB's schema is not current. A bare pgxpool.New left
+	// these tests reading whatever schema happened to be on the DB; a
+	// stale DB (e.g. pre-000059) failed every epics write with
+	// SQLSTATE 42703 instead of skipping or self-healing.
+	h := testharness.New(t)
+	return h.Pool()
 }
 
 func seedLivenessSession(t *testing.T, pool *pgxpool.Pool, workspace, raw, phrase string, count int, deleted bool) {

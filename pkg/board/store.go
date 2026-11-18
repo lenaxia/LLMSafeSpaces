@@ -69,6 +69,7 @@ func (q txQ) QueryRow(ctx context.Context, sql string, args ...any) pgx.Row {
 
 const taskColumns = `t.id, t.project_id, t.epic_id, t.short_id, t.title, t.description,
 	t.stage, t.kind, t.pending_origin, t.pending_input, t.nudge_id, t.nudged_at, t.salvage,
+	t.wait_on, t.wait_reason,
 	t.project_name, t.epic_name, t.tags,
 	t.acceptance_criteria, t.is_blocked, t.paused, t.assignee_session, t.implementer_session, t.claim_token::text,
 	t.claim_persona,
@@ -80,9 +81,10 @@ func scanTask(row pgx.Row) (*Task, error) {
 	var t Task
 	var criteria []byte
 	var salvage []byte
-	var token, assignee, implementer, persona, nudgeID, kind *string
+	var token, assignee, implementer, persona, nudgeID, kind, waitOn, waitReason *string
 	err := row.Scan(&t.ID, &t.ProjectID, &t.EpicID, &t.ShortID, &t.Title, &t.Description,
 		&t.Stage, &kind, &t.PendingOrigin, &t.PendingInput, &nudgeID, &t.NudgedAt, &salvage,
+		&waitOn, &waitReason,
 		&t.ProjectName, &t.EpicName, &t.Tags,
 		&criteria, &t.IsBlocked, &t.Paused, &assignee, &implementer, &token,
 		&persona,
@@ -119,6 +121,21 @@ func scanTask(row pgx.Row) (*Task, error) {
 	if persona != nil {
 		t.ClaimPersona = *persona
 	}
+	// Typed wait read rule (claim-wait lifecycle §1, NO backfill): the
+	// stored wait_on is authoritative; a NULL wait_on on a FLAGGED row
+	// renders 'user' by COALESCE (pre-000060 rows and alias entries the
+	// flag-op stamped before the verb existed). The composed prose rides
+	// the same edge so every read — engine guards, wire, health — sees
+	// one truth.
+	if waitOn != nil {
+		t.WaitOn = *waitOn
+	} else if t.PendingInput {
+		t.WaitOn = "user"
+	}
+	if waitReason != nil {
+		t.WaitReason = *waitReason
+	}
+	t.WaitingOnTyped = composeWaitingOn(t.WaitOn, t.WaitReason)
 	t.ShortIDDeprecated = IsDeprecatedBoardID(t.ShortID)
 	if len(criteria) > 0 {
 		if err := json.Unmarshal(criteria, &t.AcceptanceCriteria); err != nil {

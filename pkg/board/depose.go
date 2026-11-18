@@ -165,6 +165,7 @@ func (s *Service) DeposeTask(ctx context.Context, actor Actor, taskID, shortIDOr
 					claim_token=NULL, lease_expires_at=NULL, assignee_session=NULL, implementer_session=NULL,
 					claim_incremented_attempts=false, claim_persona=NULL,
 					nudge_id=NULL, nudged_at=NULL, last_heartbeat_at=NULL,
+					wait_on=NULL, wait_reason=NULL,
 					last_attempt_failed=true, failure_count=failure_count+1, last_failure_at=now(),
 					cooldown_until=now()+make_interval(secs=>$2::float8),
 					salvage=$3
