@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — docs: cross-surface simplification roadmap — the six complexity audits synthesized into 15 ranked, sequenced initiatives + the do-NOT-touch armor list (tsk-chilled-hawthorn-notices, read-only)
+
+- **Deliverable:** `reports/audits/simplification-roadmap.md` — the synthesis of all six surface audits (board-engine #2098, api-app #2096, agentd #2097, emission-defenses #2095, frontend #2099, ci-release #2094): an 8-theme cross-surface dedupe map, 9 evidence-cited conflict adjudications, 15 ranked initiatives each with value/risk/sequencing and a functional-equivalence anchor, the sequencing DAG, a 16-entry do-NOT-touch armor list (each with live incident provenance and the no-equivalent-simplification argument), and 8 functionality/verification-reducing findings flagged OUT of scope by charter.
+- **Headline sequencing calls:** the episode-reset fragment and the strict-args lockstep retirement land BEFORE the wait-lifecycle implementation (its columns join the fragment; its tools skip the stamp-mirror tax); the `last_attempt_failed` derivation folds into the wait-lifecycle migration window; the ladder extraction lands AFTER; the 22→8 collapse stays NO-GO (owner-gated phase-4 fence affirmed). Release-train automation is HARD-gated on #2092's CRD guard set (PR #2093 open at this head). ~95+ runner-min/PR recoverable across the two CI initiatives; 4 shipped user-facing divergences closed by the credential-trio unification; 3 recurring bug classes made structurally unwritable; the unwired ledger compaction closed as a live unbounded-growth liability.
+- No code changes — the roadmap document, a worklog, and this entry are the only artifacts.
+
 ## [0.44.17] - 2026-11-18
 
 ### Fixed — board: the portrait rail layout re-applies STRUCTURALLY on rotation — CSS md-authority over focus widths, rotation clocks, snap-position ownership (owner report #3, 2026-11-17 second occurrence: the symptom survived the .16 event-delivered guard)
