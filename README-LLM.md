@@ -655,7 +655,7 @@ relay injection that has just completed:
 This is acceptable: the Phase 1 window is ~7s, and users are unlikely to interact with the
 workspace within the first 76s of pod boot. The stale window is purely cosmetic
 (models show `providerID="opencode"` instead of `"opencode-relay"`) and self-corrects.
-Since #910 the same 20s window can also open mid-pod-life: a re-arm cycle that applies
+Since #910 the same 75s window can also open mid-pod-life: a re-arm cycle that applies
 after a boot-window failure flips `HasRelay()` (and thus `RelayInjected`) at its apply
 moment, minutes after boot. Same mechanism, same cosmetic effect — and the re-arm's
 opencode restart is session-aware (deferred until idle), so no in-flight request
