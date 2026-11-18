@@ -270,34 +270,50 @@ func (s *Service) taskEventsTombstone(ctx context.Context, idOrShort string, lim
 	if limit > TaskEventsMaxLimit {
 		limit = TaskEventsMaxLimit
 	}
-	// The anchor: UUID input matches item_id directly; otherwise any
-	// task-scoped event payload carrying the short id (create_task,
+	// The anchor, split per arm so each stays sargable on its partial
+	// index (migration 000060 — an OR of the two would sequential-scan
+	// the append-only audit table on every probe, the r1 review's
+	// blocking finding): UUID input matches item_id directly; otherwise
+	// any task-scoped event payload carrying the short id (create_task,
 	// delete_task, dependency events — a row that ever existed has at
 	// least its create event). Case-insensitive on the phrase form,
 	// matching the row-resolution contract.
-	rows, err := s.q().Query(ctx, `
-		SELECT DISTINCT e.project_id::text, e.item_id::text
-		FROM board_events e
-		WHERE e.item_kind='task' AND e.item_id IS NOT NULL
-		  AND (e.item_id::text = lower($1)
-		       OR lower(e.payload->>'short_id') = lower($1))`, idOrShort)
+	type anchor struct{ project, item string }
+	var anchors []anchor
+	var rows pgx.Rows
+	var err error
+	if isUUID(idOrShort) {
+		rows, err = s.q().Query(ctx, `
+			SELECT DISTINCT e.project_id::text, e.item_id::text
+			FROM board_events e
+			WHERE e.item_kind='task' AND e.item_id IS NOT NULL
+			  AND e.item_id=$1::uuid`, idOrShort)
+	} else {
+		rows, err = s.q().Query(ctx, `
+			SELECT DISTINCT e.project_id::text, e.item_id::text
+			FROM board_events e
+			WHERE e.item_kind='task' AND e.item_id IS NOT NULL
+			  AND e.payload->'short_id' IS NOT NULL
+			  AND lower(e.payload->>'short_id')=lower($1)`, idOrShort)
+	}
 	if err != nil {
 		return nil, nil, false, err
 	}
-	type anchor struct{ project, item string }
-	var anchors []anchor
+	var scanned []anchor
 	for rows.Next() {
 		var a anchor
 		if err := rows.Scan(&a.project, &a.item); err != nil {
 			rows.Close()
 			return nil, nil, false, err
 		}
-		anchors = append(anchors, a)
+		scanned = append(scanned, a)
 	}
 	if err := rows.Err(); err != nil {
+		rows.Close()
 		return nil, nil, false, err
 	}
 	rows.Close()
+	anchors = scanned
 	if len(anchors) != 1 {
 		if len(anchors) > 1 {
 			// Short ids are minted user-scoped-unique; multiple anchors
