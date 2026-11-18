@@ -1,4 +1,4 @@
--- 000060_board_events_tombstone_indexes — the #2107 gone-row audit
+-- 000061_board_events_tombstone_indexes — the #2107 gone-row audit
 -- trail's index floor. The tombstone read anchors a deleted task's
 -- timeline through board_events; without these, every anchor probe
 -- (including the honest-404 fork — each typo on the events route)

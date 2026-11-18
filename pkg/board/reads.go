@@ -271,7 +271,7 @@ func (s *Service) taskEventsTombstone(ctx context.Context, idOrShort string, lim
 		limit = TaskEventsMaxLimit
 	}
 	// The anchor, split per arm so each stays sargable on its partial
-	// index (migration 000060 — an OR of the two would sequential-scan
+	// index (migration 000061 — an OR of the two would sequential-scan
 	// the append-only audit table on every probe, the r1 review's
 	// blocking finding): UUID input matches item_id directly; otherwise
 	// any task-scoped event payload carrying the short id (create_task,

@@ -1,4 +1,4 @@
--- 000060_board_events_tombstone_indexes — down: drop the #2107
+-- 000061_board_events_tombstone_indexes — down: drop the #2107
 -- tombstone anchor's partial indexes (the gone-row read degrades to
 -- the honest 404 without them; no data shape changes either way).
 

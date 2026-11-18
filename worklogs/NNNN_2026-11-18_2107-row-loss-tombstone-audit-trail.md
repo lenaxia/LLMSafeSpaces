@@ -26,7 +26,7 @@ Issue #2107 filed with the full evidence table. The true actor is platform-side 
 
 - `pkg/board/reads.go` — `TaskEvents` gone-row fallback + `TaskEventsTombstone` adapter arm (trail + the project it names = the ownership perimeter's anchor when there is no row). No anchor ⇒ the honest 404 (never-existed vs below-store stays distinguishable).
 - `api/internal/handlers/board.go` — the REST route derives its perimeter from the trail's project on the gone-row arm; foreign trails are plain 404s.
-- `api/migrations/000060_board_events_tombstone_indexes` — r1 review's blocking finding: the anchor was a guaranteed seq-scan of the append-only audit table firing on every 404-class probe. Two partial indexes (item_id; `lower(payload->>'short_id')`) + the anchor split per arm (UUID vs phrase) so each stays sargable.
+- `api/migrations/000061_board_events_tombstone_indexes` — r1 review's blocking finding: the anchor was a guaranteed seq-scan of the append-only audit table firing on every 404-class probe. Two partial indexes (item_id; `lower(payload->>'short_id')`) + the anchor split per arm (UUID vs phrase) so each stays sargable.
 - Handler pins (board_events_rest_test.go): tombstone-owner 200 (live seam never fires), foreign-trail 404 (nothing disclosed), no-trail honest 404.
 - Integration pins (pkg/board/row_loss_2107_integration_test.go): the charter's repro held open — two →done transitions + the RC4 sweep over an epic holding open siblings; the epic refuses to complete, rows survive verbatim, zero delete events; all-done completion keeps every row. Plus the tombstone read (create+delete events, embedded snapshot, both address forms) and the honest-404 fork.
 
