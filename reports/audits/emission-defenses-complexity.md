@@ -99,10 +99,12 @@ Standing seams that are *not* emission defenses but close gaps the above would o
 | Class (corrected) | All-time pre-boundary | **Post-boundary (5.3 h, 1,449 tool parts)** |
 |-------|---------------------------|-----------------------------|
 | Key-form on **non-member** surfaces (the only direct emission bound) | **0 — every era, including pre-hygiene** | **0** |
-| Key-form on legacy `*_task` names (= pre-rename plugin stamps; members then) | 272 on the four names the round-3 review enumerated (`board_update_task` 215, `board_create_task` 46, `board_resume_task` 6, `board_pause_task` 5; 274 across all seven pre-rename task-named members), 100% carriage, **time-boxed 2026-10-26 → 10-30, ending at the #2005 rename** | n/a — names retired with the alias window |
-| Key-form on current members (= the plugin's own stamps; the unattributable zone) | 587 | 68 — **the injection is alive, as designed** |
+| Key-form on legacy `*_task` names (= pre-rename plugin stamps; members then) | **272 keyed — and that is also the total across ALL seven pre-rename task-named members** (`board_update_task` 215, `board_create_task` 46, `board_resume_task` 6, `board_pause_task` 5; the other three names carried 0 keyed between them), 100% carriage, **time-boxed 2026-10-26 → 10-30, ending at the #2005 rename** | n/a — names retired with the alias window |
+| Key-form on current members (= the plugin's own stamps; the unattributable zone) | **502 keyed** (read 01:20:06Z) | 68 — **the injection is alive, as designed** |
 | Strict semantic bleed (value = bare session id in a semantic param) | **1** (2026-10-31, `send_message` `message`) | **0** |
-| Legacy `sessionId`/`session_id` extras on non-declaring tools | 19 (corrected extractor; r1's "83" was the prefix-bug artifact) | **0** |
+| Legacy `sessionId`/`session_id` extras on non-declaring tools | **19 under the stated declared-identity set** — compact 12, abort_session 6, rename_session 1 (excluded as declarers: `board_heartbeat`, `board_move_stage`, `board_record_verdict`, `board_read`, `board_depose_story`, `board_update_story`, `board_move_stage_bulk`, `board_record_progress`, `send_message`, `create_session`, `delete_session`, `session_*`); **27 if the optional-sessionId declarers are counted** (`board_move_stage` ×3, `board_record_verdict` ×5) — the count is extractor-set-dependent by construction | **0** (any set) |
+
+*Drift note:* the post-boundary member-stamp and part-total cells grow monotonically with the window — 68 stamps / 1,449 parts at the 01:20:06Z read; 76 / 1,560 by the round-4 review's ~02:55Z re-derivation; 77 keyed at a 02:5xZ local re-read (drift-consistent). Only the **zero** cells are load-bearing (non-member key-form, strict bleed, extras) and they are 0 in every re-read.
 
 **r1/r2 numbers retracted:** "272 true emissions → 0" (rename artifact), "120 emissions after v3 live" (prefix-bug day-buckets that matched *all* key-form parts, i.e. plugin stamps), "23 bleed" / "13 baseline bleed" (substring detectors), "83 legacy extras" (broken extractor). The #2030c baseline (worklog 1278 A2's "272 model emissions on the legacy alias names, which the plugin does not stamp") shares the rename artifact — the plugin *did* stamp those names at record time.
 
@@ -119,7 +121,7 @@ Corrected count: 19 pre-boundary extras, **0 post-boundary** — and the pre-bou
 The corruption shape it recovers (`TARGET","message":"…"}` splice) is emitted *while writing a long inline body* — exactly the fragility `messageFile` removes at source for compliant sends. Residual inline surface (short `message` bodies, other long-string params elsewhere) keeps the recovery **non-fully-redundant**: keep it, but its expected fire rate drops toward zero as `messageFile` adoption completes — it is the stack's only *recovery* layer and costs ~nothing.
 
 ### 7.5 The "enable strict on gauntlet-class pods" recommendation — moot
-The interim recommendation predates the corrected bound. The post-boundary window includes board-worker traffic (68 member stamps — the population whose calls the gate would screen); zero non-member or bleed events fired.
+The interim recommendation predates the corrected bound. The post-boundary window includes board-worker traffic (68 member stamps at the 01:20:06Z read — the population whose calls the gate would screen; §7 drift note); zero non-member or bleed events fired.
 
 **Explicitly NOT redundant (re-checked):** L2 aged-arg v3 (different class; mechanism argument §3 — and the megastorm evidence stream is independent of the DB classification question); the `boardWireBody` wire strip (the plugin still stamps — 68 post-boundary stamps — and the wire must stay clean regardless of model behavior); L3 renewal caps (different threat axis); L1849/file-crud discipline (shape prevention, still the outermost layer); placeholder guards (different corruption mode: mid-write substitution, not continuation).
 
