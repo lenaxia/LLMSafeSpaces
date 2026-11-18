@@ -365,6 +365,12 @@ type HealthWait struct {
 	WaitOn     string    `json:"wait_on"`
 	WaitReason string    `json:"wait_reason,omitempty"`
 	Since      time.Time `json:"since,omitempty"`
+	// BrokerDegraded: an event-wait whose platform sensor failed past
+	// the wait-broker's re-materialize round (wait_broker_degraded,
+	// newer than the declaration) — the wait stays honest on the row
+	// and the LADDER governs it; never a stuck green badge (the
+	// claim-wait lifecycle §4.2 failure posture's health line).
+	BrokerDegraded bool `json:"broker_degraded,omitempty"`
 }
 
 // Health is the board health snapshot (design §4.2 board_read(health) /

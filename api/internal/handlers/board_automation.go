@@ -38,7 +38,9 @@ type boardService interface {
 	MoveStage(ctx context.Context, actor board.Actor, taskID, shortIDOrID, toStage, evidenceURL, requestID string) (*board.Task, error)
 	// DeclareWait is board_wait (claim-wait lifecycle): the typed-wait
 	// entry verb — worker surface, claim token required on every arm.
-	DeclareWait(ctx context.Context, actor board.Actor, taskID, shortIDOrID, waitOn, waitReason, condition, requestID string) (*board.Task, error)
+	// repo is the declaration-time repo identity (required for
+	// pr-anchored conditions; the broker compiles the sensor from it).
+	DeclareWait(ctx context.Context, actor board.Actor, taskID, shortIDOrID, waitOn, waitReason, condition, repo, requestID string) (*board.Task, error)
 	RecordVerdict(ctx context.Context, actor board.Actor, taskID, shortIDOrID string, in board.VerdictInput, requestID string) (*board.Task, *board.Verdict, error)
 	// RecordWrapUpVerdict is the wrap-up reviewer persona's close (the
 	// epic wrap-up review's engine-owned verb — token-guarded on every
@@ -186,6 +188,7 @@ func (h *PodAutomationHandler) BoardWait(c *gin.Context) {
 		WaitOn     string `json:"waitOn"`
 		WaitReason string `json:"waitReason"`
 		Condition  string `json:"condition"`
+		Repo       string `json:"repo"`
 		RequestID  string `json:"requestId"`
 	}
 	if !bindBoardBody(c, raw, &req) {
@@ -193,7 +196,7 @@ func (h *PodAutomationHandler) BoardWait(c *gin.Context) {
 	}
 	task, err := h.board.DeclareWait(c.Request.Context(),
 		h.boardActor(ownerID, workspaceID, req.ClaimToken, boardSessionID(c, raw)),
-		req.TaskID, req.ShortID, req.WaitOn, req.WaitReason, req.Condition, req.RequestID)
+		req.TaskID, req.ShortID, req.WaitOn, req.WaitReason, req.Condition, req.Repo, req.RequestID)
 	if err != nil {
 		renderBoardError(c, err)
 		return

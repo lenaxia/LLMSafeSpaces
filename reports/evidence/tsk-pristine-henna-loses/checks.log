@@ -1,0 +1,15 @@
+=== go build ./... ===
+build exit: 1
+=== fmt-check ===
+=== goimports (writable GOBIN) ===
+imports clean: 0
+=== go vet (touched pkgs incl test compile) ===
+vet exit: 0
+=== unit: app (full) ===
+ok  	github.com/lenaxia/llmsafespaces/api/internal/app	51.178s
+=== unit: board/workflows/agent-opencode ===
+ok  	github.com/lenaxia/llmsafespaces/pkg/board	0.115s
+ok  	github.com/lenaxia/llmsafespaces/pkg/workflows	0.026s
+ok  	github.com/lenaxia/llmsafespaces/pkg/agent/opencode	12.578s
+=== unit: handlers ===
+ok  	github.com/lenaxia/llmsafespaces/api/internal/handlers	91.472s

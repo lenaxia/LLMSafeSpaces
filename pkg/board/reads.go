@@ -517,7 +517,14 @@ func (s *Service) healthWaiting(ctx context.Context, userID, workspaceID *string
 		           AND be.item_id = t.id
 		           AND (be.action = 'wait_declared'
 		                OR (be.action = 'pending_input_flag' AND (be.payload->>'flag')::boolean))
-		         ORDER BY be.created_at DESC LIMIT 1)
+		         ORDER BY be.created_at DESC LIMIT 1),
+		       EXISTS (SELECT 1 FROM board_events be2
+		         WHERE be2.project_id = t.project_id AND be2.item_kind = 'task'
+		           AND be2.item_id = t.id AND be2.action = 'wait_broker_degraded'
+		           AND be2.created_at > COALESCE((SELECT be3.created_at FROM board_events be3
+		                  WHERE be3.project_id = t.project_id AND be3.item_kind = 'task'
+		                    AND be3.item_id = t.id AND be3.action = 'wait_declared'
+		                  ORDER BY be3.created_at DESC LIMIT 1), to_timestamp(0)))
 		FROM tasks t JOIN projects p ON p.id = t.project_id
 		WHERE ($1::text IS NULL OR p.user_id = $1)
 		  AND ($2::uuid IS NULL OR p.target_workspace_id = $2)
@@ -530,7 +537,7 @@ func (s *Service) healthWaiting(ctx context.Context, userID, workspaceID *string
 	for rows.Next() {
 		var w HealthWait
 		var since *time.Time
-		if err := rows.Scan(&w.TaskID, &w.ShortID, &w.Title, &w.ProjectID, &w.WaitOn, &w.WaitReason, &since); err != nil {
+		if err := rows.Scan(&w.TaskID, &w.ShortID, &w.Title, &w.ProjectID, &w.WaitOn, &w.WaitReason, &since, &w.BrokerDegraded); err != nil {
 			return err
 		}
 		if since != nil {
