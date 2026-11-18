@@ -47,20 +47,39 @@ Phase 2 deletes this machinery; it exists so prod is honest for the releases bet
   `boardAdvancesDefaultPath` → `/exchange/.opencode-board-advances` (the dual-RW subtree,
   `pod_builder.go:231-241`; FLAT names — the 0070 no-nested-exchange-paths rule; both files
   are JSONL tails ≤ their compaction bounds, far under the 256 KiB-class posture of payload
-  files — note in the worklog that these are NOT 0070 payload files and the exchange dir's
-  threat model is unchanged: platform-written, platform-read, no agent surface).
+  files). **Threat model, stated honestly:** `/exchange` is a SHARED agent-writable subtree
+  by design (mounted RW in the runtime container for the agent's write tool — 0070 §2.4a's
+  flat contract), so these files are agent-readable AND agent-writable; they are not 0070
+  payload files and never ride the payload read discipline. Consequences, owned rather than
+  papered over: (a) hydrate MUST tolerate poisoned/corrupt lines exactly as today's per-line
+  scanner already does (`board_workers.go:66-73` skips unparseable lines; the tail's
+  `readBoardAdvanceStamps` unmarshal-skips) — pinned below; (b) through Phase 1's lifetime a
+  worker could fabricate an advance record into the agent-writable tail and suppress its own
+  claim's due-mark (the R2 advance arm) — the worker-declared lying class §5/Phase 3 exists
+  to close, bounded here to self-harm (the row falls back to sweep-lapse semantics, today's
+  behavior; single-tenant pod, the owner's forgery ruling applies) and DELETED with the tail
+  in Phase 2, which is the permanent closure.
 - Hydrate-on-demand: `boardWorkerRegistry.isWorker` re-reads the file when the id is unknown
   (mtime-gated: stat, rehydrate only on change — the file is append-only; the consult stays a
   bounded small read). The main half then sees sidecar appends without restarts.
 - Loud degradation: `record()` and the ledger append increment new expvars
-  `board_workers_registry_write_failures` / `board_advance_tail_write_failures` and log WARN
-  once per process (today both are silent by contract — the freeze was invisible).
+  `board_workers_registry_write_failures` / `board_advance_tail_write_failures`; `record()`
+  additionally gains a WARN (it is the silent one today — `board_workers.go:81-101` returns
+  on file error with no signal, which is how the freeze stayed invisible); the tail already
+  WARNs per append/open failure (`board_turn_ledger.go:180`, `:122`) and gains only the
+  counter and the once-per-process discipline. The real gap both halves share is that no
+  surface compares claims-active against events-folded end-to-end — that is 1.3's, not this
+  bullet's.
 - Compat: one release of reading BOTH paths (old `/workspace` file if the new one is absent)
   so an in-place upgrade keeps pre-existing entries; then the old paths are never written.
 - **Pin:** `TestPin_2100A_SidecarRegistryWriteLands` — write via the sidecar path env, read
   from a fresh registry hydrated at the new path (pre-fix: the write EROFS-fails silently and
   the reader never sees the id). **Pin:** `TestPin_2100A_LoudOnWriteFailure` — unwritable
-  path ⇒ counter increments, WARN logged (pre-fix: silence).
+  path ⇒ counter increments, WARN logged (pre-fix: `record()`'s silence). **Pin:**
+  `TestPin_2100A_HydrateToleratesCorruptLines` — a registry/tail file seeded with poisoned
+  lines (garbage JSON, wrong-shape records, a fabricated session id) hydrates per-line-skip
+  without error, and a poisoned CORRUPT line never flips an advance verdict the memory
+  ledger contradicts (the scanner posture, pinned against the new path).
 
 ### 1.3 Channel heartbeat (the monitoring half of "silent failure impossible")
 
@@ -100,8 +119,8 @@ Phase 2 deletes this machinery; it exists so prod is honest for the releases bet
   the actor JSON's `session_id` key is the #1747 view, `store.go:472` — manager/reconciler
   moves carry no session and never match), plus the verdict arm (`NOT EXISTS (... FROM
   board_events be WHERE be.item_id = t.id AND be.action = 'verdict' AND be.created_at > $4
-  AND be.actor->>'session_id' = ANY($2))`).   ANY($2))`). Rows matching an advance never due-mark — the DECISION is the guarded
-  statement's own predicate (no lookup-then-write race window). The `turn_advances` counter
+  AND be.actor->>'session_id' = ANY($2))`). Rows matching an advance never due-mark — the
+  DECISION is the guarded statement's own predicate. The `turn_advances` counter
   stays honest via a cheap ADVISORY pre-check (one SELECT of the same EXISTS, telemetry
   only, no authority: a race between check and write can miss a count, never a due-mark).
   When `board_record_progress` lands (the #2044 lane), its write joins the EXISTS set by
