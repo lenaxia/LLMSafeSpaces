@@ -84,10 +84,14 @@ type recordingIndex struct {
 	mu      sync.Mutex
 	rows    map[string][]types.SessionListItem
 	deleted map[string]bool
+	// rebuilt records the #1481 count rebuilds (key
+	// "workspaceID/sessionID" → count) — the listing-latency async
+	// walk's convergence surface.
+	rebuilt map[string]int
 }
 
 func newRecordingIndex() *recordingIndex {
-	return &recordingIndex{rows: map[string][]types.SessionListItem{}, deleted: map[string]bool{}}
+	return &recordingIndex{rows: map[string][]types.SessionListItem{}, deleted: map[string]bool{}, rebuilt: map[string]int{}}
 }
 
 func (r *recordingIndex) seed(workspaceID, sessionID string, count int) {
@@ -113,7 +117,10 @@ func (r *recordingIndex) DeleteSession(_ context.Context, w, s string) error {
 func (r *recordingIndex) UpsertTitle(_ context.Context, _, _, _ string) error             { return nil }
 func (r *recordingIndex) UpsertParent(_ context.Context, _, _, _ string) error            { return nil }
 func (r *recordingIndex) UpsertContextUsed(_ context.Context, _, _ string, _ int64) error { return nil }
-func (r *recordingIndex) RebuildMessageCount(_ context.Context, _, _ string, _ int) error {
+func (r *recordingIndex) RebuildMessageCount(_ context.Context, w, s string, count int) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.rebuilt[w+"/"+s] = count
 	return nil
 }
 

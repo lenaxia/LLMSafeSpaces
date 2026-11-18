@@ -589,7 +589,7 @@ The writer captures the existing on-disk config at construction (`loadExisting()
 2. **Relay-only delivery hardening (design 0061, HOLD — #1548/#1546).** Four mechanisms, no more: (M1) crash-loud arming — enabled-but-unarmable staging exits the controller with code 85 within the 30s startup-guard window (the enable line IS the armed contract; extends the 81/82-agentd, 83/84-opencode ladder); (M2) migration-mode fail-open fallback — absent/expired handoff at batch time delivers the pre-flip raw-key entry + increments `relay_fallback_deliveries_total{workspace,provider_slug}` (the counter IS the stall detector; strict mode = one bool after 7 zero-days); (M3) the posture gate — ONE CI job cold-installing the chart's own shipped defaults (namespace scope, relay-only on, delivery pins) on kind, asserting all-Ready + the armed line + zero forbidden log lines + image-commit==tag-commit; carries the #1546 RBAC fixes (the split keypair rule, the pins list/watch, the flag↔RBAC key-coupling pin, the always-created inferencerelays ClusterRole); (M4) `CredentialsStaged=False` fed by the batch degrade (the one preference item). Rejected with reasons in §9: heartbeat derivation/auto-follow, staleness gauges, separate provenance jobs, flip-manifest systems — detectors ride on work that already happens.
 3. **Relay injector re-arm — fetch-failure class resolved (#910), credential-change class open.** The injector's boot window is no longer one-shot-per-pod: on a terminal fetch failure (`fetch_failed`, `no_free_models`, `unhealthy_timeout`, config write failures) the SAME attempt re-arms on a generalized bounded-backoff loop (`cmd/workspace-agentd/rearm_loop.go`: waits double from 5m, capped at 30m; gated on no busy sessions via the SSE session tracker; not stacked behind a session-aware deferred restart — a `deferredRestarts` gauge is checked at cycle entry AND immediately before the relay kill, where a deferral that appeared mid-attempt skips the kill entirely because the outstanding deferred restart reads the just-written config; `HasRelay()` re-checked at each cycle entry; per-cycle `llmsafespaces_rearm_outcome_total{loop="relay_injector",outcome}`). The 2026-08-16 incident class (workspace 946a442f: boot-window fetch EOF → relay-only default unresolvable for the pod's entire lifetime) now recovers without pod recreation. US-72.4's relay-only liveness consumes the same loop. Remaining gap: the loop only starts after a retryable failure — a personal-key boot (`skipped_personal_key`, non-retryable by design: relay is correctly bypassed) never re-evaluates if the credential later changes public. That trigger still needs an explicit re-trigger.
 
-4. **In-memory model cache is per-API-replica.** `SetModel` evicts on the replica that handled the request; other replicas serve stale data for up to 5 seconds. Future: Redis-backed cache for cross-replica consistency (US-30.11).
+4. **In-memory model cache is per-API-replica.** `SetModel` evicts on the replica that handled the request; other replicas serve stale data for up to 60 seconds (`modelCacheTTL`). Future: Redis-backed cache for cross-replica consistency (US-30.11).
 
 5. **`resolveModelWithProvider` non-determinism on collision.** When two providers in `agent-config.json` share a model ID, Go map iteration is non-deterministic — `resolveModelWithProvider` returns whichever provider the runtime visits first. In practice, provider model IDs are namespaced and do not collide, but this is not enforced.
 
@@ -636,26 +636,26 @@ agentd /v1/readyz:
              + cachedState() (providerCache, 15s TTL; live calls on miss, bounded by 5s)
 
 API server (ListModels cache miss):
-  fetchRelayInjected() → GET /v1/readyz (Bearer token, port 4098, 5s total timeout)
-                       → ReadyzResponse.RelayInjected
-  → cached in modelCachePayload with 5s TTL alongside model list
+   fetchRelayInjected() → GET /v1/readyz (Bearer token, port 4098, 5s total timeout)
+                        → ReadyzResponse.RelayInjected
+   → cached in modelCachePayload with modelCacheTTL (60s) alongside model list
 ```
 
-**Stale window:** `relayInjected` can take up to **5s + 15s = 20s** to reflect a
+**Stale window:** `relayInjected` can take up to **60s + 15s = 75s** to reflect a
 relay injection that has just completed:
-- The model cache TTL is 5s — a cache hit may serve the previous `relayInjected=false` value
-  for up to 5s after the cache was written.
+- The model cache TTL is 60s (`modelCacheTTL`) — a cache hit may serve the previous
+  `relayInjected=false` value for up to 60s after the cache was written.
 - The `providerCache` inside readyz has a 15s TTL — a readyz call may return stale
   `connected[]` data for up to 15s after relay injection.
 - In the worst case, a `ListModels` request at T=1s caches `relayInjected=false` until
-  T=6s; relay injection completes at T=7s; the cache expires at T=6s but the next readyz
+  T=61s; relay injection completes at T=7s; the cache expires at T=61s but the next readyz
   call may read stale `providerCache` for another 15s — making the first correct response
-  appear at approximately T=21s.
+  appear at approximately T=76s.
 
 This is acceptable: the Phase 1 window is ~7s, and users are unlikely to interact with the
-workspace within the first 20s of pod boot. The stale window is purely cosmetic
+workspace within the first 76s of pod boot. The stale window is purely cosmetic
 (models show `providerID="opencode"` instead of `"opencode-relay"`) and self-corrects.
-Since #910 the same 20s window can also open mid-pod-life: a re-arm cycle that applies
+Since #910 the same 75s window can also open mid-pod-life: a re-arm cycle that applies
 after a boot-window failure flips `HasRelay()` (and thus `RelayInjected`) at its apply
 moment, minutes after boot. Same mechanism, same cosmetic effect — and the re-arm's
 opencode restart is session-aware (deferred until idle), so no in-flight request

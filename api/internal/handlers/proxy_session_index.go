@@ -706,14 +706,13 @@ func (h *ProxyHandler) rebuildMessageCounts(ctx context.Context, workspaceID str
 }
 
 // listingCountBudget bounds the #1880 listing serve-through walks per
-// request — the drift class converges across listing polls (the sidebar
-// refreshes ~30s), so K=3 mirrors reconcileCountBudget's measured cost
-// bound (≤3 single-GET walks, ~1.5s worst case, ONLY while drift rows
-// exist). "Converged" is exact only for the proxy-traversed class; the
-// never-traversed signature (last_message_at NULL) deliberately stays
-// hot after a serve-through persist, so those rows re-walk on each
-// cooldown expiry — bounded staleness by design, not a steady state of
-// zero walks.
+// listing pass — the drift class converges across listing polls (the
+// sidebar refreshes ~30s), so K=3 mirrors reconcileCountBudget's
+// measured cost bound. "Converged" is exact only for the
+// proxy-traversed class; the never-traversed signature
+// (last_message_at NULL) deliberately stays hot after a persist, so
+// those rows re-walk on each cooldown expiry — bounded staleness by
+// design, not a steady state of zero walks.
 const listingCountBudget = 3
 
 // countServeCooldown backs off a drift row whose last walk already
@@ -730,17 +729,55 @@ const countServeCooldown = 5 * time.Minute
 // this pathological resets the rotation state rather than growing.
 const countServeCap = 8192
 
+// countServeRetireAfterMisses is the listing-latency retirement pin:
+// this many CONSECUTIVE confirmed-absent walks (the ErrSessionNotFound
+// 404 classifier — a definitive not-found verdict from a RUNNING pod)
+// retire the row from walk candidacy. Three was observed live: the
+// same ghost rows re-armed on every listing forever (663 walk
+// failures/hour), and each re-arm cost a pod round trip on the
+// request path.
+const countServeRetireAfterMisses = 3
+
+// countServeRetireWindow is how long a retired row stays out of walk
+// candidacy. Retirement is a window, never a tombstone: past expiry
+// the row re-arms (the session may have reappeared — harness reset,
+// snapshot restore). The row itself is NEVER deleted here: deletion
+// stays with the operator-reviewed reap path, because a count-walk
+// 404 says nothing about the row's history and a suspended pod's PVC
+// still holds the session.
+const countServeRetireWindow = time.Hour
+
+// listingCountWalkTimeout bounds a detached walk pass. The walks run
+// on a detached context (the request ctx dies at response flush —
+// the runParentBackfill precedent), so this timeout IS the pass's
+// only bound.
+const listingCountWalkTimeout = 10 * time.Second
+
+// countWalkJob is one dispatched walk: the row's harness id and the
+// persisted count it was serving when selected (the persist-diff
+// baseline).
+type countWalkJob struct {
+	internalID string
+	persisted  int
+}
+
 // countServeTracker is the in-replica walk state behind
-// ServeHarnessMessageCounts: the last walk time and walked count per
+// ScheduleHarnessMessageCounts: the last walk time and walked count per
 // (workspace/session) drift row. Rotation fairness (never-walked
 // first, then oldest — the rebuild pass's oldest-touched discipline on
-// the read path) and the unchanged-row cooldown both read it. Deliberately
-// NOT durable: any replica converges its own drift set, and a restart
-// just re-warms.
+// the read path) and the unchanged-row cooldown both read it. The
+// listing-latency additions: inflight dedupe (a row being walked by an
+// earlier pass's detached goroutine is not re-dispatched), the
+// confirmed-miss streak and retirement stamps (transient failures
+// never touch them). Deliberately NOT durable: any replica converges
+// its own drift set, and a restart just re-warms.
 type countServeTracker struct {
-	mu     sync.Mutex
-	lastAt map[string]time.Time
-	lastCt map[string]int
+	mu        sync.Mutex
+	lastAt    map[string]time.Time
+	lastCt    map[string]int
+	inflight  map[string]bool
+	misses    map[string]int
+	retiredAt map[string]time.Time
 }
 
 func (t *countServeTracker) lookup(key string) (time.Time, int, bool) {
@@ -759,13 +796,77 @@ func (t *countServeTracker) record(key string, count int, at time.Time) {
 	if t.lastAt == nil {
 		t.lastAt = map[string]time.Time{}
 		t.lastCt = map[string]int{}
+		t.misses = map[string]int{}
+		t.retiredAt = map[string]time.Time{}
 	}
 	if len(t.lastAt) >= countServeCap {
 		t.lastAt = map[string]time.Time{}
 		t.lastCt = map[string]int{}
+		t.misses = map[string]int{}
+		t.retiredAt = map[string]time.Time{}
 	}
 	t.lastAt[key] = at
 	t.lastCt[key] = count
+	t.misses[key] = 0
+}
+
+// tryMarkInflight claims a row for the detached walk pass; false means
+// an earlier pass is already walking it.
+func (t *countServeTracker) tryMarkInflight(key string) bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.inflight == nil {
+		t.inflight = map[string]bool{}
+	}
+	if t.inflight[key] {
+		return false
+	}
+	t.inflight[key] = true
+	return true
+}
+
+func (t *countServeTracker) clearInflight(key string) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	delete(t.inflight, key)
+}
+
+// recordMiss bumps the consecutive confirmed-absent streak; at
+// countServeRetireAfterMisses the row is retired (stamp recorded,
+// true returned exactly once per retirement). Transient failures
+// never reach this method. The miss map carries its own countServeCap
+// reset (stamps cleared with it): ghost rows fail walks forever —
+// they never reach record() — so the rotation reset alone would
+// never bound this population.
+func (t *countServeTracker) recordMiss(key string, at time.Time) bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.misses == nil {
+		t.misses = map[string]int{}
+	}
+	t.misses[key]++
+	if len(t.misses) >= countServeCap {
+		t.misses = map[string]int{}
+		t.retiredAt = map[string]time.Time{}
+		return false
+	}
+	if t.misses[key] >= countServeRetireAfterMisses {
+		if t.retiredAt == nil {
+			t.retiredAt = map[string]time.Time{}
+		}
+		t.retiredAt[key] = at
+		t.misses[key] = 0
+		return true
+	}
+	return false
+}
+
+// isRetired reports whether the row is inside its retirement window.
+func (t *countServeTracker) isRetired(key string, now time.Time) bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	stamp, ok := t.retiredAt[key]
+	return ok && now.Sub(stamp) < countServeRetireWindow
 }
 
 // countServeState lazily initializes the serve-through tracker (the
@@ -780,22 +881,46 @@ func (h *ProxyHandler) countServeState() *countServeTracker {
 	return h.countServe
 }
 
-// ServeHarnessMessageCounts is the #1880 direction-3 serve-through: the
-// listing read path makes the HARNESS count authoritative for the
-// drift class — rows whose message stream never traversed the API
-// proxy (board/dispatch-spawned sessions: pod-local prompt delivery,
-// no SSE subscriber) sit at message_count 0 forever because neither
-// the incremental RecordMessage path nor the present-only reconcile
-// rebuild can see them (#1452 list-visibility). For eligible rows
-// (sessionindex.CountServeEligible) this walks the harness count by
-// ID — the #1865 reap-veto's by-ID probe precedent, immune to the
-// list gap — serves it on the caller's slice IN PLACE, and persists
-// it through the rebuild seam (self-healing, the backfillContextUsed
-// precedent). Budgeted (listingCountBudget walks/request),
-// oldest-touched first across passes; unchanged rows back off for
-// countServeCooldown. A failed walk serves the index value (never
-// worse than the pre-fix wire) and counts the outcome loudly.
-func (h *ProxyHandler) ServeHarnessMessageCounts(ctx context.Context, workspaceID string, sessions []types.SessionListItem) {
+// countWalkDispatch resolves the dispatch seam: production runs the
+// detached pass on a goroutine; SetCountWalkDispatchForTest pins it
+// inline for deterministic ordering assertions.
+func (h *ProxyHandler) countWalkDispatch() func(fn func()) {
+	h.countServeMu.Lock()
+	defer h.countServeMu.Unlock()
+	if h.countWalkAsync == nil {
+		h.countWalkAsync = func(fn func()) { go fn() }
+	}
+	return h.countWalkAsync
+}
+
+// SetCountWalkDispatchForTest pins the walk dispatch seam (server-
+// package wiring tests run the pass inline for determinism; production
+// never calls this).
+func (h *ProxyHandler) SetCountWalkDispatchForTest(d func(fn func())) {
+	h.countServeMu.Lock()
+	defer h.countServeMu.Unlock()
+	h.countWalkAsync = d
+}
+
+// ScheduleHarnessMessageCounts is the #1880 direction-3 serve-through,
+// redesigned for the listing-latency work: the listing request SELECTS
+// the drift-class candidates (rows whose message stream never
+// traversed the API proxy — board/dispatch-spawned sessions invisible
+// to both the incremental path and the present-only rebuild) and
+// DISPATCHES their harness count walks; the walks run detached
+// (listingCountWalkTimeout-bounded context.Background()) after the
+// response is served and persist through the rebuild seam, so the
+// INDEX converges for the next poll. The request path never waits on
+// a pod round trip.
+//
+// Selection is cheap and synchronous: eligibility
+// (sessionindex.CountServeEligible), retirement (confirmed-miss
+// streak), inflight claim, the unchanged-row cooldown, rotation
+// fairness (never-walked first, then oldest), and the per-pass budget.
+// Retired and in-flight rows are dropped IN SELECTION — before the
+// budget cut — so neither ever displaces a walkable row from a pass
+// (outcomes listing_count_retired / listing_count_inflight).
+func (h *ProxyHandler) ScheduleHarnessMessageCounts(workspaceID string, sessions []types.SessionListItem) {
 	// h.adapter is ctor-required (#828 — never nil-checked). The
 	// sessionIndex seam is optional wiring; nil disables the overlay.
 	if h.sessionIndex == nil || len(sessions) == 0 {
@@ -814,9 +939,23 @@ func (h *ProxyHandler) ServeHarnessMessageCounts(ctx context.Context, workspaceI
 			continue
 		}
 		key := workspaceID + "/" + sessions[i].InternalID
+		if h.countServeState().isRetired(key, now) {
+			sessionindex.ReconcileOutcome("listing_count_retired")
+			continue
+		}
+		if !h.countServeState().tryMarkInflight(key) {
+			// An earlier pass's detached goroutine is walking this
+			// row right now — skip it here, BEFORE the budget cut,
+			// so the pass's budget reaches walkable rows.
+			sessionindex.ReconcileOutcome("listing_count_inflight")
+			continue
+		}
 		at, walkedCt, walked := h.countServeState().lookup(key)
 		if walked && walkedCt == sessions[i].MessageCount && now.Sub(at) < countServeCooldown {
 			sessionindex.ReconcileOutcome("listing_count_cooldown")
+			// Not dispatched this pass — release the claim so a
+			// concurrent pass can take the row at cooldown expiry.
+			h.countServeState().clearInflight(key)
 			continue
 		}
 		candidates = append(candidates, candidate{idx: i, walkedAt: at, walked: walked})
@@ -837,57 +976,110 @@ func (h *ProxyHandler) ServeHarnessMessageCounts(ctx context.Context, workspaceI
 		return candidates[a].walkedAt.Before(candidates[b].walkedAt)
 	})
 	if len(candidates) > listingCountBudget {
+		// Over-budget rows were claimed during selection; release
+		// them back (they stay eligible for the next pass).
+		for _, cand := range candidates[listingCountBudget:] {
+			h.countServeState().clearInflight(workspaceID + "/" + sessions[cand.idx].InternalID)
+		}
 		candidates = candidates[:listingCountBudget]
 	}
+	jobs := make([]countWalkJob, 0, len(candidates))
 	for _, cand := range candidates {
 		row := &sessions[cand.idx]
-		key := workspaceID + "/" + row.InternalID
-		persisted := row.MessageCount
-		count, err := h.adapter.CountMessages(ctx, "", workspaceID, row.InternalID)
-		if err != nil {
-			// NO tracker entry on error (review r2 defect 1): the
-			// error-path count is not a walked truth. Recording it
-			// anyway poisoned the cooldown tracker on count-0 rows
-			// (lastCt 0 == index 0 → the next listing cooldown-skipped
-			// the retry for five minutes, mislabeled as
-			// listing_count_cooldown). A failed walk re-arms.
-			sessionindex.ReconcileOutcome("listing_count_walk_error")
-			h.logger.Warn("session listing: harness count walk failed; serving the index value",
-				"workspaceID", workspaceID, "sessionID", row.InternalID, "error", err.Error())
-			continue
-		}
-		h.countServeState().record(key, count, time.Now())
-		// Serve-through: the response carries harness truth.
-		row.MessageCount = count
-		if count == persisted {
-			sessionindex.ReconcileOutcome("listing_count_unchanged")
-			continue
-		}
-		// #1882 r4 F1: the walk above IS the race window — a carrier's
-		// confirmed delete (tombstone + row removal, the propagation
-		// tail) may have landed mid-walk. This writer's Register +
-		// RebuildMessageCount is a row-CREATING mint at count>0 (the
-		// only such writer post-r1), and a re-minted carrier row is a
-		// permanent kept_for_operator ghost the reap guard refuses
-		// (count>0). The tombstone consult — the same one-line seam
-		// the r1 fix put before the two reconcile sweeps' registers.
-		//nolint:contextcheck // the tombstone read is store-local; the listing's ctx never reaches it (isSessionDeleted precedent)
-		if h.isSessionDeleted(workspaceID, row.InternalID) {
-			sessionindex.ReconcileOutcome("listing_count_skip_tombstoned")
-			continue
-		}
-		// Row-creating upsert shape — the registration seam first
-		// (design 0066 §4.2; keyed by the harness id, never the
-		// phrase — the #1756/#1881 discipline).
-		h.sessionIndex.Register(ctx, workspaceID, row.InternalID, "opencode")
-		if err := h.sessionIndex.RebuildMessageCount(ctx, workspaceID, row.InternalID, count); err != nil {
-			sessionindex.ReconcileOutcome("listing_count_persist_error")
-			h.logger.Warn("session listing: count persist failed (truth still served)",
-				"workspaceID", workspaceID, "sessionID", row.InternalID, "error", err.Error())
-			continue
-		}
-		sessionindex.ReconcileOutcome("listing_count_served")
+		jobs = append(jobs, countWalkJob{internalID: row.InternalID, persisted: row.MessageCount})
 	}
+	if len(jobs) == 0 {
+		return
+	}
+	// Detached dispatch: the pass survives the request (the ctx dies
+	// at response flush) and bounds itself with its own timeout.
+	h.countWalkDispatch()(func() { h.runListingCountWalks(workspaceID, jobs) }) //nolint:gosec,contextcheck // G118: intentional fire-and-forget detach (the runParentBackfill precedent)
+}
+
+// runListingCountWalks executes one dispatched pass: the budgeted
+// walks, serially, on a detached bounded context. Per job: the walk,
+// the tracker record, the tombstone consult, and the row-creating
+// persist through the registration seam (Register +
+// RebuildMessageCount — design 0066 §4.2; keyed by the harness id,
+// never the phrase — the #1756/#1881 discipline). Inflight state
+// clears as each job completes so a concurrent listing can claim the
+// row the moment this pass finishes with it.
+func (h *ProxyHandler) runListingCountWalks(workspaceID string, jobs []countWalkJob) {
+	ctx, cancel := context.WithTimeout(context.Background(), listingCountWalkTimeout)
+	defer cancel()
+	for _, job := range jobs {
+		key := workspaceID + "/" + job.internalID
+		h.walkOneListingCount(ctx, workspaceID, key, job)
+		h.countServeState().clearInflight(key)
+	}
+}
+
+// walkOneListingCount is one row's detached walk — the #1880 r2/r4
+// semantics unchanged from the synchronous era, minus the in-place
+// response mutation (the wire never carried walked truth from THIS
+// pass; the index is the convergence surface).
+func (h *ProxyHandler) walkOneListingCount(ctx context.Context, workspaceID, key string, job countWalkJob) {
+	count, err := h.adapter.CountMessages(ctx, "", workspaceID, job.internalID)
+	if err != nil {
+		// NO tracker entry on error (review r2 defect 1): the
+		// error-path count is not a walked truth. Recording it
+		// anyway poisoned the cooldown tracker on count-0 rows
+		// (lastCt 0 == index 0 → the next listing cooldown-skipped
+		// the retry for five minutes, mislabeled as
+		// listing_count_cooldown). A failed walk re-arms.
+		//
+		// Failure classification is typed, never string-matched:
+		// the definitive ErrSessionNotFound 404 verdict (the
+		// httpSessionError classifier — only a RUNNING pod can
+		// render it) feeds the retirement streak; every other
+		// failure (pod not running, 5xx, timeout) is transient and
+		// re-arms forever.
+		if errors.Is(err, agent.ErrSessionNotFound) {
+			if newlyRetired := h.countServeState().recordMiss(key, time.Now()); newlyRetired {
+				h.logger.Warn("session listing: count walk retired — repeated session-not-found; serving the index value until the window expires",
+					"workspaceID", workspaceID, "sessionID", job.internalID,
+					"window", countServeRetireWindow.String())
+			} else {
+				h.logger.Debug("session listing: harness count walk confirmed absent",
+					"workspaceID", workspaceID, "sessionID", job.internalID, "error", err.Error())
+			}
+			sessionindex.ReconcileOutcome("listing_count_walk_miss")
+			return
+		}
+		sessionindex.ReconcileOutcome("listing_count_walk_error")
+		h.logger.Warn("session listing: harness count walk failed; serving the index value",
+			"workspaceID", workspaceID, "sessionID", job.internalID, "error", err.Error())
+		return
+	}
+	h.countServeState().record(key, count, time.Now())
+	if count == job.persisted {
+		sessionindex.ReconcileOutcome("listing_count_unchanged")
+		return
+	}
+	// #1882 r4 F1: the walk IS the race window — a carrier's
+	// confirmed delete (tombstone + row removal, the propagation
+	// tail) may have landed mid-walk. This writer's Register +
+	// RebuildMessageCount is a row-CREATING mint at count>0 (the
+	// only such writer post-r1), and a re-minted carrier row is a
+	// permanent kept_for_operator ghost the reap guard refuses
+	// (count>0). The tombstone consult — the same one-line seam
+	// the r1 fix put before the two reconcile sweeps' registers.
+	//nolint:contextcheck // the tombstone read is store-local; the detached pass's ctx never reaches it (isSessionDeleted precedent)
+	if h.isSessionDeleted(workspaceID, job.internalID) {
+		sessionindex.ReconcileOutcome("listing_count_skip_tombstoned")
+		return
+	}
+	// Row-creating upsert shape — the registration seam first
+	// (design 0066 §4.2; keyed by the harness id, never the
+	// phrase — the #1756/#1881 discipline).
+	h.sessionIndex.Register(ctx, workspaceID, job.internalID, "opencode")
+	if err := h.sessionIndex.RebuildMessageCount(ctx, workspaceID, job.internalID, count); err != nil {
+		sessionindex.ReconcileOutcome("listing_count_persist_error")
+		h.logger.Warn("session listing: count persist failed (the index keeps the stale value)",
+			"workspaceID", workspaceID, "sessionID", job.internalID, "error", err.Error())
+		return
+	}
+	sessionindex.ReconcileOutcome("listing_count_served")
 }
 
 func (h *ProxyHandler) SetSessionIndex(si interfaces.SessionIndexService) {
