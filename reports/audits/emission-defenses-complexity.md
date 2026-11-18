@@ -125,7 +125,7 @@ The interim recommendation predates the corrected bound. The post-boundary windo
 
 ---
 
-## 8. Findings matrix (common format — aligned to `reports/audits/api-app-complexity.md` §7)
+## 8. Findings matrix (common format — aligned to `reports/audits/api-app-complexity.md` §7, the open sibling PR #2096; the path lands on main when it merges)
 
 *Class: **P** = proportionate (keep, cost is earned), **C** = collapsible (consolidate/refactor, functional equivalence arguable), **D** = dead (dead-in-fleet or dead-in-principle).*
 
