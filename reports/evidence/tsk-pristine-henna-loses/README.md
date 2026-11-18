@@ -1,5 +1,7 @@
 # tsk-pristine-henna-loses — wait-event-broker evidence (2026-11-18)
 
+**PR #2109** (`board-wait-event-broker` → `main`; foundation PR #2104 MERGED — this branch merges main at aa4869bad, plus the #2106 listing-latency and audit merges).
+
 Branch `board-wait-event-broker` off `origin/main` (583237c32) + merge of
 `board-wait-typed-state` (617741bcc, story 1 — the dependency). Worklog:
 `worklogs/1303_2026-11-18_wait-event-broker.md`. Governing designs:
