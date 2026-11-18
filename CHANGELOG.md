@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — docs: pkg/board engine complexity audit — the 26-column state inventory, the incident-hardening stack as a sum, and the honest 22→8 evaluation (tsk-sappy-nickel-shines, read-only)
+
+- **Deliverable:** `reports/audits/board-engine-complexity.md` — a findings matrix (15 rows, classed proportionate/collapsible/dead, each origin-traced to its incident or marked accretion) over the ~15.4 kLOC non-test engine: the 26 task state columns and the 11-arm ladder precedence they feed, the #2042→#2061/wrap-up hardening layers' interactions and overlaps, and the seams (reconciler 1,781 LOC / stage write sites / the 32-site audit surface / the 13-knob config lattice).
+- **Headline:** the dominant cost is the episode-reset threading discipline (~10-column clear-the-claim set re-typed at 11+ exit sites — the package's worst observed bug class, and what #2060's collapse was chartered to remove); a SQL-fragment consolidation is the top-ranked candidate at ~1/50th the collapse's risk.
+- **22→8 verdict:** NO-GO now, narrowed GO later — the columns are load-bearing single-statement SQL predicates (the resolved replica-arbitration design), three of the eight ClaimEvidence fields are new state rather than derived state, and the wire cost is permanent. Survivors: derive `last_attempt_failed` (verified ≡ `failure_count > 0` at every write site), treat the sentinel triple (`nudge_id`/`nudged_at`/`last_heartbeat_at`) as one slot, cap future evidence at jsonb slots (the `salvage` precedent).
+- No code changes — the audit document, a worklog, and this entry are the only artifacts.
+
 ## [0.44.17] - 2026-11-18
 
 ### Fixed — board: the portrait rail layout re-applies STRUCTURALLY on rotation — CSS md-authority over focus widths, rotation clocks, snap-position ownership (owner report #3, 2026-11-17 second occurrence: the symptom survived the .16 event-delivered guard)
