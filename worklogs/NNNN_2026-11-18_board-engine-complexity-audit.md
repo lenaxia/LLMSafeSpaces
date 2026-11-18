@@ -12,7 +12,7 @@ changes.
   1,039 / stage 987 / wrapup 930 the five largest); 21.2 kLOC of pins (58%).
 - 26 task-table state columns across 10 column-adding migrations
   (000039-000059); 48 `UPDATE tasks` sites in 15 files; 11+ hand-maintained
-  episode-reset sets; 21 nil-inert Service seams; 13 engine knobs (11
+  episode-reset sets; 21 nil-inert Service seams; 14 engine knobs (12
   deploy-exposed) + 4 constants; ~30-term audit-action vocabulary over 32
   `recordEventTx` sites; 3 coexisting event-id minting schemes.
 - The ladder's effective 11-arm precedence reconstructed from rc1Reclaims
