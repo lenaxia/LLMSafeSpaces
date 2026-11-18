@@ -13,7 +13,9 @@ off `origin/main` @ `bd56d8464`.
   (optimistic reconcile, stream buffer + echo gate, stuck-session auto-abort,
   context/compaction, prompt fold-sync, queue-vs-direct send, duplicated reset
   effects, banner zoo, auto-rename, auto-create/deletion navigation). Spec-file
-  count used as the complexity metric: 20 spec files / 6,362 test lines, plus
+  count used as the complexity metric: 21 spec files / 6,962 test lines
+  (base spec included — the count rule is applied uniformly across surfaces),
+  plus
   the `hookcount` meta-spec that statically scans source for hook-order safety.
 - **Provider tree** — SessionActivityProvider (2,346 ln; ~1,050-ln SSE handler
   closure; busy-lease/flight/tombstone machines; queryCache reach-in; fresh
