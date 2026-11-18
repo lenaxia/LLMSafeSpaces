@@ -200,6 +200,62 @@ func (s *BoardSuite) TestDeclareWait_UserWait_HealthSectionCoalesceRead() {
 	s.Equal(board.WaitOnUser, h.Waiting[0].WaitOn)
 }
 
+// TestDeclareWait_WorkspaceHealth_WaitingSection pins the WORKSPACE
+// health surface's waiting section (round-1 review finding: the
+// nil-vs-empty wire split) — the same projection BoardHealth serves,
+// workspace-scoped. Both invariants: [] NOT null when nothing waits,
+// and both wait types render with their facts.
+func (s *BoardSuite) TestDeclareWait_WorkspaceHealth_WaitingSection() {
+	ctx := context.Background()
+	ws := s.seedWorkspace()
+	p := s.seedProject(ws, 4)
+	e := s.seedEpic(p, board.EpicActive)
+	t1 := s.seedTask(e, "ws-waiting", nil, false)
+
+	// BEFORE any wait: the section is NON-NIL EMPTY — "waiting": [] on
+	// the wire, never null (the split the owner surface never had).
+	h0, err := s.svc.BoardHealthInWorkspace(ctx, ws)
+	s.Require().NoError(err)
+	require.NotNil(s.T(), h0.Waiting, "the workspace surface emits [] — never null — when nothing waits")
+	require.Empty(s.T(), h0.Waiting)
+
+	c := s.claimOrFail(ws)
+	s.Require().Equal(t1.ID, c.TaskID)
+	s.declareEvent(s.T(), c, "PR 2083 merge", "pr_merged(2083)")
+
+	t2 := s.seedTask(e, "ws-user-wait", nil, false)
+	c2 := s.claimOrFail(ws)
+	s.Require().Equal(t2.ID, c2.TaskID)
+	_, err = s.svc.DeclareWait(ctx, s.agent(c2.Assignee, c2.ClaimToken), "", c2.ShortID,
+		board.WaitOnUser, "owner decision: runtime bump scope", "", "")
+	s.Require().NoError(err)
+
+	h, err := s.svc.BoardHealthInWorkspace(ctx, ws)
+	s.Require().NoError(err)
+	require.Len(s.T(), h.Waiting, 2)
+	byShort := map[string]board.HealthWait{}
+	for _, w := range h.Waiting {
+		byShort[w.ShortID] = w
+	}
+	ew, ok := byShort[t1.ShortID]
+	s.Require().True(ok, "the event-wait renders on the workspace surface")
+	s.Equal(board.WaitOnEvent, ew.WaitOn)
+	s.Equal("PR 2083 merge", ew.WaitReason)
+	s.False(ew.Since.IsZero(), "since rides the wait_declared event's timestamp")
+	uw, ok := byShort[t2.ShortID]
+	s.Require().True(ok, "the user-wait renders on the workspace surface")
+	s.Equal(board.WaitOnUser, uw.WaitOn)
+	s.Equal("owner decision: runtime bump scope", uw.WaitReason)
+
+	// Workspace scope: a sibling workspace sees its own empty section —
+	// non-nil, empty, and no cross-workspace wait disclosure.
+	other := s.seedWorkspace()
+	h2, err := s.svc.BoardHealthInWorkspace(ctx, other)
+	s.Require().NoError(err)
+	require.NotNil(s.T(), h2.Waiting)
+	require.Empty(s.T(), h2.Waiting, "no cross-workspace wait disclosure")
+}
+
 // --- The verb matrix's refusals -------------------------------------------
 
 func (s *BoardSuite) TestDeclareWait_RefusalMatrix() {
