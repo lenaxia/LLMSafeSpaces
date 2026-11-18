@@ -2,7 +2,7 @@
 
 Branch `board-wait-event-broker` off `origin/main` (583237c32) + merge of
 `board-wait-typed-state` (617741bcc, story 1 — the dependency). Worklog:
-`worklogs/1296_2026-11-18_wait-event-broker.md`. Governing designs:
+`worklogs/1303_2026-11-18_wait-event-broker.md`. Governing designs:
 `reports/specs/claim-wait-lifecycle-{high,low}-level-design.md` §3/§4 (the
 prelim's patched charters — patched text governs; PR #2101). Issue #2100
 referenced per charter, counters untouched, fixes file separately.
