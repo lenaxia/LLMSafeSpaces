@@ -301,6 +301,23 @@ async function expectSettledOn(rail: Locator, stage: string) {
   throw new Error(`rail did not settle on ${stage} within [${lo - 1}, ${hi + 1}] — last scrollLeft ${sl}`);
 }
 
+/** The rotation-survival contract for the rail's POSITION (owner
+ * report #3): after any viewport-class crossing the rail must sit
+ * INSIDE some column's valid snap range (±1px sub-pixel) — mandatory
+ * snap's own invariant, asserted because nothing else re-establishes
+ * it: the browser's rotation scroll-restoration replays the old
+ * content offset against the CHANGED column widths, and a rail left
+ * straddling two columns reads to the user as "columns at the wrong
+ * sizes" even with every width class correct. At md+ the row fits
+ * (scrollLeft 0) and the check is trivially legal. */
+async function expectSnappedLegal(rail: Locator) {
+  const ranges = await allSnapRanges(rail);
+  const sl = await rail.evaluate((el) => el.scrollLeft);
+  const legal = ranges.some((r) => sl >= r.lo - 1 && sl <= r.hi + 1);
+  const rendered = ranges.map((r) => `${r.stage}:[${Math.round(r.lo)},${Math.round(r.hi)}]`).join(" ");
+  expect(legal, `scrollLeft ${Math.round(sl)} inside a valid snap range (${rendered})`).toBe(true);
+}
+
 /** The rail's layout signature for orientation assertions: column
  * widths as fractions of the rail's content width, plus the mode and
  * whether the rail overflows. */
@@ -574,6 +591,7 @@ test.describe("board rail touch scrolling (the v0.44.15 owner report)", () => {
     // The portrait baseline (fresh mount).
     const portrait0 = await stableLayout(page, rail);
     expectPortraitLayout(portrait0);
+    await expectSnappedLegal(rail);
 
     // portrait → landscape: the md row.
     await page.setViewportSize({ width: 844, height: 390 });
@@ -587,6 +605,13 @@ test.describe("board rail touch scrolling (the v0.44.15 owner report)", () => {
     for (const stage of ["backlog", "in_progress", "in_review", "done"]) {
       expect(portrait1.fractions[stage]!).toBeCloseTo(portrait0.fractions[stage]!, 1);
     }
+    // Owner report #3's missing assertion class: the WIDTHS were pinned
+    // but the POSITION never was — scroll restoration replays the old
+    // content offset against the changed column widths, and a rail
+    // left straddling two columns reads as "wrong sizes" even with
+    // correct classes. The portrait rail must sit INSIDE a column's
+    // valid snap range after every rotation.
+    await expectSnappedLegal(rail);
 
     // Rapid repeated rotations (the reflow animates each crossing — the
     // final state must still converge to the correct layout).
@@ -597,6 +622,7 @@ test.describe("board rail touch scrolling (the v0.44.15 owner report)", () => {
       await page.waitForTimeout(60);
     }
     expectPortraitLayout(await stableLayout(page, rail));
+    await expectSnappedLegal(rail);
 
     // The lens resets across the viewport-class change: enter focus at
     // portrait, rotate to md+ — overview, no focus widths anywhere —
@@ -613,5 +639,78 @@ test.describe("board rail touch scrolling (the v0.44.15 owner report)", () => {
     await page.setViewportSize({ width: 390, height: 844 });
     const portraitAfterLens = await stableLayout(page, rail);
     expectPortraitLayout(portraitAfterLens);
+    await expectSnappedLegal(rail);
+  });
+
+  // Owner report #3 (2026-11-17, second occurrence — the symptom survived
+  // the .16 event-delivered guard): a REAL phone rotation is a device
+  // orientation change, not a bare viewport resize — this test drives the
+  // round-trip through CDP's setDeviceMetricsOverride with a matching
+  // screenOrientation (the emulation shape a real renderer rotation
+  // takes), pinning the same contract: the portrait 95/3+5-peek layout
+  // re-applies after BOTH directions, rapid rotations converge, the
+  // snap position stays legal, and the md row never regresses. This is
+  // the test shape that joins the permanent wall: together with the
+  // jsdom undelivered-event pins (BoardPage.orientation.test.tsx) it
+  // brackets the failure surface the width-only pins missed.
+  test("orientation round-trip via device emulation (owner report #3): a real rotation shape restores the portrait layout exactly", async ({ page }) => {
+    const rail = await openBoard(page);
+    const cdp = await page.context().newCDPSession(page);
+    const rotate = async (width: number, height: number, angle: 0 | 90) => {
+      await cdp.send("Emulation.setDeviceMetricsOverride", {
+        width,
+        height,
+        deviceScaleFactor: 3,
+        mobile: true,
+        screenWidth: width,
+        screenHeight: height,
+        screenOrientation: { angle, type: angle === 90 ? "landscapePrimary" : "portraitPrimary" },
+      });
+    };
+
+    // The portrait baseline (fresh mount, before any override).
+    const portrait0 = await stableLayout(page, rail);
+    expectPortraitLayout(portrait0);
+    await expectSnappedLegal(rail);
+
+    // portrait → landscape (the real rotation shape): the md row.
+    await rotate(844, 390, 90);
+    expectLandscapeLayout(await stableLayout(page, rail));
+
+    // landscape → portrait: the EXACT portrait layout returns, snapped
+    // legally — the owner's "does not re-apply" symptom.
+    await rotate(390, 844, 0);
+    const portrait1 = await stableLayout(page, rail);
+    expectPortraitLayout(portrait1);
+    for (const stage of ["backlog", "in_progress", "in_review", "done"]) {
+      expect(portrait1.fractions[stage]!).toBeCloseTo(portrait0.fractions[stage]!, 1);
+    }
+    await expectSnappedLegal(rail);
+
+    // Rapid repeated rotations through the device path converge.
+    for (const [w, h, a] of [
+      [844, 390, 90], [390, 844, 0], [844, 390, 90], [390, 844, 0],
+    ] as const) {
+      await rotate(w, h, a as 0 | 90);
+      await page.waitForTimeout(60);
+    }
+    expectPortraitLayout(await stableLayout(page, rail));
+    await expectSnappedLegal(rail);
+
+    // A lens entered at portrait cannot hold portrait geometry at md+
+    // (state or no state — the CSS authority) and cannot survive the
+    // round-trip.
+    await page.locator('[data-stage-col="in_progress"] [data-testid="col-focus-toggle-in_progress"]').tap();
+    await expect(rail).toHaveAttribute("data-mode", "focus");
+    await rotate(844, 390, 90);
+    expectLandscapeLayout(await stableLayout(page, rail));
+    await rotate(390, 844, 0);
+    const portraitAfterLens = await stableLayout(page, rail);
+    expectPortraitLayout(portraitAfterLens);
+    await expectSnappedLegal(rail);
+
+    // Release the override so later tests in the worker start clean.
+    await cdp.send("Emulation.clearDeviceMetricsOverride");
+    await cdp.detach();
   });
 });
