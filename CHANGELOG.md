@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.44.17] - 2026-11-18
+
 ### Fixed — board: the portrait rail layout re-applies STRUCTURALLY on rotation — CSS md-authority over focus widths, rotation clocks, snap-position ownership (owner report #3, 2026-11-17 second occurrence: the symptom survived the .16 event-delivered guard)
 
 - **The symptom (owner, real phone, post-.16)**: rotating landscape then back to portrait still leaves the sprint board columns at the wrong sizes — the portrait 95/3+5-peek layout does not re-apply. The .16 fix (PR #2087) made the lens exit event-delivered (`mdPlus` state + render guard) and its own record carried the residual: "a genuinely UNDELIVERED event still leaves mdPlus stale; no poll." The owner's rotation landed in that residual — the md row's correctness was a function of ONE delivered `matchMedia` change event.
@@ -32,6 +34,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Unbound-empty state**: an unbound workspace with zero sessions renders the "Choose a harness when starting your first session" hint under "No sessions yet".
 - **a11y per the #2021 discipline**: Radix Dialog (modal focus trap, Escape, aria-modal), the options are a roving-tabindex radiogroup (arrows/Home/End move selection, focus-visible rings), and a polite live region announces the selection.
 - Pinned by: `HarnessPickerDialog.test.tsx` (render/preselect/submit/keyboard/roving/announcements/error/cancel), `Sidebar.harness.test.tsx` (picker-exactly-once incl. the bound-workspaces-never-ask and single-option-silent-bind pins, submit→ensureSession body, unbound hint, header badge), `WorkspaceSettingsDrawer.harness.test.tsx` (bound/unbound rows + the zero-switch-affordances absence pin).
+
+### Changed — runtime: opencode 1.18.15 → 1.19.5 (PR #2083, automated bump + the runbook's human half)
+
+- The pinned runtime binary bump with the merge-checklist executed: a real 1.19.5 capture (`sse_events_1_19_5_live.jsonl` + `event_store_1_19_5.jsonl`, the tool-part lifecycle now pinned current), the six test tables registered with conscious re-pins, ABI goldens regenerated (byte-identical — no schema drift, no new event types), the V2 queue-drain and origin-plugin freeze legs re-verified on 1.19.5, and a `.trivyignore` accept for CVE-2026-112366 (picomatch, dev-only transitive dep, no fixed version published — fleet-wide environmental advisory).
 
 ## [0.44.16] - 2026-11-17
 
