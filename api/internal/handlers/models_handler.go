@@ -95,7 +95,7 @@ func (h *ModelsHandler) ListModels(c *gin.Context) {
 		return
 	}
 
-	// Check cache first (5s TTL).
+	// Check cache first (modelCacheTTL).
 	var annotated []annotatedModel
 	var relayInjected bool
 	var cacheHit bool
