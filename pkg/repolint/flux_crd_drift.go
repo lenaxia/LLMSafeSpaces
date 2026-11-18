@@ -238,7 +238,7 @@ func sliceContains(ss []string, s string) bool {
 func SyncFluxCRDs(root string) error {
 	chartDir := filepath.Join(root, FluxCRDChartDir)
 	mirrorDir := filepath.Join(root, FluxCRDMirrorDir)
-	if err := os.MkdirAll(mirrorDir, 0o755); err != nil {
+	if err := os.MkdirAll(mirrorDir, 0o750); err != nil {
 		return fmt.Errorf("create %s: %w", mirrorDir, err)
 	}
 

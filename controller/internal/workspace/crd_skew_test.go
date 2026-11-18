@@ -59,13 +59,6 @@ func pruningCreateInterceptor(pruning *bool) (interceptor.Funcs, *int) {
 	dryRunCreates := 0
 	return interceptor.Funcs{
 		Create: func(ctx context.Context, c ctrlclient.WithWatch, obj ctrlclient.Object, opts ...ctrlclient.CreateOption) error {
-			for _, o := range opts {
-				if _, ok := o.(interface {
-					ApplyToCreate(*ctrlclient.CreateOptions)
-				}); ok {
-					// counted below via the merged options
-				}
-			}
 			co := &ctrlclient.CreateOptions{}
 			co.ApplyOptions(opts)
 			if len(co.DryRun) > 0 {

@@ -81,7 +81,7 @@ func TestCRDSkewRebindScript_LoadBearingFragments(t *testing.T) {
 	bindIdx := strings.Index(s, `-p "{\"spec\":{\"harness\":\"$HARNESS\"}}"`)
 	verifyIdx := strings.Index(s, "jsonpath='{.spec.harness}'")
 	cleanupIdx := strings.Index(s, `\"$MARKER_ANNOTATION\":null`)
-	if !(bindIdx < verifyIdx && verifyIdx < cleanupIdx) {
+	if bindIdx >= verifyIdx || verifyIdx >= cleanupIdx {
 		t.Errorf("re-bind order broken: bind(%d) must precede verify(%d) must precede marker cleanup(%d)",
 			bindIdx, verifyIdx, cleanupIdx)
 	}
