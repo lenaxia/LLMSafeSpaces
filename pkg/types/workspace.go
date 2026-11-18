@@ -109,6 +109,16 @@ type WorkspaceListItem struct {
 	// pod until the first-session picker submit or an explicit bind);
 	// "opencode"/"pi" = bound for life.
 	Harness *string `json:"harness,omitempty"`
+	// HarnessOptions is the instance's enabled harness set (the
+	// picker's offer list; opencode always present — the union
+	// invariant). Mirrors Workspace.HarnessOptions / GetWorkspace.
+	// MUST be populated by ListWorkspaces: the sidebar evaluates the
+	// list it already holds when the user clicks "new session" — a
+	// starved item degrades the frontend to the opencode-only fallback
+	// and the first-session picker can never render (the 2026-11-18
+	// prod incident; same defect class as OrgID #477 and PhraseID
+	// #1757 r2).
+	HarnessOptions []string `json:"harnessOptions,omitempty"`
 }
 
 // WorkspaceStatusResult carries the status fields read from the Workspace CRD.
