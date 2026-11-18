@@ -1732,6 +1732,14 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 				}
 				seedCancel()
 			}
+			// The spawner's own seams, hoisted to shared locals: the
+			// pod activator + agentd node executor serve BOTH the
+			// fresh-worker spawn and the salvage probe (the
+			// salvage-prefer terminal's production SalvageSource — the
+			// same EnsureActive + sessionless script-node dispatch,
+			// read-only git/GitHub questions in the workspace pod).
+			boardActivator := &apiwf.K8sWorkspaceActivator{K8sClient: k8sClient, Namespace: cfg.Kubernetes.Namespace}
+			boardExecutor := &apiwf.HTTPAgentExecutor{Port: 4097, PasswordProvider: proxyHandler}
 			spawnOpts := []board.Option{
 				board.WithLivenessSource(boardLivenessHub),
 				// RC-C S2 (badge honesty + busy TTL): the read edge's
@@ -1757,9 +1765,16 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 				// phase cache — nil-safe and honest (an unseen workspace
 				// is never frozen; today's semantics).
 				board.WithSuspendSource(newBoardSuspendSource(proxyHandler.GetAllKnownPhases)),
+				// The salvage-prefer terminal (the claim wait lifecycle,
+				// §5): the two worker-claim exhaustion sites probe the
+				// lane's leftover work through this source — the same
+				// activator + node-execution seams as the spawn, asking
+				// git/GitHub the three questions in the workspace pod.
+				// Nil-leg failures degrade loudly to today's terminal.
+				board.WithSalvageSource(newBoardSalvageSource(boardScopeFor(boardPool), boardActivator, boardExecutor)),
 				board.WithWorkerSpawner(newBoardSpawner(
-					&apiwf.K8sWorkspaceActivator{K8sClient: k8sClient, Namespace: cfg.Kubernetes.Namespace},
-					&apiwf.HTTPAgentExecutor{Port: 4097, PasswordProvider: proxyHandler},
+					boardActivator,
+					boardExecutor,
 					// #1966: the spawner stamps the worker-class origin
 					// mark (session_origins, kind='session') on every
 					// successful fresh-worker spawn — the sidebar's

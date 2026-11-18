@@ -777,6 +777,7 @@ func (s *Service) BoardHealthInWorkspace(ctx context.Context, workspaceID string
 		RecentReclaims:       []HealthReclaim{},
 		ProjectSlots:         []HealthProjectSlots{},
 		AckWaits:             []HealthAckWait{},
+		Waiting:              []HealthWait{},
 	}
 	rows, err := s.q().Query(ctx, `
 		SELECT t.id, t.short_id, t.title, t.project_id, coalesce(t.assignee_session, ''), t.lease_expires_at

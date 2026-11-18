@@ -102,6 +102,13 @@ type ProxyHandler struct {
 	countServe   *countServeTracker
 	countServeMu sync.Mutex
 
+	// countWalkAsync is the dispatched walk pass's dispatch seam (the
+	// listing-latency async redesign): production default runs the
+	// pass on a goroutine; SetCountWalkDispatchForTest pins it inline
+	// for deterministic wiring assertions. Lazy-resolved through
+	// countWalkDispatch() so struct-literal constructions stay safe.
+	countWalkAsync func(fn func())
+
 	// countPassIndexOverride pins the #1880 r2 rebuild-rotation
 	// window (tests). Production derives the window statelessly from
 	// wall-clock buckets of the reconcile cadence (see
