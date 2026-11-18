@@ -27,6 +27,7 @@ Land the typed-wait story: migration `000060_board_typed_wait` (wait_on/wait_rea
 - `pkg/board/reads.go` `BoardHealthInWorkspace`: init `Waiting: []HealthWait{}` in the Health literal — the workspace surface emitted `"waiting": null` when empty while the owner surface emitted `[]` (nil-vs-empty wire split on one shared struct).
 - `pkg/board/wait_integration_test.go`: new pin `TestDeclareWait_WorkspaceHealth_WaitingSection` — non-nil-empty before any wait, both wait types render with facts (wait_on/reason/since), sibling workspace sees its own empty section (no cross-workspace disclosure).
 - PR #2104 body rewritten from the wrong verbatim (#2072's heartbeat-orbit budget text) to this story's actual summary + verification; dropped the misattributed `Closes #2044` (that issue landed via #2072/a9ad956b4).
+- `sdks/openapi.yaml`: BoardTask gained `waitOn`/`waitReason`/`waitingOn` (CI round-1 caught `TestOpenAPISchemaParity_BoardTask` — the spec is the SDK contract source); BoardHealth gained the `waiting` array + `BoardHealthWait` schema (`{task_id, short_id, title, project_id, wait_on, wait_reason, since}`). `ack_waits` spec drift is pre-existing and left for its own lane.
 - This worklog (round-0 style finding).
 
 ---
@@ -54,6 +55,7 @@ None. (Local sandbox has no Postgres/Docker — DB-gated integration pins verifi
 - `go test ./pkg/board/...` — ok (unit: parser/compose/reason-validation; PG-gated suite skips locally, runs in CI).
 - `go test ./api/internal/handlers/ -run 'TestBoard|TestWait|Parity' -count=1` — ok.
 - `go test ./cmd/workspace-agentd/ -run 'TestMCP|TestBoard|TestStrict' -count=1` — ok. (One full-package watchdog flake under 92% disk pressure passes in isolation; unrelated to this diff.)
+- `go test ./api/internal/server/ -run 'TestOpenAPISchemaParity' -count=1` — PASS (BoardTask parity restored after the openapi.yaml fix).
 - CI (PR #2104 round 0): build green; all 14 wait integration pins green with `-race` per the reviewer's verification.
 
 ---
@@ -78,4 +80,5 @@ None. (Local sandbox has no Postgres/Docker — DB-gated integration pins verifi
 - `pkg/board/board.go`, `criteria_met.go`, `depose.go`, `engine.go`, `persona.go`, `reads.go`, `rearm.go`, `reconciler.go`, `review.go`, `rows.go`, `stage.go`, `store.go`, `wait.go`, `wrapup.go` (`wait.go` new)
 - `pkg/board/wait_integration_test.go`, `wait_test.go` (new)
 - `runtimes/opencode/plugins/llmsafespaces-origin.js`
+- `sdks/openapi.yaml` (BoardTask waitOn/waitReason/waitingOn; BoardHealth waiting + BoardHealthWait)
 - `worklogs/NNNN_2026-11-18_board-typed-wait-verb.md` (this file)
