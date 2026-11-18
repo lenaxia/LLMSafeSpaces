@@ -353,6 +353,8 @@ export const BOARD_GUARD_MESSAGES: Record<string, string> = {
   self: "A story cannot depend on itself (ruling R4).",
   // #1837 P1b: the emission-corruption rejection class.
   text_rejected: "The text failed corruption checks (degenerate repetition or raw JSON splice artifacts) — regenerate the content (long text: use a file-backed field).",
+  // Claim-wait lifecycle (migration 000060): ONE active event-wait per story.
+  wait_already_declared: "This story already carries an active event-wait — one per story; advance the row or clear the wait before declaring another.",
 };
 
 import boardErrorCodesGolden from "../api/boardErrorCodes.json";

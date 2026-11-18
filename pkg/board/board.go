@@ -335,6 +335,9 @@ const (
 	// S5 (the DEPOSED directive): a LIVE healthy claim refuses
 	// deposition — the lease has not lapsed, or the assignee shows life.
 	GuardClaimLive = "claim_live"
+	// Claim-wait lifecycle (typed waits): the story already carries an
+	// active event-wait — ONE per story (migration 000060 / board_wait).
+	GuardWaitDeclared = "wait_already_declared"
 	// #1699 (#1772): malformed arguments (rendered 400).
 	GuardInput = "invalid_input"
 )

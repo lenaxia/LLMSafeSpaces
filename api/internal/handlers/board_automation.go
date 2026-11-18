@@ -36,6 +36,9 @@ type boardService interface {
 	Heartbeat(ctx context.Context, actor board.Actor, taskID, shortIDOrID string, observedProgressAt time.Time) (board.HeartbeatResult, error)
 	ReportThrottle(ctx context.Context, actor board.Actor, taskID, shortIDOrID string, retryAfter time.Duration, requestID string) (*board.Task, error)
 	MoveStage(ctx context.Context, actor board.Actor, taskID, shortIDOrID, toStage, evidenceURL, requestID string) (*board.Task, error)
+	// DeclareWait is board_wait (claim-wait lifecycle): the typed-wait
+	// entry verb — worker surface, claim token required on every arm.
+	DeclareWait(ctx context.Context, actor board.Actor, taskID, shortIDOrID, waitOn, waitReason, condition, requestID string) (*board.Task, error)
 	RecordVerdict(ctx context.Context, actor board.Actor, taskID, shortIDOrID string, in board.VerdictInput, requestID string) (*board.Task, *board.Verdict, error)
 	// RecordWrapUpVerdict is the wrap-up reviewer persona's close (the
 	// epic wrap-up review's engine-owned verb — token-guarded on every
@@ -156,6 +159,41 @@ func (h *PodAutomationHandler) BoardMoveStage(c *gin.Context) {
 	task, err := h.board.MoveStage(c.Request.Context(),
 		h.boardActor(ownerID, workspaceID, req.ClaimToken, boardSessionID(c, raw)),
 		req.TaskID, req.ShortID, req.ToStage, req.EvidenceURL, req.RequestID)
+	if err != nil {
+		renderBoardError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, task)
+}
+
+// BoardWait is board_wait (claim-wait lifecycle, migration 000060):
+// the typed-wait entry verb — the worker declares WHAT the story waits
+// on. waitOn='user' enters today's pending_input flag-op
+// byte-identically (plus wait_on/wait_reason dress); waitOn='event'
+// parks the claim on a declarative condition (grammar validated at the
+// engine's verb edge; the condition rides the wait_declared event, the
+// row carries the prose). Token-guarded on every arm; one active
+// event-wait per story.
+func (h *PodAutomationHandler) BoardWait(c *gin.Context) {
+	raw, workspaceID, ownerID, ok := h.resolve(c)
+	if !ok {
+		return
+	}
+	var req struct {
+		TaskID     string `json:"taskId"`
+		ShortID    string `json:"shortId"`
+		ClaimToken string `json:"claimToken"`
+		WaitOn     string `json:"waitOn"`
+		WaitReason string `json:"waitReason"`
+		Condition  string `json:"condition"`
+		RequestID  string `json:"requestId"`
+	}
+	if !bindBoardBody(c, raw, &req) {
+		return
+	}
+	task, err := h.board.DeclareWait(c.Request.Context(),
+		h.boardActor(ownerID, workspaceID, req.ClaimToken, boardSessionID(c, raw)),
+		req.TaskID, req.ShortID, req.WaitOn, req.WaitReason, req.Condition, req.RequestID)
 	if err != nil {
 		renderBoardError(c, err)
 		return

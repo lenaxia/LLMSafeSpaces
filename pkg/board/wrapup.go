@@ -656,7 +656,7 @@ func (s *Service) RecordWrapUpVerdict(ctx context.Context, actor Actor, taskID, 
 			UPDATE tasks SET stage='done', stage_entered_at=now(),
 				claim_token=NULL, lease_expires_at=NULL, claim_incremented_attempts=false, claim_persona=NULL,
 				failure_count=0, last_attempt_failed=false, last_failure_at=NULL,
-				pending_origin=NULL, pending_input=false,
+				pending_origin=NULL, pending_input=false, wait_on=NULL, wait_reason=NULL,
 				nudge_id=NULL, nudged_at=NULL, last_heartbeat_at=NULL
 			WHERE id=$1 AND NOT paused AND stage='in_review' AND claim_token=$2`,
 			cur.ID, actor.ClaimToken)

@@ -55,8 +55,10 @@ func TestMCPBoard_RegistryShape(t *testing.T) {
 	want := []string{
 		// Worker tools (#1701, design 0067 §4.3c). board_record_verdict
 		// (#1947): the spawned reviewer persona's ONE authorized write —
-		// claim-token-required, worker projection only.
-		"board_heartbeat", "board_move_stage", "board_read", "board_record_verdict", "board_record_wrapup_verdict", "board_report_throttle",
+		// claim-token-required, worker projection only. board_wait
+		// (claim-wait lifecycle, migration 000060): the typed-wait entry
+		// verb — worker-only, claim-token-required on every arm.
+		"board_heartbeat", "board_move_stage", "board_read", "board_record_verdict", "board_record_wrapup_verdict", "board_report_throttle", "board_wait",
 		// Manager set (#1747): projects.
 		"board_create_project", "board_update_project", "board_project_archive",
 		"board_project_unarchive", "board_project_pause", "board_project_resume",

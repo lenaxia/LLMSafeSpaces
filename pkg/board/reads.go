@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 )
@@ -473,6 +474,7 @@ func (s *Service) BoardHealth(ctx context.Context, userID string) (*Health, erro
 		RecentReclaims:       []HealthReclaim{},
 		ProjectSlots:         []HealthProjectSlots{},
 		AckWaits:             []HealthAckWait{},
+		Waiting:              []HealthWait{},
 	}
 	if err := s.healthActiveLeases(ctx, userID, h); err != nil {
 		return nil, err
@@ -489,7 +491,54 @@ func (s *Service) BoardHealth(ctx context.Context, userID string) (*Health, erro
 	if err := s.healthAckWaits(ctx, &userID, nil, h); err != nil {
 		return nil, err
 	}
+	if err := s.healthWaiting(ctx, &userID, nil, h); err != nil {
+		return nil, err
+	}
 	return h, s.healthProjectSlots(ctx, userID, h)
+}
+
+// healthWaiting renders the typed-wait section (claim-wait lifecycle
+// §2.3): every waiting claimed row — user-waits (flagged; wait_on
+// renders 'user' by the COALESCE read for pre-verb rows) AND
+// event-waits — with {short_id, wait_on, wait_reason, since}. since is
+// the declaration event's timestamp: the verb's wait_declared event,
+// or the flag-op's pending_input_flag event for alias-entered
+// user-waits (the latest flag=true one; zero when history has aged out
+// of board_events — the facts stay, the timestamp degrades honestly).
+// A nil bound widens the perimeter (the agent surface passes only its
+// workspace, the healthAckWaits pattern).
+func (s *Service) healthWaiting(ctx context.Context, userID, workspaceID *string, h *Health) error {
+	rows, err := s.q().Query(ctx, `
+		SELECT t.id, t.short_id, t.title, t.project_id,
+		       COALESCE(t.wait_on, CASE WHEN t.pending_input THEN 'user' END),
+		       COALESCE(t.wait_reason, ''),
+		       (SELECT be.created_at FROM board_events be
+		         WHERE be.project_id = t.project_id AND be.item_kind = 'task'
+		           AND be.item_id = t.id
+		           AND (be.action = 'wait_declared'
+		                OR (be.action = 'pending_input_flag' AND (be.payload->>'flag')::boolean))
+		         ORDER BY be.created_at DESC LIMIT 1)
+		FROM tasks t JOIN projects p ON p.id = t.project_id
+		WHERE ($1::text IS NULL OR p.user_id = $1)
+		  AND ($2::uuid IS NULL OR p.target_workspace_id = $2)
+		  AND (t.wait_on IS NOT NULL OR t.pending_input)
+		ORDER BY t.created_at, t.id`, userID, workspaceID)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var w HealthWait
+		var since *time.Time
+		if err := rows.Scan(&w.TaskID, &w.ShortID, &w.Title, &w.ProjectID, &w.WaitOn, &w.WaitReason, &since); err != nil {
+			return err
+		}
+		if since != nil {
+			w.Since = *since
+		}
+		h.Waiting = append(h.Waiting, w)
+	}
+	return rows.Err()
 }
 
 // healthAckWaits renders the wrap-up circuit-breaker's surface (§8): the
@@ -858,6 +907,9 @@ func (s *Service) BoardHealthInWorkspace(ctx context.Context, workspaceID string
 	}
 	srows.Close()
 	if err := s.healthAckWaits(ctx, nil, &workspaceID, h); err != nil {
+		return nil, err
+	}
+	if err := s.healthWaiting(ctx, nil, &workspaceID, h); err != nil {
 		return nil, err
 	}
 	return h, nil

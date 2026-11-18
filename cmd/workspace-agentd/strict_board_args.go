@@ -119,6 +119,10 @@ var boardStampSetTools = map[string]bool{
 	"board_list":            true,
 	"board_health":          true,
 	"board_validate_file":   true,
+	// Claim-wait lifecycle: board_wait joined the plugin's stamp set
+	// (audit attribution + the turn-end posture's stamp family — a
+	// wait declaration typically ends the declaring turn).
+	"board_wait": true,
 }
 
 // boardIdentityStampErrorText is the teaching error for an emitted

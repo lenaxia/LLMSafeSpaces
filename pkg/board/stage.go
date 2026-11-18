@@ -252,9 +252,13 @@ func (s *Service) moveStageTx(ctx context.Context, tx pgx.Tx, actor Actor, taskI
 	case from == StageInProgress && toStage == StagePendingInput:
 		// FLAG SET from live work (000050: pending_input is a flag, not a
 		// stage — the row keeps in_progress, the clock suspended by the
-		// RC1 scan's flag exclusion). Token + identity retained.
+		// RC1 scan's flag exclusion). Token + identity retained. Typed
+		// dress: every flag-set stamps wait_on='user' (migration 000060)
+		// and clears any prior wait_reason (an event-wait converting to
+		// the flag leaves its prose behind — the flag's reason is the
+		// next declaration's to state).
 		tag, err := tx.Exec(ctx, `
-			UPDATE tasks SET pending_input=true, pending_origin='worker', updated_at=now()
+			UPDATE tasks SET pending_input=true, pending_origin='worker', wait_on='user', wait_reason=NULL, updated_at=now()
 			WHERE id=$1 AND stage=$2 AND NOT pending_input`, taskID, from)
 		if err != nil {
 			return res, nudge{}, err
@@ -303,8 +307,9 @@ func (s *Service) moveStageTx(ctx context.Context, tx pgx.Tx, actor Actor, taskI
 
 	case from == StageInReview && toStage == StagePendingInput:
 		// FLAG SET from review (000050: flag-not-stage; row stays in_review).
+		// Typed dress: wait_on='user' (migration 000060).
 		tag, err := tx.Exec(ctx, `
-			UPDATE tasks SET pending_input=true, pending_origin='worker', updated_at=now()
+			UPDATE tasks SET pending_input=true, pending_origin='worker', wait_on='user', wait_reason=NULL, updated_at=now()
 			WHERE id=$1 AND stage=$2 AND NOT pending_input`, taskID, from)
 		if err != nil {
 			return res, nudge{}, err
@@ -355,8 +360,11 @@ func (s *Service) moveStageTx(ctx context.Context, tx pgx.Tx, actor Actor, taskI
 		// The nudge self-fail (000050): a worker that cannot complete
 		// declares failure per the lease-nudge prose. Counts as the
 		// attempt's failure; rearm is the exit. Token+identity cleared.
+		// Typed wait clears with the terminal (migration 000060: no
+		// waiting badge on a failed row).
 		tag, err := tx.Exec(ctx, `
 			UPDATE tasks SET stage='failed', stage_entered_at=now(), pending_input=false, pending_origin=NULL,
+				wait_on=NULL, wait_reason=NULL,
 				nudge_id=NULL, nudged_at=NULL,
 				claim_token=NULL, lease_expires_at=NULL, assignee_session=NULL, implementer_session=NULL,
 				claim_incremented_attempts=false, claim_persona=NULL,
@@ -543,7 +551,11 @@ func (s *Service) doneCascade(ctx context.Context, tx pgx.Tx, t *Task, evidenceU
 // route through here — a stage move off a flagged row resolves the
 // flag with the move).
 func (s *Service) updateStageTx(ctx context.Context, tx pgx.Tx, taskID, from, toStage, extra, evidenceURL string, actor Actor) (string, error) {
-	extra += `, pending_origin=NULL, pending_input=false, nudge_id=NULL, nudged_at=NULL, last_heartbeat_at=NULL, busy_renews=0, no_advance_renews=0`
+	// Typed wait: every STAGE transition is a worker-anchored advance
+	// (or the human exit) — the wait clears with the move (migration
+	// 000060's "any worker-anchored advance clears it"; the flag ops
+	// above never route through here).
+	extra += `, pending_origin=NULL, pending_input=false, wait_on=NULL, wait_reason=NULL, nudge_id=NULL, nudged_at=NULL, last_heartbeat_at=NULL, busy_renews=0, no_advance_renews=0`
 	tag, err := tx.Exec(ctx, `
 		UPDATE tasks SET stage=$2, stage_entered_at=now(), `+extra+`
 		WHERE id=$1 AND stage=$3`, taskID, toStage, from)
@@ -642,7 +654,7 @@ func (s *Service) bounceTx(ctx context.Context, tx pgx.Tx, taskID, implementer s
 		UPDATE tasks SET stage='in_progress', stage_entered_at=now(),
 			claim_token=$2, lease_expires_at=now()+make_interval(secs=>$3::float8), last_progress_at=now(),
 			assignee_session=$4, claim_incremented_attempts=false, claim_persona=NULL,
-			pending_input=false, pending_origin=NULL,
+			pending_input=false, pending_origin=NULL, wait_on=NULL, wait_reason=NULL,
 			nudge_id=NULL, nudged_at=NULL, last_heartbeat_at=NULL, busy_renews=0, no_advance_renews=0
 		WHERE id=$1 AND NOT paused`,
 		taskID, token, s.cfg.LeaseDuration.Seconds(), assignee)
@@ -670,8 +682,10 @@ func (s *Service) exitPendingReclaim(ctx context.Context, tx pgx.Tx, actor Actor
 	// worker-origin park (the row kept in_progress), and the enumerated
 	// LANDING for a drift_review park on in_review — the real stage moves
 	// with the re-claim, and the transition row below records that move.
+	// The re-claim MINT also clears the typed wait (the episode rule).
 	tag, err := tx.Exec(ctx, `
 		UPDATE tasks SET stage='in_progress', stage_entered_at=now(), pending_input=false, pending_origin=NULL,
+			wait_on=NULL, wait_reason=NULL,
 			nudge_id=NULL, nudged_at=NULL, last_heartbeat_at=NULL, busy_renews=0, no_advance_renews=0,
 			claim_token=$2, lease_expires_at=now()+make_interval(secs=>$3::float8), last_progress_at=now(),
 			assignee_session=NULL, implementer_session=NULL, claim_incremented_attempts=false, claim_persona=NULL, attempts=0,

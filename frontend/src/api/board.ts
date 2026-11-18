@@ -65,6 +65,15 @@ export interface BoardTask {
   pending_origin?: string | null;
   paused: boolean;
   waiting_on?: string;
+  /** Typed wait (claim-wait lifecycle, migration 000060): the wait
+   * TYPE — 'user' (dress on the pending_input flag) or 'event' (the
+   * declarative park: flag stays false, the platform owns resolution).
+   * NET-NEW wire fields are camelCase (the #2047 read-edge precedent).
+   * waitingOn is the composed prose for badges ("PR 2083 merge" /
+   * "user: runtime bump scope"); read-edge derived, never stored. */
+  waitOn?: "user" | "event" | "";
+  waitReason?: string;
+  waitingOnTyped?: string;
   backpressure?: string;
   project_name: string;
   epic_name: string;
