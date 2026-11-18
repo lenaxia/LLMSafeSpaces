@@ -51,7 +51,8 @@ ALTER TABLE tasks ADD COLUMN wait_reason TEXT;
   broker owns its lifecycle without a row dependency.
 - **waitReason** runs the textguard seam (cap 512, the placeholder-token scan).
 - Audit: `recordEventTx` action `wait_declared` (or `wait_cleared` on conversion),
-  deterministic id `wait:<taskID>:<claimToken>` (one declaration per episode; replays
+  deterministic id `wait:<taskID>:<claimToken>:<unix-nanos>` (the persona-escalation
+  nanos precedent — a within-episode re-declaration gets its OWN event; replays
   converge) — this is the event the broker consumes.
 
 ### 2.2 Clearing — "any worker-anchored advance clears it"
@@ -118,7 +119,10 @@ type WaitBroker struct {
 Run(ctx) — cadence 30s (SweepInterval); one pass:
   1. read wait_declared events past the watermark (deterministic ids make replays inert)
   2. for each declared event-wait still live on its row (wait_on='event', claim token
-     matches): ensure the compiled trigger exists (label select then create — idempotent)
+     matches): ensure the compiled trigger exists (label select then create — idempotent;
+     a NEW wait_declared event for an existing broker-owned trigger name — a
+     within-episode re-declaration — UPDATEs the trigger's script instead, so the fresh
+     declaration's seed reaches the sensor under the same ownership)
   3. for each broker-owned trigger whose row wait is GONE (cleared / claim ended / wedged /
      story terminal): trigger delete, event `wait_orphan_cleaned`
   4. for each delivered-but-unconsumed fire (trigger_fires audit, delivered class, fire
@@ -157,13 +161,25 @@ unit-pinned byte shapes):
 
 State dedupe (each template): the #1812 **marker-file signature** pattern (gate-script-patterns.md
 Pattern 3 — the gate input envelope carries only `{source, received_at}` and trigger vars are
-NOT readable by the script, so the script's own marker file is the sanctioned state channel):
-build a signature of the observed state (merge SHA / head-SHA + conclusions digest /
-stage+updated_at), compare against the marker under a broker-owned exchange-dir path
-(`/exchange/wait-broker/<short_id>.marker`), and proceed ONLY on transition into the satisfied
-state — mark-on-observation gives at-most-once fire per state change, so a 2-min poll of a
-long-merged PR fires once. Belt: broker-side consume dedupe — `wait_resolved` is keyed on the
-fire id, so a re-delivered or repeated fire never re-sends the resume. Repo
+NOT readable by the script, so the script's own marker file is the sanctioned state channel),
+keyed PER EPISODE and seeded PER DECLARATION so a re-declared wait can never inherit a stale
+satisfied signature: build the signature as `declSeed|observed` (declSeed = the declaration's
+wait_declared event id, a COMPILE-TIME constant the broker renders into the trigger script;
+observed = merge SHA / head-SHA + conclusions digest / stage+updated_at), compare against the
+marker at the FLAT per-episode path `/exchange/wait-broker-<short_id>-<claimTokenHash8>.marker`
+(flat by design: nested exchange dirs are the umask-0755 no-group-write EACCES class
+board_file_params.go documents — a nested marker could never be platform-unlinked), and
+proceed ONLY on transition into the satisfied state — mark-on-observation gives at-most-once
+fire per state change per declaration: a 2-min poll of a long-merged PR fires once, and a
+RE-DECLARED wait (new event id ⇒ new seed, fresh or updated trigger script) fires again even
+on an unchanged condition — never the fire-never stale-suppression shape. On proceed the
+script deletes its own marker (it runs in the workspace with fs access), so the happy path
+leaves nothing behind. Litter posture, stated honestly: the broker (API process) has no
+workspace filesystem access and CANNOT sweep markers; an orphaned marker (episode ended
+without a satisfying fire — wedge, claim-end, superseded declaration) is one ≤256 B flat
+file, bounded at one per episode, platform-unlinkable by name like every flat exchange file.
+Belt: broker-side consume dedupe — `wait_resolved` is keyed on the fire id, so a re-delivered
+or repeated fire never re-sends the resume. Repo
 identity (`owner/repo`) resolves from the workspace's project facts at declaration time
 (rides the `wait_declared` payload); the broker never guesses.
 
