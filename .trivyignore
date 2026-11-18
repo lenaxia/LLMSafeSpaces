@@ -26,6 +26,18 @@
 # Re-evaluate when npm-lock.json is updated.
 CVE-2026-59869 exp:2026-10-21
 
+# CVE-2026-112366 — picomatch: Denial of Service via single-branch
+# repeated extglob patterns
+# Transitive npm dev dependency of BUILD TOOLING only (@rollup/pluginutils,
+# tinyglobby, vite, vitest — not a root dependency of either -dependencies
+# or -devDependencies). Not shipped in any production artifact: the frontend
+# Dockerfile's runtime stage copies only the built dist/ into nginx, so the
+# matcher never executes at runtime. The CVE (published into the Trivy DB
+# 2026-11-17 between 19:15Z and 19:51Z — main and every open branch went
+# red simultaneously) has NO fixed release yet. Re-evaluate when a patched
+# picomatch ships and the lockfile picks it up.
+CVE-2026-112366 exp:2027-02-17
+
 # GHSA-qwww-vcr4-c8h2 — react-router: RSC Mode CSRF Bypass
 # Not exploitable: this advisory affects React Server Components (RSC) mode
 # with server actions. LLMSafeSpaces uses client-side routing only

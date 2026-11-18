@@ -4,7 +4,7 @@
 procedures were appended below in #938. Contents: opencode config
 schema, then SSE event fixtures — live wire + persisted store.)
 
-`opencode-config.schema.json` is a pinned copy of opencode's official config schema (source: <https://opencode.ai/config.json>). The chart-side agent-config writer (`pkg/agent/opencode/configwriter.go`, behind the AgentConfigWriter seam) MUST produce output that validates against this schema — enforced by `TestAgentConfigWriter_Rebuild_MatchesOpencodeSchema` and the generic `assertMatchesOpencodeSchema` helper called from every `rebuild()` test.
+`opencode-config.schema.json` is a pinned copy of opencode's official config schema (source: <https://opencode.ai/config.json>). The chart-side agent-config writer (`pkg/agent/opencode/configwriter.go`, behind the AgentConfigWriter seam) MUST produce output that validates against this schema — enforced by `TestConfigWriter_Rebuild_MatchesOpencodeSchema*` (`pkg/agent/opencode/configwriter_test.go`) and the generic `assertMatchesOpencodeSchema` helper called from every `rebuild()` test.
 
 ## Why pinned in-tree
 
@@ -17,21 +17,21 @@ Hermetic tests. Fetching the schema at test time couples CI to opencode's websit
 
 Refresh when either:
 1. **Chart release** — every `ts-*` build tag bump against a new upstream opencode version.
-2. **Test failure** — if `TestAgentConfigWriter_Rebuild_MatchesOpencodeSchema` starts failing on main without a writer change, that's the signal that opencode changed the schema and we haven't refreshed.
+2. **Test failure** — if `TestConfigWriter_Rebuild_MatchesOpencodeSchema*` starts failing on main without a writer change, that's the signal that opencode changed the schema and we haven't refreshed.
 
 ## How to refresh
 
 ```bash
 curl -sSL https://opencode.ai/config.json \
     -o pkg/agent/opencode/testdata/opencode-config.schema.json
-go test ./cmd/workspace-agentd/... -run 'TestAgentConfigWriter_Rebuild_MatchesOpencodeSchema'
+go test ./pkg/agent/opencode/ -run 'TestConfigWriter_Rebuild_MatchesOpencodeSchema'
 ```
 
 If tests still pass → commit the schema update. If they fail → the writer needs to catch up to the new schema; fix the writer, re-run.
 
 ## Note on external `$ref`s
 
-Opencode's schema has four `$ref` targets pointing at `https://models.dev/model-schema.json` — a 226 KB enum of every model on `models.dev`. These are resolved by the loader (`loadOpencodeSchema` in `configwriter_test.go`) by **replacing each `$ref` with `{"type": "string"}`** before compilation. Rationale:
+Opencode's schema has three `$ref` targets pointing at `https://models.dev/model-schema.json` — a 226 KB enum of every model on `models.dev`. (Four in the pre-1.19.x pin; the 1.19.5 refresh dropped one.) These are resolved by the loader (`loadOpencodeSchema` in `configwriter_test.go`) by **replacing each `$ref` with `{"type": "string"}`** before compilation. Rationale:
 
 - The writer emits arbitrary provider/model strings from user config; we do not gate on "must be a known models.dev model."
 - The models.dev enum changes weekly and would add a huge, unstable dependency for zero contract-testing value.
@@ -41,9 +41,9 @@ Opencode's schema has four `$ref` targets pointing at `https://models.dev/model-
 
 # SSE event fixtures — refresh procedure
 
-Two fixture PAIRS pin the opencode event surfaces (1.18.10 + 1.18.15).
-They exist because wire-shape drift was the root cause of issue #739
-(context usage silently NULL for weeks):
+Three fixture PAIRS pin the opencode event surfaces (1.18.10 + 1.18.15 +
+1.19.5). They exist because wire-shape drift was the root cause of issue
+#739 (context usage silently NULL for weeks):
 
 | Fixture | Surface | Type names | How captured |
 |---|---|---|---|
@@ -51,18 +51,22 @@ They exist because wire-shape drift was the root cause of issue #739
 | `event_store_1_18_10.jsonl` | persisted `event` table in `opencode.db` | **version-suffixed** (`message.part.updated.1`) | rows read from a live pod's `opencode.db`, reconstructed into the `/event` envelope shape (cross-checked against the live capture) |
 | `sse_events_1_18_15_live.jsonl` | same `/event` surface, opencode 1.18.15 | **unsuffixed** | local `opencode serve` (1.18.15) + OpenAI-compatible mock provider (tool-call round + terminal usage chunk); same redaction, deltas NOT subsampled (only 2 — the subsample rule is volume-driven) |
 | `event_store_1_18_15.jsonl` | same store surface, opencode 1.18.15 | **version-suffixed** | rows read from the local serve's `opencode.db` `event` table for the captured session |
+| `sse_events_1_19_5_live.jsonl` | same `/event` surface, opencode 1.19.5 | **unsuffixed** | local `opencode serve` (1.19.5, worklog 1295) + OpenAI-compatible mock provider driving ONE turn: bash tool-call round (echo) → text round with terminal usage chunk; same redaction (IDs → shared synthetic map across the pair, >120-char strings → 60 chars + `…[trimmed]`), single delta kept |
+| `event_store_1_19_5.jsonl` | same store surface, opencode 1.19.5 | **version-suffixed** | rows read from the same serve's `opencode.db` `event` table, ordered by insertion |
 | `events-text-turn.txt` | `/event` SSE stream, the `session.next.*` V2 family (what the authority consumes under steer admission) | text turn: `session.next.{prompt.admitted,prompted,step.started,reasoning.started/ended,text.started/delta/ended,step.ended}` | verbatim `curl -N /event` capture on a production pod during a live steer-admitted turn (#1291); SSE `data:` lines kept verbatim; IDs mapped to synthetic sequences (consistent within a fixture), >120-char strings trimmed, non-frame lines dropped |
 | `events-tool-turn.txt` | same surface, same family | tool turn: adds `session.next.tool.{called,input.started/delta/ended,success}` | same capture method, a second turn that calls the bash tool; same redaction |
 
 **1.18.15 fixture limitations (deliberate, documented):** captured
 against the ai-sdk provider runtime (openai-compatible mock), which on
 1.18.15 emits `step-start`/`step-finish` PART types but produced no
-`tool` parts in this environment. The 1.18.10 pod capture REMAINS the
-tool-part lifecycle pin until a staging-pod re-capture on 1.18.15+;
-both pairs stay in the tree and every fixture test runs against both.
-New in the 1.18.15 live capture: `session.created` on the live stream
-(already in the taxonomy), `step-finish` parts with terminal-usage
-tokens.
+`tool` parts in this environment. RESOLVED by the 1.19.5 pair: its
+capture drove a real bash tool round, so the `tool` part lifecycle
+(pending → running → completed, callID + state.input) is now pinned on
+the current version's wire (the 1.18.10 pod capture remains the
+historical pin). New in the 1.18.15 live capture: `session.created` on
+the live stream (already in the taxonomy), `step-finish` parts with
+terminal-usage tokens. The 1.19.5 capture introduces NO new event
+types — taxonomy and repolint literal table unchanged.
 
 The same logical event type carries different names on the two surfaces — that is why `wire.IsPartUpdated` is suffix-tolerant, not as hedging. `session.status` events exist ONLY on the live SSE stream (never persisted) — agentd's busy/idle tracker depends on that.
 
@@ -87,7 +91,7 @@ Every fixture event must remain byte-shape-faithful apart from redaction/trimmin
 # opencode upgrade runbook (gated)
 
 Every runtime-image opencode bump (`OPENCODE_VERSION` in
-`runtimes/base/Dockerfile`) changes the wire every parser, taxonomy
+`runtimes/opencode/Dockerfile`) changes the wire every parser, taxonomy
 table, and metering decode depends on. The bump → re-capture pairing is
 **enforced** by gates (pre-commit + CI fail a bump without fixture
 changes) — this section is the procedure the gates point at.
