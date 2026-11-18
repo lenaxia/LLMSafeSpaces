@@ -148,6 +148,87 @@ func TestListingCount_InflightDedupeSkipsRow(t *testing.T) {
 	require.Equal(t, map[string]int{"ws-1/ses_busy": 5}, f.idx.rebuiltCounts)
 }
 
+// TestListingCount_InflightRowDoesNotDisplaceBudget — the review r1
+// docs-truth pin: the inflight claim runs IN SELECTION, before the
+// budget cut, so an in-flight row never consumes one of the pass's
+// three slots. Four eligible rows, budget 3, one pre-inflight: the
+// pass walks THREE non-inflight rows (the inflight row displaces
+// nobody; the cut falls on the fourth never-walked row).
+func TestListingCount_InflightRowDoesNotDisplaceBudget(t *testing.T) {
+	f := newAsyncCountTestHandler(t,
+		map[string]int{"ses_busy": 1, "ses_a": 1, "ses_b": 1, "ses_c": 1, "ses_d": 1}, nil)
+	syncDispatch(f.h)
+	require.True(t, f.h.countServeState().tryMarkInflight("ws-1/ses_busy"),
+		"sanity: the earlier pass holds ses_busy")
+	sessions := []types.SessionListItem{
+		driftRow("ses_busy", time.Hour),
+		driftRow("ses_a", time.Hour), driftRow("ses_b", time.Hour),
+		driftRow("ses_c", time.Hour), driftRow("ses_d", time.Hour),
+	}
+
+	f.h.ScheduleHarnessMessageCounts("ws-1", sessions)
+
+	assert.ElementsMatch(t, []string{"ses_a", "ses_b", "ses_c"}, f.walked(),
+		"the inflight row spends no budget — three walkable rows walk")
+}
+
+// TestCountServeTracker_CapResetBoundsRetirementMaps — the review r1
+// robustness pin: the tracker's maps are bounded by countServeCap
+// wholeness resets, and the MISS map carries its own — ghost rows
+// fail walks forever (they never reach record()), so the
+// rotation-reset trigger alone would never bound this population.
+// Lifetime-distinct drift rows must not grow the tracker without
+// bound (the map's own documented invariant).
+func TestCountServeTracker_CapResetBoundsRetirementMaps(t *testing.T) {
+	tr := &countServeTracker{}
+	base := time.Now()
+
+	for i := 0; i < countServeCap+50; i++ {
+		key := fmt.Sprintf("ws-1/ses_%05d", i)
+		neverRetired := tr.recordMiss(key, base)
+		require.False(t, neverRetired,
+			"one miss per key never retires (streak 1 < 3)")
+	}
+
+	tr.mu.Lock()
+	defer tr.mu.Unlock()
+	require.Less(t, len(tr.misses), countServeCap,
+		"the miss map's own cap reset bounded it — cap+50 distinct keys cannot exceed the cap")
+	require.LessOrEqual(t, len(tr.retiredAt), len(tr.misses),
+		"retirement stamps reset with the miss map (rotation state)")
+}
+
+// TestCountServeTracker_SuccessWalkResetAlsoBounds — record()'s
+// rotation reset (lastAt-triggered) clears the miss and retirement
+// maps with it: the two reset triggers are independent, and both
+// leave the tracker bounded.
+func TestCountServeTracker_SuccessWalkResetAlsoBounds(t *testing.T) {
+	tr := &countServeTracker{}
+	base := time.Now()
+
+	for i := 0; i < countServeRetireAfterMisses; i++ {
+		retired := tr.recordMiss("ws-1/ses_ghost", base)
+		require.Equal(t, i == countServeRetireAfterMisses-1, retired,
+			"the streak retires exactly on the third miss")
+	}
+	tr.mu.Lock()
+	require.Len(t, tr.retiredAt, 1, "sanity: the streak retired the row")
+	tr.mu.Unlock()
+
+	for i := 0; i < countServeCap+1; i++ {
+		tr.record(fmt.Sprintf("ws-1/ses_live_%04d", i), i, base.Add(time.Duration(i)*time.Second))
+	}
+
+	tr.mu.Lock()
+	defer tr.mu.Unlock()
+	require.LessOrEqual(t, len(tr.lastAt), countServeCap,
+		"the rotation reset bounded lastAt")
+	require.LessOrEqual(t, len(tr.misses), 1,
+		"record()'s reset cleared the miss map; only the post-reset key remains")
+	require.Empty(t, tr.retiredAt,
+		"record()'s reset cleared the retirement stamps — bounded again")
+}
+
 // TestListingCount_RetiresAfterRepeatedConfirmedMisses — the B pin:
 // three consecutive confirmed-absent walks (the ErrSessionNotFound 404
 // classifier) retire the row from walk candidacy. The next listing

@@ -796,13 +796,14 @@ func (t *countServeTracker) record(key string, count int, at time.Time) {
 	if t.lastAt == nil {
 		t.lastAt = map[string]time.Time{}
 		t.lastCt = map[string]int{}
-	}
-	if t.misses == nil {
 		t.misses = map[string]int{}
+		t.retiredAt = map[string]time.Time{}
 	}
 	if len(t.lastAt) >= countServeCap {
 		t.lastAt = map[string]time.Time{}
 		t.lastCt = map[string]int{}
+		t.misses = map[string]int{}
+		t.retiredAt = map[string]time.Time{}
 	}
 	t.lastAt[key] = at
 	t.lastCt[key] = count
@@ -833,7 +834,10 @@ func (t *countServeTracker) clearInflight(key string) {
 // recordMiss bumps the consecutive confirmed-absent streak; at
 // countServeRetireAfterMisses the row is retired (stamp recorded,
 // true returned exactly once per retirement). Transient failures
-// never reach this method.
+// never reach this method. The miss map carries its own countServeCap
+// reset (stamps cleared with it): ghost rows fail walks forever —
+// they never reach record() — so the rotation reset alone would
+// never bound this population.
 func (t *countServeTracker) recordMiss(key string, at time.Time) bool {
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -841,15 +845,20 @@ func (t *countServeTracker) recordMiss(key string, at time.Time) bool {
 		t.misses = map[string]int{}
 	}
 	t.misses[key]++
-	if t.misses[key] < countServeRetireAfterMisses {
+	if len(t.misses) >= countServeCap {
+		t.misses = map[string]int{}
+		t.retiredAt = map[string]time.Time{}
 		return false
 	}
-	if t.retiredAt == nil {
-		t.retiredAt = map[string]time.Time{}
+	if t.misses[key] >= countServeRetireAfterMisses {
+		if t.retiredAt == nil {
+			t.retiredAt = map[string]time.Time{}
+		}
+		t.retiredAt[key] = at
+		t.misses[key] = 0
+		return true
 	}
-	t.retiredAt[key] = at
-	t.misses[key] = 0
-	return true
+	return false
 }
 
 // isRetired reports whether the row is inside its retirement window.
@@ -906,11 +915,11 @@ func (h *ProxyHandler) SetCountWalkDispatchForTest(d func(fn func())) {
 //
 // Selection is cheap and synchronous: eligibility
 // (sessionindex.CountServeEligible), retirement (confirmed-miss
-// streak), inflight dedupe, the unchanged-row cooldown, rotation
+// streak), inflight claim, the unchanged-row cooldown, rotation
 // fairness (never-walked first, then oldest), and the per-pass budget.
-// A retired row neither walks nor spends budget (outcome
-// listing_count_retired); an in-flight row likewise
-// (listing_count_inflight).
+// Retired and in-flight rows are dropped IN SELECTION — before the
+// budget cut — so neither ever displaces a walkable row from a pass
+// (outcomes listing_count_retired / listing_count_inflight).
 func (h *ProxyHandler) ScheduleHarnessMessageCounts(workspaceID string, sessions []types.SessionListItem) {
 	// h.adapter is ctor-required (#828 — never nil-checked). The
 	// sessionIndex seam is optional wiring; nil disables the overlay.
@@ -934,9 +943,19 @@ func (h *ProxyHandler) ScheduleHarnessMessageCounts(workspaceID string, sessions
 			sessionindex.ReconcileOutcome("listing_count_retired")
 			continue
 		}
+		if !h.countServeState().tryMarkInflight(key) {
+			// An earlier pass's detached goroutine is walking this
+			// row right now — skip it here, BEFORE the budget cut,
+			// so the pass's budget reaches walkable rows.
+			sessionindex.ReconcileOutcome("listing_count_inflight")
+			continue
+		}
 		at, walkedCt, walked := h.countServeState().lookup(key)
 		if walked && walkedCt == sessions[i].MessageCount && now.Sub(at) < countServeCooldown {
 			sessionindex.ReconcileOutcome("listing_count_cooldown")
+			// Not dispatched this pass — release the claim so a
+			// concurrent pass can take the row at cooldown expiry.
+			h.countServeState().clearInflight(key)
 			continue
 		}
 		candidates = append(candidates, candidate{idx: i, walkedAt: at, walked: walked})
@@ -957,16 +976,16 @@ func (h *ProxyHandler) ScheduleHarnessMessageCounts(workspaceID string, sessions
 		return candidates[a].walkedAt.Before(candidates[b].walkedAt)
 	})
 	if len(candidates) > listingCountBudget {
+		// Over-budget rows were claimed during selection; release
+		// them back (they stay eligible for the next pass).
+		for _, cand := range candidates[listingCountBudget:] {
+			h.countServeState().clearInflight(workspaceID + "/" + sessions[cand.idx].InternalID)
+		}
 		candidates = candidates[:listingCountBudget]
 	}
 	jobs := make([]countWalkJob, 0, len(candidates))
 	for _, cand := range candidates {
 		row := &sessions[cand.idx]
-		key := workspaceID + "/" + row.InternalID
-		if !h.countServeState().tryMarkInflight(key) {
-			sessionindex.ReconcileOutcome("listing_count_inflight")
-			continue
-		}
 		jobs = append(jobs, countWalkJob{internalID: row.InternalID, persisted: row.MessageCount})
 	}
 	if len(jobs) == 0 {

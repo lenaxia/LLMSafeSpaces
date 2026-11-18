@@ -73,6 +73,17 @@ None. Follow-up candidates (not done, deliberately): `GetAuthoritativeActiveSess
 
 ---
 
+## Review Round 1 (PR #2106) — all four findings fixed
+
+1. **robustness: unbounded `misses`/`retiredAt`** — `recordMiss` now carries its own `countServeCap` wholesale reset (ghost rows never reach `record()`'s lastAt-triggered reset, so the miss map needed its own trigger; retirement stamps clear with it); `record()`'s rotation reset also clears both new maps. Pins: `TestCountServeTracker_CapResetBoundsRetirementMaps` (cap+50 distinct keys → bounded) + `TestCountServeTracker_SuccessWalkResetAlsoBounds`.
+2. **docs-truth: inflight-vs-budget comment** — the inflight claim moved INTO selection, before the budget cut, so an in-flight row never displaces a walkable row (cooldown-skipped and over-budget rows release their claim). Comment now states the real order. Pin: `TestListingCount_InflightRowDoesNotDisplaceBudget` (4 eligible rows, 1 pre-inflight → 3 walkable rows walk).
+3. **docs-truth: stale README TTL passages** — README-LLM.md:592 (per-replica staleness) and the stale-window paragraph (:646 block) updated to `modelCacheTTL`/60s with 60s+15s window math.
+4. **style: orphan comment fragment** — sessionindex/service.go outcome-registry comment re-attached cleanly (duplicate fragment dropped, #1889 clause rejoined).
+
+Tests re-run: handlers/server/sessionindex/app all ok; golangci-lint 0 issues; gofmt clean.
+
+---
+
 ## Next Steps
 
 1. Push branch, open PR, run the AI-review cycle to APPROVE, squash-merge (repo workflow).
