@@ -24,12 +24,14 @@ Everything below applies to every story regardless of use case.
   "natural pause point". Report as you go (what was done, the artifact
   URL, what is next); **stopping after the report while work remains is
   the anti-pattern** — the report is an update, not a stopping point.
-- **What you are waiting on decides the move:**
+- **What you are waiting on decides the move** (the typed-wait verb
+  `board_wait` is the entry for both wait kinds; the claim token guards
+  it):
 
   | Waiting on | The move |
   | --- | --- |
-  | a USER decision | `board_move_stage {toStage: "pending_input"}` with the question stated in the move and your report — never pending_input for events |
-  | an EVENT (CI run, review verdict, PR state) | keep the turn alive with a bounded watch (`gh pr checks --watch`, cap ~12 min) OR end the turn declaring the event-wait and its condition (what you wait on, where it lands, how you resume) |
+  | a USER decision | `board_wait {waitOn: "user", waitReason: "<the question>"}` — the `pending_input` flag-op with the question stated (`board_move_stage {toStage: "pending_input"}` keeps working as the alias) — never for events |
+  | an EVENT (CI run, review verdict, PR state) | keep the turn alive with a bounded watch (`gh pr checks --watch`, cap ~12 min) OR `board_wait {waitOn: "event", condition: "pr_merged(<pr>)"}` declaring the event-wait, then end the turn (the closed grammar: `pr_merged`/`ci_green` take a PR number, `story_done` takes a `tsk-…` short id) |
   | nothing | keep working |
 
 - **`make fmt-check` before every push.** A red format check never leaves

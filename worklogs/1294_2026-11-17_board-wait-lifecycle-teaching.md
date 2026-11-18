@@ -85,3 +85,20 @@ process; if 2058 merges first its pins and mine coexist by design.
   verified byte-identical by the mirror semantics).
 - `go build ./...`, `go vet` on the touched packages, `make fmt-check`
   — green.
+
+## Union with the engine half (2104, 2026-11-18 main wave)
+
+Tonight's wave merged `board_wait` (typed waits, migration 000060):
+`waitOn='user'` IS the pending_input flag-op (typed dress:
+wait_on/wait_reason; move_stage toStage=pending_input stays the alias,
+implicit wait_on='user'); `waitOn='event'` parks the claim on a closed
+declarative condition (`pr_merged(<pr>)` / `ci_green(<pr>)` /
+`story_done(tsk-…)`) — the row stays in_progress with its claim, the
+ladder does not freeze. The teaching union: the charter block's
+wait-type table and both process-discipline copies now teach the typed
+verb for BOTH rows (the legacy move_stage form named as the alias);
+pins updated in the same change (charter test: `board_wait`,
+`waitOn: "user"`, `waitOn: "event"`, `pr_merged(<pr>)`; catalog:
+`board_wait`). Merge conflicts with the wave were CHANGELOG/COORDINATE
+append-at-anchor (keep-both); no engine file overlap — 2104 touched
+none of this PR's files.

@@ -105,19 +105,24 @@ func boardCharterPrompt(c *board.Claim) string {
 		b.WriteString("evidence. The claim token above authorizes your in-flight writes for this task only.\n")
 	}
 	// The wait lifecycle, taught at claim time (tsk-petite-seasoning-wiggles,
-	// the teaching half — the engine half lands separately): the nudge
-	// contract used to ride only the nudge text, and workers ended turns
-	// at checkpoints ("report-then-stop") while actionable work remained.
-	// Both arms carry the same block — a persona worker fails these rules
-	// exactly as an implementer does.
+	// the teaching half): the nudge contract used to ride only the nudge
+	// text, and workers ended turns at checkpoints ("report-then-stop")
+	// while actionable work remained. Union with the engine half (2104,
+	// typed waits): the wait-type table teaches board_wait — waitOn='user'
+	// IS the pending_input flag-op with the question stated (move_stage
+	// toStage=pending_input keeps working as the alias); waitOn='event'
+	// parks the claim on the closed condition grammar (pr_merged/ci_green/
+	// story_done). Both arms carry the same block — a persona worker
+	// fails these rules exactly as an implementer does.
 	b.WriteString("\nTURN BUDGET & WAITS: a turn is a unit of WORK, not progress. Do not end your turn while\n")
 	b.WriteString("actionable next steps remain — turn-end is for completion, blockage, or a declared external\n")
 	b.WriteString("wait, never a checkpoint or a 'natural pause point'. What you are waiting on decides the move:\n")
-	b.WriteString("- waiting on a USER decision -> board_move_stage to pending_input with the question stated\n")
-	b.WriteString("  (never pending_input for events);\n")
+	b.WriteString("- waiting on a USER decision -> board_wait {waitOn: \"user\", waitReason: \"<the question>\"} —\n")
+	b.WriteString("  the pending_input flag-op with the question stated (never for events);\n")
 	b.WriteString("- waiting on an EVENT (CI run, review, PR) -> keep this turn alive with a bounded watch\n")
-	b.WriteString("  (gh pr checks --watch, cap ~12 min) OR end the turn declaring the event-wait and its\n")
-	b.WriteString("  condition;\n")
+	b.WriteString("  (gh pr checks --watch, cap ~12 min) OR board_wait {waitOn: \"event\", condition: \"pr_merged(<pr>)\"}\n")
+	b.WriteString("  (pr_merged/ci_green take a PR number; story_done takes a tsk-… short id)\n")
+	b.WriteString("  declaring the event-wait, then end the turn;\n")
 	b.WriteString("- nothing to wait on -> keep working.\n")
 	b.WriteString("Report as you go (what was done, the artifact URL, what is next); stopping after the report\n")
 	b.WriteString("while work remains is the anti-pattern. If a BOARD LEASE NUDGE message arrives, call\n")

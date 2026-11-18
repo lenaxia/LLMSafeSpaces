@@ -298,6 +298,12 @@ var boardParityMatrix = []parityRow{
 		agentTools: []string{"board_heartbeat"}},
 	{action: "report_throttle", restMethods: nil, rest: absentCell, externalMCP: absentCell, agent: liveCell,
 		agentTools: []string{"board_report_throttle"}},
+	// Claim-wait lifecycle (migration 000060): the typed-wait entry
+	// verb — worker-only like heartbeat/throttle (a wait is a
+	// claim-holder's declaration; the public REST/external MCP surfaces
+	// never carry claim tokens).
+	{action: "wait", restMethods: nil, rest: absentCell, externalMCP: absentCell, agent: liveCell,
+		agentTools: []string{"board_wait"}},
 	// Engine-internal since R9 — absent on ALL surfaces, permanently.
 	// The agent surface's absence is enforced at BOTH tiers: the seam
 	// route table (TestBoardParity_AgentColumn) and the agentd registry
@@ -525,6 +531,7 @@ func TestBoardParity_AgentColumn(t *testing.T) {
 		"POST /internal/v1/automation/board/tasks/set-criteria-met", // #1946: the reviewer-persona claim's scoped criteria-flags write
 		"POST /internal/v1/automation/board/tasks/throttle",
 		"POST /internal/v1/automation/board/tasks/verdict",        // #1947: the spawned reviewer persona's verdict channel (token-guarded)
+		"POST /internal/v1/automation/board/tasks/wait",           // claim-wait lifecycle: the typed-wait entry verb (token-guarded on every arm)
 		"POST /internal/v1/automation/board/tasks/wrapup-verdict", // epic wrap-up review: the reviewer persona's close (engine-owned schema, token-guarded)
 		"PUT /internal/v1/automation/board/config",                // board_set_config: tier-selected REPLACE write (manager set)
 	}, seamBoardRoutes(t),
@@ -539,6 +546,11 @@ func TestBoardParity_AgentColumn(t *testing.T) {
 	w = doBoard(t, r, http.MethodPost, "/internal/v1/automation/board/tasks/throttle",
 		`{"workspaceID":"ws-1","shortId":"tsk-cccc3333","claimToken":"tok","retryAfterSeconds":30}`)
 	assert.Equal(t, http.StatusOK, w.Code, w.Body.String())
+	w = doBoard(t, r, http.MethodPost, "/internal/v1/automation/board/tasks/wait",
+		`{"workspaceID":"ws-1","shortId":"tsk-cccc3333","claimToken":"tok","waitOn":"event","waitReason":"PR 2083 merge","condition":"pr_merged(2083)"}`)
+	assert.Equal(t, http.StatusOK, w.Code, w.Body.String())
+	assert.Equal(t, 1, svc.calls["wait"], "the wait verb reached the service")
+	assert.Equal(t, "event", svc.lastWaitOn, "the wait args passed through verbatim")
 
 	// Guard-class parity on the shared action (move_stage): the same
 	// BoardService error renders the same (status, code) on both
@@ -710,7 +722,7 @@ func TestBoardParity_ExternalMCPColumn(t *testing.T) {
 	// declared-asymmetric rows absent with none.
 	for _, row := range boardParityMatrix {
 		switch row.action {
-		case "heartbeat", "report_throttle":
+		case "heartbeat", "report_throttle", "wait":
 			assert.Equal(t, "absent", row.externalMCP.kind,
 				"%s: worker-only action — external actors hold no claim tokens (§4.3b)", row.action)
 			assert.Empty(t, row.extTools, "%s: absent cells name no tools", row.action)

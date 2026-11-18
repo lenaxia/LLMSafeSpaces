@@ -815,7 +815,7 @@ func (s *Service) rc1Reclaims(ctx context.Context) (int, error) {
 			// guess (000050). Failed + evidence; rearm is the exit.
 			tag, err := tx.Exec(ctx, `
 				UPDATE tasks SET stage='failed', stage_entered_at=now(),
-					pending_origin='escalated', pending_input=false,
+					pending_origin='escalated', pending_input=false, wait_on=NULL, wait_reason=NULL,
 				nudge_id=NULL, nudged_at=NULL, last_heartbeat_at=NULL,
 				busy_renews=0, no_advance_renews=0,
 				claim_token=NULL, lease_expires_at=NULL, assignee_session=NULL, implementer_session=NULL,
@@ -862,6 +862,7 @@ func (s *Service) rc1Reclaims(ctx context.Context) (int, error) {
 				claim_token=NULL, lease_expires_at=NULL, assignee_session=NULL, implementer_session=NULL,
 				claim_incremented_attempts=false, claim_persona=NULL,
 				nudge_id=NULL, nudged_at=NULL, last_heartbeat_at=NULL,
+				wait_on=NULL, wait_reason=NULL,
 				last_attempt_failed=true, failure_count=failure_count+1, last_failure_at=now(),
 				cooldown_until=now()+make_interval(secs=>$2::float8)
 			WHERE id=$1 AND stage='in_progress' AND (lease_expires_at IS NULL OR lease_expires_at < now())`,
@@ -1026,7 +1027,7 @@ func (s *Service) rc1PersonaClaims(ctx context.Context) (personaReclaim, error) 
 			// in_review shape (no accounting, no transition).
 			tag, err := tx.Exec(ctx, `
 				UPDATE tasks SET claim_token=NULL, lease_expires_at=NULL, claim_persona=NULL,
-					nudge_id=NULL, nudged_at=NULL, last_heartbeat_at=NULL
+					nudge_id=NULL, nudged_at=NULL, last_heartbeat_at=NULL, wait_on=NULL, wait_reason=NULL
 				WHERE id=$1 AND stage='in_review' AND lease_expires_at < now()`, v.id)
 			if err != nil {
 				_ = tx.Rollback(ctx)
@@ -1078,7 +1079,7 @@ func (s *Service) rc1PersonaClaims(ctx context.Context) (personaReclaim, error) 
 		// in exactly that emptied window).
 		tag, err := tx.Exec(ctx, `
 			UPDATE tasks SET claim_token=NULL, lease_expires_at=NULL, assignee_session=NULL, claim_persona=NULL,
-				nudge_id=NULL, nudged_at=NULL, last_heartbeat_at=NULL,
+				nudge_id=NULL, nudged_at=NULL, last_heartbeat_at=NULL, wait_on=NULL, wait_reason=NULL,
 				last_attempt_failed=true, failure_count=failure_count+1, last_failure_at=now(),
 				cooldown_until=now()+make_interval(secs=>$2::float8)
 			WHERE id=$1 AND stage='in_review' AND lease_expires_at < now()`,
@@ -1181,7 +1182,7 @@ func (s *Service) rc1PersonaClaims(ctx context.Context) (personaReclaim, error) 
 		if int(v.failures) >= s.cfg.AttemptsCap {
 			tag, err := tx.Exec(ctx, `
 				UPDATE tasks SET stage='failed', stage_entered_at=now(), pending_origin='escalated', pending_input=false,
-					cooldown_until=NULL
+					wait_on=NULL, wait_reason=NULL, cooldown_until=NULL
 				WHERE id=$1 AND stage='in_review' AND claim_token IS NULL`, v.id)
 			if err != nil {
 				_ = tx.Rollback(ctx)
@@ -1351,7 +1352,7 @@ func (s *Service) pendingCoupling(ctx context.Context) (staged, resumed int, err
 			return staged, resumed, err
 		}
 		tag, err := tx.Exec(ctx, `
-			UPDATE tasks SET pending_input=true, pending_origin='worker', updated_at=now()
+			UPDATE tasks SET pending_input=true, pending_origin='worker', wait_on='user', wait_reason=NULL, updated_at=now()
 			WHERE id=$1 AND stage='in_progress' AND NOT pending_input`, r.id)
 		if err != nil {
 			_ = tx.Rollback(ctx)
@@ -1406,6 +1407,7 @@ func (s *Service) pendingCoupling(ctx context.Context) (staged, resumed int, err
 		}
 		tag, err := tx.Exec(ctx, `
 			UPDATE tasks SET pending_input=false, pending_origin=NULL,
+				wait_on=NULL, wait_reason=NULL,
 				lease_expires_at=now()+make_interval(secs=>$2::float8), updated_at=now()
 			WHERE id=$1 AND pending_input AND pending_origin='worker'`,
 			r.id, s.cfg.LeaseDuration.Seconds())
@@ -1544,7 +1546,7 @@ func (s *Service) rc2Drift(ctx context.Context, cutoff time.Time) (done, review,
 					return done, review, reentry, err
 				}
 				tag, err := tx.Exec(ctx, `
-					UPDATE tasks SET pending_input=true, pending_origin='drift_review', updated_at=now()
+					UPDATE tasks SET pending_input=true, pending_origin='drift_review', wait_on='user', wait_reason=NULL, updated_at=now()
 					WHERE id=$1 AND stage='in_review' AND NOT pending_input`, t.ID)
 				if err != nil {
 					_ = tx.Rollback(ctx)
@@ -1593,9 +1595,11 @@ func (s *Service) rc2Drift(ctx context.Context, cutoff time.Time) (done, review,
 						-- flag with the move (paired form — a drift_review
 						-- park reaching closed-unmerged must not violate
 						-- tasks_pending_input_set, review round 2 finding 4)
-						-- and reset the episode evidence slots.
+						-- and reset the episode evidence slots (the typed
+						-- wait clears with the mint).
 						pending_input=false, pending_origin=NULL,
-						nudge_id=NULL, nudged_at=NULL, last_heartbeat_at=NULL, busy_renews=0, no_advance_renews=0
+						nudge_id=NULL, nudged_at=NULL, last_heartbeat_at=NULL, busy_renews=0, no_advance_renews=0,
+						wait_on=NULL, wait_reason=NULL
 					WHERE id=$1 AND stage='in_review'`,
 					t.ID, newToken, s.cfg.LeaseDuration.Seconds())
 				if err != nil {
@@ -1612,9 +1616,11 @@ func (s *Service) rc2Drift(ctx context.Context, cutoff time.Time) (done, review,
 						-- Paired-form flag resolution + episode reset (the
 						-- backlog twin of finding 4: a no-identity parked
 						-- row lands backlog flag-free, never a constraint
-						-- violation that poisons the sweep).
+						-- violation that poisons the sweep). The typed
+						-- wait clears with the move.
 						pending_input=false, pending_origin=NULL,
-						nudge_id=NULL, nudged_at=NULL, last_heartbeat_at=NULL
+						nudge_id=NULL, nudged_at=NULL, last_heartbeat_at=NULL,
+						wait_on=NULL, wait_reason=NULL
 					WHERE id=$1 AND stage='in_review'`, t.ID)
 				if err != nil {
 					_ = tx.Rollback(ctx)

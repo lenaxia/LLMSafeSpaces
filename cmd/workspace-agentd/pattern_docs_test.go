@@ -247,9 +247,11 @@ func TestPatternDocs_ContentPins_BoardCatalog(t *testing.T) {
 		"evidenceUrl",                // the evidence contract on handoff
 		// Wait lifecycle (taught at claim time too — tsk-petite-seasoning-
 		// wiggles): turn budget, wait-type table, nudge contract, and the
-		// report-then-stop anti-pattern survive any doc rewrite.
+		// report-then-stop anti-pattern survive any doc rewrite. The table
+		// teaches the typed-wait verb (2104 union).
 		"unit of WORK, not progress", // the turn-budget rule
 		"with the question stated",   // pending_input = user decisions, never events
+		"board_wait",                 // the typed-wait entry verb (waitOn user/event)
 		"bounded watch",              // event waits: capped in-turn watch
 		"stopping after the report",  // the report-then-stop anti-pattern, named
 		"answer nudges only",         // heartbeats answer nudges, never speculated

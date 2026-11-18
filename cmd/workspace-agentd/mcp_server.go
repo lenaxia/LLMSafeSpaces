@@ -763,6 +763,19 @@ func mcpToolCatalog() []mcpTool {
 			}, "required": []string{"claimToken"}},
 		},
 		{
+			Name:        "board_wait",
+			Description: "Declare a TYPED WAIT on your claimed story (the REST wire term is 'task'; claim-wait lifecycle): say WHAT the story waits on — the row, board_health's waiting section, and the UI badge all show it. waitOn='user' enters today's pending_input wait byte-identically (the ladder freezes: no nudge, no reclaim while a human is awaited; the exits are the manager moves — you cannot self-exit) plus wait_reason dress. waitOn='event' parks the claim on a declarative condition the platform resolves later: pending_input stays false, the row stays in_progress, and the lease ladder does NOT freeze — you stay a full ladder citizen (answer nudges with board_heartbeat; a resolved event-wait reaches you as a resume message). condition is REQUIRED for event-waits and closed to v1 grammar: pr_merged(<PR number>) | ci_green(<PR number>) | story_done(<story short_id>) — anything else refuses at the verb edge. waitReason (≤512 chars, human prose, required for event-waits) is what every surface shows. ONE active event-wait per story (a second refuses wait_already_declared); any worker-anchored advance (stage move, verdict, criteria write) clears the wait. Requires the claim token from your charter envelope on every arm.",
+			InputSchema: map[string]any{"type": "object", "properties": map[string]any{
+				"claimToken": map[string]any{"type": "string", "description": "The claim token from your charter envelope (the in-flight guard — required on every arm; a wait is a claim-holder's declaration)"},
+				"waitOn":     map[string]any{"type": "string", "description": "'user' (await a human — today's pending_input wait, ladder frozen) or 'event' (await a declarative condition — ladder keeps running); required semantically — the engine refuses anything else", "enum": []string{"user", "event"}},
+				"waitReason": map[string]any{"type": "string", "description": "Short human prose naming what the story waits on (e.g. \"PR 2083 merge\", \"owner decision: runtime bump scope\") — shown on the wire, board_health, and the UI badge; required for event-waits"},
+				"condition":  map[string]any{"type": "string", "description": "Event-waits only: the declarative condition, closed grammar pr_merged(N) | ci_green(N) | story_done(tsk-…) — validated here, resolved by the platform's wait broker"},
+				"requestId":  map[string]any{"type": "string", "description": "Optional idempotency key (UUID): reuse it on retry of the SAME declaration — a replay returns the original outcome, never a duplicate"},
+				"shortId":    map[string]any{"type": "string", "description": "The story's short id (word-phrase form) — alternative to storyId"},
+				"storyId":    map[string]any{"type": "string", "description": "The story's UUID — alternative to shortId"},
+			}, "required": []string{"claimToken"}},
+		},
+		{
 			Name:        "board_move_stage",
 			Description: "Move a story's stage (the REST wire term is 'task') — the worker's forward writes when you hold a claim token, or the manager-grade move when you don't. WORKER (claimToken present, your claimed story): in_progress → in_review when your work is done (attach evidenceUrl — the artifact link for this transition: PR, build, doc); a review bounce (in_review → in_progress) re-arms a fresh claim and worker; → done requires ALL acceptance criteria met + evidenceUrl and is the reviewer's move, not yours. MANAGER (no claimToken — any in-workspace session, spawned workers included; the manager-grant gate is repealed, ruling 2026-10-27, tsk-copper-refectory-generates): the full legal manager set including the pending_input exits (→ in_progress re-claims, → backlog re-queues — the ONE attempts reset) and failed (the failure terminus 000050: attempts exhaustion and the lease wedge verdict land there; re-arm via board_rearm_story) — the pending_input freeze-out class (#1832) is gone; 000050: pending_input is a FLAG not a stage — the literal SETS the awaiting-input flag (row keeps its real stage) and the exits CLEAR it. A 409 with code claim_token means the claim is no longer yours — STOP and re-read the story with board_read. The story's stage machine arbitrates every move server-side; on refusal the response carries the authoritative row.",
 			InputSchema: map[string]any{"type": "object", "properties": map[string]any{
@@ -1362,7 +1375,7 @@ func callMCPTool(ctx context.Context, password, name string, args map[string]any
 	case "trigger_list", "trigger_create", "trigger_update", "trigger_delete", "trigger_fires",
 		"trigger_rotate_webhook_secret",
 		"workflow_list", "workflow_create", "workflow_update", "workflow_delete", "workflow_run", "workflow_runs",
-		"board_read", "board_heartbeat", "board_report_throttle", "board_move_stage",
+		"board_read", "board_heartbeat", "board_report_throttle", "board_move_stage", "board_wait",
 		"board_list", "board_health",
 		"board_get_config", "board_set_config",
 		"board_create_project", "board_update_project",

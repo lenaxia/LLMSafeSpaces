@@ -9,6 +9,7 @@ import { BoardErrorNotice } from "./BoardErrorNotice";
 import { X, Pencil, History } from "lucide-react";
 import { boardApi, type BoardAuditEvent, type BoardTask, type BoardVerdict, type BoardVerdictFinding } from "../../api/board";
 import { ApiClientError } from "../../api/client";
+import { cn } from "../../lib/utils";
 import { STAGE_LABELS, describeBoardError, type BoardStage, type DescribedBoardError } from "../../lib/boardRules";
 
 /** Mirrors the service's TaskEventsDefaultLimit — the drawer always asks
@@ -272,6 +273,37 @@ export function StoryDrawer({ open, onOpenChange, task, projectTasks = [], onEdi
                 </span>
               </span>
             </div>
+            {/* Typed wait (claim-wait lifecycle, migration 000060): the
+             * row that says WHAT the claim waits on — the drawer's
+             * answer to the incident's "nobody can see what the story
+             * needs". user=amber (human holds the gate, ladder frozen),
+             * event=blue (declarative condition, ladder running). */}
+            {task.waitingOnTyped && (
+              <div
+                className="flex items-center justify-between rounded-md border border-border px-2 py-1.5"
+                data-testid="drawer-wait"
+                data-wait-on={task.waitOn === "event" ? "event" : "user"}
+              >
+                <span
+                  className="text-muted-foreground"
+                  title={task.waitOn === "event"
+                    ? "Event wait — the platform resolves the declared condition; the lease ladder keeps running (nudge/reclaim still apply)"
+                    : "User wait — a human holds the gate; the lease ladder is frozen while the input is awaited"}
+                >
+                  Waiting on
+                </span>
+                <span
+                  className={cn(
+                    "rounded px-1.5 py-0 text-[10px] font-medium",
+                    task.waitOn === "event"
+                      ? "bg-sky-100 text-sky-800 dark:bg-sky-950 dark:text-sky-300"
+                      : "bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-300",
+                  )}
+                >
+                  {task.waitingOnTyped}
+                </span>
+              </div>
+            )}
             {/* 2026-10-29 owner ruling: the #1959 implementer identity is
              * on the read edge — render it as the second clickable
              * session ref (during review the assignee is the reviewer;

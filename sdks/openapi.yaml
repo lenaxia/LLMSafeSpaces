@@ -13450,6 +13450,16 @@ components:
         waiting_on:
           type: string
           description: Informational — "concurrency_limit" when the ready row waits on a cap (#1747)
+        waitOn:
+          type: string
+          enum: [user, event]
+          description: "Typed wait (claim-wait lifecycle, migration 000060): the wait TYPE — 'user' (dress on the 000050 pending_input flag; byte-identical semantics) or 'event' (pending_input stays false; the platform owns resolution). NET-NEW camelCase per the #2047 read-edge precedent; absent = no wait; a NULL-column flagged row renders 'user' by the COALESCE read rule (no backfill)."
+        waitReason:
+          type: string
+          description: "Typed wait: the short human prose naming what the story waits on (verb-edge capped at 512 bytes) — what every surface (wire, board_health waiting section, UI badge) shows. Absent when no wait_reason is set."
+        waitingOn:
+          type: string
+          description: "Typed wait: the composed prose for UIs — the event-wait's reason bare, or 'user: <reason>' (read-edge derived, never stored)."
         backpressure:
           type: string
           description: 'Informational — e.g. "backpressure: disk 92%" (#1747)'
@@ -13771,6 +13781,34 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/BoardHealthProjectSlots"
+        waiting:
+          type: array
+          description: "Typed wait (claim-wait lifecycle §2.3): every waiting claimed row — user-waits (flagged) AND event-waits — with its facts beside active_leases"
+          items:
+            $ref: "#/components/schemas/BoardHealthWait"
+    BoardHealthWait:
+      type: object
+      required: [task_id, short_id, title, project_id, wait_on]
+      properties:
+        task_id:
+          type: string
+        short_id:
+          type: string
+        title:
+          type: string
+        project_id:
+          type: string
+        wait_on:
+          type: string
+          enum: [user, event]
+          description: "The COALESCE read ('user' for flagged rows with NULL columns — no backfill)"
+        wait_reason:
+          type: string
+          description: The wait prose shown on every surface
+        since:
+          type: string
+          format: date-time
+          description: "The declaration event's timestamp (wait_declared, or pending_input_flag for alias-entered user-waits); zero when history has aged out"
     BoardHealthLease:
       type: object
       required: [task_id, short_id, title, project_id, lease_expires_at]

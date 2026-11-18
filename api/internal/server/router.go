@@ -1380,6 +1380,7 @@ func registerInternalAutomationRoutes(router *gin.Engine, cfg RouterConfig) {
 		b.PUT("/config", h.BoardSetConfig)                    // board_set_config: tier-selected REPLACE write (manager set)
 		b.POST("/tasks/heartbeat", h.BoardHeartbeat)
 		b.POST("/tasks/throttle", h.BoardReportThrottle)
+		b.POST("/tasks/wait", h.BoardWait)                          // claim-wait lifecycle: the typed-wait entry verb (token-guarded on every arm)
 		b.POST("/tasks/verdict", h.BoardRecordVerdict)              // #1947: the spawned reviewer persona's verdict channel (token-guarded)
 		b.POST("/tasks/wrapup-verdict", h.BoardRecordWrapUpVerdict) // epic wrap-up review: the reviewer persona's close (engine-owned schema, token-guarded)
 		b.POST("/tasks/move-stage", h.BoardMoveStage)
@@ -1491,12 +1492,13 @@ func workspaceSessionsListHandler(c *gin.Context, wsSvc interfaces.WorkspaceServ
 		// the harness session list — reaps ghost rows the agent
 		// reports absent for N consecutive checks.
 		proxyHandler.ReconcileSessionIndex(c.Request.Context(), workspaceID)
-		// #1880 direction 3: serve the HARNESS count for the drift
-		// class — rows whose message stream never traversed the API
-		// proxy, invisible to both the incremental path and the
-		// present-only rebuild (the #1452 list gap). Bounded walks,
-		// serve-through + persist (self-healing).
-		proxyHandler.ServeHarnessMessageCounts(c.Request.Context(), workspaceID, sessions)
+		// #1880 direction 3 (listing-latency redesign): select the
+		// drift-class rows and DISPATCH their harness count walks —
+		// the walks run detached after this response is served and
+		// persist through the rebuild seam, so the index converges
+		// for the next poll. The request path never waits on a pod
+		// round trip.
+		proxyHandler.ScheduleHarnessMessageCounts(workspaceID, sessions)
 		// Ground-truth session status (#792 Pattern 1): query
 		// /v1/statusz for authoritative busy/idle instead of the
 		// in-memory activeSess map, which goes stale when SSE

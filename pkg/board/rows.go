@@ -201,6 +201,21 @@ type Task struct {
 	Attempts         int        `json:"attempts"`
 	ClaimIncremented bool       `json:"claim_incremented_attempts"`
 	CooldownUntil    *time.Time `json:"cooldown_until,omitempty"`
+	// Typed wait (claim-wait lifecycle, migration 000060): waitOn is
+	// the wait TYPE — 'user' (dress on the 000050 pending_input flag;
+	// byte-identical semantics) or 'event' (the new worker-anchored
+	// state: pending_input stays FALSE, the platform owns resolution).
+	// NET-NEW wire fields are camelCase (the #2047 read-edge precedent
+	// assigneeQuietSeconds/assigneeBusySeconds — the legacy row shape
+	// stays snake_case). WaitOn/WaitReason carry the STORED columns as
+	// rendered by the read rule — no backfill: a pre-migration flagged
+	// row (wait_on NULL) renders WaitOn='user' by COALESCE at the scan
+	// edge. WaitingOnTyped is the composed prose for UIs ("PR 2083
+	// merge" / "user: runtime bump scope" — the incident's "nobody can
+	// see what the story needs" fix), never stored.
+	WaitOn         string `json:"waitOn,omitempty"`
+	WaitReason     string `json:"waitReason,omitempty"`
+	WaitingOnTyped string `json:"waitingOn,omitempty"`
 	// WaitingOn (derived, informational): "concurrency_limit" when the
 	// row is ready but the per-user or per-instance concurrent-claim cap
 	// is saturated (#1747 round 3 — over-cap is never an error; the row
@@ -335,6 +350,23 @@ type HealthProjectSlots struct {
 	InUse       int    `json:"in_use"`
 }
 
+// HealthWait is one waiting claimed row on the health panel's `waiting`
+// section (claim-wait lifecycle §2.3): per-claimed-row wait facts
+// BESIDE the lease facts — the "no indication what is needed to move
+// forward" fix. WaitOn renders the COALESCE read ('user' for flagged
+// rows with NULL columns); Since is the declaration event's timestamp
+// (wait_declared, or the pending_input_flag event for alias-entered
+// user-waits), zero when no event is found.
+type HealthWait struct {
+	TaskID     string    `json:"task_id"`
+	ShortID    string    `json:"short_id"`
+	Title      string    `json:"title"`
+	ProjectID  string    `json:"project_id"`
+	WaitOn     string    `json:"wait_on"`
+	WaitReason string    `json:"wait_reason,omitempty"`
+	Since      time.Time `json:"since,omitempty"`
+}
+
 // Health is the board health snapshot (design §4.2 board_read(health) /
 // §4.8's health panel): active leases + expiry, recent reclaims, task and
 // project-slot cooldowns, pending_input by origin, per-project slots.
@@ -351,6 +383,11 @@ type Health struct {
 	// manager-override close, §4's fail-visible tail). A healthy
 	// in-flight review rides the epic read, not this list.
 	AckWaits []HealthAckWait `json:"ack_waits"`
+	// Waiting is the typed-wait section (claim-wait lifecycle §2.3):
+	// every waiting claimed row — user-waits (flagged) AND event-waits
+	// — with its facts {short_id, wait_on, wait_reason, since}, beside
+	// active_leases (the same health projection pass).
+	Waiting []HealthWait `json:"waiting"`
 }
 
 // HealthAckWait is one epic awaiting the human's wrap-up ack.

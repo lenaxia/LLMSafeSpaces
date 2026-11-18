@@ -203,15 +203,19 @@ func TestCharterPrompt_RendersWaitLifecycle(t *testing.T) {
 	} {
 		got := boardCharterPrompt(c)
 		for _, want := range []string{
-			"TURN BUDGET & WAITS",                    // the block's title
-			"unit of WORK, not progress",             // the turn-budget rule
-			"never a checkpoint",                     // …nor a 'natural pause point'
-			"pending_input with the question stated", // user decisions, never events
-			"bounded watch",                          // event waits: watch in-turn, capped
-			"declaring the event-wait",               // …or end the turn declaring it
-			"stopping after the report",              // the report-then-stop anti-pattern, named
-			"board_heartbeat ONCE, FIRST",            // the nudge contract at claim time
-			"they answer nudges only",                // never speculate about heartbeats
+			"TURN BUDGET & WAITS",         // the block's title
+			"unit of WORK, not progress",  // the turn-budget rule
+			"never a checkpoint",          // …nor a 'natural pause point'
+			"board_wait",                  // the typed-wait verb (2104 union)
+			"waitOn: \"user\"",            // user decisions: the flag-op, typed
+			"with the question stated",    // the question rides waitReason
+			"waitOn: \"event\"",           // events: the declarative condition
+			"pr_merged(<pr>)",             // the closed condition grammar, taught
+			"bounded watch",               // event waits: watch in-turn, capped
+			"declaring the event-wait",    // …or declare it and end the turn
+			"stopping after the report",   // the report-then-stop anti-pattern, named
+			"board_heartbeat ONCE, FIRST", // the nudge contract at claim time
+			"they answer nudges only",     // never speculate about heartbeats
 		} {
 			if !strings.Contains(got, want) {
 				t.Fatalf("%s charter missing wait-lifecycle fragment %q:\n%s", name, want, got)

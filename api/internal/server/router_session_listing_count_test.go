@@ -3,16 +3,19 @@
 
 package server
 
-// #1880 direction 3 — the WIRING pins: the sidebar's session list route
-// serves the HARNESS count for the drift class. A GET through the
-// production router must walk the harness count for a list-invisible
-// count-zero row (the #1452 class the reconcile rebuild cannot reach)
-// and carry it on the WIRE — deleting the router's ServeHarnessMessageCounts
-// piggyback reddens these tests even with every handler unit green (the
-// TestRouterSessionList_TriggersReconcilePass precedent for the
-// reconcile piggyback). The r2 unhappy-path twin pins the failure
-// contract at the wiring tier: a walk error must answer the INDEX value
-// (never worse than the pre-fix wire), never a 5xx.
+// #1880 direction 3 — the WIRING pins, updated for the listing-latency
+// async-walk redesign: the sidebar's session list route DISPATCHES the
+// harness count walk for the drift class (detached from the request —
+// the tests pin the dispatch seam inline via SetCountWalkDispatchForTest
+// so the walk attempt and the index convergence are deterministic). The
+// WIRE serves the index value on this pass; the walked truth lands in
+// the index through the rebuild seam for the next poll. Deleting the
+// router's ScheduleHarnessMessageCounts piggyback reddens these tests
+// even with every handler unit green (the
+// TestRouterSessionList_TriggersReconcilePass precedent). The r2
+// unhappy-path twin pins the failure contract at the wiring tier: a
+// walk error must leave the INDEX value on the wire (never worse than
+// the pre-fix listing), never a 5xx.
 
 import (
 	"context"
@@ -76,8 +79,9 @@ func (a *listingCountSpyAdapter) ListSessions(_ context.Context, _, _ string) ([
 
 // listingCountRouter builds the production router around the spy
 // adapter and the given session list (the shared #1880 wiring-tier
-// fixture).
-func listingCountRouter(t *testing.T, spy *listingCountSpyAdapter, list []types.SessionListItem) *gin.Engine {
+// fixture). Returns the engine and the recording index (the walk's
+// convergence surface).
+func listingCountRouter(t *testing.T, spy *listingCountSpyAdapter, list []types.SessionListItem) (*gin.Engine, *recordingIndex) {
 	t.Helper()
 	gin.SetMode(gin.TestMode)
 	log, err := apilogger.New(false, "error", "json")
@@ -109,13 +113,18 @@ func listingCountRouter(t *testing.T, spy *listingCountSpyAdapter, list []types.
 	proxyHandler, err := handlers.NewProxyHandler(k8sMock, log, "default", nil, spy)
 	require.NoError(t, err)
 	proxyHandler.SetParentBackfilledForTest("ws-1")
+	// Pin the walk dispatch inline: the wiring assertions need the
+	// dispatched pass to have COMPLETED by the time the response is
+	// recorded (production dispatches detached — the async contract is
+	// pinned at the handler tier, proxy_session_listing_count_async_test).
+	proxyHandler.SetCountWalkDispatchForTest(func(fn func()) { fn() })
 	idx := newRecordingIndex()
 	idx.seed("ws-1", "ses_other", 2)
 	proxyHandler.SetSessionIndex(idx)
 	ws.On("ListWorkspaceSessions", mock.Anything, "test-user", "ws-1").Return(list, nil).Maybe()
 
 	svc := &mockServices{auth: auth, metrics: met, workspace: ws}
-	return NewRouter(svc, log, proxyHandler, RouterConfig{Debug: false})
+	return NewRouter(svc, log, proxyHandler, RouterConfig{Debug: false}), idx
 }
 
 func listingCountList() []types.SessionListItem {
@@ -134,9 +143,9 @@ func listingCountGet(t *testing.T, router *gin.Engine) *httptest.ResponseRecorde
 	return rec
 }
 
-func TestRouterSessionList_ServesHarnessCountForDriftRow(t *testing.T) {
+func TestRouterSessionList_SchedulesHarnessCountWalkForDriftRow(t *testing.T) {
 	spy := &listingCountSpyAdapter{countFor: map[string]int{"ses_drift": 389}}
-	router := listingCountRouter(t, spy, listingCountList())
+	router, idx := listingCountRouter(t, spy, listingCountList())
 
 	rec := listingCountGet(t, router)
 	require.Equal(t, http.StatusOK, rec.Code)
@@ -145,7 +154,7 @@ func TestRouterSessionList_ServesHarnessCountForDriftRow(t *testing.T) {
 	walked := append([]string{}, spy.walked...)
 	spy.mu.Unlock()
 	require.Contains(t, walked, "ses_drift",
-		"the listing route walked the drift row's harness count by ID")
+		"the listing route dispatched the drift row's harness count walk by ID")
 
 	var body []struct {
 		ID           string `json:"id"`
@@ -154,27 +163,36 @@ func TestRouterSessionList_ServesHarnessCountForDriftRow(t *testing.T) {
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &body))
 	found := false
 	for _, row := range body {
-		if row.ID == "ses_drift" {
+		switch row.ID {
+		case "ses_drift":
 			found = true
-			assert.Equal(t, 389, row.MessageCount,
-				"the WIRE carries the harness truth for the drift row")
+			assert.Equal(t, 0, row.MessageCount,
+				"the wire serves the index value this pass — the walk runs detached from the request")
+		case "ses_other":
+			assert.Equal(t, 2, row.MessageCount,
+				"non-drift rows serve their index values unchanged")
 		}
 	}
 	assert.True(t, found, "the drift row is in the response")
+
+	idx.mu.Lock()
+	rebuilt := idx.rebuilt["ws-1/ses_drift"]
+	idx.mu.Unlock()
+	assert.Equal(t, 389, rebuilt,
+		"the dispatched walk persisted the walked truth through the rebuild seam — the NEXT listing serves it")
 }
 
 // TestRouterSessionList_WalkErrorServesIndexValue — the r2 wiring-tier
 // unhappy pin: a harness count-walk error on the drift row must answer
-// the INDEX value on the wire with a 200 (the serve-through is
-// best-effort enhancement — its failure must never degrade the
-// listing), and the walk must have been attempted (the outcome is
-// observable, not silent).
+// the INDEX value on the wire with a 200 (the overlay is best-effort —
+// its failure must never degrade the listing), and the walk must have
+// been attempted (the outcome is observable, not silent).
 func TestRouterSessionList_WalkErrorServesIndexValue(t *testing.T) {
 	spy := &listingCountSpyAdapter{
 		countFor: map[string]int{"ses_drift": 389},
-		walkErr:  agent.ErrSessionNotFound,
+		walkErr:  agent.ErrNoRunningPod,
 	}
-	router := listingCountRouter(t, spy, listingCountList())
+	router, _ := listingCountRouter(t, spy, listingCountList())
 
 	rec := listingCountGet(t, router)
 	require.Equal(t, http.StatusOK, rec.Code,
