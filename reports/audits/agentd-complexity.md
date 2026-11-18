@@ -4,7 +4,7 @@
 **Date:** 2026-11-18. **Base:** origin/main `9f74d3020` (0.44.17 release head). **Sibling audits:** `reports/audits/api-app-complexity.md` (tsk-tidal-wolfhound-restricts — the api/internal SEAM over this code, incl. the hub read-edges and the quiet seam), `ci-release-complexity.md`, `emission-defenses-complexity.md`. Same matrix format, same yardstick: *few facts at the seam; complexity lives in one decision plane* (claim-lifecycle-design principle 5).
 **Method:** read-only — full-file reads of the supervision/sessionstate/harness-seam families, wiring archaeology in `main.go` / `server.go` / `sidecar_mode.go`, dead-code greps for every suspicious helper (callers listed below), incident cites as the code's own provenance comments carry them. **No code changes** (this document is the only artifact).
 
-**Scope:** the tree is 44,119 non-test LOC (cmd) + 2,131 (pkg/agentd); the audit's three focus areas concentrate in ~14 kLOC inventoried in §2. Out of scope beyond seam-level notes: mcp_tools/mcp_server (tool surface), secrets.go store machinery, uploads, workflow engine, board payload schema — those are other audits' lanes.
+**Scope:** the tree is 44,119 non-test LOC (cmd) + 2,131 (pkg/agentd); the three focus areas (supervision layers / state machines / harness seams) concentrate in ~19 kLOC across the four families inventoried in §2. Out of scope beyond seam-level notes: mcp_tools/mcp_server (tool surface), secrets.go store machinery, uploads, workflow engine, board payload schema — those are other audits' lanes.
 
 ---
 
@@ -12,7 +12,7 @@
 
 - **The supervision stack is a reef of small, incident-shaped healers, not a monolith.** Twelve independent liveness/healing loops run on an opencode pod (§3.1 inventory table), each born from a named incident (#892, #1632, #1311, #1732, #2045, 2026-10-08…), each with a narrow kill/heal set and loud suppression counters. The *shape* is defensible — this is defense in depth against genuinely different wedge classes — but the loops derive their world from **three different busy truths and two different health truths that must agree by discipline, not construction** (F1): the SSE tracker's own busy map gates kills (watchdog deferral, session-aware restart) while the sealed sessionstate authority owns the #1574 derived-busy definition that every *projection* surface serves.
 - **The #2040 five-derivations lesson: the instance was fixed, the class was fixed at exactly one boundary.** The board turn-end emission is now structurally single-sited (`applyHarnessEventLocked` — the anti-#2040 call-site rule, `sessionstate/board_turn_end.go:13-25`), and #1574 made busy *inside the authority* one definition. But agentd-side, four parallel busy/liveness derivations remain (tracker, notifier mirror-fold, statusz registry floor, healthz cache — §3.2), each with a documented justification and none sharing a read edge. The class fix is documentation-and-ownership, not construction.
-- **The delivery ledger/FSM (design 0055 M2) is proportionate and load-bearing** — 7 states, monotone by construction, every duplicate-storm incident (#1288, #1292b, #1315) closed by a named guard inside it. One real defect: **`deliveryLedger.compact()` has zero production callers** (grep: none outside `ledger.go` + tests) — compaction never runs, so terminal rows and the WAL grow without bound on long-lived pods (F5). Dead code whose absence is an unbounded-growth liability.
+- **The delivery ledger/FSM (design 0055 M2) is proportionate and load-bearing** — six delivery states (+ an Unspecified zero member), monotone by construction, every duplicate-storm incident (#1288, #1292b, #1315) closed by a named guard inside it. One real defect: **`deliveryLedger.compact()` has zero production callers** (grep: none outside `ledger.go` + tests) — compaction never runs, so terminal rows and the WAL grow without bound on long-lived pods (F5). Dead code whose absence is an unbounded-growth liability.
 - **The harness seams are uneven.** The sessionstate module's 7 injected seams (Parser/Store/Admitter/Actor/Wake/BoardTurnEndProbe/IDTranslator) are the real "third harness" contract — dialect-free, module-sealed, and *would* carry a third harness cleanly. The S5 status seam (`harnessStatusSource`) is a one-method interface with one non-default implementation, and the Appendix-A control-socket vocabulary (Restart/SetSpawnEnv/SpawnEnvState) is opencode-shaped: the pi adapter implements it with five honest no-ops (`pi_supervisor.go:325-366`) — the abstraction leaks pi through opencode's contract (F9). A third harness would also discover that the pi leg *bypasses* sessionstate entirely (aggregator + journal + S4 bridge instead of authority+ledger), so "a third harness" has two divergent precedent stacks to study.
 - Top 5 candidates (§8): ledger compaction wiring, the busy-truth read-edge convergence, dead-letter removals (`admissionWatch.suspect()`, the ledger-less lease backstop arm audit), the stringly restart-reason inline forks, and the sidecar's twin control-socket pollers. All documentation-or-refactor class, each with a functional-equivalence argument.
 
@@ -28,14 +28,15 @@
 | `supervise_opencode.go` | 642 | sidecar-topology PID-1 subcommand: self-verify, boot layers, adapter (spawn-env pull, crash attribution) | design 0051 US-1; #863, #1573 |
 | `healthz.go` + `healthz_cache.go` | 849 | US-22.1 no-I/O healthz; readiness cache + episode/generation CAS + the health-watchdog decision tree | US-22.1; #807, #1632 r1-r3 |
 | `watchdog_vitals.go` | 394 | vitals corroboration: dead-listener-only kill set (HUNG/STARVED/FLAT/RESPAWN/UNKNOWN) | #892, design 0050 D1 |
-| `supervisor_restarts.go` + `supervisor_status.go` | 358 | #1760 restart log; sidecar's 15s control-socket status mirror | #1760/#1776; design 0057 I10/I13 |
+| `supervisor_restarts.go` + `supervisor_status.go` | 322 | #1760 restart log; sidecar's 15s control-socket status mirror | #1760/#1776; design 0057 I10/I13 |
 | `turn_resume.go` | 278 | #1732 A2: roll-classified infra-loss → one bounded auto-resume | #1732 |
 | `admission_watch.go` | 471 | #2045 prompt-path canary: strike ring → session-aware restart | #2045 (Nov 13-15 2026 incident) |
 | `restart_reason.go` | 344 | marker file + reason taxonomy + boot-time read-back | US-44.7; #1801, #2045 |
-| `oom_detection.go` / `orphan_reaper.go` / `memory_pressure.go` / `rearm_loop.go` / `relay_liveness.go` | 1,186 | OOM classify; PID-1 zombie reap; cgroup pressure observe; bounded re-arm; relay-path liveness | worklog 371; #1632; US-44.5; #910/US-72.0; US-72.4 |
+| `oom_detection.go` / `orphan_reaper.go` / `memory_pressure.go` / `rearm_loop.go` / `relay_liveness.go` | 1,241 | OOM classify; PID-1 zombie reap; cgroup pressure observe; bounded re-arm; relay-path liveness | worklog 371; #1632; US-44.5; #910/US-72.0; US-72.4 |
+| `supervise_selfverify.go` | 276 | the fail-closed binary/image self-verify gate both supervisor subcommands run before anything | design 0051 step-2; #863, #1573 |
 | `sessionstate_metrics.go` | 497 | the reconcile/stall watchdog loop + metric bridge | US-69.12, #1311 |
 
-### 2.2 sessionstate family (5,539 LOC)
+### 2.2 sessionstate family (5,542 LOC)
 
 | File | LOC | Role | Origin |
 |---|---|---|---|
@@ -47,18 +48,18 @@
 | `sessionstate/{service,actions,replay,board_turn_end,cursor}.go` | 954 | ABI surface + rate limit; typed actions; replay ring; turn-end emission; durable cursor | 0055 I8; US-69.9; 0069; #2061/#2064 |
 | `sessionstate_wiring.go` | 1,253 | the opencode seams: StoreReader (3 endpoints), Admitter (V1+model pre-set), Actor (9 verbs), converters | US-69.3/69.7/69.9; #1372 |
 
-### 2.3 State machines beyond sessionstate (3,510 LOC)
+### 2.3 State machines beyond sessionstate (4,540 LOC)
 
 | File | LOC | Role | Origin |
 |---|---|---|---|
 | `session_tracker.go` | 943 | SSE tracker: statuses/busySince/progress stamps; statusz busy legs; watchdog busy source | design 0050 D6; #998, #1685 |
-| `session_notifier.go` + `_store` + `_delivery` | ~2,500 | idle-subscriptions: sibling frame consumer, derived-busy mirror fold, debounce, durable outbox | design 0071; #1722 |
+| `session_notifier.go` + `_store` + `_delivery` (+ `_metrics`) | 2,417 (+77) | idle-subscriptions: sibling frame consumer, derived-busy mirror fold, debounce, durable outbox | design 0071; #1722 |
 | `board_turn_ledger.go` | 383 | board turn-end emitter facts: claim-holder registry, advance ledger (JSONL tail), epochs | #2061/#2064 story 1 |
-| `session_shortids.go` / `session_ref.go` | 688 | short-id replica (advisory, receive-only) + warm worker | design 0066; #1817 |
+| `session_shortids.go` / `session_ref.go` | 797 | short-id replica (advisory, receive-only; 211) + warm worker (586) | design 0066; #1817 |
 
-### 2.4 Harness seams (pi stack ~2.6 kLOC + harness_driver 199)
+### 2.4 Harness seams (pi stack 3,195 + harness_driver 199 = 3,394 LOC)
 
-`harness_driver.go` (S5 poller/store/statusz render), `pi_supervisor.go` (S2 process model + health pass), `pi_state.go` (aggregator), `pi_policy.go` (per-session/single), `pi_rpc.go` (JSONL pump), `pi_bridge.go` (S4 transport on :4096), `pi_overlay.go`, `pi_board_turnend.go`, `sidecar_pi.go`. Origins: pi scoping report S2-S5; design 0053 §5.4; #2061.
+`harness_driver.go` 199 (S5 poller/store/statusz render), plus the eight pi files: `pi_supervisor.go` 551 (S2 process model + health pass), `pi_state.go` 448 (aggregator), `pi_policy.go` 595 (per-session/single), `pi_rpc.go` 559 (JSONL pump), `pi_bridge.go` 431 (S4 transport on :4096), `pi_overlay.go`, `pi_board_turnend.go`, `sidecar_pi.go`. Origins: pi scoping report S2-S5; design 0053 §5.4; #2061.
 
 ---
 
@@ -72,7 +73,7 @@ Twelve healing-class loops on an opencode pod (pi topology swaps #1-adjacent mac
 |---|---|---|---|---|---|
 | 1 | `managedProcess.supervise` (`managed_process.go:198`) | event: `cmd.Wait()` return | child death (crash/OOM respawn + backoff) | process table | single + supervisor |
 | 2 | health-watchdog (`refreshIsHealthyLoop`, `healthz_cache.go:364`) | 5s ticker | hung/dead-listener opencode (kill set: verdictHung only; UNKNOWN-episode bound escalates) | healthz cache (own /global/health derivation) + tracker busy + vitals | both (sidecar via socket restarter) |
-| 3 | sessionstate reconcile watchdog (`runSessionStateWatchdog`, `sessionstate_metrics.go:404`) | 15s (ReconcileCadence) | stranded ledger rows, wedged BUSY views, pending leases, declared-timeout parts; stall→wake(reseed) | harness store evidence (`StoreReader`) | single + sidecar |
+| 3 | sessionstate reconcile watchdog (`runSessionStateWatchdog`, `sessionstate_metrics.go:415`) | 15s (ReconcileCadence) | stranded ledger rows, wedged BUSY views, pending leases, declared-timeout parts; stall→wake(reseed) | harness store evidence (`StoreReader`) | single + sidecar |
 | 4 | serve-path lease refresh (`refreshSessionLeaseOnServe`, `lease.go:273`) | per GetSnapshot, TTL-coalesced | stale pending-input sets | live ask registries | both |
 | 5 | reseed ladder (`startStateAuthorityReseed`, wiring:361) | boot + generation change, backoff | projection divergence from store | store | both |
 | 6 | turn-resume supervisor (`turn_resume.go`) | event-fed (finish "unknown") | infra-lost turns (one bounded re-prompt) | raw wire events | both |
@@ -102,7 +103,7 @@ Not overlap, verified: the three busy-*clearing* paths inside sessionstate (even
 
 ### 3.3 The restart taxonomy
 
-Five restart-reason classes exist as consts (`restart_reason.go:47-97`) plus two inline strings in `managed_process.go:292-303` ("crash", "oom") and the socket's closed enum (`control_socket.go`). Six marker-write sites follow the documented every-class-writes-its-own-marker pattern. Minor fork: the two inline literals are the same taxonomy expressed three ways (F6).
+Four restart-reason classes exist as consts (`restart_reason.go:47-97`) plus three inline string values at four sites — "crash" (`managed_process.go:292,297`), "oom" (`oom_detection.go:94`), "credential_reload" (`xdg_config_layer.go:438`) — and the socket's closed enum (`control_socket.go`). Eight marker-write sites across seven files follow the documented every-class-writes-its-own-marker pattern. Minor fork: the three inline literals are the same taxonomy expressed three ways (F6).
 
 ---
 
@@ -110,7 +111,7 @@ Five restart-reason classes exist as consts (`restart_reason.go:47-97`) plus two
 
 ### 4.1 The delivery ledger/FSM (proportionate, with one dead limb)
 
-7 states: `ledgered → admitted → promoted → turn_ended`, plus `stalled` (admitted past deadline, wake-only recovery) and `failed` (per-attempt terminal, re-armable at attempt+1). Monotonicity is enforced by from-set maps (`ledger.go:283-284`); every duplicate-storm incident is closed *inside* the machine: cross-attempt dedupe (`admittedAnywhere`, #1288's five-identical-turns), evidence-based admission (#1315's FAILED-compatible-with-write), keyed upsert at the harness (S2). The surface (893 LOC) mixes four concerns — WAL persistence, the FSM, queue/depth queries, and the delivery driver — which is one file more than the concept count, but the seams are clean (driver joins the authority's session single-flight; the ledger never calls out). **The dead limb: `compact()` (`ledger.go:574-629`) has zero production callers** — the WAL and the in-memory `rows` map retain every terminal row forever. `InFlightDeliveries` scans only the three live states so correctness holds, but a long-lived pod's ledger.wal and rows map grow monotonically with delivery volume. The code is complete, tested, and unwired (F5).
+Six delivery states (+ the `Unspecified` zero member): `ledgered → admitted → promoted → turn_ended`, plus `stalled` (admitted past deadline, wake-only recovery) and `failed` (per-attempt terminal, re-armable at attempt+1). Monotonicity is enforced by from-set maps (`ledger.go:283-284`); every duplicate-storm incident is closed *inside* the machine: cross-attempt dedupe (`admittedAnywhere`, #1288's five-identical-turns), evidence-based admission (#1315's FAILED-compatible-with-write), keyed upsert at the harness (S2). The surface (893 LOC) mixes four concerns — WAL persistence, the FSM, queue/depth queries, and the delivery driver — which is one file more than the concept count, but the seams are clean (driver joins the authority's session single-flight; the ledger never calls out). **The dead limb: `compact()` (`ledger.go:574-629`) has zero production callers** — the WAL and the in-memory `rows` map retain every terminal row forever. `InFlightDeliveries` scans only the three live states so correctness holds, but a long-lived pod's ledger.wal and rows map grow monotonically with delivery volume. The code is complete, tested, and unwired (F5).
 
 ### 4.2 The busy-view authority (the real state machine — surface vs behaviors)
 
@@ -159,9 +160,9 @@ The generation-epoch CAS (`noteAgentGeneration`/`storeResolved`, `healthz_cache.
 | F3 | Delivery FSM is sound; driver+ledger+queries in one 893-LOC file | `ledger.go` | navigational only; seams clean | P | split only next-touch (driver to its own file) | — |
 | F4 | Notifier re-folds derived busy from frames (sealed-module price) | `session_notifier.go:424`, header :22-30 | a fold that must track #1574's rule by discipline | P | keep; add the one-comment cross-link to `deriveBusyComponents` | ~zero |
 | F5 | `deliveryLedger.compact()` has zero production callers — WAL + rows grow unboundedly; terminal rows retained forever | grep: no non-test callers; `ledger.go:574-629` | unbounded file/memory growth on long-lived pods; the retention policy exists on paper only | **D (dead-in-fleet)** | wire it: call on the reconcile-watchdog cadence with a retention cutoff (e.g. 24h) — the method is complete and tested | low — pinned by ledger tests; compaction preserves in-retention rows by construction |
-| F6 | Restart-reason taxonomy expressed three ways: 5 consts + 2 inline strings + socket closed enum | `managed_process.go:292-303`; `restart_reason.go:47-97`; `control_socket.go` | drift surface between marker/metric/enum | C | hoist "crash"/"oom" to consts used by all three sites | ~zero |
+| F6 | Restart-reason taxonomy expressed three ways: 4 consts + 3 inline string values at 4 sites + socket closed enum | `managed_process.go:292,297` ("crash"); `oom_detection.go:94` ("oom"); `xdg_config_layer.go:438` ("credential_reload"); `restart_reason.go:47-97`; `control_socket.go`; 8 marker-write sites / 7 files | drift surface between marker/metric/enum | C | hoist "crash"/"oom"/"credential_reload" to consts used by all sites | ~zero |
 | F7 | Lease-window idle/ERROR arm is dead in production (ledger always wired) | `newStateAuthority` always sets Admitter; `lease.go:194-229` | ~20 LOC + a third busy-clear to reason about | D (dead-in-production) | keep as the documented ledger-less backstop; add the caller-note | ~zero |
-| F8 | `admissionWatch.suspect()` exported-ish helper: no production callers (strikeCount/suspectSessionsLocked carry the load) | grep: none | 14 LOC dead | D | remove with its pins | ~zero |
+| F8 | `admissionWatch.suspect()` exported-ish helper: no production callers (strikeCount/suspectSessionsLocked carry the load) | grep: none | 17 LOC dead (`admission_watch.go:282-298`) | D | remove with its pins | ~zero |
 | F9 | Appendix-A control-socket vocabulary is opencode-shaped; pi implements it with five honest no-ops | `pi_supervisor.go:325-366` | the seam leaks: a third harness repeats the no-op ceremony; the contract conflates "supervised process" with "opencode child + spawn-env push" | C (contract, doc-first) | document the v2 supervisor contract (restart semantics OPTIONAL, capability-typed like `harness_status`); no code change warranted now | ~zero for the doc; med if re-contracted |
 | F10 | Two parallel #2061 board-turn-end emitter stacks (authority probe path; pi observer + journal path) | `board_turn_end.go` vs `pi_board_turnend.go` | the emission-site rule is honored at both attested folds; epochs/ledgers are two implementations | P (documented trade) | keep — pi has no authority; note that a future pi sessionstate tenant collapses these | — |
 | F11 | Sidecar runs twin control-socket polls (harness_status 5s, supervisor status 15s) into two stores | `sidecar_pi.go:80`, `supervisor_status.go:140` | one redundant socket round trip per 5-15s; two freshness idioms | C | merge loops next-touch (one poller writing both stores) | low |
@@ -184,8 +185,8 @@ The generation-epoch CAS (`noteAgentGeneration`/`storeResolved`, `healthz_cache.
 - **Risk:** medium — the boot window (tracker live before first reseed) must answer conservatively, and the #1576 orchestrator steer explicitly refused *seam widening*; this is scoped as an authority read-edge + consumer flip, which the steer permits. Sequenced after R3's statusz leg to land one consumer at a time.
 
 ### #3 — Dead-letter removal batch (F7, F8, F6)
-- **Value:** −~40 LOC of dead/unreachable paths and one taxonomy fork: `admissionWatch.suspect()` (no callers), the lease-window backstop arm's caller-note (or removal if the ledger-less topology is retired), and the inline "crash"/"oom" strings hoisted to the restart-reason consts.
-- **Functional equivalence:** `suspect()` deletion removes an uncalled method (its pins move or die with it); the consts hoist is a rename at three sites with the marker/metric bytes unchanged (the strings are identical).
+- **Value:** −~40 LOC of dead/unreachable paths and one taxonomy fork: `admissionWatch.suspect()` (no callers), the lease-window backstop arm's caller-note (or removal if the ledger-less topology is retired), and the three inline reason strings ("crash", "oom", "credential_reload") hoisted to the restart-reason consts.
+- **Functional equivalence:** `suspect()` deletion removes an uncalled method (its pins move or die with it); the consts hoist is a rename at four sites with the marker/metric bytes unchanged (the strings are identical).
 - **Risk:** ~zero.
 
 ### #4 — Sidecar poller merge (F11 / R5)
