@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — docs: frontend complexity audit (read-only; reports/audits/frontend-complexity.md)
+
+- Findings matrix FC-1..FC-9 for `frontend/src`: ChatPage's 10 inline state machines (21 spec files / 6,962 test lines, base spec included; the hookcount meta-spec as shape evidence; reset-machine r1/r3 and reconcile-gate #447/#1687 bug-hiding evidence), SessionActivityProvider's ~1,050-line SSE handler + fresh-context-identity re-render cost, BoardPage's 9 machines (17 spec files / 4,620 test lines; 49 useState; the rail/focus/kebab 5-day fix cluster; ~950 unextracted lines), the settings/org/platform tier duplication (credential trio ~50-60% duplicated with 4 shipped divergences; `McpServersTab` as the in-repo scope-prop exemplar), and the v0.15 refresh incident (`dc5632044`) as a domain-staleness shape lesson.
+- Top 5 simplification candidates ranked by value/risk, each with a functional-equivalence argument; no code changes.
+
 ### Added — docs: cross-surface simplification roadmap — the six complexity audits synthesized into 15 ranked, sequenced initiatives + the do-NOT-touch armor list (tsk-chilled-hawthorn-notices, read-only)
 
 - **Deliverable:** `reports/audits/simplification-roadmap.md` — the synthesis of all six surface audits (board-engine #2098, api-app #2096, agentd #2097, emission-defenses #2095, frontend #2099, ci-release #2094): an 8-theme cross-surface dedupe map, 9 evidence-cited conflict adjudications, 15 ranked initiatives each with value/risk/sequencing and a functional-equivalence anchor, the sequencing DAG, a 16-entry do-NOT-touch armor list (each with live incident provenance and the no-equivalent-simplification argument), and 8 functionality/verification-reducing findings flagged OUT of scope by charter.
