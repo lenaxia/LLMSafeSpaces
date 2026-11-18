@@ -61,7 +61,7 @@ type boardManager interface {
 	// TaskEventsTombstone is the gone-row arm (#2107): the audit trail
 	// for a task whose row no longer exists + the project the trail
 	// names (the ownership anchor when there is no row).
-	TaskEventsTombstone(ctx context.Context, idOrShort string, limit int) ([]board.Event, *board.Project, error)
+	TaskEventsTombstone(ctx context.Context, userID, idOrShort string, limit int) ([]board.Event, *board.Project, error)
 	SearchTasks(ctx context.Context, userID, q string, filters board.SearchFilters) (*board.SearchResult, error)
 	BoardHealth(ctx context.Context, userID string) (*board.Health, error)
 	// #1837 P2a: the agent surface's workspace-scoped projections.
@@ -707,7 +707,7 @@ func (h *BoardHandler) TaskEvents(c *gin.Context) {
 	}
 	// No live row: the tombstone trail (kept 404 when no trail exists
 	// either — never-existed and below-store losses stay distinguishable).
-	events, proj, err := h.board.TaskEventsTombstone(c.Request.Context(), c.Param("id"), limit)
+	events, proj, err := h.board.TaskEventsTombstone(c.Request.Context(), c.GetString("userID"), c.Param("id"), limit)
 	if err != nil {
 		renderBoardError(c, err)
 		return

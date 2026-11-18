@@ -26,6 +26,7 @@ import (
 	"context"
 	"encoding/json"
 
+	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"
 
 	"github.com/lenaxia/llmsafespaces/pkg/board"
@@ -176,7 +177,7 @@ func (s *BoardSuite) TestRowLoss_2107_TaskEventsSurviveDelete() {
 
 	// The adapter arm: the tombstone names the project — the ownership
 	// perimeter's anchor when there is no row.
-	_, proj, err := s.svc.TaskEventsTombstone(ctx, victim.ShortID, 0)
+	_, proj, err := s.svc.TaskEventsTombstone(ctx, testUser, victim.ShortID, 0)
 	require.NoError(t, err)
 	require.Equal(t, p.ID, proj.ID, "the trail's project is the perimeter anchor")
 }
@@ -201,6 +202,74 @@ func (s *BoardSuite) TestRowLoss_2107_TombstoneKeepsTheHonest404() {
 	require.Error(t, err)
 	var nf *board.NotFoundError
 	require.ErrorAs(t, err, &nf, "no trail keeps the 404 class (the below-store fork)")
-	_, _, err = s.svc.TaskEventsTombstone(ctx, "tsk-never-minted-anywhere", 0)
+	_, _, err = s.svc.TaskEventsTombstone(ctx, testUser, "tsk-never-minted-anywhere", 0)
 	require.ErrorAs(t, err, &nf, "the adapter arm keeps the same 404")
+
+	// The UUID variant spellings (braces, urn:uuid:…) parse through
+	// uuid.Parse but must survive the ::uuid cast — the r2 pin: a
+	// 404-class read NEVER degrades into a cast-error 500. A random
+	// nonexistent UUID: nothing resolves, nothing anchors.
+	phantom := uuid.NewString()
+	_, err = s.svc.TaskEvents(ctx, "", "{"+phantom+"}", 0)
+	require.ErrorAs(t, err, &nf, "braces-wrapped UUID keeps the 404 class")
+	_, err = s.svc.TaskEvents(ctx, "", "urn:uuid:"+phantom, 0)
+	require.ErrorAs(t, err, &nf, "urn-prefixed UUID keeps the 404 class")
+}
+
+// TestRowLoss_2107_TombstoneCrossUserHomonym pins the r3 finding's
+// fix: short ids are minted USER-SCOPED (taskMintOwnerScope), so two
+// users can hold the same phrase — mint-normal, not an anomaly. The
+// user-scoped anchor resolves EACH owner's own deleted trail by short
+// id; a caller with no such trail keeps the plain 404.
+func (s *BoardSuite) TestRowLoss_2107_TombstoneCrossUserHomonym() {
+	t := s.T()
+	ctx := context.Background()
+	ws := s.seedWorkspace()
+	p := s.seedProject(ws, 2)
+	e := s.seedEpic(p, board.EpicActive)
+
+	// User A (the suite's testUser): a real filing + real delete.
+	victim := s.seedTask(e, "homonym-victim", nil, false)
+	_, err := s.svc.DeleteTask(ctx, s.owner(), victim.ID, "", false, "")
+	require.NoError(t, err)
+
+	// User B: the SAME short id on their own project — the mint-normal
+	// cross-user homonym (seeded directly; the service mint would also
+	// allow it, this keeps the fixture minimal).
+	_, err = s.pool.Exec(ctx, `
+		INSERT INTO users (id, username, email, password_hash, active, role)
+		VALUES ('user-b-homonym', 'user-b-homonym', 'b@example.com', 'hash', true, 'user')
+		ON CONFLICT (id) DO NOTHING`)
+	require.NoError(t, err)
+	var bProject, bItem string
+	err = s.pool.QueryRow(ctx, `
+		INSERT INTO projects (id, user_id, name, short_id, worker_slots, status, created_at, updated_at)
+		VALUES (gen_random_uuid(), 'user-b-homonym', 'proj-b', 'prj-homonym1', 2, 'active', now(), now())
+		RETURNING id::text`).Scan(&bProject)
+	require.NoError(t, err)
+	bItem = uuid.NewString()
+	_, err = s.pool.Exec(ctx, `
+		INSERT INTO board_events (id, project_id, item_kind, item_id, action, actor, payload, created_at)
+		VALUES ('evt-homonym-b-1', $1, 'task', $2, 'delete_task',
+		        '{"kind":"user","user":"user-b-homonym","surface":"rest"}'::jsonb,
+		        jsonb_build_object('short_id', $3::text, 'snapshot', jsonb_build_object('short_id', $3::text)),
+		        now() + interval '1 minute')`, bProject, bItem, victim.ShortID)
+	require.NoError(t, err)
+
+	// Each owner resolves their OWN trail by the shared short id.
+	evA, projA, err := s.svc.TaskEventsTombstone(ctx, testUser, victim.ShortID, 0)
+	require.NoError(t, err, "the owner's scoped anchor resolves despite the homonym")
+	require.Equal(t, p.ID, projA.ID)
+	require.NotEmpty(t, evA)
+
+	evB, projB, err := s.svc.TaskEventsTombstone(ctx, "user-b-homonym", victim.ShortID, 0)
+	require.NoError(t, err, "the homonym owner resolves their own trail too")
+	require.Equal(t, bProject, projB.ID)
+	require.Len(t, evB, 1)
+	require.Equal(t, "delete_task", evB[0].Action)
+
+	// A caller with no trail under that phrase keeps the plain 404.
+	_, _, err = s.svc.TaskEventsTombstone(ctx, "user-c-neither", victim.ShortID, 0)
+	var nf *board.NotFoundError
+	require.ErrorAs(t, err, &nf, "no trail of one's own keeps the 404 class")
 }

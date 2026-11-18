@@ -274,13 +274,22 @@ func (st *Store) scopeCandidates(ctx context.Context, q Queryer, kind, projectID
 // resolveTask resolves a task by UUID or case-insensitive short ID, with
 // optional project scope.
 func (st *Store) resolveTask(ctx context.Context, q Queryer, projectID, idOrShort string) (*Task, error) {
+	// Canonicalized ONCE for the UUID arm: uuid.Parse (isUUID's own
+	// machinery) accepts variant spellings — braces, urn:uuid:… — that
+	// a uuid-typed comparison of the raw text rejects (22P02 from a
+	// 404-class read, the #2107 r2 review's finding). Parsed and
+	// rerendered, the bind always holds (#2107 r3).
+	canonicalUUID := idOrShort
+	if id, perr := uuid.Parse(strings.TrimSpace(idOrShort)); perr == nil {
+		canonicalUUID = id.String()
+	}
 	resolve := func() pgx.Row {
 		base := `SELECT ` + taskColumns + ` FROM tasks t WHERE `
 		if isUUID(idOrShort) {
 			if projectID != "" {
-				return q.QueryRow(ctx, base+`t.id=$1 AND t.project_id=$2`, idOrShort, projectID)
+				return q.QueryRow(ctx, base+`t.id=$1 AND t.project_id=$2`, canonicalUUID, projectID)
 			}
-			return q.QueryRow(ctx, base+`t.id=$1`, idOrShort)
+			return q.QueryRow(ctx, base+`t.id=$1`, canonicalUUID)
 		}
 		if projectID != "" {
 			return q.QueryRow(ctx, base+`lower(t.short_id)=lower($1) AND t.project_id=$2`, idOrShort, projectID)

@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 )
 
@@ -186,7 +187,10 @@ func (s *Service) TaskEvents(ctx context.Context, taskID, shortIDOrID string, li
 	if err != nil {
 		var nf *NotFoundError
 		if errors.As(err, &nf) {
-			if events, _, found, ferr := s.taskEventsTombstone(ctx, pick(taskID, shortIDOrID), limit); ferr != nil {
+			// The internal fallback is UNSCOPED (no user identity here):
+			// adapters that enforce ownership route gone rows through
+			// TaskEventsTombstone instead (the user-scoped arm).
+			if events, _, found, ferr := s.taskEventsTombstone(ctx, "", pick(taskID, shortIDOrID), limit); ferr != nil {
 				return nil, ferr
 			} else if found {
 				return events, nil
@@ -241,13 +245,17 @@ func (s *Service) TaskEvents(ctx context.Context, taskID, shortIDOrID string, li
 // TaskEventsTombstone is the adapter-facing arm of the gone-row
 // fallback: the audit timeline for a task whose row no longer exists,
 // plus the project the trail itself names — the ownership perimeter's
-// anchor when there is no row to derive it from. Returns the original
-// NotFoundError when no trail resolves (never-existed, or a below-store
-// loss that left no events — the honest distinction the investigation
-// fork needs, issue #2107).
-func (s *Service) TaskEventsTombstone(ctx context.Context, idOrShort string, limit int) ([]Event, *Project, error) {
+// anchor when there is no row to derive it from. The anchor is SCOPED
+// to the caller's projects (userID): short ids are minted user-scoped
+// (taskMintOwnerScope), so a cross-user homonym is mint-normal — the
+// unscoped read would see multiple anchors and refuse, sealing the
+// owner's own trail behind a mislabeled 404 (the r3 review's finding).
+// Returns the original NotFoundError when no trail resolves
+// (never-existed, or a below-store loss that left no events — the
+// honest distinction the investigation fork needs, issue #2107).
+func (s *Service) TaskEventsTombstone(ctx context.Context, userID, idOrShort string, limit int) ([]Event, *Project, error) {
 	nf := &NotFoundError{Item: "task", Identifier: idOrShort}
-	events, p, found, err := s.taskEventsTombstone(ctx, idOrShort, limit)
+	events, p, found, err := s.taskEventsTombstone(ctx, userID, idOrShort, limit)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -259,9 +267,13 @@ func (s *Service) TaskEventsTombstone(ctx context.Context, idOrShort string, lim
 
 // taskEventsTombstone is the shared primitive: anchor the (project,
 // item) pair from board_events without the tasks row, then serve the
-// same timeline query the live path runs. found=false keeps the
-// caller's 404 (the row AND its trail are both gone).
-func (s *Service) taskEventsTombstone(ctx context.Context, idOrShort string, limit int) ([]Event, *Project, bool, error) {
+// same timeline query the live path runs. userID scopes the anchor to
+// that user's projects (the homonym-correct arm); "" is the UNSCOPED
+// global read — callers without a user identity see cross-user
+// homonyms as multiple anchors and refuse (mint-normal, NOT an
+// anomaly; see the refusal note below). found=false keeps the caller's
+// 404 (the row AND its trail are both gone).
+func (s *Service) taskEventsTombstone(ctx context.Context, userID, idOrShort string, limit int) ([]Event, *Project, bool, error) {
 	if idOrShort == "" {
 		return nil, nil, false, nil
 	}
@@ -283,19 +295,27 @@ func (s *Service) taskEventsTombstone(ctx context.Context, idOrShort string, lim
 	var anchors []anchor
 	var rows pgx.Rows
 	var err error
-	if isUUID(idOrShort) {
+	// The UUID arm binds the CANONICAL form: uuid.Parse (what isUUID
+	// leans on) accepts variant spellings — braces, urn:uuid:… — that
+	// the $1::uuid cast rejects (22P02 from a 404-class route, the r2
+	// review's finding). Parsed-and-rerendered, the cast always holds;
+	// anything unparsable falls to the short-id arm. The optional
+	// user scope rides the projects join (homonym correctness, r3).
+	if id, perr := uuid.Parse(strings.TrimSpace(idOrShort)); perr == nil {
 		rows, err = s.q().Query(ctx, `
 			SELECT DISTINCT e.project_id::text, e.item_id::text
 			FROM board_events e
+			JOIN projects p ON p.id = e.project_id AND ($2 = '' OR p.user_id = $2)
 			WHERE e.item_kind='task' AND e.item_id IS NOT NULL
-			  AND e.item_id=$1::uuid`, idOrShort)
+			  AND e.item_id=$1::uuid`, id.String(), userID)
 	} else {
 		rows, err = s.q().Query(ctx, `
 			SELECT DISTINCT e.project_id::text, e.item_id::text
 			FROM board_events e
+			JOIN projects p ON p.id = e.project_id AND ($2 = '' OR p.user_id = $2)
 			WHERE e.item_kind='task' AND e.item_id IS NOT NULL
 			  AND e.payload->'short_id' IS NOT NULL
-			  AND lower(e.payload->>'short_id')=lower($1)`, idOrShort)
+			  AND lower(e.payload->>'short_id')=lower($1)`, idOrShort, userID)
 	}
 	if err != nil {
 		return nil, nil, false, err
@@ -317,16 +337,26 @@ func (s *Service) taskEventsTombstone(ctx context.Context, idOrShort string, lim
 	anchors = scanned
 	if len(anchors) != 1 {
 		if len(anchors) > 1 {
-			// Short ids are minted user-scoped-unique; multiple anchors
-			// mean a below-store anomaly. Refuse loudly, keep the 404 —
-			// never silently merge trails across projects.
-			slog.WarnContext(ctx, "board: task-events tombstone anchor ambiguous — refusing",
-				"id", idOrShort, "anchors", len(anchors))
+			// Cross-user short-id homonyms are MINT-NORMAL (the mint
+			// ladder is user-scoped, ~2M phrase space) — NOT an anomaly.
+			// The unscoped read cannot tell them apart; refuse and keep
+			// the 404 rather than silently merging trails across
+			// projects. User-scoped callers (TaskEventsTombstone) never
+			// land here for their own ids — the r3 review's finding.
+			slog.WarnContext(ctx, "board: task-events tombstone anchor ambiguous (cross-user homonym on the unscoped read?) — refusing",
+				"id", idOrShort, "anchors", len(anchors), "user_scoped", userID != "")
 		}
 		return nil, nil, false, nil
 	}
 	p, err := s.store.resolveProject(ctx, s.q(), "", anchors[0].project)
 	if err != nil {
+		var pnf *NotFoundError
+		if errors.As(err, &pnf) {
+			// The trail outlived its project: no row, no owner
+			// perimeter to check against — the honest shape is the
+			// caller's 404, never a 500 (r2 review's finding).
+			return nil, nil, false, nil
+		}
 		return nil, nil, false, err
 	}
 	evRows, err := s.q().Query(ctx, `
