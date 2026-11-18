@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — docs: cross-surface simplification roadmap — the six complexity audits synthesized into 15 ranked, sequenced initiatives + the do-NOT-touch armor list (tsk-chilled-hawthorn-notices, read-only)
+
+- **Deliverable:** `reports/audits/simplification-roadmap.md` — the synthesis of all six surface audits (board-engine #2098, api-app #2096, agentd #2097, emission-defenses #2095, frontend #2099, ci-release #2094): an 8-theme cross-surface dedupe map, 9 evidence-cited conflict adjudications, 15 ranked initiatives each with value/risk/sequencing and a functional-equivalence anchor, the sequencing DAG, a 16-entry do-NOT-touch armor list (each with live incident provenance and the no-equivalent-simplification argument), and 8 functionality/verification-reducing findings flagged OUT of scope by charter.
+- **Headline sequencing calls:** the episode-reset fragment and the strict-args lockstep retirement land BEFORE the wait-lifecycle implementation (its columns join the fragment; its tools skip the stamp-mirror tax); the `last_attempt_failed` derivation folds into the wait-lifecycle migration window; the ladder extraction lands AFTER; the 22→8 collapse stays NO-GO (owner-gated phase-4 fence affirmed). Release-train automation is HARD-gated on #2092's CRD guard set (PR #2093 open at this head). ~95+ runner-min/PR recoverable across the two CI initiatives; 4 shipped user-facing divergences closed by the credential-trio unification; 3 recurring bug classes made structurally unwritable; the unwired ledger compaction closed as a live unbounded-growth liability.
+- No code changes — the roadmap document, a worklog, this entry, and a COORDINATE row are the only artifacts.
+
 ### Added — docs: pkg/board engine complexity audit — the 26-column state inventory, the incident-hardening stack as a sum, and the honest 22→8 evaluation (tsk-sappy-nickel-shines, read-only)
 
 - **Deliverable:** `reports/audits/board-engine-complexity.md` — a findings matrix (15 rows, classed proportionate/collapsible/dead, each origin-traced to its incident or marked accretion) over the ~15.4 kLOC non-test engine: the 26 task state columns and the 11-arm ladder precedence they feed, the #2042→#2061/wrap-up hardening layers' interactions and overlaps, and the seams (reconciler 1,781 LOC / stage write sites / the 32-site audit surface / the 14-knob config lattice).
