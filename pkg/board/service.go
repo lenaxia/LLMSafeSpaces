@@ -154,6 +154,13 @@ type Service struct {
 	// semantics (the nudge ladder + heartbeat response floor still run
 	// when a nudger is wired), every existing guarantee intact.
 	lives AssigneeLivenessSource
+	// salvage is the salvage-prefer terminal's probe seam (the claim
+	// wait lifecycle, §5): the two worker-claim exhaustion sites
+	// (claimOnce + TaskStart escalate arms) consult it before writing
+	// the failed terminal — differing salvage facts depose-with-salvage
+	// (pointer + rearm posture) instead. Nil = inert: no probe, today's
+	// terminal byte-identical (pinned).
+	salvage SalvageSource
 	// nudger delivers the lease-nudge sentinel to a quiet assignee's
 	// session. Nil = no nudge ladder (expiry with no observation falls
 	// to today's wall-clock reclaim).
