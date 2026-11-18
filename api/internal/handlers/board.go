@@ -58,6 +58,10 @@ type boardManager interface {
 	ListTasks(ctx context.Context, projectID string, stage, failed string) ([]board.Task, error)
 	ListEpics(ctx context.Context, projectID string) ([]board.Epic, error)
 	TaskEvents(ctx context.Context, taskID, shortIDOrID string, limit int) ([]board.Event, error)
+	// TaskEventsTombstone is the gone-row arm (#2107): the audit trail
+	// for a task whose row no longer exists + the project the trail
+	// names (the ownership anchor when there is no row).
+	TaskEventsTombstone(ctx context.Context, idOrShort string, limit int) ([]board.Event, *board.Project, error)
 	SearchTasks(ctx context.Context, userID, q string, filters board.SearchFilters) (*board.SearchResult, error)
 	BoardHealth(ctx context.Context, userID string) (*board.Health, error)
 	// #1837 P2a: the agent surface's workspace-scoped projections.
@@ -670,10 +674,13 @@ const (
 // changes, orphan/unblock events — in chronological order behind the
 // same owner perimeter as GetTask (foreign rows are plain 404s). The
 // optional ?limit=N keeps the newest N rows (default 200, max 500).
+//
+// The gone-row fallback (issue #2107, the 2026-11 row-loss class): a
+// deleted task's trail still exists (delete events embed the row
+// snapshot — "remove the object, not the history"); the perimeter then
+// anchors on the project the trail itself names, so an investigation
+// can read WHO deleted WHAT long after the row left the table.
 func (h *BoardHandler) TaskEvents(c *gin.Context) {
-	if _, ok := h.ownerTask(c, c.Param("id"), false); !ok {
-		return
-	}
 	limit := 0
 	if v := c.Query("limit"); v != "" {
 		n, err := strconv.Atoi(v)
@@ -686,9 +693,26 @@ func (h *BoardHandler) TaskEvents(c *gin.Context) {
 		}
 		limit = n
 	}
-	events, err := h.board.TaskEvents(c.Request.Context(), "", c.Param("id"), limit)
+	if t, err := h.board.GetTask(c.Request.Context(), "", c.Param("id")); err == nil {
+		if _, ok := h.ownerProject(c, t.ProjectID); !ok {
+			return
+		}
+		events, err := h.board.TaskEvents(c.Request.Context(), "", c.Param("id"), limit)
+		if err != nil {
+			renderBoardError(c, err)
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{"events": events})
+		return
+	}
+	// No live row: the tombstone trail (kept 404 when no trail exists
+	// either — never-existed and below-store losses stay distinguishable).
+	events, proj, err := h.board.TaskEventsTombstone(c.Request.Context(), c.Param("id"), limit)
 	if err != nil {
 		renderBoardError(c, err)
+		return
+	}
+	if _, ok := h.ownerProject(c, proj.ID); !ok {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"events": events})

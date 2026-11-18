@@ -5,6 +5,7 @@ package board
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strconv"
@@ -166,9 +167,30 @@ const (
 // read is the history seam the task-detail drawer renders. Ownership
 // follows the caller's read perimeter (the adapter resolves + checks
 // the row, exactly like GetTask).
+//
+// The GONE-ROW FALLBACK (the 2026-11 row-loss class, issue #2107):
+// delete removes the object, not the history — the delete_task event
+// embeds the row's full snapshot — yet the timeline 404'd the moment
+// the row left the table, sealing the audit trail exactly when an
+// investigation needs it most (the incident's fifth loss was the
+// investigation story itself). When the row no longer resolves,
+// TaskEvents anchors the trail through board_events instead: the
+// item_id directly for UUID input, else any event payload carrying
+// the short id (create_task, delete_task, dependency events all do).
+// No anchor either ⇒ nothing ever existed OR the row vanished below
+// the store with no event trail — the caller's 404 (with its
+// did-you-mean contract) still distinguishes that fork, honestly.
 func (s *Service) TaskEvents(ctx context.Context, taskID, shortIDOrID string, limit int) ([]Event, error) {
 	t, err := s.store.resolveTask(ctx, s.q(), "", pick(taskID, shortIDOrID))
 	if err != nil {
+		var nf *NotFoundError
+		if errors.As(err, &nf) {
+			if events, _, found, ferr := s.taskEventsTombstone(ctx, pick(taskID, shortIDOrID), limit); ferr != nil {
+				return nil, ferr
+			} else if found {
+				return events, nil
+			}
+		}
 		return nil, err
 	}
 	if limit <= 0 {
@@ -213,6 +235,111 @@ func (s *Service) TaskEvents(ctx context.Context, taskID, shortIDOrID string, li
 	// session fields, never-worse, off the one consult.
 	s.translateEventReads(ctx, t.ProjectID, out)
 	return out, nil
+}
+
+// TaskEventsTombstone is the adapter-facing arm of the gone-row
+// fallback: the audit timeline for a task whose row no longer exists,
+// plus the project the trail itself names — the ownership perimeter's
+// anchor when there is no row to derive it from. Returns the original
+// NotFoundError when no trail resolves (never-existed, or a below-store
+// loss that left no events — the honest distinction the investigation
+// fork needs, issue #2107).
+func (s *Service) TaskEventsTombstone(ctx context.Context, idOrShort string, limit int) ([]Event, *Project, error) {
+	nf := &NotFoundError{Item: "task", Identifier: idOrShort}
+	events, p, found, err := s.taskEventsTombstone(ctx, idOrShort, limit)
+	if err != nil {
+		return nil, nil, err
+	}
+	if !found {
+		return nil, nil, nf
+	}
+	return events, p, nil
+}
+
+// taskEventsTombstone is the shared primitive: anchor the (project,
+// item) pair from board_events without the tasks row, then serve the
+// same timeline query the live path runs. found=false keeps the
+// caller's 404 (the row AND its trail are both gone).
+func (s *Service) taskEventsTombstone(ctx context.Context, idOrShort string, limit int) ([]Event, *Project, bool, error) {
+	if idOrShort == "" {
+		return nil, nil, false, nil
+	}
+	if limit <= 0 {
+		limit = TaskEventsDefaultLimit
+	}
+	if limit > TaskEventsMaxLimit {
+		limit = TaskEventsMaxLimit
+	}
+	// The anchor: UUID input matches item_id directly; otherwise any
+	// task-scoped event payload carrying the short id (create_task,
+	// delete_task, dependency events — a row that ever existed has at
+	// least its create event). Case-insensitive on the phrase form,
+	// matching the row-resolution contract.
+	rows, err := s.q().Query(ctx, `
+		SELECT DISTINCT e.project_id::text, e.item_id::text
+		FROM board_events e
+		WHERE e.item_kind='task' AND e.item_id IS NOT NULL
+		  AND (e.item_id::text = lower($1)
+		       OR lower(e.payload->>'short_id') = lower($1))`, idOrShort)
+	if err != nil {
+		return nil, nil, false, err
+	}
+	type anchor struct{ project, item string }
+	var anchors []anchor
+	for rows.Next() {
+		var a anchor
+		if err := rows.Scan(&a.project, &a.item); err != nil {
+			rows.Close()
+			return nil, nil, false, err
+		}
+		anchors = append(anchors, a)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, nil, false, err
+	}
+	rows.Close()
+	if len(anchors) != 1 {
+		if len(anchors) > 1 {
+			// Short ids are minted user-scoped-unique; multiple anchors
+			// mean a below-store anomaly. Refuse loudly, keep the 404 —
+			// never silently merge trails across projects.
+			slog.WarnContext(ctx, "board: task-events tombstone anchor ambiguous — refusing",
+				"id", idOrShort, "anchors", len(anchors))
+		}
+		return nil, nil, false, nil
+	}
+	p, err := s.store.resolveProject(ctx, s.q(), "", anchors[0].project)
+	if err != nil {
+		return nil, nil, false, err
+	}
+	evRows, err := s.q().Query(ctx, `
+		SELECT id, item_kind, item_id, action, actor, payload, created_at
+		FROM board_events
+		WHERE project_id=$1 AND item_kind='task' AND item_id=$2
+		ORDER BY created_at DESC, id DESC
+		LIMIT $3`, anchors[0].project, anchors[0].item, limit)
+	if err != nil {
+		return nil, nil, false, err
+	}
+	defer evRows.Close()
+	var newestFirst []Event
+	for evRows.Next() {
+		var e Event
+		if err := evRows.Scan(&e.ID, &e.ItemKind, &e.ItemID, &e.Action, &e.Actor, &e.Payload, &e.CreatedAt); err != nil {
+			return nil, nil, false, err
+		}
+		e.ProjectID = anchors[0].project
+		newestFirst = append(newestFirst, e)
+	}
+	if err := evRows.Err(); err != nil {
+		return nil, nil, false, err
+	}
+	out := make([]Event, len(newestFirst))
+	for i, e := range newestFirst {
+		out[len(newestFirst)-1-i] = e
+	}
+	s.translateEventReads(ctx, anchors[0].project, out)
+	return out, p, true, nil
 }
 
 // ListProjects lists the owner's boards (user-level, ruling R7).
