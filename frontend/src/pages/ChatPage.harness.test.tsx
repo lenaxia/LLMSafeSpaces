@@ -168,32 +168,60 @@ describe("ChatPage — parked-unbound first-session flow (D1/D2/D3/D4)", () => {
     alertSpy.mockRestore();
   });
 
-  it("D3: the three bind-failure classes render distinguishable text in the still-open dialog", async () => {
-    const cases: Array<[number, string, RegExp]> = [
-      [500, "internal_error: harness_bind_not_persisted (spec.harness reads back empty)", /harness_bind_not_persisted/],
-      [409, "harness_immutable: harness is immutable once bound for this workspace", /harness_immutable/],
-      [422, "validation_error: harness \"pi\" is not enabled on this instance", /not enabled on this instance/],
-    ];
-    for (const [status, error, pattern] of cases) {
-      const user = userEvent.setup();
-      (workspacesApi.getStatus as Mock).mockResolvedValue({ phase: "Creating", message: "waiting for harness selection" });
-      (workspacesApi.list as Mock).mockResolvedValue({
-        items: [makeItem({ harnessOptions: ["opencode", "pi"] })],
-        pagination: { limit: 20, offset: 0, total: 1 },
-      });
-      (workspacesApi.ensureSession as Mock).mockRejectedValue(new ApiClientError(status, { error }));
+  it.each([
+    [500, "internal_error: harness_bind_not_persisted (spec.harness reads back empty)", /harness_bind_not_persisted/],
+    [409, "harness_immutable: harness is immutable once bound for this workspace", /harness_immutable/],
+    [422, "validation_error: harness \"pi\" is not enabled on this instance", /not enabled on this instance/],
+  ])("class %i renders distinct inline text in the still-open dialog", async (status, error, pattern) => {
+    const user = userEvent.setup();
+    (workspacesApi.getStatus as Mock).mockResolvedValue({ phase: "Creating", message: "waiting for harness selection" });
+    (workspacesApi.list as Mock).mockResolvedValue({
+      items: [makeItem({ harnessOptions: ["opencode", "pi"] })],
+      pagination: { limit: 20, offset: 0, total: 1 },
+    });
+    (workspacesApi.ensureSession as Mock).mockRejectedValue(new ApiClientError(status, { error }));
 
-      const { unmount } = renderChat("/chat/ws-1");
-      await user.click(await screen.findByTestId("first-session-cta"));
-      await user.click(screen.getByTestId("harness-picker-submit"));
-      await waitFor(() => {
-        expect(screen.getByText(pattern)).toBeInTheDocument();
-      });
-      expect(screen.getByRole("dialog")).toBeInTheDocument();
-      unmount();
-      vi.clearAllMocks();
-      (workspacesApi.list as Mock).mockResolvedValue({ items: [], pagination: { limit: 20, offset: 0, total: 0 } });
-    }
+    renderChat("/chat/ws-1");
+    await user.click(await screen.findByTestId("first-session-cta"));
+    await user.click(screen.getByTestId("harness-picker-submit"));
+    await waitFor(() => {
+      expect(screen.getByText(pattern)).toBeInTheDocument();
+    });
+    expect(screen.getByRole("dialog")).toBeInTheDocument();
+  });
+
+  it("D3 (review r1 F1): a failed dialog attempt that SUCCEEDS on retry never alerts the stale failure", async () => {
+    const alertSpy = vi.spyOn(window, "alert").mockImplementation(() => {});
+    const user = userEvent.setup();
+    (workspacesApi.getStatus as Mock).mockResolvedValue({ phase: "Creating", message: "waiting for harness selection" });
+    (workspacesApi.list as Mock).mockResolvedValue({
+      items: [makeItem({ harnessOptions: ["opencode", "pi"] })],
+      pagination: { limit: 20, offset: 0, total: 1 },
+    });
+    (workspacesApi.ensureSession as Mock)
+      .mockRejectedValueOnce(new ApiClientError(500, { error: "internal_error: harness_bind_not_persisted (skew)" }))
+      .mockResolvedValueOnce({ sessionId: "sess-ok", workspaceId: "ws-1", workspacePhase: "Active", resumed: false });
+
+    renderChat("/chat/ws-1");
+
+    await user.click(await screen.findByTestId("first-session-cta"));
+    await user.click(screen.getByTestId("harness-picker-submit"));
+    await waitFor(() => {
+      expect(screen.getByText(/harness_bind_not_persisted/)).toBeInTheDocument();
+    });
+
+    // Retry from the still-open dialog — this attempt succeeds.
+    await user.click(screen.getByTestId("harness-picker-submit"));
+    await waitFor(() => {
+      expect(workspacesApi.ensureSession).toHaveBeenCalledTimes(2);
+    });
+    await waitFor(() => {
+      expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    });
+    // The stale failure must not fall out of the closed dialog as an
+    // alert after the successful bind.
+    expect(alertSpy).not.toHaveBeenCalled();
+    alertSpy.mockRestore();
   });
 
   it("D3: dialog-less silent-bind failure alerts the honest class text, not the generic string", async () => {
@@ -266,6 +294,49 @@ describe("ChatPage — parked-unbound first-session flow (D1/D2/D3/D4)", () => {
     });
     await new Promise((r) => setTimeout(r, 50));
     expect(workspacesApi.ensureSession).not.toHaveBeenCalled();
+  });
+
+  it("D4 ordering (review r1 F3): status flips Active before the listing lands — no create slips through the unknown-unbound window, and the unbound listing then blocks", async () => {
+    let resolveList: (v: unknown) => void = () => {};
+    (workspacesApi.getStatus as Mock).mockResolvedValue({ phase: "Active" });
+    (workspacesApi.list as Mock).mockImplementation(() => new Promise((res) => { resolveList = res; }));
+
+    renderChat("/chat/ws-1");
+
+    await waitFor(() => {
+      expect(document.querySelector("textarea")).toBeInTheDocument();
+    });
+    await new Promise((r) => setTimeout(r, 50));
+    // The listing is still in flight — the unbound flag is unknown, so
+    // the auto-create must hold (this is the window the old code
+    // created in).
+    expect(workspacesApi.ensureSession).not.toHaveBeenCalled();
+
+    resolveList({
+      items: [makeItem({ phase: "Active", harnessOptions: ["opencode", "pi"] })],
+      pagination: { limit: 20, offset: 0, total: 1 },
+    });
+    await new Promise((r) => setTimeout(r, 50));
+    // Unbound now known: still no create — the bind is the picker's
+    // one-time decision.
+    expect(workspacesApi.ensureSession).not.toHaveBeenCalled();
+  });
+
+  it("D4 ordering: a late-resolving BOUND listing still auto-creates once it lands", async () => {
+    let resolveList: (v: unknown) => void = () => {};
+    (workspacesApi.getStatus as Mock).mockResolvedValue({ phase: "Active" });
+    (workspacesApi.list as Mock).mockImplementation(() => new Promise((res) => { resolveList = res; }));
+
+    renderChat("/chat/ws-1");
+
+    resolveList({
+      items: [makeItem({ phase: "Active", harness: "opencode", harnessOptions: ["opencode", "pi"] })],
+      pagination: { limit: 20, offset: 0, total: 1 },
+    });
+
+    await waitFor(() => {
+      expect(workspacesApi.ensureSession).toHaveBeenCalledWith("ws-1");
+    });
   });
 
   it("D4: a BOUND Active workspace auto-creates through the bind-aware ensureSession wire", async () => {

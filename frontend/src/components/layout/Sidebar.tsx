@@ -281,6 +281,7 @@ export function Sidebar({ onNavigate }: Props) {
               activating={activateMutation.isPending && activateMutation.variables === ws.id}
               creatingSession={newSessionMutation.isPending && newSessionMutation.variables?.wsId === ws.id}
               createError={sessionCreateError}
+              onConsumeCreateError={() => setSessionCreateError(null)}
               onToggle={() => handleWorkspaceClick(ws)}
               onSelectSession={(sid) => handleSessionClick(ws.id, sid)}
               onNewSession={(harness) => newSessionMutation.mutate({ wsId: ws.id, harness })}
@@ -389,6 +390,10 @@ interface WorkspaceGroupProps {
    * open picker renders it inline; a picker-less path (single-option
    * silent bind) alerts it. Null while no failure is outstanding. */
   createError?: { wsId: string; message: string } | null;
+  /** Consumes that failure (review r1 F2): called when the picker
+   * closes, so a canceled failure never re-alerts and a later reopen
+   * starts clean. */
+  onConsumeCreateError?: () => void;
   onToggle: () => void;
   onSelectSession: (sessionId: string) => void;
   /** Harness rides along only when the workspace is unbound (the
@@ -420,6 +425,7 @@ function WorkspaceGroup({
   activating,
   creatingSession,
   createError,
+  onConsumeCreateError,
   onToggle,
   onSelectSession,
   onNewSession,
@@ -478,10 +484,17 @@ function WorkspaceGroup({
   // D3 alert fallback: failures on picker-less paths (the single-option
   // silent bind, the empty-state CTA) have no inline surface — alert
   // them with the honest class text. Keyed by error-object identity so
-  // a re-render never re-alerts; each failure gets a fresh object.
+  // a re-render never re-alerts; each failure gets a fresh object. An
+  // error the OPEN dialog renders inline is marked surfaced here, so
+  // closing the dialog after reading it never re-alerts the same
+  // failure (review r1 F2).
   const alertedCreateErrorRef = useRef<{ wsId: string; message: string } | null>(null);
   useEffect(() => {
-    if (!createError || createError.wsId !== workspace.id || showHarnessPicker) return;
+    if (!createError || createError.wsId !== workspace.id) return;
+    if (showHarnessPicker) {
+      alertedCreateErrorRef.current = createError;
+      return;
+    }
     if (alertedCreateErrorRef.current === createError) return;
     alertedCreateErrorRef.current = createError;
     try { window.alert(createError.message); } catch { /* blocked */ }
@@ -653,6 +666,11 @@ function WorkspaceGroup({
         open={showHarnessPicker}
         onOpenChange={(open) => {
           setShowHarnessPicker(open);
+          // Consume the ws-keyed failure with the dialog that carried
+          // it (review r1 F2): a canceled failure must not re-alert
+          // when the dialog closes, and a later reopen must not
+          // inherit the previous attempt's inline error.
+          if (!open) onConsumeCreateError?.();
         }}
         workspaceName={workspace.name}
         options={harnessOptions}

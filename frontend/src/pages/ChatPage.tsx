@@ -197,6 +197,12 @@ export function ChatPage() {
     setLocalMessages([]);
     setSessionErrors([]);
     setSseStreamParts([]);
+    // Review r1 F6: the picker is a modal over whatever workspace the
+    // route lands on — browser-back mid-picker must not carry it (or a
+    // stale failure) onto the newly-viewed workspace; a submit binds
+    // the CURRENT workspace with a choice made in another's dialog.
+    setShowHarnessPicker(false);
+    setHarnessPickError(null);
     // Pending prompt content is NOT cleared here — it lives in the global
     // SessionActivityProvider (keyed by requestId) so it survives within-tab
     // navigation between a parent session and its subtasks (issue #346).
@@ -225,7 +231,7 @@ export function ChatPage() {
     },
   });
 
-  const { data: activeWorkspaceData } = useQuery({
+  const { data: activeWorkspaceData, isSuccess: listLoaded } = useQuery({
     queryKey: ["workspaces"],
     queryFn: () => workspacesApi.list(),
     select: (data) => data.items?.find((w) => w.id === workspaceId),
@@ -236,13 +242,13 @@ export function ChatPage() {
   const isReady = status?.phase === "Active";
 
   // D1/D4 (harness-selection audit): the workspace listing is the
-  // unbound flag's source (harness absent = unbound). listLoaded gates
-  // the derivation so a still-loading listing can never flash the
-  // parked-unbound panel for a bound (pod-building) workspace; the
-  // offer list degrades to opencode-only when the listing predates
-  // harnessOptions.
-  const listLoaded = activeWorkspaceData !== undefined;
-  const harnessUnbound = listLoaded && !activeWorkspaceData.harness;
+  // unbound flag's source (harness absent = unbound). listLoaded is the
+  // query's isSuccess — NOT `data !== undefined` (review r1 F4): `select`
+  // yields undefined both while loading and when the workspace is absent
+  // from the list (deleted mid-view), and absence must read as bound,
+  // never as a parked-unbound flash. The offer list degrades to
+  // opencode-only when the listing predates harnessOptions.
+  const harnessUnbound = listLoaded && activeWorkspaceData !== undefined && !activeWorkspaceData.harness;
   const harnessOptions =
     activeWorkspaceData?.harnessOptions && activeWorkspaceData.harnessOptions.length > 0
       ? activeWorkspaceData.harnessOptions
@@ -385,12 +391,17 @@ export function ChatPage() {
       // reach Active), so today this is latent defense — but any future
       // path yielding an unbound Active workspace (restore, import,
       // suspend/resume variants) must surface the picker's one-time
-      // decision, not silently bind the default. Pinned by
-      // ChatPage.harness.test.tsx.
+      // decision, not silently bind the default. Gated on listLoaded so
+      // the invariant holds under every query ordering (a status read
+      // that flips isReady before the listing lands cannot slip a
+      // harness-less create through the unknown-unbound window; the
+      // effect re-fires when the listing resolves). Pinned by
+      // ChatPage.harness.test.tsx (both orderings).
+      if (!listLoaded) return;
       if (harnessUnbound) return;
       createSessionMutation.mutate(workspaceId);
     }
-  }, [isReady, workspaceId, sessionId, harnessUnbound]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [isReady, workspaceId, sessionId, listLoaded, harnessUnbound]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // D1: the first-session flow for a parked-unbound workspace — the
   // same ensureSession path as the sidebar's picker (a single enabled
@@ -403,9 +414,14 @@ export function ChatPage() {
   const firstSessionMutation = useMutation({
     mutationFn: ({ wsId, harness }: { wsId: string; harness?: string }) =>
       workspacesApi.ensureSession(wsId, { harness }),
+    // Reset on every attempt (review r1 F1): a stale failure left set
+    // across a retry that SUCCEEDS would otherwise fall out of the
+    // dialog-closed state and alert after the successful bind.
+    onMutate: () => setHarnessPickError(null),
     onSuccess: (data, vars) => {
       queryClient.invalidateQueries({ queryKey: ["workspaces"] });
       queryClient.invalidateQueries({ queryKey: ["sessions", vars.wsId] });
+      setHarnessPickError(null);
       setShowHarnessPicker(false);
       navigate(`/chat/${vars.wsId}/${data.sessionId}`);
     },
@@ -1339,7 +1355,10 @@ export function ChatPage() {
       )}
 
       {isTransitioning && (
-        <div className="flex flex-1 flex-col items-center justify-center gap-4 text-muted-foreground">
+        <div
+          className="flex flex-1 flex-col items-center justify-center gap-4 text-muted-foreground"
+          aria-live="polite"
+        >
           {parkedUnbound ? (
             /* D1: a parked-unbound workspace is not "creating" — no pod
              * is built until the harness bind. The honest panel names

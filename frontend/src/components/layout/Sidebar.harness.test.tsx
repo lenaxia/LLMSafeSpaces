@@ -320,6 +320,38 @@ describe("Sidebar — bind-failure error-class fidelity (D3)", () => {
     expect(alertSpy).not.toHaveBeenCalledWith("Failed to create session.");
     alertSpy.mockRestore();
   });
+
+  // Review r1 F2 pin: a failure the open dialog rendered inline is
+  // consumed with the dialog — canceling after reading it must not
+  // re-alert the same message.
+  it("cancel after an inline picker failure does not re-alert on dialog close", async () => {
+    const alertSpy = vi.spyOn(window, "alert").mockImplementation(() => {});
+    const user = userEvent.setup();
+    (workspacesApi.list as ListMock).mockResolvedValue({
+      items: [makeWorkspace({ phase: "Creating", harnessOptions: ["opencode", "pi"] })],
+      pagination: { limit: 20, offset: 0, total: 1 },
+    });
+    (workspacesApi.getSessions as ListMock).mockResolvedValue([]);
+    (workspacesApi.ensureSession as ListMock).mockRejectedValue(
+      new ApiClientError(409, { error: "harness_immutable: harness is immutable once bound for this workspace" }),
+    );
+
+    renderSidebar();
+
+    await user.click(await screen.findByRole("button", { name: "New chat" }));
+    await user.click(screen.getByTestId("harness-picker-submit"));
+    await waitFor(() => {
+      expect(screen.getByText(/harness_immutable/)).toBeInTheDocument();
+    });
+
+    await user.click(screen.getByRole("button", { name: "Cancel" }));
+    await waitFor(() => {
+      expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    });
+    await new Promise((r) => setTimeout(r, 50));
+    expect(alertSpy).not.toHaveBeenCalled();
+    alertSpy.mockRestore();
+  });
 });
 
 describe("Sidebar — empty-state first-session CTA (D5)", () => {
@@ -363,5 +395,37 @@ describe("Sidebar — empty-state first-session CTA (D5)", () => {
     await waitFor(() => {
       expect(workspacesApi.ensureSession).toHaveBeenCalledWith("ws-1", {});
     });
+  });
+
+  it("the CTA is disabled while a create is in flight (double-fire guard)", async () => {
+    const user = userEvent.setup();
+    (workspacesApi.list as ListMock).mockResolvedValue({
+      items: [makeWorkspace({ harness: "opencode", harnessOptions: ["opencode", "pi"] })],
+      pagination: { limit: 20, offset: 0, total: 1 },
+    });
+    (workspacesApi.getSessions as ListMock).mockResolvedValue([]);
+    (workspacesApi.ensureSession as ListMock).mockImplementation(() => new Promise(() => {}));
+
+    renderSidebar();
+
+    const cta = await screen.findByTestId("empty-state-new-session");
+    await user.click(cta);
+
+    await waitFor(() => {
+      expect(screen.getByTestId("empty-state-new-session")).toBeDisabled();
+    });
+  });
+
+  it("a suspended workspace hides the empty-state CTA (it cannot create sessions)", async () => {
+    (workspacesApi.list as ListMock).mockResolvedValue({
+      items: [makeWorkspace({ phase: "Suspended", harness: "opencode", harnessOptions: ["opencode", "pi"] })],
+      pagination: { limit: 20, offset: 0, total: 1 },
+    });
+    (workspacesApi.getSessions as ListMock).mockResolvedValue([]);
+
+    renderSidebar();
+
+    await screen.findByText(/no sessions yet/i);
+    expect(screen.queryByTestId("empty-state-new-session")).not.toBeInTheDocument();
   });
 });
