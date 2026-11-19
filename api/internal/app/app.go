@@ -1624,6 +1624,10 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 				// the lease (floor 5m at the loader; engine floors <=0 at
 				// the 10m default).
 				NudgeMeasureWindow: time.Duration(max(cfg.Board.NudgeMeasureWindowSeconds, 300)) * time.Second,
+				// #2100: the store-native evidence transport — the
+				// engine-side half of the kill-switch (the agentd half
+				// reads the same env).
+				PresenceTransportV2: cfg.Board.PresenceV2,
 				// #2044 heartbeat-orbit budget: K presence-only
 				// heartbeat responses before the wedge verdict; <=0
 				// falls back to the engine's default (3).

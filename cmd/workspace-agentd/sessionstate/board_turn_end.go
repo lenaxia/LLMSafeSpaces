@@ -116,7 +116,7 @@ func (a *Authority) emitBoardTurnEndLocked(sid string, turnStart time.Time) {
 		a.boardTurnEpochs = map[string]uint64{}
 	}
 	a.boardTurnEpochs[sid]++
-	duration := int64(0) //nolint:gosec // G115: turn durations are pod-lifetime bounded
+	duration := int64(0)    //nolint:gosec // G115: turn durations are pod-lifetime bounded
 	startedAtMs := int64(0) //nolint:gosec // G115: epoch-ms fits int64 by construction
 	if !turnStart.IsZero() {
 		duration = time.Since(turnStart).Milliseconds()

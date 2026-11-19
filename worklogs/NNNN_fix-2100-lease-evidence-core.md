@@ -42,7 +42,7 @@ lease windows).
 
 ### P2 — store-native evidence transport v2 (behind its flag, default ON)
 
-Flag: `LLMSAFESPACES_BOARD_TRANSPORT_V2` (agentd-side, default **true** — the
+Flag: `LLMSAFESPACES_BOARD_PRESENCEV2` (BOTH halves — engine + agentd, default **true** — the
 class-kill IS the fix; the flag is the kill-switch restoring v1 emission
 verbatim after a process restart). The charter's separately-gated "(default
 off)" applies to the 45→20m LEASE retune, which is deliberately NOT here
@@ -110,6 +110,20 @@ rolls, prod keeps burning on the OLD binaries (registry consult gated,
 pods on old agentd. Post-roll, the frozen `/workspace/.opencode-board-workers`
 artifact is read at most ONCE (legacy grace, only while the `/exchange` file
 is absent) and never again written.
+
+## The fold-in (round 2, orchestrator direction)
+
+The engine-side flag arrived from a parallel WIP worktree
+(`/workspace/presence-v2-wt`, uncommitted): its `PresenceTransportV2`
+EngineConfig field + API config plumbing + the unified env name
+(`LLMSAFESPACES_BOARD_PRESENCEV2`) are folded in — BOTH halves of the
+transport now honor ONE kill-switch, and the store-side derivation is
+gated on it (off ⇒ the declared payload flag is trusted verbatim,
+pinned). Its Phase-3.2-full heartbeat shape (declared watermark ignored
+for ALL clock purposes, `last_progress_at` unwritten by responses) is
+NOT folded: it re-designs the #2044 budget's motion input (2044-C's
+fresh-declare pin) and belongs with design Phase 3.3's advance clock —
+the WIP worktree keeps it for that lane.
 
 ## Sequenced follow-ups (out of this PR by design)
 

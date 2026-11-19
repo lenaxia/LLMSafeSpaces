@@ -125,6 +125,38 @@ func (s *BoardSuite) TestPin_P2_NoRegistryNeeded_PureAssigneeMatch() {
 	require.False(s.T(), lease.After(time.Now().Add(time.Second)), "the lease collapsed to due")
 }
 
+func (s *BoardSuite) TestPin_P2_KillSwitchOff_TrustsDeclaredFlagVerbatim() {
+	ws, c := s.seedClaimedTask("v2-kill-switch-off")
+	s.armLiveLease(c.TaskID)
+	assignee := s.reloadTask(c.TaskID).AssigneeSession
+	windowStart := time.Now().UTC().Add(-2 * time.Minute)
+
+	// A store-observed advance EXISTS inside the window...
+	_, err := s.pool.Exec(context.Background(), `
+		INSERT INTO board_transitions (task_id, from_stage, to_stage, actor, at)
+		VALUES ($1, 'in_progress', 'in_progress', $2::jsonb, now())`,
+		c.TaskID, `{"kind":"user","session_id":"`+assignee+`"}`)
+	require.NoError(s.T(), err)
+
+	// ...but the engine flag is OFF: the v1 path trusts the payload's
+	// declared flag verbatim (advanced=false ⇒ the due-mark fires —
+	// today's behavior, byte-identical; the kill-switch contract).
+	v1cfg := s.cfg
+	v1cfg.PresenceTransportV2 = false
+	svcV1 := board.NewService(s.pool, v1cfg, board.WithLivenessSource(&fakeLiveness{}))
+	marked, err := svcV1.ConsumeTurnEnd(context.Background(), board.TurnEndDueMark{
+		WorkspaceID: ws, SessionRefs: []string{assignee}, Epoch: 1,
+		Advanced: false, TurnStartedAt: windowStart, ObservedAt: time.Now().UTC(),
+	})
+	require.NoError(s.T(), err)
+	require.True(s.T(), marked, "flag off: the declared flag is trusted — no store derivation, the v1 path verbatim")
+
+	var lease time.Time
+	require.NoError(s.T(), s.pool.QueryRow(context.Background(),
+		`SELECT lease_expires_at FROM tasks WHERE id=$1`, c.TaskID).Scan(&lease))
+	require.False(s.T(), lease.After(time.Now().Add(time.Second)), "the due-mark landed (v1 semantics)")
+}
+
 func (s *BoardSuite) TestPin_P2_UserChatInert_UnderStoreDerivation() {
 	_, c := s.seedClaimedTask("user-chat-inert")
 	s.armLiveLease(c.TaskID)

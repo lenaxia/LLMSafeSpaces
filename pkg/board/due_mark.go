@@ -148,11 +148,16 @@ func (s *Service) ConsumeTurnEnd(ctx context.Context, e TurnEndDueMark) (bool, e
 	if observed.IsZero() {
 		observed = time.Now().UTC()
 	}
-	// Transport v2's store-side advance derivation (#2100): the turn
-	// window is present ⇒ the STORE answers "did this turn advance"
-	// from the writes the platform already owns. An observed advance
-	// is telemetry-only (same R2 posture as a v1 emitter's flag); the
-	// guarded UPDATE below re-checks the same predicate at write time.
+	// Transport v2's store-side advance derivation (#2100): armed AND
+	// the turn window present ⇒ the STORE answers "did this turn
+	// advance" from the writes the platform already owns — a worker-
+	// side or file-artifact-declared advance carries no authority once
+	// v2 is armed (the frozen-file class never wins over store truth).
+	// An observed advance is telemetry-only (same R2 posture as a v1
+	// emitter's flag); the guarded UPDATE below re-checks the same
+	// predicate at write time. Kill-switch off (or a pre-v2 emitter
+	// carrying no window): the payload's declared flag is trusted —
+	// today's path verbatim.
 	sql := `
 		UPDATE tasks t SET lease_expires_at=now(), updated_at=now()
 		FROM projects p
@@ -167,7 +172,7 @@ func (s *Service) ConsumeTurnEnd(ctx context.Context, e TurnEndDueMark) (bool, e
 		  AND t.lease_expires_at > now()
 		  AND t.stage_entered_at <= $3`
 	args := []any{e.WorkspaceID, e.SessionRefs, observed}
-	if !e.TurnStartedAt.IsZero() {
+	if s.cfg.PresenceTransportV2 && !e.TurnStartedAt.IsZero() {
 		if advanced, err := s.advanceObservedByStore(ctx, e.WorkspaceID, e.SessionRefs, e.TurnStartedAt); err == nil && advanced {
 			turnAdvances.Inc()
 			return false, nil // the store observed the advance — the row is not due (advisory short-circuit)

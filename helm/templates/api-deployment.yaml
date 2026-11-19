@@ -167,6 +167,10 @@ spec:
             # <=0 to 10m).
             - name: LLMSAFESPACES_BOARD_NUDGEMEASUREWINDOW
               value: {{ dig "nudgeMeasureWindowSeconds" 600 .Values.board | quote }}
+            # #2100: the store-native evidence transport's engine-side
+            # kill-switch (the agentd half reads the same env).
+            - name: LLMSAFESPACES_BOARD_PRESENCEV2
+              value: {{ dig "presenceV2" true .Values.board | quote }}
             - name: LLMSAFESPACES_BOARD_THROTTLEBACKOFFSECONDS
               value: {{ dig "throttleBackoffSeconds" 300 .Values.board | quote }}
             # #1813: failed-attempt auto-return-to-ready base backoff.

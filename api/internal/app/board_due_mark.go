@@ -187,12 +187,12 @@ func (c *boardTurnEndConsumer) ObserveFrame(workspaceID string, evt *abiv1.Event
 		turnStart = time.UnixMilli(ms).UTC()
 	}
 	e := board.TurnEndDueMark{
-		WorkspaceID:  workspaceID,
-		SessionRefs:  refs,
-		Epoch:        payload.GetEpoch(),
-		Advanced:     payload.GetAdvanced(),
+		WorkspaceID:   workspaceID,
+		SessionRefs:   refs,
+		Epoch:         payload.GetEpoch(),
+		Advanced:      payload.GetAdvanced(),
 		TurnStartedAt: turnStart,
-		ObservedAt:   time.Now().UTC(),
+		ObservedAt:    time.Now().UTC(),
 	}
 	c.lastFoldNano.Store(e.ObservedAt.UnixNano())
 	select {
@@ -231,24 +231,24 @@ func (c *boardTurnEndConsumer) Run(ctx context.Context) {
 					}
 				}()
 				marked, sinkErr := c.sink(ctx, e)
-			if sinkErr != nil {
-				// A failed write is a missed acceleration only —
-				// the sweep converges the row. Log at debug-adjacent
-				// volume: transient pool pressure is routine.
-				if c.logger != nil {
-					c.logger.Warn("board turn-end consumer: due-mark write failed (sweep backstop owns the row)", "workspace", e.WorkspaceID, "error", sinkErr)
+				if sinkErr != nil {
+					// A failed write is a missed acceleration only —
+					// the sweep converges the row. Log at debug-adjacent
+					// volume: transient pool pressure is routine.
+					if c.logger != nil {
+						c.logger.Warn("board turn-end consumer: due-mark write failed (sweep backstop owns the row)", "workspace", e.WorkspaceID, "error", sinkErr)
+					}
 				}
-			}
-			// #2100-B: a LANDED due-mark rebaselines the hub's
-			// observation cursors NOW — the next sweep measures from
-			// the mark (pre-fix: the parking turn's trailing frames
-			// read as first-observation movement and ladderRenew
-			// erased the acceleration). Failure is loud and retried by
-			// nothing (the next due-mark re-runs it; one-window cost).
-			if marked {
-				c.hub.Rebaseline(ctx, e.SessionRefs)
-			}
-		}()
+				// #2100-B: a LANDED due-mark rebaselines the hub's
+				// observation cursors NOW — the next sweep measures from
+				// the mark (pre-fix: the parking turn's trailing frames
+				// read as first-observation movement and ladderRenew
+				// erased the acceleration). Failure is loud and retried by
+				// nothing (the next due-mark re-runs it; one-window cost).
+				if marked {
+					c.hub.Rebaseline(ctx, e.SessionRefs)
+				}
+			}()
 		}
 	}
 }

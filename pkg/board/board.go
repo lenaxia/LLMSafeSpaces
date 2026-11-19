@@ -67,6 +67,20 @@ type EngineConfig struct {
 	// pins can run sub-floor windows exactly like the 200ms
 	// LeaseDuration precedent.
 	NudgeMeasureWindow time.Duration
+	// PresenceTransportV2 arms the store-native evidence transport
+	// (#2100, lease-evidence-core design Phase 2 — the class-kill):
+	// turn-end emission is ungated agentd-side (every harness busy→idle
+	// publishes; the consumer's assignee-match is the claim filter) and
+	// this engine derives the advance verdict from the platform's own
+	// store (board_transitions/board_events inside the turn window),
+	// never from the agentd-side file artifacts — with v2 armed the
+	// frozen-file class carries no authority (frozen-file hydration
+	// never wins over store truth). false = the v1 path verbatim (the
+	// emitter's declared flag is trusted; no store derivation) — the
+	// kill-switch both halves honor (env
+	// LLMSAFESPACES_BOARD_PRESENCEV2, default TRUE — the class-kill IS
+	// the fix).
+	PresenceTransportV2 bool
 	// HeartbeatLapseThreshold is how stale the worker-anchored progress
 	// clock (tasks.last_progress_at) may get on a lease-due row before
 	// the heartbeat-lapse arm fires (#2043, the 2026-11-15 incident's
@@ -155,6 +169,7 @@ func DefaultEngineConfig() EngineConfig {
 		MaxNodesPerEpic:         64,
 		WrapUpConsecutiveCap:    3,
 		PressureSampleTTL:       2 * time.Minute,
+		PresenceTransportV2:     true,
 	}
 }
 

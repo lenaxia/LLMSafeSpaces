@@ -20,7 +20,7 @@ package main
 // The file artifacts are no longer AUTHORITATIVE when enabled (the
 // registry survives solely for the same-half self-certification
 // refusal; the advance tail keeps its belt role for a flag flip-back).
-// Flip LLMSAFESPACES_BOARD_TRANSPORT_V2=false to restore the v1
+// Flip LLMSAFESPACES_BOARD_PRESENCEV2=false to restore the v1
 // emission path verbatim (process restart applies it).
 
 import (
@@ -40,7 +40,7 @@ var (
 func boardTransportV2Enabled() bool {
 	boardTransportV2Once.Do(func() {
 		boardTransportV2Val = true
-		if v, ok := os.LookupEnv("LLMSAFESPACES_BOARD_TRANSPORT_V2"); ok {
+		if v, ok := os.LookupEnv("LLMSAFESPACES_BOARD_PRESENCEV2"); ok {
 			if b, err := strconv.ParseBool(v); err == nil {
 				boardTransportV2Val = b
 			}
