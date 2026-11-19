@@ -710,6 +710,14 @@ func (s *Service) ListWorkspaces(ctx context.Context, userID string, opts types.
 
 	items := make([]types.WorkspaceListItem, 0, len(metas))
 	states := s.fetchUserWorkspaceStates(ctx, userID)
+	// HarnessOptions is instance-wide (the picker's offer list), so one
+	// read serves every item. MUST ride the list: the sidebar evaluates
+	// the list it already holds at "new session" click time — an absent
+	// field degrades the frontend to the opencode-only fallback and the
+	// first-session picker can never render (2026-11-18 prod incident;
+	// same defect class as OrgID #477 / PhraseID #1757 r2). Mirrors
+	// GetWorkspace's HarnessOptions.
+	enabledHarnesses := s.EnabledHarnesses(ctx)
 	for _, m := range metas {
 		st := states[m.ID]
 		item := types.WorkspaceListItem{
@@ -739,6 +747,8 @@ func (s *Service) ListWorkspaces(ctx context.Context, userID string, opts types.
 		if st.HarnessBound {
 			item.Harness = harnessPtr(st.Harness)
 		}
+		// The picker's offer list — see the comment at enabledHarnesses.
+		item.HarnessOptions = enabledHarnesses
 		// #2092: the degraded-bind verdict rides the list — the
 		// picker/sidebar's "blocked on cluster CRD" hint.
 		item.BindBlocked = st.BindBlocked
