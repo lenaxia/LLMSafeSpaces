@@ -124,18 +124,35 @@ export function Sidebar({ onNavigate }: Props) {
   // binding persisted server-side (the choice survives the retry), so
   // the refetch keeps the sidebar honest instead of re-offering a
   // decision the workspace has already made.
+  //
+  // D3 (harness-selection audit): onError records the server's error
+  // class (ApiClientError.body.error carries class + remediation —
+  // harness_bind_not_persisted's kubectl action, harness_immutable's
+  // current value, the 422 not-enabled set) keyed to the workspace, so
+  // an open picker renders it INLINE instead of the class-laundering
+  // "Failed to create session." alert. Rows without an open picker
+  // (the single-option silent bind) still alert — with this same
+  // honest text, never the generic one.
+  const [sessionCreateError, setSessionCreateError] = useState<{ wsId: string; message: string } | null>(null);
   const newSessionMutation = useMutation({
     mutationFn: ({ wsId, harness }: { wsId: string; harness?: string }) =>
       workspacesApi.ensureSession(wsId, { harness }),
+    onMutate: () => setSessionCreateError(null),
     onSuccess: (data, vars) => {
       queryClient.invalidateQueries({ queryKey: ["workspaces"] });
       queryClient.invalidateQueries({ queryKey: ["sessions", vars.wsId] });
       navigate(`/chat/${vars.wsId}/${data.sessionId}`);
       onNavigate?.();
     },
-    onError: () => {
+    onError: (err: unknown, vars) => {
       queryClient.invalidateQueries({ queryKey: ["workspaces"] });
-      try { window.alert("Failed to create session."); } catch { /* blocked */ }
+      setSessionCreateError({
+        wsId: vars.wsId,
+        message:
+          err instanceof ApiClientError && err.body?.error
+            ? err.body.error
+            : "Failed to create session.",
+      });
     },
   });
 
@@ -263,6 +280,7 @@ export function Sidebar({ onNavigate }: Props) {
               selectedSessionId={sessionId}
               activating={activateMutation.isPending && activateMutation.variables === ws.id}
               creatingSession={newSessionMutation.isPending && newSessionMutation.variables?.wsId === ws.id}
+              createError={sessionCreateError}
               onToggle={() => handleWorkspaceClick(ws)}
               onSelectSession={(sid) => handleSessionClick(ws.id, sid)}
               onNewSession={(harness) => newSessionMutation.mutate({ wsId: ws.id, harness })}
@@ -367,6 +385,10 @@ interface WorkspaceGroupProps {
   selectedSessionId?: string;
   activating: boolean;
   creatingSession: boolean;
+  /** D3: the latest session-create/bind failure (wsId-keyed) — an
+   * open picker renders it inline; a picker-less path (single-option
+   * silent bind) alerts it. Null while no failure is outstanding. */
+  createError?: { wsId: string; message: string } | null;
   onToggle: () => void;
   onSelectSession: (sessionId: string) => void;
   /** Harness rides along only when the workspace is unbound (the
@@ -397,6 +419,7 @@ function WorkspaceGroup({
   selectedSessionId,
   activating,
   creatingSession,
+  createError,
   onToggle,
   onSelectSession,
   onNewSession,
@@ -438,6 +461,31 @@ function WorkspaceGroup({
   const [showSettings, setShowSettings] = useState(false);
   const [showRefreshConfirm, setShowRefreshConfirm] = useState(false);
   const [showHarnessPicker, setShowHarnessPicker] = useState(false);
+
+  // D3: the picker STAYS OPEN through submit — on failure the server's
+  // error class renders inline (the error prop) and the choice is
+  // preserved for retry; on success the settled effect below closes it
+  // (the route navigation usually unmounts this row first).
+  const wsCreateError = createError?.wsId === workspace.id ? createError.message : null;
+  const submittedHarnessRef = useRef(false);
+  useEffect(() => {
+    if (submittedHarnessRef.current && !creatingSession && !wsCreateError) {
+      submittedHarnessRef.current = false;
+      setShowHarnessPicker(false);
+    }
+  }, [creatingSession, wsCreateError]);
+
+  // D3 alert fallback: failures on picker-less paths (the single-option
+  // silent bind, the empty-state CTA) have no inline surface — alert
+  // them with the honest class text. Keyed by error-object identity so
+  // a re-render never re-alerts; each failure gets a fresh object.
+  const alertedCreateErrorRef = useRef<{ wsId: string; message: string } | null>(null);
+  useEffect(() => {
+    if (!createError || createError.wsId !== workspace.id || showHarnessPicker) return;
+    if (alertedCreateErrorRef.current === createError) return;
+    alertedCreateErrorRef.current = createError;
+    try { window.alert(createError.message); } catch { /* blocked */ }
+  }, [createError, showHarnessPicker, workspace.id]);
 
   const handleNewSession = () => {
     if (harnessUnbound) {
@@ -603,12 +651,19 @@ function WorkspaceGroup({
        * re-offers the same one-time decision. */}
       <HarnessPickerDialog
         open={showHarnessPicker}
-        onOpenChange={setShowHarnessPicker}
+        onOpenChange={(open) => {
+          setShowHarnessPicker(open);
+        }}
         workspaceName={workspace.name}
         options={harnessOptions}
         submitting={creatingSession}
+        error={wsCreateError}
         onSubmit={(harness) => {
-          setShowHarnessPicker(false);
+          // D3: do NOT close here — the dialog stays open through the
+          // flight; failure renders the class inline (error prop above)
+          // and preserves the choice for retry, success settles it via
+          // the effect (or the route navigation unmounting the row).
+          submittedHarnessRef.current = true;
           onNewSession(harness);
         }}
       />
@@ -653,8 +708,8 @@ function WorkspaceSessionList({
   selectedSessionId,
   harnessUnbound,
   onSelectSession,
-  onNewSession: _onNewSession,
-  creatingSession: _creatingSession,
+  onNewSession,
+  creatingSession,
   isSuspended,
   onRenameSession,
   onArchiveSession,
@@ -947,6 +1002,22 @@ function WorkspaceSessionList({
             >
               Choose a harness when starting your first session
             </div>
+          )}
+          {/* D5 (harness-selection audit): the intended empty-state CTA —
+           * the previously dead onNewSession/creatingSession props now
+           * drive a real button (unbound: the bind's entrance; bound: a
+           * plain new session; suspended: hidden — a suspended workspace
+           * cannot create sessions). */}
+          {!isSuspended && (
+            <button
+              type="button"
+              onClick={onNewSession}
+              disabled={creatingSession}
+              className="mt-1 rounded border border-border px-2 py-1 text-xs text-foreground transition-colors hover:bg-accent/50 disabled:opacity-50"
+              data-testid="empty-state-new-session"
+            >
+              {creatingSession ? "Creating…" : harnessUnbound ? "Choose harness & start" : "Start a session"}
+            </button>
           )}
         </div>
       )}

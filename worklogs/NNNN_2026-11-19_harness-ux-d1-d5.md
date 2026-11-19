@@ -1,0 +1,93 @@
+# Worklog: Harness UX Defects D1–D5 — ChatPage Picker Entrance, status.message, Error-Class Fidelity
+
+**Date:** 2026-11-19
+**Session:** Board story tsk-marshy-cipher-hauls (re-file of the lost tsk-hazel-lagoon-hums) — the harness-selection-flow audit's frontend findings, implemented as one PR. Source of truth: `reports/audits/harness-selection-flow.md` findings D1–D5 (lines 73–77).
+**Status:** Complete
+
+---
+
+## Objective
+
+Close the audit's five frontend findings on the harness first-session flow: the mobile dead-end behind a spinner with false "a few seconds" copy (D1), the untyped/unrendered `status.message` that makes parked-unbound indistinguishable from pod-building (D2), the class-laundering `window.alert("Failed to create session.")` on every bind/create failure (D3), the latent harness-less auto-create path (D4), and the dead `WorkspaceSessionList` props (D5).
+
+---
+
+## Work Completed
+
+### D1 — ChatPage first-session entrance (parked-unbound Creating)
+
+- `ChatPage` derives `harnessUnbound` from the workspace LIST read (`workspace.harness` absent), gated by `listLoaded` so a still-loading listing can never flash the parked-unbound panel for a bound pod-building workspace.
+- When `isTransitioning && harnessUnbound` (the park — unbound workspaces never leave Creating without a bind), the transitioning panel replaces the spinner + "usually takes a few seconds" copy with a "Waiting for harness selection" panel and a **Start first session** CTA (`data-testid="first-session-cta"`).
+- The CTA runs the same `ensureSession` path as the sidebar's picker: single enabled harness binds silently (no modal); multiple open `HarnessPickerDialog`. This is the flow's first mobile-visible entrance — the sidebar's `+` button lives in the drawer-hidden sidebar (the audit's mobile dead-end).
+- Success navigates to `/chat/{wsId}/{sessionId}` (invalidating workspaces+sessions); failure keeps the dialog open with the class inline (D3).
+
+### D2 — `status.message` typed and rendered
+
+- `frontend/src/api/types.ts` `WorkspaceStatus`: added `message?: string` (served by `WorkspaceStatusResult.Message` all along; the controller parks unbound workspaces with `"waiting for harness selection"`).
+- The generic transitioning branch renders `status?.message ?? "This usually takes a few seconds"`; the parked-unbound branch renders the message under its fixed heading. Parked-unbound and pod-building now read differently by construction.
+
+### D3 — error-class fidelity
+
+- `Sidebar.newSessionMutation.onError` no longer alerts the generic string: it records `{wsId, message}` where `message = ApiClientError.body.error` (the wire carries class + remediation — `internal_error: harness_bind_not_persisted (… kubectl apply -f helm/crds/workspace.yaml …)`, `harness_immutable: …`, `validation_error: … not enabled …`), falling back to the generic string only for non-API errors.
+- `WorkspaceGroup` passes the ws-matched error to `HarnessPickerDialog`'s previously-dead `error` prop; the dialog's submit no longer closes it (`setShowHarnessPicker(false)` removed from `onSubmit`) — a settled effect closes it on success, failure renders the class inline and preserves the choice for retry.
+- The dialog-less silent-bind path (single enabled harness) still alerts — now with the honest class text, keyed by error-object identity so nothing re-alerts on re-render.
+- `ChatPage.firstSessionMutation` carries the identical contract for the new CTA path.
+
+### D4 — latent auto-create path routed bind-aware
+
+- `ChatPage.createSessionMutation` now rides `workspacesApi.ensureSession` (the bind-aware atomic wire) instead of `sessionsApi.create(wsId, "New chat")` (a title-only body on the SAME endpoint — the title was already ignored server-side by `parseSessionsNewHarnessBody`).
+- The auto-create effect guards: `if (harnessUnbound) return;` — an unbound workspace must never auto-create (the bind is the picker's one-time decision). Latent today (the controller parks unbound in Creating, never Active), pinned by test against future paths (restore/import/resume variants). `ChatView.onNewSession` routes through the same guard.
+- Deps extended with `harnessUnbound`; the pending-guard prevents duplicate creates on re-fire.
+
+### D5 — WorkspaceSessionList dead props wired
+
+- The underscore-aliased `onNewSession`/`creatingSession` props now drive a real empty-state CTA (`data-testid="empty-state-new-session"`): "Choose harness & start" (unbound — the bind's entrance), "Start a session" (bound), hidden while suspended, disabled while creating.
+
+---
+
+## Key Decisions
+
+1. **Unbound signal = the list read, not `status.message` text-matching.** The panel's branch keys off `workspace.harness` (a stable contract field); `status.message` is rendered as honest copy but never parsed — prose-matching a controller string would be brittle.
+2. **Dialog stays open through submit; success closes via settled effect.** The mutation lives in `Sidebar` but the picker state in `WorkspaceGroup`, and success navigation does not always unmount the row (sidebar persists across the route change) — `submittedHarnessRef` + `!creatingSession && !wsCreateError` closes it deterministically.
+3. **Alert fallback retained for dialog-less failures, with honest text.** Single-option silent binds have no inline surface; an alert carrying `body.error` beats a silent failure or a returned generic alert. Keyed by error-object identity (never re-alerts; each failure is a fresh object).
+4. **Auto-create moved to `ensureSession` with an unbound guard rather than assertions-only.** Equivalent wire for bound workspaces (same endpoint, same response shape), strictly safer for the latent unbound case; the invariant is additionally pinned by `ChatPage.harness.test.tsx`.
+5. **D6 (first-session wait UX) left as-is** — the audit files it as an optional API-side progress-message rider on the same `status.message` surface D2 now renders; out of this story's scope.
+
+---
+
+## Assumptions (Rule 7) and validation
+
+| Assumption | Validation |
+|---|---|
+| The wire serves `body.error` with class + remediation for all three D3 classes | `respondWithError` emits `gin.H{"error": apiErr.Error()}`; `APIError.Error()` = `Code: Message (Err)`; the bind-verify 500 wraps the full kubectl remediation in `Err` |
+| The picker can never fire for a bound workspace from ChatPage | `parkedUnbound` requires `isTransitioning` (bound Active workspaces render ChatView); `handleFirstSession` is only reachable from the transitioning panel and the guarded `onNewSession` |
+| The empty-state CTA cannot double-fire with the row `+` button | Both route through `handleNewSession`; `creatingSession` disables both while pending |
+| `sessionsApi.create`'s title had no server effect | `parseSessionsNewHarnessBody` decodes only `harness`; title was already dead on this endpoint |
+| PR 2110 (backend list `harnessOptions`) is the enabler, not a code dependency | Frontend already typed `harnessOptions?` with `FALLBACK_HARNESS_OPTIONS` degrade; this PR builds on origin/main and benefits from 2110 the moment it merges (no shared files) |
+
+---
+
+## Blockers
+
+None. PR 2110 (fix/list-harness-options) was still OPEN at implementation time; this branch builds on origin/main and touches no file 2110 changes — the multi-option offer list lights up when 2110 merges (single-option instances are fully functional without it).
+
+---
+
+## Tests Run
+
+- `npx vitest run src/pages/ChatPage.harness.test.tsx src/components/layout/Sidebar.harness.test.tsx` — 24 passed.
+- `npm run test` (full frontend suite) — **243 files / 2797 tests, all passed** (after updating the two legitimate guards: the auto-create wire expectation in `ChatPage.test.tsx`, and `ChatPage.hookcount.test.tsx` 78→83 for the five new hooks).
+- `npm run typecheck` — clean. `npm run lint` — 0 errors (7 pre-existing warnings in generated abi files + BoardPage, untouched).
+- `make fmt-check` — clean.
+
+---
+
+## Files Modified
+
+- `frontend/src/api/types.ts` — `WorkspaceStatus.message?: string` (D2)
+- `frontend/src/pages/ChatPage.tsx` — parked-unbound panel + CTA (D1), status.message rendering (D2), firstSessionMutation with inline-error contract (D3), bind-aware auto-create + guard (D4)
+- `frontend/src/components/layout/Sidebar.tsx` — error-class capture + ws-keyed propagation (D3), dialog-open-until-settled (D3), empty-state CTA (D5)
+- `frontend/src/pages/ChatPage.harness.test.tsx` — new: 9 tests pinning D1/D2/D3/D4
+- `frontend/src/components/layout/Sidebar.harness.test.tsx` — +6 tests: D3 dialog-path fidelity, the three classes distinguishable, silent-path honest alert, D5 CTA
+- `frontend/src/pages/ChatPage.test.tsx` / `ChatPage.hookcount.test.tsx` — guards updated to the new wire/hook count
+- `worklogs/NNNN_2026-11-19_harness-ux-d1-d5.md` — this entry

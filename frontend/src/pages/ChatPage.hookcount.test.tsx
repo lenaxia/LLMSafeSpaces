@@ -167,7 +167,7 @@ const HOOK_CALL = /\buse[A-Z][A-Za-z0-9]*\s*[<(]/g;
 // intentionally add or remove a hook in ChatPage, update this number —
 // an unexpected change means hooks moved across the early-return guard
 // or the hook order was accidentally restructured.
-const EXPECTED_HOOK_CALLS = 78; // +useClearSessionBusy +fold-ref/useEffect (#1687 live-update bridge) +agentRestarted useState (#1760) +useIsMobile (#1845 mobile prompt presenter) +reconcileLandedUserMessage useCallback (queued-message ordering)
+const EXPECTED_HOOK_CALLS = 83; // +useClearSessionBusy +fold-ref/useEffect (#1687 live-update bridge) +agentRestarted useState (#1760) +useIsMobile (#1845 mobile prompt presenter) +reconcileLandedUserMessage useCallback (queued-message ordering) +5 harness-selection audit D1/D3 (showHarnessPicker useState, harnessPickError useState, firstSessionMutation useMutation, alertedPickErrorRef useRef, alert-fallback useEffect)
 
 describe("ChatPage hook count stability (React error #310 regression guard)", () => {
   beforeEach(() => {

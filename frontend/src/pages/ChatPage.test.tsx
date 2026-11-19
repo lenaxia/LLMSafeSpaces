@@ -25,6 +25,7 @@ vi.mock("../api/workspaces", () => ({
     abortSession: vi.fn().mockResolvedValue(undefined),
     markSessionSeen: vi.fn().mockResolvedValue(undefined),
     getSessions: vi.fn().mockResolvedValue([]),
+    ensureSession: vi.fn().mockResolvedValue({ sessionId: "new-sess", workspaceId: "ws-1", workspacePhase: "Active", resumed: false }),
   },
 }));
 vi.mock("../providers/SessionActivityProvider", () => ({
@@ -53,7 +54,6 @@ vi.mock("../api/messages", () => {
   const gh = vi.fn().mockResolvedValue([]);
   return { messagesApi: { getHistory: gh, getHistoryPage: vi.fn().mockImplementation(async () => { const msgs = await gh(); return { messages: msgs, nextCursor: undefined }; }), sendAsync: vi.fn(), queueMessage: vi.fn().mockResolvedValue({ messageID: "msg_q_mock" }), getQueue: vi.fn().mockResolvedValue({ messages: [] }), deleteQueueMessage: vi.fn().mockResolvedValue(undefined) } };
 });
-vi.mock("../api/sessions", () => ({ sessionsApi: { create: vi.fn() } }));
 vi.mock("../hooks/useEventStream", () => ({ useEventStream: vi.fn() }));
 
 // Capture the contract-stream options ChatPage registers with
@@ -74,7 +74,6 @@ vi.mock("../hooks/useContractStream", () => ({
 
 import { workspacesApi } from "../api/workspaces";
 import { messagesApi } from "../api/messages";
-import { sessionsApi } from "../api/sessions";
 
 function renderChatPage(path = "/chat") {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -325,9 +324,12 @@ describe("ChatPage", () => {
 
   it("auto-creates session when workspace Active and no sessionId", async () => {
     (workspacesApi.getStatus as ReturnType<typeof vi.fn>).mockResolvedValue({ phase: "Active" });
-    (sessionsApi.create as ReturnType<typeof vi.fn>).mockResolvedValue({ sessionId: "new-sess" });
+    (workspacesApi.ensureSession as ReturnType<typeof vi.fn>).mockResolvedValue({ sessionId: "new-sess", workspaceId: "ws-1", workspacePhase: "Active", resumed: false });
     renderChatPage("/chat/ws-1");
-    await waitFor(() => expect(sessionsApi.create).toHaveBeenCalledWith("ws-1", "New chat"));
+    // D4 (harness-selection audit): the auto-create rides the bind-aware
+    // sessions/new wire (ensureSession) — a bound workspace is equivalent,
+    // and this path can never mint a harness-less create on an unbound one.
+    await waitFor(() => expect(workspacesApi.ensureSession).toHaveBeenCalledWith("ws-1"));
   });
 
   it("shows chatError banner when send fails", async () => {
