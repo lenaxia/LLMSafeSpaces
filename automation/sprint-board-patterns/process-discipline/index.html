@@ -2136,10 +2136,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#push-and-turn-discipline" class="md-nav__link">
+  <a href="#turn-budget-waits-and-push-discipline" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Push and turn discipline
+        Turn budget, waits, and push discipline
       
     </span>
   </a>
@@ -2215,15 +2215,50 @@ Everything below applies to every story regardless of use case.</p>
   ORCHESTRATOR merges after APPROVED. Pushing and handing off is the end of
   the worker's merge involvement.</li>
 </ul>
-<h2 id="push-and-turn-discipline">Push and turn discipline<a class="headerlink" href="#push-and-turn-discipline" title="Permanent link">&para;</a></h2>
+<h2 id="turn-budget-waits-and-push-discipline">Turn budget, waits, and push discipline<a class="headerlink" href="#turn-budget-waits-and-push-discipline" title="Permanent link">&para;</a></h2>
+<ul>
+<li><strong>A turn is a unit of WORK, not progress.</strong> Do not end your turn
+  while actionable next steps remain — turn-end is for completion,
+  blockage, or a DECLARED external wait; never a checkpoint or a
+  "natural pause point". Report as you go (what was done, the artifact
+  URL, what is next); <strong>stopping after the report while work remains is
+  the anti-pattern</strong> — the report is an update, not a stopping point.</li>
+<li><strong>What you are waiting on decides the move</strong> (the typed-wait verb
+  <code>board_wait</code> is the entry for both wait kinds; the claim token guards
+  it):</li>
+</ul>
+<table>
+<thead>
+<tr>
+<th>Waiting on</th>
+<th>The move</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>a USER decision</td>
+<td><code>board_wait {waitOn: "user", waitReason: "&lt;the question&gt;"}</code> — the <code>pending_input</code> flag-op with the question stated (<code>board_move_stage {toStage: "pending_input"}</code> keeps working as the alias) — never for events</td>
+</tr>
+<tr>
+<td>an EVENT (CI run, review verdict, PR state)</td>
+<td>keep the turn alive with a bounded watch (<code>gh pr checks --watch</code>, cap ~12 min) OR <code>board_wait {waitOn: "event", condition: "pr_merged(&lt;pr&gt;)"}</code> declaring the event-wait, then end the turn (the closed grammar: <code>pr_merged</code>/<code>ci_green</code> take a PR number, <code>story_done</code> takes a <code>tsk-…</code> short id)</td>
+</tr>
+<tr>
+<td>nothing</td>
+<td>keep working</td>
+</tr>
+</tbody>
+</table>
 <ul>
 <li><strong><code>make fmt-check</code> before every push.</strong> A red format check never leaves
   your machine.</li>
-<li><strong>Push, verify the run started, END the turn.</strong> After pushing: confirm the
-  verification run actually started (the check run / suite run appears on
-  the branch), then END your turn with a report. <strong>No sleep-polling</strong> — do
-  not sit in the turn waiting on the run or the review; the board wakes the
-  right session when there is something to do.</li>
+<li><strong>Push, verify the run started, then watch or declare — never
+  sleep-poll.</strong> After pushing, confirm the verification run actually
+  started (the check run appears on the branch), then either bounded-
+  watch it in this turn or end the turn DECLARING the event-wait and its
+  condition. <strong>No sleep-polling</strong> — sleep-then-check loops are banned; a
+  capped watch command or a declared wait is the discipline. The board
+  wakes the right session when there is something to do.</li>
 <li>One report per turn: what was done, the artifact URL, what is next (if
   anything). The report is the audit humans read.</li>
 </ul>
@@ -2278,8 +2313,12 @@ vendors. Whatever stack the workspace runs on, these shapes hold.</p>
 <ul>
 <li>The claim token in your charter envelope authorizes YOUR in-flight writes
   on THIS story only.</li>
-<li>A BOARD LEASE NUDGE gets ONE <code>board_heartbeat</code> immediately, then continue
-  working. No periodic heartbeat — liveness is platform-observed.</li>
+<li>A BOARD LEASE NUDGE gets ONE <code>board_heartbeat</code> immediately — FIRST,
+  before any other action — then continue working, advance the stage, or
+  declare failure with reason. Never speculate about heartbeats: they
+  answer nudges only; there is no periodic heartbeat (liveness is
+  platform-observed). This contract rides the charter itself at claim
+  time, not just the nudge text.</li>
 <li>A 409 <code>claim_token</code> anywhere means the claim is gone: STOP, <code>board_read</code>
   the story, follow what you find (see <code>lifecycle-salvage.md</code> if a prior
   attempt's work exists).</li>
@@ -2289,9 +2328,13 @@ vendors. Whatever stack the workspace runs on, these shapes hold.</p>
 <h2 id="for-charter-writers">For charter writers<a class="headerlink" href="#for-charter-writers" title="Permanent link">&para;</a></h2>
 <p>Reference this file instead of copying its rules: a charter needs only the
 work-specific parts (background, scope, where, deliverable) plus criteria.
-Each use case — writing code, research, creative writing, data analytics,
-data post-processing, batch content operations — has a worked charter in
-this directory; grep '^Description:' for the catalog.</p>
+The charter template the board renders at claim time already carries the
+wait-lifecycle core (turn budget, the wait-type decision table, the nudge
+contract, the report-then-stop anti-pattern) — do not hand-copy it into
+descriptions; this file holds the full rules and rationale. Each use case —
+writing code, research, creative writing, data analytics, data
+post-processing, batch content operations — has a worked charter in this
+directory; grep '^Description:' for the catalog.</p>
 <p>The canonical example payloads live in the sibling files; the shape
 patterns (single story, epic+plan, reviewer-checkable) are worked in
 <code>shape-single-story.md</code>, <code>shape-epic-plan.md</code>, and
@@ -2318,7 +2361,7 @@ patterns (single story, epic+plan, reviewer-checkable) are worked in
     <span class="md-icon" title="Last update">
       <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M21 13.1c-.1 0-.3.1-.4.2l-1 1 2.1 2.1 1-1c.2-.2.2-.6 0-.8l-1.3-1.3c-.1-.1-.2-.2-.4-.2m-1.9 1.8-6.1 6V23h2.1l6.1-6.1zM12.5 7v5.2l4 2.4-1 1L11 13V7zM11 21.9c-5.1-.5-9-4.8-9-9.9C2 6.5 6.5 2 12 2c5.3 0 9.6 4.1 10 9.3-.3-.1-.6-.2-1-.2s-.7.1-1 .2C19.6 7.2 16.2 4 12 4c-4.4 0-8 3.6-8 8 0 4.1 3.1 7.5 7.1 7.9l-.1.2z"/></svg>
     </span>
-    <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-timeago" title="November 12, 2026 23:02:30 UTC"><span class="timeago" datetime="2026-11-12T23:02:30+00:00" locale="en"></span></span><span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-iso_date" title="November 12, 2026 23:02:30 UTC">2026-11-12</span>
+    <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-timeago" title="November 17, 2026 19:51:10 UTC"><span class="timeago" datetime="2026-11-17T19:51:10+00:00" locale="en"></span></span><span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-iso_date" title="November 17, 2026 19:51:10 UTC">2026-11-17</span>
   </span>
 
     
