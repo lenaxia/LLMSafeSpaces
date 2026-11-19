@@ -776,6 +776,16 @@ func (s *Service) Heartbeat(ctx context.Context, actor Actor, taskID, shortIDOrI
 	// design: the back-fill's failure never fails the heartbeat.
 	s.backfillAssigneeStamp(ctx, t, actor)
 	serverNow := time.Now().UTC()
+	if observedProgressAt.IsZero() {
+		// #2100 response-observed presence: a heartbeat carrying NO
+		// declared watermark is a valid response — the arrival IS the
+		// evidence, and the STORE's clock is the only one written (the
+		// pre-fix shape stored the zero time as year-1: a client-hoped
+		// clock the store must never trust). The harness-agnostic
+		// floor's portability answer: presence is any observed
+		// response, never a demanded grammar.
+		observedProgressAt = serverNow
+	}
 	switch {
 	case observedProgressAt.After(serverNow.Add(heartbeatFutureTolerance)):
 		return HeartbeatResult{}, &GuardError{Code: GuardInput, Detail: fmt.Sprintf(

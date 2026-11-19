@@ -388,6 +388,23 @@ type Health struct {
 	// — with its facts {short_id, wait_on, wait_reason, since}, beside
 	// active_leases (the same health projection pass).
 	Waiting []HealthWait `json:"waiting"`
+	// EventChannel is the turn-end event channel's heartbeat line
+	// (#2100 design §1.3): the fold channel's age compared against
+	// claims-active — the surface that makes a dead fold leg read
+	// DEGRADED instead of invisible. Nil (no source wired) ⇒ the line
+	// is absent, never zero-valued.
+	EventChannel *HealthEventChannel `json:"event_channel,omitempty"`
+}
+
+// HealthEventChannel is the event_channel health line: one row, three
+// facts. Degraded is true exactly when claims are active AND the last
+// turn-end fold is older than boardEventChannelStaleAfter — the
+// comparison #2100 lacked (claims existed, events folded 0, nothing
+// compared them, so the dead due-mark path stayed invisible for days).
+type HealthEventChannel struct {
+	LastFoldAgeSeconds float64 `json:"last_fold_age_seconds"`
+	ClaimsActive       int     `json:"claims_active"`
+	Degraded           bool    `json:"degraded"`
 }
 
 // HealthAckWait is one epic awaiting the human's wrap-up ack.

@@ -1991,6 +1991,12 @@ board:
   # in_review). Default 3 ≈ 2¼ h of presence-only orbiting on the 45 m
   # lease — the same epoch-scale bound as the busy cap.
   noAdvanceHeartbeatCap: 3
+  # #2100: the nudge rung's measurement window in seconds — the
+  # challenge's cost (park→nudge→verdict latency), DECOUPLED from
+  # leaseSeconds (the 45→20m lease retune stays a separately-gated
+  # follow-up phase; do not couple them). Loader floor 300. Default
+  # 600 = 10m, >=3x the worst observed legitimate response latency.
+  nudgeMeasureWindowSeconds: 600
   # 429 cooldown in seconds, applied to BOTH the task and the project's
   # worker slots (new claims into a throttled project pause).
   throttleBackoffSeconds: 300

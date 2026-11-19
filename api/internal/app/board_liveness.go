@@ -319,6 +319,70 @@ func (h *boardLivenessHub) markNudge(ctx context.Context, nudgeID, ref string) {
 	h.mu.Unlock()
 }
 
+// Rebaseline re-bases the observation cursors for the given refs at
+// the CURRENT evidence stamps (#2100-B, lease-evidence-core design
+// §1.1): the due-mark's masking fix. The parking turn's own frames are
+// pre-mark movement; the hub's first-observation posture baselines the
+// frame legs at zero (any stamp this process ever saw reads as
+// movement on first sight — the busy-worker protection), so a due-mark
+// landing before the first observation is erased one sweep later by
+// ladderRenew. Calling this AT the due-mark moves the baseline to
+// "now": the next observation measures from the mark, and the quiet
+// arms — not a gratuitous renewal — own the row.
+//
+// Idempotent and safe to call repeatedly (it writes the same cursor a
+// sweep would). Failure logs loud and is retried by nothing — the next
+// due-mark re-runs it; the cost of a missed rebaseline is one window
+// (today's behavior).
+func (h *boardLivenessHub) Rebaseline(ctx context.Context, refs []string) {
+	if h == nil || len(refs) == 0 {
+		return
+	}
+	arefs := make([]board.AssigneeRef, 0, len(refs))
+	for _, r := range refs {
+		if r != "" {
+			arefs = append(arefs, board.AssigneeRef{SessionID: r})
+		}
+	}
+	if len(arefs) == 0 {
+		return
+	}
+	rows, err := h.resolveRefs(ctx, arefs)
+	if err != nil {
+		// Loud, not silent (#2100's defect class): a missed
+		// rebaseline costs one window — the sweep backstop owns the
+		// row — but it must be VISIBLE.
+		slog.WarnContext(ctx, "board: due-mark rebaseline could not resolve refs (cursor unchanged; one-window cost)",
+			"refs", len(arefs), "err", err.Error())
+		return
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	for _, row := range rows {
+		// The stamps as the sweep itself would read them: per class,
+		// whichever identity key moved latest (the observe path's own
+		// arithmetic, mirrored so the rebaselined cursor and the next
+		// observation agree by construction).
+		stamp := h.framesWorker[row.rawID]
+		if p := h.framesWorker[row.phrase]; p > stamp {
+			stamp = p
+		}
+		opaque := h.framesOpaque[row.rawID]
+		if p := h.framesOpaque[row.phrase]; p > opaque {
+			opaque = p
+		}
+		cur := boardLiveCursor{frameStamp: stamp, opaqueStamp: opaque, dbCount: row.messageCount}
+		// Every ref form the cursors key on: the engine's ref as
+		// passed AND the resolved raw/phrase keys (cursors key on the
+		// ref as passed, board_liveness.go's own note).
+		for _, key := range [...]string{row.ref, row.rawID, row.phrase} {
+			if key != "" {
+				h.cursors[key] = cur
+			}
+		}
+	}
+}
+
 // sessionIndexRow is one resolved assignee's durable evidence.
 type sessionIndexRow struct {
 	ref          string // the engine's ref (as passed)

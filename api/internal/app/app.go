@@ -1620,6 +1620,10 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 				// #2043 two-clock split: the progress clock's staleness
 				// bound; <=0 falls back to the engine's 90m default.
 				HeartbeatLapseThreshold: time.Duration(cfg.Board.HeartbeatLapseSeconds) * time.Second,
+				// #2100: the challenge's measure window — decoupled from
+				// the lease (floor 5m at the loader; engine floors <=0 at
+				// the 10m default).
+				NudgeMeasureWindow: time.Duration(max(cfg.Board.NudgeMeasureWindowSeconds, 300)) * time.Second,
 				// #2044 heartbeat-orbit budget: K presence-only
 				// heartbeat responses before the wedge verdict; <=0
 				// falls back to the engine's default (3).
@@ -1922,8 +1926,12 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 			// existing quiet arms. Degraded stream ⇒ no dispatches ⇒
 			// today's sweep semantics verbatim (the accelerator-never-
 			// dependency posture, epic R5).
-			boardTurnEnds := newBoardTurnEndConsumer(boardSvc.ConsumeTurnEnd, log)
+			boardTurnEnds := newBoardTurnEndConsumer(boardSvc.ConsumeTurnEnd, log, boardLivenessHub)
 			go boardTurnEnds.Run(ctx)
+			// #2100 §1.3 — the channel's heartbeat in board_health: the
+			// fold stamp vs claims-active comparison makes a dead fold
+			// leg read DEGRADED on the surface a human actually reads.
+			boardSvc.SetTurnEndFoldSource(boardTurnEnds.lastFoldAt)
 			proxyHandler.SetFrameObserver(chainFrameObservers(boardLivenessHub.ObserveFrame, boardTurnEnds.ObserveFrame))
 			// REST projection (design 0067 §4.3a, #1699 Lane 2): a thin
 			// adapter over the same canonical service — the manager

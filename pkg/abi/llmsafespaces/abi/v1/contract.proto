@@ -305,8 +305,17 @@ message Event {
 // the turn window's length (busy-mark to settle). #2042 contract: the
 // event is management-class — zero liveness/renewal authority; never
 // stamped into worker-activity evidence.
+//
+// #2100 transport v2 (lease-evidence-core design §2.1): emission is
+// UNGATED (every harness turn-end publishes; the API consumer's
+// assignee-match is the claim filter), `advanced` is emitted false
+// always and DEPRECATED at emission (the verdict derives store-side
+// from board_transitions/board_events inside `turn_started_at_unix_ms`'s
+// window — turn_started_at is the authority's busy-mark anchor, unix
+// milliseconds, 0 = absent for pre-v2 emitters).
 message BoardTurnEnd {
   bool advanced = 1;
   uint64 epoch = 2;
   int64 turn_duration_ms = 3;
+  int64 turn_started_at_unix_ms = 4;
 }

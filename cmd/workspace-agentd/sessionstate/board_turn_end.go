@@ -70,49 +70,67 @@ func (a *Authority) applyHarnessEventLocked(evt *abiv1.Event) {
 	a.emitBoardTurnEndLocked(sid, turnStart)
 }
 
-// emitBoardTurnEndLocked consults the board seam and, for a
-// claim-holder, publishes EVENT_TYPE_BOARD_TURN_END with the seam's
-// advance verdict plus the authority's turn facts. Best-effort by
-// contract (R4): the probe consult runs behind a recover wall — a
-// panicking seam is contained and counted, the harness fold above is
-// already complete; a cursor-persist failure inside applyLocked drops
-// the publication (counted as such — the metric reads published turns,
-// not attempted ones). a.mu must be held.
+// emitBoardTurnEndLocked publishes EVENT_TYPE_BOARD_TURN_END for a
+// harness-attested busy→idle transition. Two worlds:
+//
+//   - v1 (default since #2064): the probe consult gates emission on
+//     ClaimHolder (R1 — user chats never emit) and supplies the
+//     agentd-side advance verdict.
+//   - v2 (#2100, Config.BoardTurnEndUngated): UNGATED — every
+//     transition publishes (the API consumer's assignee-match is the
+//     claim filter), `advanced` is false always (the verdict derives
+//     store-side), and the probe is not consulted at all (the registry
+//     gate the #2100-A incident proved EROFS-dead).
+//
+// Both carry the turn window's absolute start (turn_started_at) — the
+// consumer's store-side derivation anchor. Best-effort by contract
+// (R4): the probe consult runs behind a recover wall — a panicking
+// seam is contained and counted, the harness fold above is already
+// complete; a cursor-persist failure inside applyLocked drops the
+// publication (counted as such — the metric reads published turns, not
+// attempted ones). a.mu must be held.
 func (a *Authority) emitBoardTurnEndLocked(sid string, turnStart time.Time) {
-	probe := a.cfg.BoardTurnEndProbe
-	if probe == nil {
-		return // feature unwired / degraded pod — sweep semantics (epic R5)
-	}
-	var facts BoardTurnEndFacts
-	func() {
-		defer func() {
-			if r := recover(); r != nil {
-				a.boardTurnEndProbeFailures++
-				a.logger.Error("sessionstate: board turn-end probe panic contained — no publication",
-					zap.String("session", sid), zap.Any("panic", r))
-			}
+	advanced := false
+	if !a.cfg.BoardTurnEndUngated {
+		probe := a.cfg.BoardTurnEndProbe
+		if probe == nil {
+			return // feature unwired / degraded pod — sweep semantics (epic R5)
+		}
+		var facts BoardTurnEndFacts
+		func() {
+			defer func() {
+				if r := recover(); r != nil {
+					a.boardTurnEndProbeFailures++
+					a.logger.Error("sessionstate: board turn-end probe panic contained — no publication",
+						zap.String("session", sid), zap.Any("panic", r))
+				}
+			}()
+			facts = probe(sid, turnStart)
 		}()
-		facts = probe(sid, turnStart)
-	}()
-	if !facts.ClaimHolder {
-		return // claim-holder sessions only — user chats never emit (R1)
+		if !facts.ClaimHolder {
+			return // claim-holder sessions only — user chats never emit (R1)
+		}
+		advanced = facts.Advanced
 	}
 	if a.boardTurnEpochs == nil {
 		a.boardTurnEpochs = map[string]uint64{}
 	}
 	a.boardTurnEpochs[sid]++
 	duration := int64(0) //nolint:gosec // G115: turn durations are pod-lifetime bounded
+	startedAtMs := int64(0) //nolint:gosec // G115: epoch-ms fits int64 by construction
 	if !turnStart.IsZero() {
 		duration = time.Since(turnStart).Milliseconds()
+		startedAtMs = turnStart.UnixMilli()
 	}
 	seqBefore := a.seq
 	a.applyLocked(&abiv1.Event{
 		SessionId: sid,
 		Type:      abiv1.EventType_EVENT_TYPE_BOARD_TURN_END,
 		BoardTurnEnd: &abiv1.BoardTurnEnd{
-			Advanced:       facts.Advanced,
-			Epoch:          a.boardTurnEpochs[sid],
-			TurnDurationMs: duration,
+			Advanced:            advanced,
+			Epoch:               a.boardTurnEpochs[sid],
+			TurnDurationMs:      duration,
+			TurnStartedAtUnixMs: startedAtMs,
 		},
 	})
 	if a.seq > seqBefore {
