@@ -3,6 +3,7 @@ import { AuthProvider } from "./providers/AuthProvider";
 import { ThemeProvider } from "./providers/ThemeProvider";
 import { ToastProvider } from "./providers/ToastProvider";
 import { QueryClientProvider } from "./providers/QueryClientProvider";
+import { EntityIndexSync } from "./components/shared/EntityIndexSync";
 import { ErrorBoundary } from "./components/layout/ErrorBoundary";
 import { UpdateAvailableToast } from "./components/layout/UpdateAvailableToast";
 import { TooltipProvider } from "./components/ui";
@@ -32,6 +33,9 @@ export function App() {
                   rendered inside portals can find the provider context. */}
               <TooltipProvider delayDuration={300}>
                 <RouterProvider router={router} />
+                {/* Entity auto-linking (tsk-vibrant-cadet-pearls): mirrors
+                    loaded session/board caches into the linkify registry. */}
+                <EntityIndexSync />
                 <PWAUpdater />
                 <TimezoneReporter />
               </TooltipProvider>

@@ -45,6 +45,7 @@ import {
   type BoardStage,
   type DescribedBoardError,
 } from "../lib/boardRules";
+import { consumeBoardDeepLink } from "../lib/boardDeepLink";
 
 /** The reconciler's default sweep cadence doubles as the board's periodic
  * reconciliation belt (§4.6 ii: "periodically reconciles … so a
@@ -561,6 +562,58 @@ export function BoardPage() {
   const [deleteError, setDeleteError] = useState<DescribedBoardError | null>(null);
 
   const [taskDrawer, setTaskDrawer] = useState<BoardTask | null>(null);
+
+  // Entity deep links (tsk-vibrant-cadet-pearls): /board?story=<short>
+  // opens the story drawer, ?epic=<short> the epic drawer, ?project=
+  // <short> focuses the lane — the landing targets of chat entity
+  // links. The param is consumed once the read model resolves it (or
+  // proves it cannot) and cleared, so a refresh does not re-open
+  // drawers. Pure semantics in lib/boardDeepLink (unit-pinned there).
+  const boardDeepLinkConsumedRef = useRef("||");
+  useEffect(() => {
+    const story = searchParams.get("story");
+    const epic = searchParams.get("epic");
+    const project = searchParams.get("project");
+    const dedupe = `${story ?? ""}|${epic ?? ""}|${project ?? ""}`;
+    if (dedupe === "||" || dedupe === boardDeepLinkConsumedRef.current) return;
+    const allEpicsSettled =
+      epicsQueries.length === 0 || epicsQueries.every((q) => q.isSuccess || q.isError);
+    const action = consumeBoardDeepLink(
+      { story, epic, project },
+      {
+        projects,
+        tasks,
+        epics: Array.from(epicsByProject.values()).flatMap((m) => Array.from(m.values())),
+        projectsLoaded: projectsQuery.isSuccess,
+        tasksLoaded: tasksQuery.isSuccess,
+        epicsLoaded: allEpicsSettled,
+      },
+    );
+    if (action.kind === "waiting") return;
+    boardDeepLinkConsumedRef.current = dedupe;
+    const next = new URLSearchParams(searchParams);
+    let changed = false;
+    for (const key of ["story", "epic", "project"]) {
+      if (next.has(key)) {
+        next.delete(key);
+        changed = true;
+      }
+    }
+    if (changed) setSearchParams(next, { replace: true });
+    if (action.kind === "open-story") setTaskDrawer(action.task);
+    else if (action.kind === "open-epic") setEpicDrawer(action.epic);
+    else if (action.kind === "focus-project") setFocusProject(action.project.id);
+    // "none": loaded but no match — stale or deleted id; dropped.
+  }, [
+    searchParams,
+    setSearchParams,
+    projects,
+    tasks,
+    epicsByProject,
+    epicsQueries,
+    projectsQuery.isSuccess,
+    tasksQuery.isSuccess,
+  ]);
 
   // Owner ask 2026-11-13: the Done column's show-all drawer — which
   // lane's done set it carries (null = closed). Per-mount state, no

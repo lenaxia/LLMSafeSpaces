@@ -1,4 +1,4 @@
-import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import rehypeSanitize from "rehype-sanitize";
@@ -11,17 +11,32 @@ import { useTheme } from "../../providers/ThemeProvider";
 import { highlight } from "../../lib/shiki";
 import { parseAttachments } from "../../lib/attachments";
 import { parseAgentMessage } from "../../lib/agentMessage";
+import { useEntityLinkify } from "../../hooks/useEntityLinks";
 import { AttachmentChips } from "./AttachmentChips";
 import { AgentOriginBadge } from "./AgentOriginBadge";
+import { EntityLink } from "../shared/EntityLink";
 import { MermaidDiagram } from "./MermaidDiagram";
 import { LazyDetails } from "../ui/LazyDetails";
 import type { MessagePart as MessagePartType } from "../../api/types";
 
 const ReactDiffViewer = lazy(() => import("react-diff-viewer-continued"));
 
-function MarkdownLink({ href, children, node: _node, ...props }: React.AnchorHTMLAttributes<HTMLAnchorElement> & { node?: unknown }) {
+function MarkdownLink({ href, children, node: _node, title, ...props }: React.AnchorHTMLAttributes<HTMLAnchorElement> & { node?: unknown }) {
+  const h = typeof href === "string" ? href : "";
+  // Entity auto-links (and any in-app markdown link) navigate in-app
+  // (tsk-vibrant-cadet-pearls): SPA route, same tab. The minted
+  // markdown title carries the entity's accessible label ("Board
+  // story tsk-… — <title>") — promote it to aria-label so screen
+  // readers get type + title instead of raw-id soup.
+  if (h.startsWith("/board") || h.startsWith("/chat/")) {
+    return (
+      <EntityLink href={h} label={title}>
+        {children}
+      </EntityLink>
+    );
+  }
   return (
-    <a {...props} href={href} target="_blank" rel="noopener noreferrer">
+    <a {...props} href={href} title={title} target="_blank" rel="noopener noreferrer">
       {children}
     </a>
   );
@@ -429,6 +444,19 @@ function ToolDiffView({ oldStr, newStr, isDark }: { oldStr: string; newStr: stri
 function MarkdownBody({ text, isStreaming }: { text: string; isStreaming?: boolean }) {
   const wordWrap = useUserSetting("codeBlockWordWrap", false);
   const { resolved } = useTheme();
+  // Entity auto-linking (tsk-vibrant-cadet-pearls): resolved
+  // tsk-/epc-/prj-/session candidates become inline links in the
+  // markdown SOURCE — one pass, before ReactMarkdown, so there is no
+  // double rendering and guarded regions (code spans/blocks, URLs)
+  // are never linkified (the transform skips them by construction).
+  // Memoized on (text, linkify): linkify is stable per registry
+  // version, so identical input re-transforms to identical output
+  // (rerender-stability pin).
+  const linkify = useEntityLinkify();
+  const linkified = useMemo(
+    () => linkify(text, { streaming: isStreaming ?? false }),
+    [linkify, text, isStreaming],
+  );
   return (
     <ReactMarkdown
       remarkPlugins={[remarkGfm]}
@@ -470,7 +498,7 @@ function MarkdownBody({ text, isStreaming }: { text: string; isStreaming?: boole
         },
       }}
     >
-      {text}
+      {linkified}
     </ReactMarkdown>
   );
 }
