@@ -303,13 +303,11 @@ describe("ChatPage — parked-unbound first-session flow (D1/D2/D3/D4)", () => {
 
     renderChat("/chat/ws-1");
 
-    await waitFor(() => {
-      expect(document.querySelector("textarea")).toBeInTheDocument();
-    });
-    await new Promise((r) => setTimeout(r, 50));
-    // The listing is still in flight — the unbound flag is unknown, so
-    // the auto-create must hold (this is the window the old code
-    // created in).
+    // Settle: status resolves (isReady flips) while the listing is
+    // still in flight — the unbound flag is unknown, so the auto-create
+    // must hold through that window (the companion late-bound test is
+    // the positive control that a settled listing does fire).
+    await new Promise((r) => setTimeout(r, 150));
     expect(workspacesApi.ensureSession).not.toHaveBeenCalled();
 
     resolveList({
@@ -333,6 +331,30 @@ describe("ChatPage — parked-unbound first-session flow (D1/D2/D3/D4)", () => {
       items: [makeItem({ phase: "Active", harness: "opencode", harnessOptions: ["opencode", "pi"] })],
       pagination: { limit: 20, offset: 0, total: 1 },
     });
+
+    await waitFor(() => {
+      expect(workspacesApi.ensureSession).toHaveBeenCalledWith("ws-1");
+    });
+  });
+
+  it("D4 gate failure story (review r2 F1): a FAILED listing shows a retry, never a silent dead composer; retry unblocks the auto-create", async () => {
+    const user = userEvent.setup();
+    (workspacesApi.getStatus as Mock).mockResolvedValue({ phase: "Active" });
+    (workspacesApi.list as Mock)
+      .mockRejectedValueOnce(new Error("list down"))
+      .mockResolvedValueOnce({
+        items: [makeItem({ phase: "Active", harness: "opencode", harnessOptions: ["opencode", "pi"] })],
+        pagination: { limit: 20, offset: 0, total: 1 },
+      });
+
+    renderChat("/chat/ws-1");
+
+    // The gated window surfaces the failure with a retry — not a
+    // spinner-forever, not a disabled composer with no explanation.
+    const retry = await screen.findByRole("button", { name: "Retry" });
+    expect(workspacesApi.ensureSession).not.toHaveBeenCalled();
+
+    await user.click(retry);
 
     await waitFor(() => {
       expect(workspacesApi.ensureSession).toHaveBeenCalledWith("ws-1");

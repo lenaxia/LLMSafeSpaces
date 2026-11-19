@@ -43,6 +43,14 @@ Close the audit's five frontend findings on the harness first-session flow: the 
 
 - The underscore-aliased `onNewSession`/`creatingSession` props now drive a real empty-state CTA (`data-testid="empty-state-new-session"`): "Choose harness & start" (unbound — the bind's entrance), "Start a session" (bound), hidden while suspended, disabled while creating.
 
+### Review r1/r2 hardening
+
+- **r1 F1:** `firstSessionMutation` resets the pick error on `onMutate`/`onSuccess` — a failed dialog attempt that succeeds on retry can never alert the stale failure after the successful bind (pinned).
+- **r1 F2:** the Sidebar marks an inline-rendered picker error as surfaced, and the dialog's close consumes the ws-keyed failure — cancel-after-failure never re-alerts; a later reopen starts clean (pinned).
+- **r1 F3/F4 + r2 F1:** the auto-create gate waits for the listing (`listLoaded` = the query's `isSuccess`, not `data !== undefined`) under every query ordering; the gated window renders as loading, and a FAILED listing surfaces a retry affordance instead of a silent dead composer (pinned: status-first/unknown-unbound holds, late-bound creates, list-failure retry unblocks).
+- **r1 F5:** the transitioning panel is a polite live region (`aria-live="polite"`, no `role="status"` — the role collided with existing tests' `getByRole("status")` sync points). **r1 F6:** picker state resets on param change.
+- **r2 F2:** the source audit is committed at `reports/audits/harness-selection-flow.md` (matching the repo's committed-audit precedent) so the worklog's citations resolve.
+
 ---
 
 ## Key Decisions
@@ -75,8 +83,8 @@ None. PR 2110 (fix/list-harness-options) was still OPEN at implementation time; 
 
 ## Tests Run
 
-- `npx vitest run src/pages/ChatPage.harness.test.tsx src/components/layout/Sidebar.harness.test.tsx` — 24 passed.
-- `npm run test` (full frontend suite) — **243 files / 2797 tests, all passed** (after updating the two legitimate guards: the auto-create wire expectation in `ChatPage.test.tsx`, and `ChatPage.hookcount.test.tsx` 78→83 for the five new hooks).
+- `npx vitest run src/pages/ChatPage.harness.test.tsx src/components/layout/Sidebar.harness.test.tsx` — green, including all review r1/r2 pins.
+- `npm run test` (full frontend suite) — **all passed (2805+ tests)** (after updating the two legitimate guards: the auto-create wire expectation in `ChatPage.test.tsx`, and `ChatPage.hookcount.test.tsx` 78→83 for the five new hooks).
 - `npm run typecheck` — clean. `npm run lint` — 0 errors (7 pre-existing warnings in generated abi files + BoardPage, untouched).
 - `make fmt-check` — clean.
 
@@ -85,9 +93,10 @@ None. PR 2110 (fix/list-harness-options) was still OPEN at implementation time; 
 ## Files Modified
 
 - `frontend/src/api/types.ts` — `WorkspaceStatus.message?: string` (D2)
-- `frontend/src/pages/ChatPage.tsx` — parked-unbound panel + CTA (D1), status.message rendering (D2), firstSessionMutation with inline-error contract (D3), bind-aware auto-create + guard (D4)
+- `frontend/src/pages/ChatPage.tsx` — parked-unbound panel + CTA (D1), status.message rendering (D2), firstSessionMutation with inline-error contract (D3), bind-aware auto-create + guard + failure-story (D4)
 - `frontend/src/components/layout/Sidebar.tsx` — error-class capture + ws-keyed propagation (D3), dialog-open-until-settled (D3), empty-state CTA (D5)
-- `frontend/src/pages/ChatPage.harness.test.tsx` — new: 9 tests pinning D1/D2/D3/D4
-- `frontend/src/components/layout/Sidebar.harness.test.tsx` — +6 tests: D3 dialog-path fidelity, the three classes distinguishable, silent-path honest alert, D5 CTA
+- `frontend/src/pages/ChatPage.harness.test.tsx` — new: tests pinning D1/D2/D3/D4 + review r1/r2 pins (retry-success, ordering, list-failure retry)
+- `frontend/src/components/layout/Sidebar.harness.test.tsx` — +tests: D3 dialog-path fidelity, the three classes distinguishable, silent-path honest alert, D5 CTA + cancel-no-re-alert pin
 - `frontend/src/pages/ChatPage.test.tsx` / `ChatPage.hookcount.test.tsx` — guards updated to the new wire/hook count
+- `reports/audits/harness-selection-flow.md` — the source audit, committed per the repo's committed-audit precedent (r2 F2)
 - `worklogs/NNNN_2026-11-19_harness-ux-d1-d5.md` — this entry

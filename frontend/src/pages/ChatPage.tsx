@@ -231,7 +231,12 @@ export function ChatPage() {
     },
   });
 
-  const { data: activeWorkspaceData, isSuccess: listLoaded } = useQuery({
+  const {
+    data: activeWorkspaceData,
+    isSuccess: listLoaded,
+    isError: listLoadError,
+    refetch: refetchWorkspaceList,
+  } = useQuery({
     queryKey: ["workspaces"],
     queryFn: () => workspacesApi.list(),
     select: (data) => data.items?.find((w) => w.id === workspaceId),
@@ -1520,6 +1525,24 @@ export function ChatPage() {
         <div className="flex flex-1 items-center justify-center">
           <Spinner />
         </div>
+      ) : (isReady && !sessionId && !listLoaded) ? (
+        /* Review r2 F1: the D4 auto-create gate waits for the workspace
+         * listing (the unbound flag's source) — that window must read as
+         * loading, and a FAILED listing must offer a retry instead of a
+         * silent dead composer (nothing else re-fetches it until a
+         * focus change). */
+        listLoadError ? (
+          <div className="flex flex-1 flex-col items-center justify-center gap-3 text-muted-foreground">
+            <p className="text-sm">Couldn&apos;t load the workspace list — retry to start your session.</p>
+            <Button variant="outline" size="sm" onClick={() => void refetchWorkspaceList()}>
+              Retry
+            </Button>
+          </div>
+        ) : (
+          <div className="flex flex-1 items-center justify-center">
+            <Spinner />
+          </div>
+        )
       ) : (
         <div className="flex-1 min-h-0">
           <ChatView
