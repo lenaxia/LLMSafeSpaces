@@ -97,4 +97,4 @@ None for the fix. Prod pick-up requires the normal release train (merge → tag 
 - `pkg/types/workspace.go` — `WorkspaceListItem.HarnessOptions` field + contract comment
 - `api/internal/services/workspace/workspace_service.go` — `ListWorkspaces` hoists `EnabledHarnesses`, sets the field per item
 - `api/internal/services/workspace/workspace_service_test.go` — `TestListWorkspaces_PropagatesHarnessOptions` (pi-enabled + degrade subtests)
-- `worklogs/NNNN_2026-11-18_workspace-list-harness-options.md` — this entry
+- `worklogs/1306_2026-11-18_workspace-list-harness-options.md` — this entry
