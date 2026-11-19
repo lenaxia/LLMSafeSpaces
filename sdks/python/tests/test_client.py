@@ -645,6 +645,8 @@ def test_workspace_list_full_payload_round_trip():
                     "agentNeedsRefresh": False,
                     "credentialsPendingSince": None,
                     "orgId": "org-9",
+                    "harnessOptions": ["opencode", "pi"],
+                    "bindBlocked": False,
                 }
             ],
             "pagination": None,
@@ -658,6 +660,10 @@ def test_workspace_list_full_payload_round_trip():
     assert item.agentVersion == "1.18.10"
     assert item.orgId == "org-9"
     assert item.maxActiveSessions == 3
+    # #2110/#2092: the picker's offer list + the degraded-bind verdict
+    # both ride list items now — strict kwargs must accept them.
+    assert item.harnessOptions == ["opencode", "pi"]
+    assert item.bindBlocked is False
 
 
 def test_workspace_models_reject_unknown_fields():
