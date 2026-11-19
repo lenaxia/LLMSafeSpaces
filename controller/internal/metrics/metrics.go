@@ -158,6 +158,23 @@ var (
 		},
 		[]string{"workspace_id"},
 	)
+	// CRDSkew (#2092): 1 while the cluster's CRD for the named resource
+	// lacks a spec field the running controller writes — the structural
+	// apiserver PRUNES the field on every write and returns success, so
+	// nothing else converges (the 2026-11-17 born-unbound wedge: the
+	// Flux path served the pre-0.44.15 Workspace CRD without
+	// spec.harness; every bind write was silently dropped). One series
+	// per (crd, field) — deliberately NOT per workspace: a whole-fleet
+	// wedge must read as ONE page, not N. Heals to 0 the moment a
+	// verify lands (backfill read-back / startup probe), so the
+	// LLMSafeSpacesCRDSkew alert auto-resolves on the CRD apply.
+	CRDSkew = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "llmsafespaces_crd_skew",
+			Help: "1 while the cluster's CRD for the named resource is missing a spec field this controller writes (the apiserver prunes the field on every write; helm never upgrades crds/ — issue #2092), by crd and field. Heals to 0 once a write verifies (CRD applied)",
+		},
+		[]string{"crd", "field"},
+	)
 	WorkspaceCreateDurationSeconds = prometheus.NewHistogramVec(
 		prometheus.HistogramOpts{Name: "llmsafespaces_workspace_create_duration_seconds", Help: "Wall-clock time from creation request to Active", Buckets: startupBuckets},
 		[]string{"has_packages", "has_init_script"},
@@ -284,6 +301,7 @@ func AllCollectors() []prometheus.Collector {
 		WorkspacePVCCleanupDelegatedTotal,
 		WorkspaceAgentdVersionSkew,
 		WorkspaceAgentdVersionSkewDetectedTotal,
+		CRDSkew,
 		WorkspaceCreateDurationSeconds, WorkspaceResumeDurationSeconds,
 		WorkspaceInitContainerDurationSeconds,
 		ReconciliationDurationSeconds, ReconciliationErrorsTotal,

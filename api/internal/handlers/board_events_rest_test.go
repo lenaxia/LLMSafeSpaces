@@ -116,3 +116,62 @@ func TestBoardREST_TaskEventsErrorClass(t *testing.T) {
 	w := doBoardREST(t, r, http.MethodGet, "/api/v1/me/tasks/tsk-cccc3333/events", "")
 	assert.Equal(t, http.StatusNotFound, w.Code)
 }
+
+// --- #2107: the gone-row (tombstone) arm --------------------------------------
+
+// TestBoardREST_TaskEventsTombstoneOwner: a DELETED task's timeline
+// still renders for its owner — the live seam never fires (the row is
+// gone), the tombstone seam does, and the trail's project carries the
+// ownership perimeter when there is no row to derive it from.
+func TestBoardREST_TaskEventsTombstoneOwner(t *testing.T) {
+	svc := newFakeBoardManager()
+	svc.projects = []board.Project{{ID: "p1", ShortID: "prj-aaaa1111", UserID: "user-1", Status: board.ProjectActive}}
+	// No live row: the victim left the table (the delete event is the
+	// trail's terminal entry).
+	svc.events = testTaskEvents()
+	svc.tombstoneFound = true
+	r := newBoardRESTRouter(t, svc)
+
+	w := doBoardREST(t, r, http.MethodGet, "/api/v1/me/tasks/tsk-gone-ebony-tunnel/events", "")
+	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
+
+	var body struct {
+		Events []board.Event `json:"events"`
+	}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &body))
+	require.Len(t, body.Events, 3, "the gone row's trail renders verbatim")
+	assert.Equal(t, "evt-1", body.Events[0].ID)
+	assert.Equal(t, "create_task", body.Events[0].Action)
+	assert.Equal(t, 0, svc.calls["task_events"], "the live seam never fires — the row is gone")
+	assert.Equal(t, 1, svc.calls["task_events_tombstone"], "the tombstone seam served the trail")
+	assert.Equal(t, "tsk-gone-ebony-tunnel", svc.lastTaskEventsRef)
+}
+
+// TestBoardREST_TaskEventsForeignTrail: the tombstone arm keeps the
+// owner perimeter — a trail whose project belongs to someone else is a
+// plain 404 with nothing disclosed, exactly like a foreign live row;
+// and a probe with NO trail anywhere (never-existed / below-store
+// loss) keeps the honest 404 without fabricating history.
+func TestBoardREST_TaskEventsForeignTrail(t *testing.T) {
+	svc := newFakeBoardManager()
+	svc.projects = []board.Project{{ID: "p1", ShortID: "prj-aaaa1111", UserID: "someone-else", Status: board.ProjectActive}}
+	svc.events = testTaskEvents()
+	svc.tombstoneFound = true
+	r := newBoardRESTRouter(t, svc)
+
+	w := doBoardREST(t, r, http.MethodGet, "/api/v1/me/tasks/tsk-gone-ebony-tunnel/events", "")
+	assert.Equal(t, http.StatusNotFound, w.Code)
+	assert.NotContains(t, w.Body.String(), "evt-1", "a foreign trail discloses nothing")
+	assert.NotContains(t, w.Body.String(), "someone-else")
+	assert.Equal(t, 1, svc.calls["task_events_tombstone"], "the tombstone seam resolved; the perimeter refused")
+
+	// The no-trail fork: the honest 404 stands (the investigation's
+	// below-store discriminator).
+	svc2 := newFakeBoardManager()
+	svc2.tombstoneFound = false
+	r2 := newBoardRESTRouter(t, svc2)
+	w2 := doBoardREST(t, r2, http.MethodGet, "/api/v1/me/tasks/tsk-never-was-anywhere/events", "")
+	assert.Equal(t, http.StatusNotFound, w2.Code)
+	assert.Equal(t, 1, svc2.calls["task_events_tombstone"], "the anchor was consulted once")
+	assert.Equal(t, 0, svc2.calls["task_events"])
+}

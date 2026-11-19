@@ -400,6 +400,16 @@ const (
 	// (marker-less) workspaces — those are backfilled to opencode
 	// instead.
 	WorkspaceConditionHarnessBindingPending WorkspaceConditionType = "HarnessBindingPending"
+	// WorkspaceReasonBindNotPersisted (#2092): the DEGRADED reason on a
+	// True HarnessBindingPending condition — the workspace is not merely
+	// waiting for a choice; bind attempts are FAILING to persist because
+	// the cluster's Workspace CRD predates spec.harness (the apiserver
+	// prunes the bind write). Set by the API tier's bind-verify failure
+	// path; surfaced to the user as the picker/sidebar's "blocked on
+	// cluster CRD — operator action required" hint instead of an
+	// unbounded Creating spinner. Cleared by any successful bind (the
+	// controller's clearHarnessBindingPending bound path).
+	WorkspaceReasonBindNotPersisted = "BindNotPersisted"
 	// WorkspaceConditionLegacyKeysScrubbed (US-72.6, design 0058 §8):
 	// the one-time legacy-key migration scrub's outcome, mirrored from
 	// healthz's (/v1/healthz) legacyScrub slice. True/clean = the steady

@@ -1,0 +1,26 @@
+# The Flux CRD path mirror (issue #2092, release-train CRD guard).
+#
+# Production runs Flux-managed: CRDs ride the ops repo's kustomization
+# `cluster-llmsafespaces-crds` (./kubernetes/apps/llmsafespaces/
+# llmsafespaces/crds). `helm upgrade` NEVER upgrades crds/ (helm/README.md
+# "CRD upgrades"), so that kustomization is the ONLY thing that moves a
+# CRD schema on the cluster — and on 2026-11-17 it was the gap: the chart
+# train moved to 0.44.15/.16/.17 carrying the spec.harness schema change
+# while the Flux path still served the pre-.15 CRD. Every born-unbound
+# workspace created since wedged in Creating forever (the apiserver pruned
+# the bind write; nothing converged, nothing alerted).
+#
+# This directory is this repo's TRACKED COPY of what that Flux path must
+# reference. repolint (`make repolint`, pre-commit + CI) fails the PR when
+# any helm/crds/*.yaml is not byte-identical to its mirror here — a CRD
+# schema change MUST bump this path in the SAME PR, and the release
+# checklist (docs/release-bump-checklist.md, CRD apply train gate) carries
+# the copy into the ops repo. Schema change = train gate on CRD apply.
+#
+# Sync with: make flux-sync-crds   (or: repolint -fix-flux-crds)
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - inferencerelay.yaml
+  - runtimeenvironment.yaml
+  - workspace.yaml

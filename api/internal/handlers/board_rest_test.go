@@ -51,6 +51,10 @@ type fakeBoardManager struct {
 	lastTaskEventsRef   string
 	lastTaskEventsLimit int
 
+	// #2107: the gone-row trail arm — when true the tombstone fake
+	// resolves (live rows 404 into the fallback in handler pins).
+	tombstoneFound bool
+
 	lastVerdictInput board.VerdictInput
 	verdicts         []board.Verdict
 
@@ -433,6 +437,22 @@ func (f *fakeBoardManager) TaskEvents(_ context.Context, _, shortIDOrID string, 
 		return nil, err
 	}
 	return f.events, nil
+}
+
+// TaskEventsTombstone mirrors the service's gone-row arm (#2107): the
+// fake returns the configured trail + project so handler pins can
+// exercise the deleted-row read path without a live row.
+func (f *fakeBoardManager) TaskEventsTombstone(_ context.Context, userID, idOrShort string, limit int) ([]board.Event, *board.Project, error) {
+	f.call("task_events_tombstone")
+	f.lastTaskEventsRef = idOrShort
+	f.lastTaskEventsLimit = limit
+	if err := f.errFor["task_events_tombstone"]; err != nil {
+		return nil, nil, err
+	}
+	if f.tombstoneFound {
+		return f.events, &f.projects[0], nil
+	}
+	return nil, nil, &board.NotFoundError{Item: "task", Identifier: idOrShort}
 }
 
 func (f *fakeBoardManager) ListTasks(_ context.Context, projectID, stage, failed string) ([]board.Task, error) {

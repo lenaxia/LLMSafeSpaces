@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"testing"
 
+	"github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
@@ -205,27 +206,36 @@ func TestBuildWorkspaceCRD_HarnessBinding(t *testing.T) {
 func TestBindWorkspaceHarness(t *testing.T) {
 	ctx := context.Background()
 
-	t.Run("bind-while-null binds exactly once and removes the marker", func(t *testing.T) {
+	t.Run("bind-while-null binds once, marker removed only after the verify lands", func(t *testing.T) {
 		f := newHarnessFixture(t, true)
 		unbound := bornUnboundCRD()
 		// Get #1: the endpoint's own fetch; Get #2: bindUnboundWorkspace's
 		// fresh read under the conflict-retry (the write lane's contract);
-		// Get #3: the post-write VERIFY read (the CRD-skew seam — the
-		// same pointer reads back bound after the mutation below).
-		f.ws.On("Get", mock.Anything, "ws-1", mock.Anything).Return(unbound, nil).Times(3)
-		var updated *v1.Workspace
+		// Get #3: the post-write VERIFY read (the CRD-skew seam);
+		// Get #4: the marker-cleanup read (review r2: removal is deferred
+		// until the bind is PROVEN landed — the same shared pointer reads
+		// back bound by then).
+		f.ws.On("Get", mock.Anything, "ws-1", mock.Anything).Return(unbound, nil).Times(4)
+		var writes []*v1.Workspace
 		f.ws.On("Update", mock.Anything, mock.Anything).
-			Run(func(args mock.Arguments) { updated = args.Get(1).(*v1.Workspace) }).
-			Return(nil, nil).Once()
+			Run(func(args mock.Arguments) {
+				// Snapshot: both writes carry the SAME shared pointer —
+				// the assertions must see each write's state as sent.
+				writes = append(writes, args.Get(1).(*v1.Workspace).DeepCopy())
+			}).
+			Return(nil, nil).Twice()
 
 		res, err := f.svc.BindWorkspaceHarness(ctx, "user-1", "ws-1", "pi")
 		require.NoError(t, err)
 		assert.Equal(t, "pi", res.Harness)
 		assert.False(t, res.AlreadyBound)
-		require.NotNil(t, updated)
-		assert.Equal(t, v1.HarnessPi, updated.Spec.Harness)
-		_, marker := updated.Annotations[v1.AnnotationHarnessUnbound]
-		assert.False(t, marker, "the marker is removed at bind")
+		require.Len(t, writes, 2, "the bind write + the post-verify marker cleanup")
+		assert.Equal(t, v1.HarnessPi, writes[0].Spec.Harness)
+		assert.Equal(t, "true", writes[0].Annotations[v1.AnnotationHarnessUnbound],
+			"the bind write KEEPS the marker — a pruned bind must leave the workspace re-drivable (review r2)")
+		assert.Equal(t, v1.HarnessPi, writes[1].Spec.Harness)
+		_, marker := writes[1].Annotations[v1.AnnotationHarnessUnbound]
+		assert.False(t, marker, "the verified bind's cleanup removes the marker")
 	})
 
 	t.Run("same value on a bound workspace is idempotent (no write)", func(t *testing.T) {
@@ -442,12 +452,14 @@ func TestResolveSessionHarness(t *testing.T) {
 
 	t.Run("unbound + omitted binds opencode (the non-interactive default)", func(t *testing.T) {
 		f := newHarnessFixture(t, false)
-		// Two reads: the bind's fresh read + the post-write verify read.
-		f.ws.On("Get", mock.Anything, "ws-1", mock.Anything).Return(bornUnboundCRD(), nil).Twice()
+		// Three reads: the bind's fresh read, the post-write verify
+		// read, and the marker-cleanup read (review r2's deferred
+		// removal).
+		f.ws.On("Get", mock.Anything, "ws-1", mock.Anything).Return(bornUnboundCRD(), nil).Times(3)
 		var updated *v1.Workspace
 		f.ws.On("Update", mock.Anything, mock.Anything).
 			Run(func(args mock.Arguments) { updated = args.Get(1).(*v1.Workspace) }).
-			Return(nil, nil).Once()
+			Return(nil, nil).Twice()
 
 		h, err := f.svc.resolveSessionHarness(ctx, bornUnboundCRD(), "ws-1", "")
 		require.NoError(t, err)
@@ -458,19 +470,22 @@ func TestResolveSessionHarness(t *testing.T) {
 
 	t.Run("unbound + picker submit binds it (the frontend path)", func(t *testing.T) {
 		f := newHarnessFixture(t, true)
-		// Two reads: the bind's fresh read + the post-write verify read.
-		f.ws.On("Get", mock.Anything, "ws-1", mock.Anything).Return(bornUnboundCRD(), nil).Twice()
-		var updated *v1.Workspace
+		// Three reads: the bind's fresh read, the post-write verify
+		// read, and the marker-cleanup read.
+		f.ws.On("Get", mock.Anything, "ws-1", mock.Anything).Return(bornUnboundCRD(), nil).Times(3)
+		var writes []*v1.Workspace
 		f.ws.On("Update", mock.Anything, mock.Anything).
-			Run(func(args mock.Arguments) { updated = args.Get(1).(*v1.Workspace) }).
-			Return(nil, nil).Once()
+			Run(func(args mock.Arguments) { writes = append(writes, args.Get(1).(*v1.Workspace).DeepCopy()) }).
+			Return(nil, nil).Twice()
 
 		h, err := f.svc.resolveSessionHarness(ctx, bornUnboundCRD(), "ws-1", "pi")
 		require.NoError(t, err)
 		assert.Equal(t, "pi", h)
-		require.NotNil(t, updated)
-		assert.Equal(t, v1.HarnessPi, updated.Spec.Harness)
-		_, marker := updated.Annotations[v1.AnnotationHarnessUnbound]
+		require.Len(t, writes, 2)
+		assert.Equal(t, v1.HarnessPi, writes[0].Spec.Harness)
+		assert.Equal(t, "true", writes[0].Annotations[v1.AnnotationHarnessUnbound],
+			"the bind write keeps the marker; removal rides the verified cleanup")
+		_, marker := writes[1].Annotations[v1.AnnotationHarnessUnbound]
 		assert.False(t, marker)
 	})
 
@@ -579,11 +594,13 @@ func TestBindWorkspaceHarness_NotPersistedFailsLoudly(t *testing.T) {
 
 	unbound := bornUnboundCRD()
 	// Get serves the shared object every read (endpoint fetch, the
-	// bind's fresh read, the verify read). The Update hook IS the
-	// pruning apiserver: the write is accepted, and the field the
-	// object carries afterwards is dropped — so the verify read-back
-	// sees spec.harness == "" (marker gone too: annotations, being
-	// schema-known, DO persist the deletion).
+	// bind's fresh read, the verify read, the condition write's read).
+	// The Update hook IS the pruning apiserver: the write is accepted,
+	// and the field the object carries afterwards is dropped — so the
+	// verify read-back sees spec.harness == "". The MARKER survives
+	// (review r2: the bind write no longer deletes it — annotations
+	// would persist that deletion on the skewed cluster, consuming the
+	// re-drive discriminator).
 	f.ws.On("Get", mock.Anything, "ws-1", mock.Anything).Return(unbound, nil)
 	f.ws.On("Update", mock.Anything, mock.Anything).
 		Run(func(args mock.Arguments) {
@@ -591,7 +608,12 @@ func TestBindWorkspaceHarness_NotPersistedFailsLoudly(t *testing.T) {
 			stored.Spec.Harness = "" // pruned by the harness-less CRD
 		}).
 		Return(nil, nil).Once()
+	// #2092 ruling 3: the degraded condition write (best-effort; the
+	// condition surfaces in the picker/sidebar as the CRD-blocked hint).
+	f.ws.On("UpdateStatus", mock.Anything, mock.AnythingOfType("*v1.Workspace")).
+		Return(unbound, nil).Maybe()
 
+	before := testutil.ToFloat64(harnessBindNotPersistedTotal.WithLabelValues(bindNotPersistedSurfaceBindVerify))
 	_, err := f.svc.BindWorkspaceHarness(ctx, "user-1", "ws-1", "pi")
 	apiErr := harnessAPIError(t, err)
 	assert.Equal(t, 500, apiErr.StatusCode())
@@ -600,4 +622,69 @@ func TestBindWorkspaceHarness_NotPersistedFailsLoudly(t *testing.T) {
 	require.NotNil(t, apiErr.Err, "the remediation rides the wrapped error")
 	assert.Contains(t, apiErr.Err.Error(), "CRD predates 0.44.15",
 		"the error names the operator remediation (apply helm/crds/workspace.yaml)")
+
+	// #2092 ruling 2: the verdict ticks the counter the alert rides.
+	assert.Equal(t, before+1, testutil.ToFloat64(harnessBindNotPersistedTotal.WithLabelValues(bindNotPersistedSurfaceBindVerify)),
+		"the failed verify increments the bind_verify surface")
+	// #2092 ruling 3: the degraded condition landed on the object the
+	// status write carried (the shared fixture object).
+	var degraded *v1.WorkspaceCondition
+	for i := range unbound.Status.Conditions {
+		if unbound.Status.Conditions[i].Type == v1.WorkspaceConditionHarnessBindingPending {
+			degraded = &unbound.Status.Conditions[i]
+		}
+	}
+	require.NotNil(t, degraded, "the BindNotPersisted condition must be written")
+	assert.Equal(t, "True", string(degraded.Status))
+	assert.Equal(t, v1.WorkspaceReasonBindNotPersisted, degraded.Reason)
+	assert.Contains(t, degraded.Message, "operator action required")
+	assert.Contains(t, degraded.Message, "remains unbound",
+		"the message must not claim the choice was kept — it was not")
+}
+
+// Review r2 (pruned-bind-consumes-marker): the marker's survival is
+// not an accident — it is what makes the wedge RECOVERABLE. This pin
+// drives the full two-phase incident: a pi bind against the skewed
+// CRD fails loudly AND leaves the workspace re-drivable (marker +
+// empty harness — the state effectiveBoundHarness still reads
+// unbound, the recovery sweep's filter still matches); then the CRD
+// lands (the fixture stops pruning) and the SAME re-drive succeeds,
+// verifies, and cleans the marker. Pre-fix this was born-red in the
+// middle phase: the first pruned bind consumed the marker, the
+// workspace read legacy-bound opencode, and the re-drive 409'd.
+func TestBindWorkspaceHarness_NotPersisted_KeepsReDrive(t *testing.T) {
+	ctx := context.Background()
+	f := newHarnessFixture(t, true)
+
+	unbound := bornUnboundCRD()
+	pruned := true // the cluster's CRD state, flipped by "applying" it
+	f.ws.On("Get", mock.Anything, "ws-1", mock.Anything).Return(unbound, nil)
+	f.ws.On("Update", mock.Anything, mock.Anything).
+		Run(func(args mock.Arguments) {
+			if pruned {
+				args.Get(1).(*v1.Workspace).Spec.Harness = ""
+			}
+		}).
+		Return(nil, nil).Times(3) // pruned bind + healed bind + marker cleanup
+	f.ws.On("UpdateStatus", mock.Anything, mock.AnythingOfType("*v1.Workspace")).
+		Return(unbound, nil).Maybe()
+
+	// Phase 1 — skewed: the bind is accepted-but-pruned, and fails loud.
+	_, err := f.svc.BindWorkspaceHarness(ctx, "user-1", "ws-1", "pi")
+	apiErr := harnessAPIError(t, err)
+	assert.Equal(t, "harness_bind_not_persisted", apiErr.Message)
+	assert.Empty(t, unbound.Spec.Harness, "the pruned bind left no spec stamp")
+	assert.Equal(t, "true", unbound.Annotations[v1.AnnotationHarnessUnbound],
+		"the discriminator marker SURVIVES the pruned bind — the workspace stays re-drivable")
+	_, stillBound := effectiveBoundHarness(unbound)
+	assert.False(t, stillBound, "a failed bind must not read as bound (the pre-fix legacy-409 trap)")
+
+	// Phase 2 — the CRD lands; the SAME re-drive converges and cleans up.
+	pruned = false
+	res, err := f.svc.BindWorkspaceHarness(ctx, "user-1", "ws-1", "pi")
+	require.NoError(t, err, "the re-drive succeeds once the CRD carries the field")
+	assert.Equal(t, "pi", res.Harness)
+	assert.Equal(t, v1.HarnessPi, unbound.Spec.Harness, "the healed bind verifies on the shared object")
+	_, marker := unbound.Annotations[v1.AnnotationHarnessUnbound]
+	assert.False(t, marker, "the verified bind removes the waiting marker")
 }
