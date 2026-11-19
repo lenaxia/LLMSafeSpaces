@@ -109,6 +109,15 @@ type WorkspaceListItem struct {
 	// pod until the first-session picker submit or an explicit bind);
 	// "opencode"/"pi" = bound for life.
 	Harness *string `json:"harness,omitempty"`
+	// BindBlocked (#2092): true while this unbound workspace's binds
+	// are FAILING to persist — the HarnessBindingPending condition
+	// carries reason BindNotPersisted because the cluster's Workspace
+	// CRD predates spec.harness (every bind write is pruned). The
+	// picker/sidebar renders the degraded hint ("blocked on cluster
+	// CRD — operator action required") instead of the unbounded
+	// Creating state. omitempty: only ever true; clears on the
+	// successful bind.
+	BindBlocked bool `json:"bindBlocked,omitempty"`
 }
 
 // WorkspaceStatusResult carries the status fields read from the Workspace CRD.

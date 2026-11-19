@@ -91,6 +91,12 @@ func New(cfg *config.Config, log *logger.Logger, k8sClient interfaces.Kubernetes
 	if err != nil {
 		return nil, fmt.Errorf("failed to initialize workspace service: %w", err)
 	}
+	// #2092 ruling 4 — arm the create-time CRD capability probe: on a
+	// cluster whose Workspace CRD predates spec.harness, a create WITHOUT
+	// an explicit harness fails loud at the gate instead of birthing a
+	// workspace that can never bind (eternal Creating). Cached (60s TTL
+	// + invalidation on live skew evidence), never per-request.
+	workspaceService.ArmCRDCapabilityProbe()
 
 	// Reuse the cache service's Redis connection pool for the rate limiter
 	// instead of opening a second client/pool to the same Redis instance.

@@ -195,6 +195,17 @@ type WorkspaceReconciler struct {
 	harnessBackfillMu        sync.Mutex
 	harnessBackfillAttemptAt map[string]time.Time
 
+	// CRD-skew capability probe bookkeeping (issue #2092, observability
+	// arm): harnessCRDProbeAt records the last probe AT for the one
+	// (crd, field) series this controller verdicts on — the on-skew
+	// re-probe cadence (reprobeHarnessCRDAfterHealWindow) so the gauge
+	// heals within minutes of the operator applying the CRD even when
+	// no legacy workspace backfills over it. Piggybacked on reconciles
+	// (no standalone loop); guarded by harnessCRDProbeMu.
+	harnessCRDProbeMu       sync.Mutex
+	harnessCRDProbeAt       map[string]time.Time
+	harnessCRDStartupProbed bool
+
 	// AgentdSidecarEnabled (design 0051 US-2, chart-gated, default
 	// false): when true, buildPod appends the native agentd sidecar and
 	// switches the main container to supervise-opencode mode. Requires
@@ -265,6 +276,12 @@ func (r *WorkspaceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	if !workspace.DeletionTimestamp.IsZero() {
 		result, err = r.handleDeletion(ctx, workspace)
 	} else {
+		// #2092 CRD-skew observability: the once-per-process capability
+		// probe settles the llmsafespaces_crd_skew gauge before any
+		// pruned write is observed (see crd_skew.go — riding the first
+		// reconcile means the probe's namespace is one this controller
+		// holds create RBAC for by construction).
+		r.probeHarnessCRDCapabilityOnce(ctx, workspace.Namespace)
 		// Harness bind-once invariant (owner ruling 2026-11-16),
 		// before phase dispatch so every phase observes it: legacy
 		// marker-less empty-harness workspaces are backfilled to

@@ -418,6 +418,78 @@ func TestListWorkspaces_HappyPath(t *testing.T) {
 	assert.Equal(t, 2, result.Pagination.Total)
 }
 
+// TestListWorkspaces_BindBlockedMapping (review r2, the
+// bindblocked-list-mapping-unpinned finding): the SERVICE-level pin of
+// the #2092 DTO wiring — a degraded BindNotPersisted condition must
+// surface as item.BindBlocked=true and a healthy unbound wait must
+// stay false. Pre-fix only the helper's truth table was pinned (and
+// the vitest suite mocks the field directly), so deleting the
+// mapping lines reddened nothing.
+func TestListWorkspaces_BindBlockedMapping(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	now := time.Now()
+
+	metas := []*types.WorkspaceMetadata{
+		{ID: "ws-degraded", UserID: "user1", Name: "degraded", StorageSize: "10Gi", CreatedAt: now},
+		{ID: "ws-healthy-unbound", UserID: "user1", Name: "waiting", StorageSize: "10Gi", CreatedAt: now},
+		{ID: "ws-active", UserID: "user1", Name: "active", StorageSize: "10Gi", CreatedAt: now},
+	}
+	f.db.On("ListWorkspaces", ctx, "user1", 10, 0).Return(metas, &types.PaginationMetadata{Total: 3, Limit: 10}, nil)
+
+	degraded := v1.Workspace{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "ws-degraded",
+			Annotations: map[string]string{
+				v1.AnnotationHarnessUnbound: "true",
+			},
+		},
+		Spec:   v1.WorkspaceSpec{},
+		Status: v1.WorkspaceStatus{Phase: v1.WorkspacePhaseCreating},
+	}
+	upsertBindNotPersistedCondition(&degraded)
+	healthyUnbound := v1.Workspace{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "ws-healthy-unbound",
+			Annotations: map[string]string{
+				v1.AnnotationHarnessUnbound: "true",
+			},
+		},
+		Status: v1.WorkspaceStatus{
+			Phase: v1.WorkspacePhaseCreating,
+			// The healthy wait: pending on the CHOICE, not on a failed
+			// bind — the hint must not fire for it (contrast pin).
+			Conditions: []v1.WorkspaceCondition{{
+				Type:   v1.WorkspaceConditionHarnessBindingPending,
+				Status: "True",
+				Reason: "HarnessUnbound",
+			}},
+		},
+	}
+	active := v1.Workspace{
+		ObjectMeta: metav1.ObjectMeta{Name: "ws-active"},
+		Spec:       v1.WorkspaceSpec{Harness: v1.HarnessOpencode},
+		Status:     v1.WorkspaceStatus{Phase: v1.WorkspacePhaseActive},
+	}
+	crdList := &v1.WorkspaceList{Items: []v1.Workspace{degraded, healthyUnbound, active}}
+	f.ws.On("List", mock.Anything, metav1.ListOptions{LabelSelector: "user-id=user1"}).Return(crdList, nil)
+
+	result, err := f.svc.ListWorkspaces(ctx, "user1", types.ListOptions{Limit: 10, Offset: 0})
+	require.NoError(t, err)
+	require.Len(t, result.Items, 3)
+
+	byID := map[string]types.WorkspaceListItem{}
+	for _, it := range result.Items {
+		byID[it.ID] = it
+	}
+	assert.True(t, byID["ws-degraded"].BindBlocked,
+		"the degraded BindNotPersisted condition must reach the list item — the picker/sidebar hint rides it")
+	assert.False(t, byID["ws-healthy-unbound"].BindBlocked,
+		"a healthy unbound wait (reason HarnessUnbound) is NOT bind-blocked — the Creating wait renders")
+	assert.False(t, byID["ws-active"].BindBlocked,
+		"a bound workspace is never bind-blocked")
+}
+
 // TestListWorkspaces_PropagatesOrgID is a regression test for
 // LLMSafeSpaces#477. WorkspaceMetadata carries OrgID (Epic 11; nullable —
 // personal workspaces have no org). The conversion to WorkspaceListItem

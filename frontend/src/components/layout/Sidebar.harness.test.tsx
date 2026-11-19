@@ -188,4 +188,39 @@ describe("Sidebar — first-session harness picker (bind-once)", () => {
     await screen.findByText("My Workspace");
     expect(screen.queryByTestId("harness-badge")).not.toBeInTheDocument();
   });
+
+  // #2092 ruling 3: an unbound workspace whose binds persistently fail
+  // (cluster CRD predates the harness field) must surface the degraded
+  // hint INSTEAD of the unbounded Creating phase text — the honest
+  // state is operator-actionable, not "in progress".
+  it("bindBlocked: renders the CRD-blocked hint, never the bare Creating phase", async () => {
+    (workspacesApi.list as ListMock).mockResolvedValue({
+      items: [makeWorkspace({ phase: "Creating", harnessOptions: ["opencode", "pi"], bindBlocked: true })],
+      pagination: { limit: 20, offset: 0, total: 1 },
+    });
+    (workspacesApi.getSessions as ListMock).mockResolvedValue([]);
+
+    renderSidebar();
+
+    const hint = await screen.findByTestId("bind-blocked-hint");
+    expect(hint).toHaveTextContent(/blocked on cluster CRD — operator action required/i);
+    // The plain phase span is REPLACED, not accompanied: "Creating"
+    // would read as progress on a workspace that can never converge.
+    expect(screen.queryByText("Creating")).not.toBeInTheDocument();
+  });
+
+  // Contrast pin: without bindBlocked the Creating phase renders
+  // exactly as before (the healthy unbound wait is unchanged).
+  it("without bindBlocked the plain Creating phase still renders", async () => {
+    (workspacesApi.list as ListMock).mockResolvedValue({
+      items: [makeWorkspace({ phase: "Creating", harnessOptions: ["opencode", "pi"] })],
+      pagination: { limit: 20, offset: 0, total: 1 },
+    });
+    (workspacesApi.getSessions as ListMock).mockResolvedValue([]);
+
+    renderSidebar();
+
+    expect(await screen.findByText("Creating")).toBeInTheDocument();
+    expect(screen.queryByTestId("bind-blocked-hint")).not.toBeInTheDocument();
+  });
 });
