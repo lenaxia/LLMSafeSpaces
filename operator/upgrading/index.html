@@ -1410,6 +1410,17 @@
   
 </li>
         
+          <li class="md-nav__item">
+  <a href="#crd-skew-recovery-issue-2092" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        CRD skew recovery (issue #2092)
+      
+    </span>
+  </a>
+  
+</li>
+        
       </ul>
     </nav>
   
@@ -2621,6 +2632,17 @@
   
 </li>
         
+          <li class="md-nav__item">
+  <a href="#crd-skew-recovery-issue-2092" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        CRD skew recovery (issue #2092)
+      
+    </span>
+  </a>
+  
+</li>
+        
       </ul>
     </nav>
   
@@ -2973,41 +2995,98 @@
 </span><span id="__span-5-3"><a id="__codelineno-5-3" name="__codelineno-5-3" href="#__codelineno-5-3"></a>kubectl<span class="w"> </span>get<span class="w"> </span>crd<span class="w"> </span>inferencerelays.llmsafespaces.dev<span class="w"> </span>-o<span class="w"> </span><span class="nv">jsonpath</span><span class="o">=</span><span class="s1">'{.spec.versions[*].name}'</span>
 </span></code></pre></div>
 <p>The controller supports the latest served version; older versions are served with a conversion webhook if present.</p>
+<h3 id="crd-skew-recovery-issue-2092">CRD skew recovery (issue #2092)<a class="headerlink" href="#crd-skew-recovery-issue-2092" title="Permanent link">&para;</a></h3>
+<p>A <strong>CRD-skewed</strong> cluster serves a Workspace CRD older than the platform
+release (missing a spec field the platform writes — the 2026-11-17
+incident: <code>spec.harness</code>, added in 0.44.15). Because <code>helm upgrade</code> never
+touches <code>crds/</code>, this is the default outcome on Flux-managed clusters
+whose CRD kustomization was not bumped with the release train. The
+structural apiserver <strong>silently prunes</strong> the unknown field on every write
+and returns success, so:</p>
+<ul>
+<li>workspaces created <strong>without</strong> an explicit harness (the frontend-picker
+  path) wedge in <code>Creating</code> forever — <code>HarnessBindingPending=True</code>, no
+  pod, and every bind attempt fails with <code>harness_bind_not_persisted</code>;</li>
+<li>the legacy fleet degrades loudly-but-safely (the controller's backfill
+  error, once per 10m per workspace; the phase machine is never blocked);</li>
+<li>new harness-less creates are <strong>refused at the gate</strong> (<code>crd_missing_harness_capability</code>
+  — pass an explicit harness or upgrade the CRD), so no new wedged
+  workspaces are created while the skew persists.</li>
+</ul>
+<p><strong>Detection:</strong> the <code>LLMSafeSpacesCRDSkew</code> alert (critical) fires within
+15 minutes of a conclusive skew verdict — from boot, via the controller's
+dry-run capability probe, not from a user failing first. The
+<code>LLMSafeSpacesHarnessBindNotPersisted</code> warning is the user-impact echo
+(binds actively failing). The gauge
+(<code>llmsafespaces_crd_skew{crd,field}</code>) heals to 0 — both alerts
+auto-resolve — the moment a write verifies after the CRD lands.</p>
+<p><strong>Recovery (operator):</strong></p>
+<ol>
+<li>Apply the current CRD — the Flux path bump (this repo tracks the
+   mirror in <code>deploy/flux/crds/</code>; the release checklist's CRD-apply step
+   carries it into the ops repo), or directly:</li>
+</ol>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-6-1"><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a>kubectl<span class="w"> </span>apply<span class="w"> </span>-f<span class="w"> </span>helm/crds/workspace.yaml
+</span></code></pre></div>
+<ol>
+<li>Sweep the wedged born-unbound workspaces (one shot, with read-back
+   verify on every bind):</li>
+</ol>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-7-1"><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a>./local/crd-skew-rebind.sh<span class="w">            </span><span class="c1"># enumerate only (always safe)</span>
+</span><span id="__span-7-2"><a id="__codelineno-7-2" name="__codelineno-7-2" href="#__codelineno-7-2"></a>./local/crd-skew-rebind.sh<span class="w"> </span>--rebind<span class="w">   </span><span class="c1"># re-bind → opencode (confirm prompt)</span>
+</span></code></pre></div>
+<p>The script lists workspaces with <code>spec.harness==""</code> + the
+   <code>llmsafespaces.dev/harness-unbound</code> marker, re-drives the bind
+   (<code>--rebind=pi</code> for pi), removes the waiting marker, and <strong>fails
+   loudly</strong> on any bind that reads back empty (the CRD is still stale).
+   The controller builds each pod on its next reconcile after the bind.</p>
+<p><strong>Recovery (user):</strong> no operator needed if the CRD has landed — re-run
+the first-session picker or <code>PUT /workspaces/{id}/harness</code>; the bind
+persists and the workspace converges. A bind that failed against the
+stale CRD does NOT consume the choice: the workspace stays unbound (the
+failed attempt keeps the discriminator marker), so the same re-drive
+works. While the CRD is still stale the
+picker/sidebar shows the degraded hint ("blocked on cluster CRD —
+operator action required") instead of an unbounded Creating spinner.</p>
+<p><strong>Prevention:</strong> the release-train CRD guard — repolint fails any PR that
+changes a CRD under <code>helm/crds/</code> without the byte-identical mirror bump
+in <code>deploy/flux/crds/</code> (<code>make flux-sync-crds</code>). Schema change = train
+gate on CRD apply (see <code>docs/release-bump-checklist.md</code> §6).</p>
 <hr />
 <h2 id="the-kek-rotation-window">The KEK rotation window<a class="headerlink" href="#the-kek-rotation-window" title="Permanent link">&para;</a></h2>
 <p>If a release changes how the master KEK is derived or wrapped, you may need to rotate the KEK so existing ciphertext remains decryptable under the new scheme. The <code>rotate-kek</code> CLI (<code>cmd/rotate-kek/main.go</code>) handles this:</p>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-6-1"><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a><span class="c1"># Dry-run first</span>
-</span><span id="__span-6-2"><a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a>kubectl<span class="w"> </span>-n<span class="w"> </span>llmsafespaces<span class="w"> </span><span class="nb">exec</span><span class="w"> </span>deploy/llmsafespaces-api<span class="w"> </span>--<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-6-3"><a id="__codelineno-6-3" name="__codelineno-6-3" href="#__codelineno-6-3"></a><span class="w">    </span>/usr/local/bin/rotate-kek<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-6-4"><a id="__codelineno-6-4" name="__codelineno-6-4" href="#__codelineno-6-4"></a><span class="w">    </span>--old-master-file<span class="w"> </span>/var/run/secrets/llmsafespaces/master-secret<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-6-5"><a id="__codelineno-6-5" name="__codelineno-6-5" href="#__codelineno-6-5"></a><span class="w">    </span>--new-master-file<span class="w"> </span>/path/to/new-kek<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-6-6"><a id="__codelineno-6-6" name="__codelineno-6-6" href="#__codelineno-6-6"></a><span class="w">    </span>--database-url<span class="w"> </span><span class="s2">"postgres://user:pass@host:5432/dbname?sslmode=require"</span><span class="w"> </span><span class="se">\</span>
-</span><span id="__span-6-7"><a id="__codelineno-6-7" name="__codelineno-6-7" href="#__codelineno-6-7"></a><span class="w">    </span>--dry-run
-</span><span id="__span-6-8"><a id="__codelineno-6-8" name="__codelineno-6-8" href="#__codelineno-6-8"></a>
-</span><span id="__span-6-9"><a id="__codelineno-6-9" name="__codelineno-6-9" href="#__codelineno-6-9"></a><span class="c1"># Apply</span>
-</span><span id="__span-6-10"><a id="__codelineno-6-10" name="__codelineno-6-10" href="#__codelineno-6-10"></a>kubectl<span class="w"> </span>-n<span class="w"> </span>llmsafespaces<span class="w"> </span><span class="nb">exec</span><span class="w"> </span>deploy/llmsafespaces-api<span class="w"> </span>--<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-6-11"><a id="__codelineno-6-11" name="__codelineno-6-11" href="#__codelineno-6-11"></a><span class="w">    </span>/usr/local/bin/rotate-kek<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-6-12"><a id="__codelineno-6-12" name="__codelineno-6-12" href="#__codelineno-6-12"></a><span class="w">    </span>--old-master-file<span class="w"> </span>/var/run/secrets/llmsafespaces/master-secret<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-6-13"><a id="__codelineno-6-13" name="__codelineno-6-13" href="#__codelineno-6-13"></a><span class="w">    </span>--new-master-file<span class="w"> </span>/path/to/new-kek<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-6-14"><a id="__codelineno-6-14" name="__codelineno-6-14" href="#__codelineno-6-14"></a><span class="w">    </span>--database-url<span class="w"> </span><span class="s2">"postgres://user:pass@host:5432/dbname?sslmode=require"</span><span class="w"> </span><span class="se">\</span>
-</span><span id="__span-6-15"><a id="__codelineno-6-15" name="__codelineno-6-15" href="#__codelineno-6-15"></a><span class="w">    </span>--redis-url<span class="w"> </span><span class="s2">"redis://host:6379"</span>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-8-1"><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a><span class="c1"># Dry-run first</span>
+</span><span id="__span-8-2"><a id="__codelineno-8-2" name="__codelineno-8-2" href="#__codelineno-8-2"></a>kubectl<span class="w"> </span>-n<span class="w"> </span>llmsafespaces<span class="w"> </span><span class="nb">exec</span><span class="w"> </span>deploy/llmsafespaces-api<span class="w"> </span>--<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-8-3"><a id="__codelineno-8-3" name="__codelineno-8-3" href="#__codelineno-8-3"></a><span class="w">    </span>/usr/local/bin/rotate-kek<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-8-4"><a id="__codelineno-8-4" name="__codelineno-8-4" href="#__codelineno-8-4"></a><span class="w">    </span>--old-master-file<span class="w"> </span>/var/run/secrets/llmsafespaces/master-secret<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-8-5"><a id="__codelineno-8-5" name="__codelineno-8-5" href="#__codelineno-8-5"></a><span class="w">    </span>--new-master-file<span class="w"> </span>/path/to/new-kek<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-8-6"><a id="__codelineno-8-6" name="__codelineno-8-6" href="#__codelineno-8-6"></a><span class="w">    </span>--database-url<span class="w"> </span><span class="s2">"postgres://user:pass@host:5432/dbname?sslmode=require"</span><span class="w"> </span><span class="se">\</span>
+</span><span id="__span-8-7"><a id="__codelineno-8-7" name="__codelineno-8-7" href="#__codelineno-8-7"></a><span class="w">    </span>--dry-run
+</span><span id="__span-8-8"><a id="__codelineno-8-8" name="__codelineno-8-8" href="#__codelineno-8-8"></a>
+</span><span id="__span-8-9"><a id="__codelineno-8-9" name="__codelineno-8-9" href="#__codelineno-8-9"></a><span class="c1"># Apply</span>
+</span><span id="__span-8-10"><a id="__codelineno-8-10" name="__codelineno-8-10" href="#__codelineno-8-10"></a>kubectl<span class="w"> </span>-n<span class="w"> </span>llmsafespaces<span class="w"> </span><span class="nb">exec</span><span class="w"> </span>deploy/llmsafespaces-api<span class="w"> </span>--<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-8-11"><a id="__codelineno-8-11" name="__codelineno-8-11" href="#__codelineno-8-11"></a><span class="w">    </span>/usr/local/bin/rotate-kek<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-8-12"><a id="__codelineno-8-12" name="__codelineno-8-12" href="#__codelineno-8-12"></a><span class="w">    </span>--old-master-file<span class="w"> </span>/var/run/secrets/llmsafespaces/master-secret<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-8-13"><a id="__codelineno-8-13" name="__codelineno-8-13" href="#__codelineno-8-13"></a><span class="w">    </span>--new-master-file<span class="w"> </span>/path/to/new-kek<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-8-14"><a id="__codelineno-8-14" name="__codelineno-8-14" href="#__codelineno-8-14"></a><span class="w">    </span>--database-url<span class="w"> </span><span class="s2">"postgres://user:pass@host:5432/dbname?sslmode=require"</span><span class="w"> </span><span class="se">\</span>
+</span><span id="__span-8-15"><a id="__codelineno-8-15" name="__codelineno-8-15" href="#__codelineno-8-15"></a><span class="w">    </span>--redis-url<span class="w"> </span><span class="s2">"redis://host:6379"</span>
 </span></code></pre></div>
 <p>Build the connection strings from your Helm release's <code>postgresql.*</code> / <code>redis.*</code> values (see the <a href="../runbook/#rotating-the-master-kek">Runbook</a> for the exact shape).</p>
 <p>Features: per-purpose key derivation, Postgres + Redis connections, <code>RotationCoordinator</code>, dry-run, resume-from, multi-table support. See the <a href="../runbook/#rotating-the-master-kek">Runbook</a> for the full procedure.</p>
 <p><strong>When rotation is needed:</strong> only when the release notes say so. The KEK rotation window (US-50.4) is supported by the multi-key <code>StaticKeyProvider</code>, so during the window both old and new keys can decrypt — old ciphertext is re-wrapped lazily. Most upgrades do not require KEK rotation.</p>
 <hr />
 <h2 id="rolling-back">Rolling back<a class="headerlink" href="#rolling-back" title="Permanent link">&para;</a></h2>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-7-1"><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a><span class="c1"># 1. Roll back the Helm release</span>
-</span><span id="__span-7-2"><a id="__codelineno-7-2" name="__codelineno-7-2" href="#__codelineno-7-2"></a>helm<span class="w"> </span>rollback<span class="w"> </span>llmsafespaces<span class="w"> </span>&lt;REVISION&gt;<span class="w"> </span>-n<span class="w"> </span>llmsafespaces
-</span><span id="__span-7-3"><a id="__codelineno-7-3" name="__codelineno-7-3" href="#__codelineno-7-3"></a>
-</span><span id="__span-7-4"><a id="__codelineno-7-4" name="__codelineno-7-4" href="#__codelineno-7-4"></a><span class="c1"># 2. Restore Postgres from backup (if migrations are irreversible)</span>
-</span><span id="__span-7-5"><a id="__codelineno-7-5" name="__codelineno-7-5" href="#__codelineno-7-5"></a>psql<span class="w"> </span>-h<span class="w"> </span>&lt;pg-host&gt;<span class="w"> </span>-U<span class="w"> </span>llmsafespaces<span class="w"> </span>llmsafespaces<span class="w"> </span>&lt;<span class="w"> </span>backup-<span class="k">$(</span>date<span class="w"> </span>+%F<span class="k">)</span>.sql
-</span><span id="__span-7-6"><a id="__codelineno-7-6" name="__codelineno-7-6" href="#__codelineno-7-6"></a>
-</span><span id="__span-7-7"><a id="__codelineno-7-7" name="__codelineno-7-7" href="#__codelineno-7-7"></a><span class="c1"># 3. Roll back CRDs (if they changed)</span>
-</span><span id="__span-7-8"><a id="__codelineno-7-8" name="__codelineno-7-8" href="#__codelineno-7-8"></a>kubectl<span class="w"> </span>apply<span class="w"> </span>-f<span class="w"> </span>helm/crds/<span class="w">   </span><span class="c1"># at the old chart revision</span>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-9-1"><a id="__codelineno-9-1" name="__codelineno-9-1" href="#__codelineno-9-1"></a><span class="c1"># 1. Roll back the Helm release</span>
+</span><span id="__span-9-2"><a id="__codelineno-9-2" name="__codelineno-9-2" href="#__codelineno-9-2"></a>helm<span class="w"> </span>rollback<span class="w"> </span>llmsafespaces<span class="w"> </span>&lt;REVISION&gt;<span class="w"> </span>-n<span class="w"> </span>llmsafespaces
+</span><span id="__span-9-3"><a id="__codelineno-9-3" name="__codelineno-9-3" href="#__codelineno-9-3"></a>
+</span><span id="__span-9-4"><a id="__codelineno-9-4" name="__codelineno-9-4" href="#__codelineno-9-4"></a><span class="c1"># 2. Restore Postgres from backup (if migrations are irreversible)</span>
+</span><span id="__span-9-5"><a id="__codelineno-9-5" name="__codelineno-9-5" href="#__codelineno-9-5"></a>psql<span class="w"> </span>-h<span class="w"> </span>&lt;pg-host&gt;<span class="w"> </span>-U<span class="w"> </span>llmsafespaces<span class="w"> </span>llmsafespaces<span class="w"> </span>&lt;<span class="w"> </span>backup-<span class="k">$(</span>date<span class="w"> </span>+%F<span class="k">)</span>.sql
+</span><span id="__span-9-6"><a id="__codelineno-9-6" name="__codelineno-9-6" href="#__codelineno-9-6"></a>
+</span><span id="__span-9-7"><a id="__codelineno-9-7" name="__codelineno-9-7" href="#__codelineno-9-7"></a><span class="c1"># 3. Roll back CRDs (if they changed)</span>
+</span><span id="__span-9-8"><a id="__codelineno-9-8" name="__codelineno-9-8" href="#__codelineno-9-8"></a>kubectl<span class="w"> </span>apply<span class="w"> </span>-f<span class="w"> </span>helm/crds/<span class="w">   </span><span class="c1"># at the old chart revision</span>
 </span></code></pre></div>
 <p>Find the revision to roll back to:</p>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-8-1"><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a>helm<span class="w"> </span><span class="nb">history</span><span class="w"> </span>llmsafespaces<span class="w"> </span>-n<span class="w"> </span>llmsafespaces
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-10-1"><a id="__codelineno-10-1" name="__codelineno-10-1" href="#__codelineno-10-1"></a>helm<span class="w"> </span><span class="nb">history</span><span class="w"> </span>llmsafespaces<span class="w"> </span>-n<span class="w"> </span>llmsafespaces
 </span></code></pre></div>
 <div class="admonition warning">
 <p class="admonition-title">Rollback is not always clean</p>
@@ -3023,14 +3102,14 @@
 <div class="admonition danger">
 <p class="admonition-title">Read this if you deploy via FluxCD GitRepository</p>
 <p>If you consume this chart from a Git source (FluxCD <code>GitRepository</code> or Argo CD Application pointing at this repo), you <strong>must</strong> set <code>reconcileStrategy: Revision</code> on your Flux <code>HelmRelease</code>. Otherwise the chart is packaged exactly once and <strong>never re-packaged</strong>, and every <code>helm upgrade</code> after the first will silently render against a stale snapshot.</p>
-<div class="language-yaml highlight"><pre><span></span><code><span id="__span-9-1"><a id="__codelineno-9-1" name="__codelineno-9-1" href="#__codelineno-9-1"></a><span class="nt">apiVersion</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">helm.toolkit.fluxcd.io/v2</span>
-</span><span id="__span-9-2"><a id="__codelineno-9-2" name="__codelineno-9-2" href="#__codelineno-9-2"></a><span class="nt">kind</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">HelmRelease</span>
-</span><span id="__span-9-3"><a id="__codelineno-9-3" name="__codelineno-9-3" href="#__codelineno-9-3"></a><span class="nt">spec</span><span class="p">:</span>
-</span><span id="__span-9-4"><a id="__codelineno-9-4" name="__codelineno-9-4" href="#__codelineno-9-4"></a><span class="w">  </span><span class="nt">chart</span><span class="p">:</span>
-</span><span id="__span-9-5"><a id="__codelineno-9-5" name="__codelineno-9-5" href="#__codelineno-9-5"></a><span class="w">    </span><span class="nt">spec</span><span class="p">:</span>
-</span><span id="__span-9-6"><a id="__codelineno-9-6" name="__codelineno-9-6" href="#__codelineno-9-6"></a><span class="w">      </span><span class="nt">sourceRef</span><span class="p">:</span>
-</span><span id="__span-9-7"><a id="__codelineno-9-7" name="__codelineno-9-7" href="#__codelineno-9-7"></a><span class="w">        </span><span class="nt">kind</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">GitRepository</span>
-</span><span id="__span-9-8"><a id="__codelineno-9-8" name="__codelineno-9-8" href="#__codelineno-9-8"></a><span class="w">        </span><span class="nt">reconcileStrategy</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">Revision</span><span class="w">   </span><span class="c1"># required</span>
+<div class="language-yaml highlight"><pre><span></span><code><span id="__span-11-1"><a id="__codelineno-11-1" name="__codelineno-11-1" href="#__codelineno-11-1"></a><span class="nt">apiVersion</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">helm.toolkit.fluxcd.io/v2</span>
+</span><span id="__span-11-2"><a id="__codelineno-11-2" name="__codelineno-11-2" href="#__codelineno-11-2"></a><span class="nt">kind</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">HelmRelease</span>
+</span><span id="__span-11-3"><a id="__codelineno-11-3" name="__codelineno-11-3" href="#__codelineno-11-3"></a><span class="nt">spec</span><span class="p">:</span>
+</span><span id="__span-11-4"><a id="__codelineno-11-4" name="__codelineno-11-4" href="#__codelineno-11-4"></a><span class="w">  </span><span class="nt">chart</span><span class="p">:</span>
+</span><span id="__span-11-5"><a id="__codelineno-11-5" name="__codelineno-11-5" href="#__codelineno-11-5"></a><span class="w">    </span><span class="nt">spec</span><span class="p">:</span>
+</span><span id="__span-11-6"><a id="__codelineno-11-6" name="__codelineno-11-6" href="#__codelineno-11-6"></a><span class="w">      </span><span class="nt">sourceRef</span><span class="p">:</span>
+</span><span id="__span-11-7"><a id="__codelineno-11-7" name="__codelineno-11-7" href="#__codelineno-11-7"></a><span class="w">        </span><span class="nt">kind</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">GitRepository</span>
+</span><span id="__span-11-8"><a id="__codelineno-11-8" name="__codelineno-11-8" href="#__codelineno-11-8"></a><span class="w">        </span><span class="nt">reconcileStrategy</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">Revision</span><span class="w">   </span><span class="c1"># required</span>
 </span></code></pre></div>
 <p><strong>Symptom:</strong> <code>kubectl get configmap &lt;release&gt;-migrations -o jsonpath='{.data}'</code> shows only the original migration files after you've added new ones; new chart templates don't appear. This caused the 2026-06-29 production incident.</p>
 <p>Argo CD users: the equivalent is ensuring your Application tracks <code>targetRevision</code>
@@ -3057,28 +3136,28 @@ fix. That is tracked as a follow-up to issue #456.</p>
 <hr />
 <h2 id="post-upgrade-verification">Post-upgrade verification<a class="headerlink" href="#post-upgrade-verification" title="Permanent link">&para;</a></h2>
 <p>After every upgrade, verify the platform is healthy before closing the maintenance window:</p>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-10-1"><a id="__codelineno-10-1" name="__codelineno-10-1" href="#__codelineno-10-1"></a><span class="c1"># 1. Health endpoints</span>
-</span><span id="__span-10-2"><a id="__codelineno-10-2" name="__codelineno-10-2" href="#__codelineno-10-2"></a>kubectl<span class="w"> </span>-n<span class="w"> </span>llmsafespaces<span class="w"> </span>port-forward<span class="w"> </span>svc/llmsafespaces-api<span class="w"> </span><span class="m">8080</span>:8080<span class="w"> </span><span class="p">&amp;</span>
-</span><span id="__span-10-3"><a id="__codelineno-10-3" name="__codelineno-10-3" href="#__codelineno-10-3"></a>curl<span class="w"> </span>-sf<span class="w"> </span>http://localhost:8080/readyz<span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span><span class="nb">echo</span><span class="w"> </span><span class="s2">"API ready"</span>
-</span><span id="__span-10-4"><a id="__codelineno-10-4" name="__codelineno-10-4" href="#__codelineno-10-4"></a>
-</span><span id="__span-10-5"><a id="__codelineno-10-5" name="__codelineno-10-5" href="#__codelineno-10-5"></a><span class="c1"># 2. Rollouts complete</span>
-</span><span id="__span-10-6"><a id="__codelineno-10-6" name="__codelineno-10-6" href="#__codelineno-10-6"></a>kubectl<span class="w"> </span>-n<span class="w"> </span>llmsafespaces<span class="w"> </span>rollout<span class="w"> </span>status<span class="w"> </span>deployment/llmsafespaces-api
-</span><span id="__span-10-7"><a id="__codelineno-10-7" name="__codelineno-10-7" href="#__codelineno-10-7"></a>kubectl<span class="w"> </span>-n<span class="w"> </span>llmsafespaces<span class="w"> </span>rollout<span class="w"> </span>status<span class="w"> </span>deployment/llmsafespaces-controller
-</span><span id="__span-10-8"><a id="__codelineno-10-8" name="__codelineno-10-8" href="#__codelineno-10-8"></a>
-</span><span id="__span-10-9"><a id="__codelineno-10-9" name="__codelineno-10-9" href="#__codelineno-10-9"></a><span class="c1"># 3. Webhook functional (create a throwaway workspace)</span>
-</span><span id="__span-10-10"><a id="__codelineno-10-10" name="__codelineno-10-10" href="#__codelineno-10-10"></a><span class="nv">TOKEN</span><span class="o">=</span><span class="k">$(</span>...<span class="k">)</span><span class="w">  </span><span class="c1"># auth token</span>
-</span><span id="__span-10-11"><a id="__codelineno-10-11" name="__codelineno-10-11" href="#__codelineno-10-11"></a><span class="nv">WS</span><span class="o">=</span><span class="k">$(</span>curl<span class="w"> </span>-sX<span class="w"> </span>POST<span class="w"> </span><span class="s2">"</span><span class="nv">$API</span><span class="s2">/api/v1/workspaces"</span><span class="w"> </span><span class="se">\</span>
-</span><span id="__span-10-12"><a id="__codelineno-10-12" name="__codelineno-10-12" href="#__codelineno-10-12"></a><span class="w">    </span>-H<span class="w"> </span><span class="s2">"Authorization: Bearer </span><span class="nv">$TOKEN</span><span class="s2">"</span><span class="w"> </span><span class="se">\</span>
-</span><span id="__span-10-13"><a id="__codelineno-10-13" name="__codelineno-10-13" href="#__codelineno-10-13"></a><span class="w">    </span>-H<span class="w"> </span><span class="s2">"Content-Type: application/json"</span><span class="w"> </span><span class="se">\</span>
-</span><span id="__span-10-14"><a id="__codelineno-10-14" name="__codelineno-10-14" href="#__codelineno-10-14"></a><span class="w">    </span>-d<span class="w"> </span><span class="s1">'{"name":"upgrade-smoke","runtime":"base","storageSize":"1Gi"}'</span><span class="w"> </span><span class="p">|</span><span class="w"> </span>jq<span class="w"> </span>-r<span class="w"> </span>.id<span class="k">)</span>
-</span><span id="__span-10-15"><a id="__codelineno-10-15" name="__codelineno-10-15" href="#__codelineno-10-15"></a>curl<span class="w"> </span>-sf<span class="w"> </span>-X<span class="w"> </span>POST<span class="w"> </span><span class="s2">"</span><span class="nv">$API</span><span class="s2">/api/v1/workspaces/</span><span class="nv">$WS</span><span class="s2">/activate"</span><span class="w"> </span>-H<span class="w"> </span><span class="s2">"Authorization: Bearer </span><span class="nv">$TOKEN</span><span class="s2">"</span>
-</span><span id="__span-10-16"><a id="__codelineno-10-16" name="__codelineno-10-16" href="#__codelineno-10-16"></a><span class="c1"># ... wait for Active, then delete</span>
-</span><span id="__span-10-17"><a id="__codelineno-10-17" name="__codelineno-10-17" href="#__codelineno-10-17"></a>
-</span><span id="__span-10-18"><a id="__codelineno-10-18" name="__codelineno-10-18" href="#__codelineno-10-18"></a><span class="c1"># 4. CRDs serving expected versions</span>
-</span><span id="__span-10-19"><a id="__codelineno-10-19" name="__codelineno-10-19" href="#__codelineno-10-19"></a>kubectl<span class="w"> </span>get<span class="w"> </span>crd<span class="w"> </span>workspaces.llmsafespaces.dev<span class="w"> </span>-o<span class="w"> </span><span class="nv">jsonpath</span><span class="o">=</span><span class="s1">'{.spec.versions[*].name}'</span>
-</span><span id="__span-10-20"><a id="__codelineno-10-20" name="__codelineno-10-20" href="#__codelineno-10-20"></a>
-</span><span id="__span-10-21"><a id="__codelineno-10-21" name="__codelineno-10-21" href="#__codelineno-10-21"></a><span class="c1"># 5. No stuck workspaces</span>
-</span><span id="__span-10-22"><a id="__codelineno-10-22" name="__codelineno-10-22" href="#__codelineno-10-22"></a>kubectl<span class="w"> </span>get<span class="w"> </span>workspaces<span class="w"> </span>-A<span class="w"> </span>-o<span class="w"> </span><span class="nv">jsonpath</span><span class="o">=</span><span class="s1">'{range .items[*]}{.metadata.name}{": "}{.status.phase}{"\n"}{end}'</span><span class="w"> </span><span class="p">|</span><span class="w"> </span>grep<span class="w"> </span>-v<span class="w"> </span>Active<span class="w"> </span><span class="p">|</span><span class="w"> </span>grep<span class="w"> </span>-v<span class="w"> </span>Suspended
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-12-1"><a id="__codelineno-12-1" name="__codelineno-12-1" href="#__codelineno-12-1"></a><span class="c1"># 1. Health endpoints</span>
+</span><span id="__span-12-2"><a id="__codelineno-12-2" name="__codelineno-12-2" href="#__codelineno-12-2"></a>kubectl<span class="w"> </span>-n<span class="w"> </span>llmsafespaces<span class="w"> </span>port-forward<span class="w"> </span>svc/llmsafespaces-api<span class="w"> </span><span class="m">8080</span>:8080<span class="w"> </span><span class="p">&amp;</span>
+</span><span id="__span-12-3"><a id="__codelineno-12-3" name="__codelineno-12-3" href="#__codelineno-12-3"></a>curl<span class="w"> </span>-sf<span class="w"> </span>http://localhost:8080/readyz<span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span><span class="nb">echo</span><span class="w"> </span><span class="s2">"API ready"</span>
+</span><span id="__span-12-4"><a id="__codelineno-12-4" name="__codelineno-12-4" href="#__codelineno-12-4"></a>
+</span><span id="__span-12-5"><a id="__codelineno-12-5" name="__codelineno-12-5" href="#__codelineno-12-5"></a><span class="c1"># 2. Rollouts complete</span>
+</span><span id="__span-12-6"><a id="__codelineno-12-6" name="__codelineno-12-6" href="#__codelineno-12-6"></a>kubectl<span class="w"> </span>-n<span class="w"> </span>llmsafespaces<span class="w"> </span>rollout<span class="w"> </span>status<span class="w"> </span>deployment/llmsafespaces-api
+</span><span id="__span-12-7"><a id="__codelineno-12-7" name="__codelineno-12-7" href="#__codelineno-12-7"></a>kubectl<span class="w"> </span>-n<span class="w"> </span>llmsafespaces<span class="w"> </span>rollout<span class="w"> </span>status<span class="w"> </span>deployment/llmsafespaces-controller
+</span><span id="__span-12-8"><a id="__codelineno-12-8" name="__codelineno-12-8" href="#__codelineno-12-8"></a>
+</span><span id="__span-12-9"><a id="__codelineno-12-9" name="__codelineno-12-9" href="#__codelineno-12-9"></a><span class="c1"># 3. Webhook functional (create a throwaway workspace)</span>
+</span><span id="__span-12-10"><a id="__codelineno-12-10" name="__codelineno-12-10" href="#__codelineno-12-10"></a><span class="nv">TOKEN</span><span class="o">=</span><span class="k">$(</span>...<span class="k">)</span><span class="w">  </span><span class="c1"># auth token</span>
+</span><span id="__span-12-11"><a id="__codelineno-12-11" name="__codelineno-12-11" href="#__codelineno-12-11"></a><span class="nv">WS</span><span class="o">=</span><span class="k">$(</span>curl<span class="w"> </span>-sX<span class="w"> </span>POST<span class="w"> </span><span class="s2">"</span><span class="nv">$API</span><span class="s2">/api/v1/workspaces"</span><span class="w"> </span><span class="se">\</span>
+</span><span id="__span-12-12"><a id="__codelineno-12-12" name="__codelineno-12-12" href="#__codelineno-12-12"></a><span class="w">    </span>-H<span class="w"> </span><span class="s2">"Authorization: Bearer </span><span class="nv">$TOKEN</span><span class="s2">"</span><span class="w"> </span><span class="se">\</span>
+</span><span id="__span-12-13"><a id="__codelineno-12-13" name="__codelineno-12-13" href="#__codelineno-12-13"></a><span class="w">    </span>-H<span class="w"> </span><span class="s2">"Content-Type: application/json"</span><span class="w"> </span><span class="se">\</span>
+</span><span id="__span-12-14"><a id="__codelineno-12-14" name="__codelineno-12-14" href="#__codelineno-12-14"></a><span class="w">    </span>-d<span class="w"> </span><span class="s1">'{"name":"upgrade-smoke","runtime":"base","storageSize":"1Gi"}'</span><span class="w"> </span><span class="p">|</span><span class="w"> </span>jq<span class="w"> </span>-r<span class="w"> </span>.id<span class="k">)</span>
+</span><span id="__span-12-15"><a id="__codelineno-12-15" name="__codelineno-12-15" href="#__codelineno-12-15"></a>curl<span class="w"> </span>-sf<span class="w"> </span>-X<span class="w"> </span>POST<span class="w"> </span><span class="s2">"</span><span class="nv">$API</span><span class="s2">/api/v1/workspaces/</span><span class="nv">$WS</span><span class="s2">/activate"</span><span class="w"> </span>-H<span class="w"> </span><span class="s2">"Authorization: Bearer </span><span class="nv">$TOKEN</span><span class="s2">"</span>
+</span><span id="__span-12-16"><a id="__codelineno-12-16" name="__codelineno-12-16" href="#__codelineno-12-16"></a><span class="c1"># ... wait for Active, then delete</span>
+</span><span id="__span-12-17"><a id="__codelineno-12-17" name="__codelineno-12-17" href="#__codelineno-12-17"></a>
+</span><span id="__span-12-18"><a id="__codelineno-12-18" name="__codelineno-12-18" href="#__codelineno-12-18"></a><span class="c1"># 4. CRDs serving expected versions</span>
+</span><span id="__span-12-19"><a id="__codelineno-12-19" name="__codelineno-12-19" href="#__codelineno-12-19"></a>kubectl<span class="w"> </span>get<span class="w"> </span>crd<span class="w"> </span>workspaces.llmsafespaces.dev<span class="w"> </span>-o<span class="w"> </span><span class="nv">jsonpath</span><span class="o">=</span><span class="s1">'{.spec.versions[*].name}'</span>
+</span><span id="__span-12-20"><a id="__codelineno-12-20" name="__codelineno-12-20" href="#__codelineno-12-20"></a>
+</span><span id="__span-12-21"><a id="__codelineno-12-21" name="__codelineno-12-21" href="#__codelineno-12-21"></a><span class="c1"># 5. No stuck workspaces</span>
+</span><span id="__span-12-22"><a id="__codelineno-12-22" name="__codelineno-12-22" href="#__codelineno-12-22"></a>kubectl<span class="w"> </span>get<span class="w"> </span>workspaces<span class="w"> </span>-A<span class="w"> </span>-o<span class="w"> </span><span class="nv">jsonpath</span><span class="o">=</span><span class="s1">'{range .items[*]}{.metadata.name}{": "}{.status.phase}{"\n"}{end}'</span><span class="w"> </span><span class="p">|</span><span class="w"> </span>grep<span class="w"> </span>-v<span class="w"> </span>Active<span class="w"> </span><span class="p">|</span><span class="w"> </span>grep<span class="w"> </span>-v<span class="w"> </span>Suspended
 </span></code></pre></div>
 <p>If any check fails, consult <a href="../troubleshooting/">Troubleshooting</a> or roll back.</p>
 <hr />
@@ -3111,7 +3190,7 @@ fix. That is tracked as a follow-up to issue #456.</p>
     <span class="md-icon" title="Last update">
       <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M21 13.1c-.1 0-.3.1-.4.2l-1 1 2.1 2.1 1-1c.2-.2.2-.6 0-.8l-1.3-1.3c-.1-.1-.2-.2-.4-.2m-1.9 1.8-6.1 6V23h2.1l6.1-6.1zM12.5 7v5.2l4 2.4-1 1L11 13V7zM11 21.9c-5.1-.5-9-4.8-9-9.9C2 6.5 6.5 2 12 2c5.3 0 9.6 4.1 10 9.3-.3-.1-.6-.2-1-.2s-.7.1-1 .2C19.6 7.2 16.2 4 12 4c-4.4 0-8 3.6-8 8 0 4.1 3.1 7.5 7.1 7.9l-.1.2z"/></svg>
     </span>
-    <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-timeago" title="September 18, 2026 07:07:59 UTC"><span class="timeago" datetime="2026-09-18T07:07:59+00:00" locale="en"></span></span><span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-iso_date" title="September 18, 2026 07:07:59 UTC">2026-09-18</span>
+    <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-timeago" title="November 18, 2026 19:09:51 UTC"><span class="timeago" datetime="2026-11-18T19:09:51+00:00" locale="en"></span></span><span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-iso_date" title="November 18, 2026 19:09:51 UTC">2026-11-18</span>
   </span>
 
     

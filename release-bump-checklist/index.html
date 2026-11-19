@@ -2299,6 +2299,12 @@ checklist covers the rest of the procedure.</p>
 <td><code>helm/values.yaml</code> (<code>migrations.image</code>, <code>dbInit.image</code>)</td>
 <td>Renovate PRs; not part of a coordinated bump. <code>mcp.image</code> is likewise optional and skipped by the pre-flight when unset (no workflow builds that image)</td>
 </tr>
+<tr>
+<td>platform CRDs (<code>workspaces</code>, <code>runtimeenvironments</code>, <code>inferencerelays</code>)</td>
+<td>chart <code>crds/</code> (schema source of truth)</td>
+<td><code>helm/crds/*.yaml</code>, mirrored byte-identical in <code>deploy/flux/crds/</code> (the tracked Flux path)</td>
+<td><strong>schema change = train gate on CRD apply</strong> (§6): the PR must bump <code>deploy/flux/crds/</code> in the SAME change (<code>make flux-sync-crds</code>), and the release step carries the mirror into the ops repo's <code>cluster-llmsafespaces-crds</code> kustomization — <code>helm upgrade</code> NEVER upgrades <code>crds/</code>, so the Flux path is the only thing that moves a schema on the cluster (#2092)</td>
+</tr>
 </tbody>
 </table>
 <blockquote>
@@ -2318,6 +2324,12 @@ row above (same build/tag train); it is not a new version scheme.</p>
 <li><code>controller.opencodeDelivery.image</code>: same, from <strong>merge-opencode</strong>.</li>
 <li><code>runtimeEnvironments.base.image.tag</code>: <strong>leave alone</strong> unless the seed row moved (§1) — it is CalVer, off the train.</li>
 <li>GitRepository/ HelmRelease <code>ref.tag</code>: <code>vX.Y.Z</code> with <code>reconcileStrategy: Revision</code>.</li>
+<li><strong>CRD apply (when the release carries a CRD schema change)</strong>: copy
+     <code>deploy/flux/crds/</code> (this repo's tracked mirror, which repolint keeps
+     byte-identical to <code>helm/crds/</code>) into the ops repo's
+     <code>cluster-llmsafespaces-crds</code> kustomization path
+     (<code>./kubernetes/apps/llmsafespaces/llmsafespaces/crds</code>) in the SAME
+     config PR — see §6. <code>helm upgrade</code> never applies it for you.</li>
 <li><strong>Pre-flight the config PR</strong> — run the script against the candidate values file; it encodes the four checks from #1237:</li>
 </ol>
 <div class="language-bash highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>./local/release-preflight.sh<span class="w"> </span>path/to/candidate-values.yaml<span class="w"> </span><span class="o">[</span>--opencode-bin<span class="o">=</span>&lt;candidate<span class="w"> </span>binary&gt;<span class="o">]</span>
@@ -2431,13 +2443,45 @@ wrong-CalVer tag — the ghcr pre-flight in §2 catches that.</p>
 <td>against a candidate config file: P1 registry resolution, P2 index membership + no platform-digest reuse + tag/digest coherence + <code>binarySHA256*</code> agreement with the CI-stamped index annotations, P3 base CalVer + seed equality, P4 opencode pin alignment (+ behavioral contract via <code>--opencode-bin</code>)</td>
 <td>operator-run on every config bump PR; pinned by <code>local/release_preflight_script_test.go</code></td>
 </tr>
+<tr>
+<td>repolint <code>flux-crd</code> drift check (<code>pkg/repolint/flux_crd_drift.go</code>)</td>
+<td>every <code>helm/crds/*.yaml</code> is byte-identical to its mirror in <code>deploy/flux/crds/</code>, and the mirror's <code>kustomization.yaml</code> lists exactly that set — a CRD schema change without the Flux-path bump fails the PR (born-red; #2092)</td>
+<td><code>make repolint</code> — pre-commit hook + CI Lint job</td>
+</tr>
 </tbody>
 </table>
 <p><strong>Known limit:</strong> the repolint guard reads this repo's committed files; it
 cannot see the ops config repo's values — that is what the pre-flight script
 covers (run against the candidate config PR). The two layers are complementary
 by design: repolint gates this repo at commit time, the pre-flight gates the
-config repo at its PR time.</p>
+config repo at its PR time. The CRD guard has the same shape: repolint pins
+the tracked mirror (<code>deploy/flux/crds/</code>) to the chart at commit time; §6's
+release step is what actually lands the mirror in the ops repo.</p>
+<h2 id="6-the-crd-apply-train-gate-issue-2092">6. The CRD apply train gate (issue #2092)<a class="headerlink" href="#6-the-crd-apply-train-gate-issue-2092" title="Permanent link">&para;</a></h2>
+<p><code>helm upgrade</code> NEVER upgrades the <code>crds/</code> directory (helm/README.md "CRD
+upgrades") — on a Flux-managed cluster the ops repo's
+<code>cluster-llmsafespaces-crds</code> kustomization is the only thing that moves a
+CRD schema. On 2026-11-17 the chart train shipped 0.44.15/.16/.17 carrying
+the <code>spec.harness</code> schema change while that path still served the pre-.15
+CRD: the apiserver silently pruned every bind write, and every workspace
+created through the frontend picker wedged in <code>Creating</code> forever — no pod,
+no convergence, no alert (issue #2092). The rule born from it:</p>
+<p><strong>A release that requires a CRD schema change gates the train on the CRD
+apply.</strong> Concretely:</p>
+<ol>
+<li><strong>Same PR</strong> — the schema change under <code>helm/crds/</code> and the
+   <code>deploy/flux/crds/</code> mirror bump land together (<code>make flux-sync-crds</code>;
+   repolint fails the PR otherwise — §5's guard row).</li>
+<li><strong>Same release step</strong> — the config PR (§2 step 3) carries the mirror
+   into the ops repo's kustomization path. A release note line
+   "requires CRD apply" without the config-PR copy is incomplete.</li>
+<li><strong>Post-apply convergence is designed in</strong> — the controller retries the
+   legacy backfill once per 10m window, the bind API verifies persistence,
+   <code>LLMSafeSpacesCRDSkew</code> alerts while the skew persists, and
+   <code>local/crd-skew-rebind.sh</code> enumerates + re-binds wedged born-unbound
+   workspaces once the CRD lands (docs/operator/upgrading.md — "CRD skew
+   recovery").</li>
+</ol>
 
 
 
@@ -2460,7 +2504,7 @@ config repo at its PR time.</p>
     <span class="md-icon" title="Last update">
       <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M21 13.1c-.1 0-.3.1-.4.2l-1 1 2.1 2.1 1-1c.2-.2.2-.6 0-.8l-1.3-1.3c-.1-.1-.2-.2-.4-.2m-1.9 1.8-6.1 6V23h2.1l6.1-6.1zM12.5 7v5.2l4 2.4-1 1L11 13V7zM11 21.9c-5.1-.5-9-4.8-9-9.9C2 6.5 6.5 2 12 2c5.3 0 9.6 4.1 10 9.3-.3-.1-.6-.2-1-.2s-.7.1-1 .2C19.6 7.2 16.2 4 12 4c-4.4 0-8 3.6-8 8 0 4.1 3.1 7.5 7.1 7.9l-.1.2z"/></svg>
     </span>
-    <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-timeago" title="September 16, 2026 17:31:38 UTC"><span class="timeago" datetime="2026-09-16T17:31:38+00:00" locale="en"></span></span><span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-iso_date" title="September 16, 2026 17:31:38 UTC">2026-09-16</span>
+    <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-timeago" title="November 17, 2026 23:47:56 UTC"><span class="timeago" datetime="2026-11-17T23:47:56+00:00" locale="en"></span></span><span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-iso_date" title="November 17, 2026 23:47:56 UTC">2026-11-17</span>
   </span>
 
     
