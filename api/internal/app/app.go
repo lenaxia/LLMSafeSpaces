@@ -101,6 +101,7 @@ type App struct {
 	wfReconciler       *apiwf.Reconciler          // Epic 64: workflow run executor
 	wfScheduler        *apiwf.Scheduler           // Epic 64: cron trigger scheduler
 	boardReconciler    *board.Reconciler          // #1698: task-board convergence sweep (Lane 1: dark-runs with zero projects)
+	waitBroker         *WaitBroker                // claim-wait lifecycle: the event-wait trigger reconciler (script-only sensors, no LLM leg)
 	boardPool          *pgxpool.Pool              // #1698: pgx pool for the board engine; closed on shutdown
 	canarySvc          *canary.Service            // epic-71 / 0c: metrics-only canary probe runner; nil when the knob is off
 	invitationsHandler *handlers.InvitationsHandler
@@ -480,6 +481,7 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 	var secretsPool *pgxpool.Pool               // closed on Shutdown
 	var boardPool *pgxpool.Pool                 // closed on Shutdown (board engine)
 	var boardReconciler *board.Reconciler       // started in Run
+	var waitBroker *WaitBroker                  // started in Run (the claim-wait lifecycle's event-wait reconciler)
 	var boardRESTHandler *handlers.BoardHandler // #1699: REST projection (nil = engine off → routes unregistered)
 	var dekCacheClient *redis.Client            // closed on Shutdown
 	{
@@ -1901,6 +1903,18 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 				}
 			}()
 			boardReconciler = board.NewReconciler(boardPool, engineCfg, spawnOpts...)
+			// Claim-wait lifecycle (tsk-pristine-henna-loses): the
+			// wait-broker — the stateless event-wait reconciler. It
+			// compiles declared conditions into SCRIPT-ONLY gate
+			// triggers (no prompt leg: a script trigger with no prompt
+			// never calls the LLM), consumes their fires, sends the
+			// wait-resolved resume itself, and cleans orphaned sensors
+			// — beside the reconciler, on the same pool, the same
+			// phrase-resolving sender. The story_done sensor's
+			// in-cluster default (belt): the pod's own controller-set
+			// LLMSAFESPACE_API_URL wins at fire time.
+			waitBroker = NewWaitBroker(boardPool, workflows.NewStore(boardPool), boardSender,
+				os.Getenv("LLMSAFESPACE_API_URL"))
 			// §4.6 SSE live feed (#1699 gap 4): committed board events
 			// fan out on the user + workspace channels as board.event.
 			// Fail-open by construction — nil publisher (no broker)
@@ -2091,6 +2105,7 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 		wfReconciler:       wfReconciler,
 		wfScheduler:        wfScheduler,
 		boardReconciler:    boardReconciler,
+		waitBroker:         waitBroker,
 		boardPool:          boardPool,
 		canarySvc:          canarySvc,
 		invitationsHandler: invitationsHandler,
@@ -2197,6 +2212,19 @@ func (a *App) Run() error {
 			}
 		}()
 		a.logger.Info("board reconciler started")
+	}
+
+	// Wait-broker (claim-wait lifecycle §4): the event-wait reconciler
+	// — any replica may run it (deterministic trigger names + event ids
+	// arbitrate; two replicas converge), the same crash-safety-by-
+	// construction posture as the sweep beside it.
+	if a.waitBroker != nil {
+		go func() {
+			if err := a.waitBroker.Start(a.ctx); err != nil {
+				a.logger.Error("wait broker stopped", err)
+			}
+		}()
+		a.logger.Info("board wait-broker started (event-wait sensors; script-only, no LLM leg)")
 	}
 
 	// Start instance settings (loads cache from DB).
