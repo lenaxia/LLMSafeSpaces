@@ -106,12 +106,19 @@ async function openDrainBoard(page: Page, tasks: DrainTask[]) {
   await expect(page.getByTestId(`swimlane-${PROJECT_A}`)).toBeVisible();
 }
 
+/** The portrait width-fraction columns — a FINITE-key record so every
+ * indexed read is total (noUncheckedIndexedAccess: an index-signature
+ * lookup would be `number | undefined` and redden the CI typecheck —
+ * the r1 review finding). */
+const COLUMN_KEYS = ["backlog", "inProgress", "inReview", "done"] as const;
+type ColumnFractions = Record<(typeof COLUMN_KEYS)[number], number>;
+
 /** Measured portrait width FRACTIONS per column (content-width
  * normalized) — the same measurement discipline and tolerance bands as
  * board.spec.ts's all-done pin, applied to every drain state. */
-async function columnFractions(page: Page): Promise<Record<string, number>> {
+async function columnFractions(page: Page): Promise<ColumnFractions> {
   const rail = page.getByTestId(`stage-grid-${PROJECT_A}`);
-  return rail.evaluate((el) => {
+  return rail.evaluate<ColumnFractions>((el) => {
     const cs = getComputedStyle(el);
     const pad = parseFloat(cs.paddingLeft) + parseFloat(cs.paddingRight);
     const contentWidth = el.getBoundingClientRect().width - pad;
@@ -205,7 +212,7 @@ test.describe("board rail drain states — empty columns keep their width at eve
     await expect(rail.locator('[data-stage-col="in_review"]')).toContainText("—");
 
     const after = await columnFractions(page);
-    for (const key of ["backlog", "inProgress", "inReview", "done"] as const) {
+    for (const key of COLUMN_KEYS) {
       expect(Math.abs(after[key] - before[key]), `${key} fraction must not jump when in_review drains live`).toBeLessThan(0.02);
     }
   });

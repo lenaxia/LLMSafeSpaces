@@ -46,15 +46,20 @@ phase machine) passed every unit pin.
 3. **The kind-tier skew e2e** (`scripts/workspace-lifecycle-skew-e2e.sh`
    + `.github/workflows/workspace-lifecycle-integration.yml`, the
    us2-kind pattern): pre-.15 CRD applied BEFORE helm, controller-lean
-   chart installed `--skip-crds` (the skew survives), then the
-   owner-visible path — LC-K1 start → Active, LC-K2 refresh → recycle →
-   Active (generation observed), LC-K3 suspend/resume with PVC
-   retention, LC-K4 the operator's CRD apply converging the harness
-   stamp (controller restart = the crash-safe attempt-map reset).
-   PR-path-gated on the phase-machine surface + weekly + dispatch.
-   Pinned by `scripts/workspace_lifecycle_script_test.go` (bash -n,
-   the skew wiring order, the fixture drift guard, the us2 incident
-   classes re-pinned, every leg present).
+   chart installed `--skip-crds` (the skew survives), with the
+   design-0053 §4.5/§5.4 MANDATORY delivery trio pinned (agentd +
+   opencode + pi — image digest-spliced via the local registry, both
+   binary SHA flags each; the chart's controller-deployment gates fail
+   render without all three), then the owner-visible path — LC-K1
+   start → Active, LC-K2 refresh → recycle → Active (generation
+   observed), LC-K3 suspend/resume with PVC retention, LC-K4 the
+   operator's CRD apply converging the harness stamp (controller
+   restart = the crash-safe attempt-map reset). PR-path-gated on the
+   phase-machine surface + weekly + dispatch. Pinned by
+   `scripts/workspace_lifecycle_script_test.go` (bash -n, the skew
+   wiring order, the fixture drift guard, the us2 incident classes
+   re-pinned, every leg present, and — since r1 — the
+   all-delivery-pins-mandatory guard).
 
 4. **The rail drain-state wall**
    (`frontend/tests/e2e/board-rail-drain.spec.ts`): every drain state —

@@ -106,6 +106,72 @@ func TestWorkspaceLifecycleScript_AgentdReferenceAndPins(t *testing.T) {
 	assert.Contains(t, body, `--set "controller.agentdDelivery.binarySHA256Arm64=${BINARY_SHA}"`)
 }
 
+// The r1 review finding, pinned forever: the chart REFUSES to render
+// without all three design-0053 delivery artifacts (§4.5 agentd +
+// opencode "no baked fallback"; §5.4 pi) — a helm install that omits
+// any of the nine --set flags dies in SETUP before a single check
+// runs (controller-deployment.yaml's mandatory gates). The mirrored
+// us2 script never installs the controller, which is why the pattern
+// didn't carry them.
+func TestWorkspaceLifecycleScript_AllDeliveryPinsMandatory(t *testing.T) {
+	body := lifecycleScriptBody(t)
+	for _, art := range []struct{ name, ref string }{
+		{"opencode", `OPENCODE_REF="$REG/llmsafespaces/opencode:ci@${OPENCODE_REF##*@}"`},
+		{"pi", `PI_REF="$REG/llmsafespaces/pi:ci@${PI_REF##*@}"`},
+	} {
+		assert.Contains(t, body, art.ref,
+			"the %s digest splice must exist and keep the @ separator", art.name)
+	}
+	for _, flag := range []string{
+		`--set "controller.opencodeDelivery.image=${OPENCODE_REF}"`,
+		`--set "controller.opencodeDelivery.binarySHA256Amd64=${OPENCODE_BINARY_SHA}"`,
+		`--set "controller.opencodeDelivery.binarySHA256Arm64=${OPENCODE_BINARY_SHA}"`,
+		`--set "controller.piDelivery.image=${PI_REF}"`,
+		`--set "controller.piDelivery.binarySHA256Amd64=${PI_BINARY_SHA}"`,
+		`--set "controller.piDelivery.binarySHA256Arm64=${PI_BINARY_SHA}"`,
+	} {
+		assert.Contains(t, body, flag,
+			"the chart-mandatory delivery pin is missing — helm dies in SETUP at the render gate")
+	}
+	// The artifacts must actually be BUILT and pushed (a pin without a
+	// registry image fails the digest extraction).
+	assert.Contains(t, body, `-f runtimes/opencode/Dockerfile -t "$REG/llmsafespaces/opencode:ci"`)
+	assert.Contains(t, body, `-f runtimes/pi/Dockerfile -t "$REG/llmsafespaces/pi:ci" runtimes/pi`)
+}
+
+// The r1 review finding, pinned forever: the chart REFUSES to render
+// without all three design-0053 delivery artifacts (§4.5 agentd +
+// opencode "no baked fallback"; §5.4 pi) — a helm install that omits
+// any of the nine --set flags dies in SETUP before a single check
+// runs (controller-deployment.yaml's mandatory gates). The mirrored
+// us2 script never installs the controller, which is why the pattern
+// didn't carry them.
+func TestWorkspaceLifecycleScript_AllDeliveryPinsMandatory(t *testing.T) {
+	body := lifecycleScriptBody(t)
+	for _, art := range []struct{ name, ref string }{
+		{"opencode", `OPENCODE_REF="$REG/llmsafespaces/opencode:ci@${OPENCODE_REF##*@}"`},
+		{"pi", `PI_REF="$REG/llmsafespaces/pi:ci@${PI_REF##*@}"`},
+	} {
+		assert.Contains(t, body, art.ref,
+			"the %s digest splice must exist and keep the @ separator", art.name)
+	}
+	for _, flag := range []string{
+		`--set "controller.opencodeDelivery.image=${OPENCODE_REF}"`,
+		`--set "controller.opencodeDelivery.binarySHA256Amd64=${OPENCODE_BINARY_SHA}"`,
+		`--set "controller.opencodeDelivery.binarySHA256Arm64=${OPENCODE_BINARY_SHA}"`,
+		`--set "controller.piDelivery.image=${PI_REF}"`,
+		`--set "controller.piDelivery.binarySHA256Amd64=${PI_BINARY_SHA}"`,
+		`--set "controller.piDelivery.binarySHA256Arm64=${PI_BINARY_SHA}"`,
+	} {
+		assert.Contains(t, body, flag,
+			"the chart-mandatory delivery pin is missing — helm dies in SETUP at the render gate")
+	}
+	// The artifacts must actually be BUILT and pushed (a pin without a
+	// registry image fails the digest extraction).
+	assert.Contains(t, body, `-f runtimes/opencode/Dockerfile -t "$REG/llmsafespaces/opencode:ci"`)
+	assert.Contains(t, body, `-f runtimes/pi/Dockerfile -t "$REG/llmsafespaces/pi:ci" runtimes/pi`)
+}
+
 // Teardown must stay success-gated and the helm failure path must dump
 // diagnostics BEFORE the EXIT trap can tear the cluster down.
 func TestWorkspaceLifecycleScript_TeardownAndDiagnostics(t *testing.T) {

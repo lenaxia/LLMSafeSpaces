@@ -40,8 +40,10 @@
 #
 # Topology: the us2-kind-integration.sh pattern — controller-lean chart
 # (api/mcp/migrations off; webhooks on; cert-manager first), local
-# registry for digest-pinned agentd, --skip-crds so the pre-applied
-# legacy CRD stays served (the skew under test).
+# registry for the digest-pinned delivery artifacts (agentd + opencode +
+# pi — the design-0053 §4.5/§5.4 mandatory trio the chart refuses to
+# render without), --skip-crds so the pre-applied legacy CRD stays
+# served (the skew under test).
 #
 # NOT runnable on the authoring sandbox (no docker): executed by
 # .github/workflows/workspace-lifecycle-integration.yml (PR-path-gated
@@ -176,16 +178,29 @@ fi
 
 # --- Images ------------------------------------------------------------------
 
-log "building and pushing images to $REG (agentd, controller, runtime-base)"
+log "building and pushing images to $REG (agentd, controller, runtime-base, opencode, pi)"
 docker build --network host --build-arg VERSION=ci --build-arg COMMIT_SHA=wslcint \
   -f cmd/workspace-agentd/Dockerfile -t "$REG/llmsafespaces/agentd:ci" .
 docker build --network host --build-arg VERSION=ci --build-arg COMMIT_SHA=wslcint \
   -f controller/Dockerfile -t "$REG/llmsafespaces/controller:ci" .
 docker build --network host --build-arg VERSION=ci --build-arg COMMIT_SHA=wslcint \
   -f runtimes/base/Dockerfile -t "$REG/llmsafespaces/runtime-base:ci" .
+# The chart-MANDATORY delivery artifacts (design 0053 §4.5/§5.4 — no baked
+# fallback; the controller-deployment template fails render without them:
+# posture-gate.yml / e2e-attachments-single-container.yml / local/
+# bootstrap.sh all pin the same three). The opencode Dockerfile pins
+# OPENCODE_VERSION itself; the pi build is the ~10min release-source
+# compile (r1 review finding: the original script died in SETUP at
+# 'controller.opencodeDelivery.image is mandatory').
+docker build --network host \
+  -f runtimes/opencode/Dockerfile -t "$REG/llmsafespaces/opencode:ci" .
+docker build --network host \
+  -f runtimes/pi/Dockerfile -t "$REG/llmsafespaces/pi:ci" runtimes/pi
 docker push "$REG/llmsafespaces/agentd:ci" >/dev/null
 docker push "$REG/llmsafespaces/controller:ci" >/dev/null
 docker push "$REG/llmsafespaces/runtime-base:ci" >/dev/null
+docker push "$REG/llmsafespaces/opencode:ci" >/dev/null
+docker push "$REG/llmsafespaces/pi:ci" >/dev/null
 
 AGENTD_REF=$(docker inspect --format '{{index .RepoDigests 0}}' "$REG/llmsafespaces/agentd:ci")
 case "$AGENTD_REF" in
@@ -208,6 +223,40 @@ BINARY_SHA=$(sha256sum "$TMPDIR/workspace-agentd" 2>/dev/null | cut -d' ' -f1) \
 [ -n "$BINARY_SHA" ] || { log "could not hash extracted binary"; exit 1; }
 log "agentd binary sha256 (amd64): $BINARY_SHA"
 # <<< extract-binary-sha
+
+# opencode + pi delivery refs and binary pins (design 0053 — the chart
+# renders fail without all three delivery artifacts; the r1 finding).
+OPENCODE_REF=$(docker inspect --format '{{index .RepoDigests 0}}' "$REG/llmsafespaces/opencode:ci")
+case "$OPENCODE_REF" in
+  *@sha256:*) OPENCODE_REF="$REG/llmsafespaces/opencode:ci@${OPENCODE_REF##*@}" ;;
+  *) log "could not determine opencode manifest digest (RepoDigests empty)"; exit 1 ;;
+esac
+log "opencode reference: $OPENCODE_REF"
+OC_CID=$(docker create "$REG/llmsafespaces/opencode:ci" no-start 2>/dev/null) \
+  || { log "docker create failed for opencode binary extraction"; exit 1; }
+docker cp "$OC_CID:/usr/local/bin/opencode" "$TMPDIR/opencode-bin" >/dev/null 2>&1 \
+  || { docker rm -f "$OC_CID" >/dev/null 2>&1; log "docker cp failed to extract opencode binary"; exit 1; }
+docker rm -f "$OC_CID" >/dev/null 2>&1
+OPENCODE_BINARY_SHA=$(sha256sum "$TMPDIR/opencode-bin" 2>/dev/null | cut -d' ' -f1) \
+  || { log "sha256sum failed on extracted opencode binary"; exit 1; }
+[ -n "$OPENCODE_BINARY_SHA" ] || { log "could not hash extracted opencode binary"; exit 1; }
+log "opencode binary sha256 (amd64): $OPENCODE_BINARY_SHA"
+
+PI_REF=$(docker inspect --format '{{index .RepoDigests 0}}' "$REG/llmsafespaces/pi:ci")
+case "$PI_REF" in
+  *@sha256:*) PI_REF="$REG/llmsafespaces/pi:ci@${PI_REF##*@}" ;;
+  *) log "could not determine pi manifest digest (RepoDigests empty)"; exit 1 ;;
+esac
+log "pi reference: $PI_REF"
+PI_CID=$(docker create "$REG/llmsafespaces/pi:ci" no-start 2>/dev/null) \
+  || { log "docker create failed for pi binary extraction"; exit 1; }
+docker cp "$PI_CID:/pi" "$TMPDIR/pi-bin" >/dev/null 2>&1 \
+  || { docker rm -f "$PI_CID" >/dev/null 2>&1; log "docker cp failed to extract pi binary"; exit 1; }
+docker rm -f "$PI_CID" >/dev/null 2>&1
+PI_BINARY_SHA=$(sha256sum "$TMPDIR/pi-bin" 2>/dev/null | cut -d' ' -f1) \
+  || { log "sha256sum failed on extracted pi binary"; exit 1; }
+[ -n "$PI_BINARY_SHA" ] || { log "could not hash extracted pi binary"; exit 1; }
+log "pi binary sha256: $PI_BINARY_SHA"
 
 # --- THE SKEW: pre-.15 CRD, then controller-lean chart over it ----------------
 
@@ -242,6 +291,12 @@ helm upgrade --install "$RELEASE" helm \
   --set "controller.agentdDelivery.image=${AGENTD_REF}" \
   --set "controller.agentdDelivery.binarySHA256Amd64=${BINARY_SHA}" \
   --set "controller.agentdDelivery.binarySHA256Arm64=${BINARY_SHA}" \
+  --set "controller.opencodeDelivery.image=${OPENCODE_REF}" \
+  --set "controller.opencodeDelivery.binarySHA256Amd64=${OPENCODE_BINARY_SHA}" \
+  --set "controller.opencodeDelivery.binarySHA256Arm64=${OPENCODE_BINARY_SHA}" \
+  --set "controller.piDelivery.image=${PI_REF}" \
+  --set "controller.piDelivery.binarySHA256Amd64=${PI_BINARY_SHA}" \
+  --set "controller.piDelivery.binarySHA256Arm64=${PI_BINARY_SHA}" \
   --set controller.agentdSidecar.enabled=true \
   --wait --timeout 420s || { setup_diagnostics; exit 1; }
 

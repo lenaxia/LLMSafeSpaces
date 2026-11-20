@@ -46,7 +46,7 @@ jobs:
   ws-lifecycle-kind:
     name: Workspace lifecycle (skewed CRD, K1–K4)
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v6
 

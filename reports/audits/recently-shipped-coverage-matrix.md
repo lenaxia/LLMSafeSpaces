@@ -70,8 +70,11 @@ no phase transition fires — and on current main all five pass.
 
 Closed by this PR (kind tier): `scripts/workspace-lifecycle-skew-e2e.sh`
 + `workspace-lifecycle-integration.yml` — the us2-kind pattern
-(controller-lean chart, `--skip-crds`, pre-.15 CRD pre-applied) driving
-the owner-visible user path: start → Active, refresh → recycle → Active,
+(controller-lean chart, `--skip-crds`, pre-.15 CRD pre-applied, and the
+design-0053 §4.5/§5.4 mandatory delivery trio pinned: agentd + opencode
++ pi, digest-spliced with both binary SHA flags each — the chart refuses
+to render without them, the r1 review finding) driving the
+owner-visible user path: start → Active, refresh → recycle → Active,
 suspend → Suspended (PVC retained) → resume → Active, then the operator
 CRD apply converging the harness stamp. Dispatch + weekly + PR-path-gated
 on the phase-machine surface.
