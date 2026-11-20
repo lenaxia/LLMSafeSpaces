@@ -23,6 +23,7 @@ import (
 	kmocks "github.com/lenaxia/llmsafespaces/mocks/kubernetes"
 	lmocks "github.com/lenaxia/llmsafespaces/mocks/logger"
 	v1 "github.com/lenaxia/llmsafespaces/pkg/apis/llmsafespaces/v1"
+	"github.com/lenaxia/llmsafespaces/pkg/settings"
 	"github.com/lenaxia/llmsafespaces/pkg/types"
 )
 
@@ -418,6 +419,78 @@ func TestListWorkspaces_HappyPath(t *testing.T) {
 	assert.Equal(t, 2, result.Pagination.Total)
 }
 
+// TestListWorkspaces_BindBlockedMapping (review r2, the
+// bindblocked-list-mapping-unpinned finding): the SERVICE-level pin of
+// the #2092 DTO wiring — a degraded BindNotPersisted condition must
+// surface as item.BindBlocked=true and a healthy unbound wait must
+// stay false. Pre-fix only the helper's truth table was pinned (and
+// the vitest suite mocks the field directly), so deleting the
+// mapping lines reddened nothing.
+func TestListWorkspaces_BindBlockedMapping(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	now := time.Now()
+
+	metas := []*types.WorkspaceMetadata{
+		{ID: "ws-degraded", UserID: "user1", Name: "degraded", StorageSize: "10Gi", CreatedAt: now},
+		{ID: "ws-healthy-unbound", UserID: "user1", Name: "waiting", StorageSize: "10Gi", CreatedAt: now},
+		{ID: "ws-active", UserID: "user1", Name: "active", StorageSize: "10Gi", CreatedAt: now},
+	}
+	f.db.On("ListWorkspaces", ctx, "user1", 10, 0).Return(metas, &types.PaginationMetadata{Total: 3, Limit: 10}, nil)
+
+	degraded := v1.Workspace{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "ws-degraded",
+			Annotations: map[string]string{
+				v1.AnnotationHarnessUnbound: "true",
+			},
+		},
+		Spec:   v1.WorkspaceSpec{},
+		Status: v1.WorkspaceStatus{Phase: v1.WorkspacePhaseCreating},
+	}
+	upsertBindNotPersistedCondition(&degraded)
+	healthyUnbound := v1.Workspace{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "ws-healthy-unbound",
+			Annotations: map[string]string{
+				v1.AnnotationHarnessUnbound: "true",
+			},
+		},
+		Status: v1.WorkspaceStatus{
+			Phase: v1.WorkspacePhaseCreating,
+			// The healthy wait: pending on the CHOICE, not on a failed
+			// bind — the hint must not fire for it (contrast pin).
+			Conditions: []v1.WorkspaceCondition{{
+				Type:   v1.WorkspaceConditionHarnessBindingPending,
+				Status: "True",
+				Reason: "HarnessUnbound",
+			}},
+		},
+	}
+	active := v1.Workspace{
+		ObjectMeta: metav1.ObjectMeta{Name: "ws-active"},
+		Spec:       v1.WorkspaceSpec{Harness: v1.HarnessOpencode},
+		Status:     v1.WorkspaceStatus{Phase: v1.WorkspacePhaseActive},
+	}
+	crdList := &v1.WorkspaceList{Items: []v1.Workspace{degraded, healthyUnbound, active}}
+	f.ws.On("List", mock.Anything, metav1.ListOptions{LabelSelector: "user-id=user1"}).Return(crdList, nil)
+
+	result, err := f.svc.ListWorkspaces(ctx, "user1", types.ListOptions{Limit: 10, Offset: 0})
+	require.NoError(t, err)
+	require.Len(t, result.Items, 3)
+
+	byID := map[string]types.WorkspaceListItem{}
+	for _, it := range result.Items {
+		byID[it.ID] = it
+	}
+	assert.True(t, byID["ws-degraded"].BindBlocked,
+		"the degraded BindNotPersisted condition must reach the list item — the picker/sidebar hint rides it")
+	assert.False(t, byID["ws-healthy-unbound"].BindBlocked,
+		"a healthy unbound wait (reason HarnessUnbound) is NOT bind-blocked — the Creating wait renders")
+	assert.False(t, byID["ws-active"].BindBlocked,
+		"a bound workspace is never bind-blocked")
+}
+
 // TestListWorkspaces_PropagatesOrgID is a regression test for
 // LLMSafeSpaces#477. WorkspaceMetadata carries OrgID (Epic 11; nullable —
 // personal workspaces have no org). The conversion to WorkspaceListItem
@@ -505,6 +578,92 @@ func TestListWorkspaces_PropagatesPhraseID(t *testing.T) {
 		"WorkspaceListItem.PhraseID must be populated — the list response is what the display surfaces (#1792) consume")
 	assert.Empty(t, result.Items[1].PhraseID,
 		"a pre-backfill row surfaces an empty phrase, never a fabricated one")
+}
+
+// TestListWorkspaces_PropagatesHarnessOptions is a regression test for
+// the first-session picker starvation (2026-11-18 prod incident): the
+// sidebar's picker decision reads harnessOptions from the workspace
+// LIST response (Sidebar.tsx harnessOptions → FALLBACK_HARNESS_OPTIONS
+// degrade), but ListWorkspaces never set WorkspaceListItem.HarnessOptions
+// — every list item degraded the frontend to the ["opencode"] fallback,
+// so the picker could never appear on any instance, even with pi enabled
+// in instance settings (harness.enabled=["opencode","pi"]). Same defect
+// class as #477 (OrgID) and #1757 r2 (PhraseID): the list conversion
+// dropped a field the frontend consumes.
+//
+// The detail endpoint (GetWorkspace) always carried the field — a 312B
+// single-workspace response served pi in prod while the 7.7KB list
+// response the sidebar actually consumed served nothing.
+func TestListWorkspaces_PropagatesHarnessOptions(t *testing.T) {
+	t.Run("pi-enabled instance offers the full set on every item", func(t *testing.T) {
+		f := newFixture(t)
+		ctx := context.Background()
+		now := time.Now()
+
+		// Enable pi exactly the way prod does: the harness.enabled
+		// instance setting (helm override form — same key the settings
+		// service reads, per TestEnabledHarnesses).
+		isvc := settings.NewInstanceService(stubSettingsStore{}, f.log)
+		isvc.SetHelmOverrides(map[string]any{
+			settings.KeyHarnessEnabled.Name(): []string{"opencode", "pi"},
+		})
+		f.svc.SetInstanceSettings(isvc)
+
+		metas := []*types.WorkspaceMetadata{
+			{ID: "ws-1", UserID: "user1", Name: "ws1", StorageSize: "10Gi", CreatedAt: now},
+			{ID: "ws-2", UserID: "user1", Name: "ws2", StorageSize: "5Gi", CreatedAt: now.Add(-time.Hour)},
+		}
+		f.db.On("ListWorkspaces", ctx, "user1", 10, 0).Return(metas, &types.PaginationMetadata{Total: 2, Limit: 10}, nil)
+
+		crdList := &v1.WorkspaceList{Items: []v1.Workspace{
+			{ObjectMeta: metav1.ObjectMeta{Name: "ws-1"}, Status: v1.WorkspaceStatus{Phase: v1.WorkspacePhaseActive}},
+			{ObjectMeta: metav1.ObjectMeta{Name: "ws-2"}, Status: v1.WorkspaceStatus{Phase: v1.WorkspacePhaseSuspended}},
+		}}
+		f.ws.On("List", mock.Anything, metav1.ListOptions{LabelSelector: "user-id=user1"}).Return(crdList, nil)
+
+		result, err := f.svc.ListWorkspaces(ctx, "user1", types.ListOptions{Limit: 10, Offset: 0})
+		assert.NoError(t, err)
+		assert.Len(t, result.Items, 2)
+
+		// EVERY item must carry the offer list: the sidebar evaluates
+		// the list it currently has, not a fresh detail fetch, when the
+		// user clicks "new session" — one starved item is one silent
+		// opencode bind (the incident).
+		for i, item := range result.Items {
+			require.NotNil(t, item.HarnessOptions,
+				"item %d: WorkspaceListItem.HarnessOptions must be populated — "+
+					"without it the frontend's FALLBACK_HARNESS_OPTIONS degrade "+
+					"pins the offer list to opencode-only and the first-session "+
+					"picker can never render", i)
+			assert.Equal(t, []string{"opencode", "pi"}, item.HarnessOptions,
+				"item %d: the offer list must mirror EnabledHarnesses", i)
+		}
+	})
+
+	t.Run("unwired settings degrade to opencode-only, never nil", func(t *testing.T) {
+		f := newFixture(t)
+		ctx := context.Background()
+		now := time.Now()
+
+		metas := []*types.WorkspaceMetadata{
+			{ID: "ws-1", UserID: "user1", Name: "ws1", StorageSize: "10Gi", CreatedAt: now},
+		}
+		f.db.On("ListWorkspaces", ctx, "user1", 10, 0).Return(metas, &types.PaginationMetadata{Total: 1, Limit: 10}, nil)
+		f.ws.On("List", mock.Anything, metav1.ListOptions{LabelSelector: "user-id=user1"}).Return(&v1.WorkspaceList{
+			Items: []v1.Workspace{
+				{ObjectMeta: metav1.ObjectMeta{Name: "ws-1"}, Status: v1.WorkspaceStatus{Phase: v1.WorkspacePhaseActive}},
+			},
+		}, nil)
+
+		result, err := f.svc.ListWorkspaces(ctx, "user1", types.ListOptions{Limit: 10, Offset: 0})
+		assert.NoError(t, err)
+		assert.Len(t, result.Items, 1)
+		// The union invariant: opencode is always offered, even when the
+		// instance settings service is not wired (EnabledHarnesses'
+		// degrade path). nil would re-trigger the frontend fallback with
+		// an empty list — a different starvation shape.
+		assert.Equal(t, []string{"opencode"}, result.Items[0].HarnessOptions)
+	})
 }
 
 func TestListWorkspaces_Empty_ReturnsEmptyList(t *testing.T) {

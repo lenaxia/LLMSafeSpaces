@@ -10518,6 +10518,24 @@ components:
         phraseId:
           type: string
           description: The #1757 workspace phrase (2 words + 1 digit, fleet-unique) — the display address; surfaces in list responses so pickers/dashboards can address workspaces without the UUID (#1792).
+        harnessOptions:
+          type: array
+          items:
+            type: string
+          description: >
+            The instance's enabled harness set — the first-session
+            picker's offer list (#2110); opencode always present (the
+            union invariant). Populated on every list item so the
+            picker renders from the held list without a refetch.
+        bindBlocked:
+          type: boolean
+          description: >
+            #2092: true while this unbound workspace's binds FAIL to
+            persist (the cluster's Workspace CRD predates
+            spec.harness, so bind writes are pruned) — the
+            picker/sidebar renders the degraded "blocked on cluster
+            CRD" hint. Absent = false (omitempty; only ever true,
+            clears on the successful bind).
     PaginationMetadata:
       type: object
       properties:

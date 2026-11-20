@@ -42,8 +42,10 @@ import (
 // model/tools/behavior, including the reviewer's verdict-channel
 // charter) rides the dispatch itself (see boardSpawnRequest), never
 // the charter: the board layer composes no behavior (owner ruling
-// 2026-10-29, role-only). A persona-less claim renders today's charter
-// byte-identically.
+// 2026-10-29, role-only). A persona-less claim renders the worker
+// trailer's opening line (the wait-lifecycle block below the arm
+// trailers is shared by both arms — see TestCharterPrompt_Renders-
+// WaitLifecycle).
 func boardCharterPrompt(c *board.Claim) string {
 	var b strings.Builder
 	stage := c.Stage
@@ -91,19 +93,42 @@ func boardCharterPrompt(c *board.Claim) string {
 	// when the work is done") rode the reviewer persona's charter too,
 	// and the spawned reviewer executed the task's Round 1 and called
 	// board_move_stage instead of recording its verdict. The task body
-	// above is the persona's working context; the persona-less charter
-	// keeps today's trailer byte-identically.
+	// above is the persona's working context; the persona arm drops the
+	// implementer loop (the wait-lifecycle block below is shared — it is
+	// stage-agnostic discipline, not the implementer loop).
 	if c.Persona != nil {
 		fmt.Fprintf(&b, "Deliver the '%s' agent role's outcome for stage %s per the role's charter — the task\n", c.Persona.Label(), stage)
-		b.WriteString("body is your working context, not an implementer loop to run. If a BOARD LEASE NUDGE\n")
-		b.WriteString("message arrives, call board_heartbeat ONCE immediately, then continue. The claim token above\n")
+		b.WriteString("body is your working context, not an implementer loop to run. The claim token above\n")
 		b.WriteString("authorizes your in-flight writes for this task only.\n")
 	} else {
-		b.WriteString("Work the task to completion. If a BOARD LEASE NUDGE message arrives (your claim has gone\n")
-		b.WriteString("quiet): FIRST call board_heartbeat once to confirm you are active, then continue working if\n")
-		b.WriteString("there is more work to do; otherwise move the task to in_review with evidence. The claim token\n")
-		b.WriteString("above authorizes your in-flight writes for this task only.\n")
+		b.WriteString("Work the task to completion: when the work is done, move the task to in_review with\n")
+		b.WriteString("evidence. The claim token above authorizes your in-flight writes for this task only.\n")
 	}
+	// The wait lifecycle, taught at claim time (tsk-petite-seasoning-wiggles,
+	// the teaching half): the nudge contract used to ride only the nudge
+	// text, and workers ended turns at checkpoints ("report-then-stop")
+	// while actionable work remained. Union with the engine half (2104,
+	// typed waits): the wait-type table teaches board_wait — waitOn='user'
+	// IS the pending_input flag-op with the question stated (move_stage
+	// toStage=pending_input keeps working as the alias); waitOn='event'
+	// parks the claim on the closed condition grammar (pr_merged/ci_green/
+	// story_done). Both arms carry the same block — a persona worker
+	// fails these rules exactly as an implementer does.
+	b.WriteString("\nTURN BUDGET & WAITS: a turn is a unit of WORK, not progress. Do not end your turn while\n")
+	b.WriteString("actionable next steps remain — turn-end is for completion, blockage, or a declared external\n")
+	b.WriteString("wait, never a checkpoint or a 'natural pause point'. What you are waiting on decides the move:\n")
+	b.WriteString("- waiting on a USER decision -> board_wait {waitOn: \"user\", waitReason: \"<the question>\"} —\n")
+	b.WriteString("  the pending_input flag-op with the question stated (never for events);\n")
+	b.WriteString("- waiting on an EVENT (CI run, review, PR) -> keep this turn alive with a bounded watch\n")
+	b.WriteString("  (gh pr checks --watch, cap ~12 min) OR board_wait {waitOn: \"event\", condition: \"pr_merged(<pr>)\"}\n")
+	b.WriteString("  (pr_merged/ci_green take a PR number; story_done takes a tsk-… short id)\n")
+	b.WriteString("  declaring the event-wait, then end the turn;\n")
+	b.WriteString("- nothing to wait on -> keep working.\n")
+	b.WriteString("Report as you go (what was done, the artifact URL, what is next); stopping after the report\n")
+	b.WriteString("while work remains is the anti-pattern. If a BOARD LEASE NUDGE message arrives, call\n")
+	b.WriteString("board_heartbeat ONCE, FIRST — then continue working, advance the stage, or declare failure\n")
+	b.WriteString("with reason. Never speculate about heartbeats: they answer nudges only; there is no periodic\n")
+	b.WriteString("heartbeat.\n")
 	// #2046 R5 — the directive contract (what halt/resume mean for an
 	// in-flight charter): turn-boundary control messages, never aborts.
 	// The sentinel (lsp:agent-message-v1, mode board-directive) makes

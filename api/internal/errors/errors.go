@@ -70,6 +70,13 @@ const (
 
 	// ErrorTypeBadRequest represents bad request errors
 	ErrorTypeBadRequest ErrorType = "bad_request"
+
+	// ErrorTypeServiceUnavailable represents a temporary server-side
+	// condition that clears without client change (#2092: the cluster's
+	// CRD predates the platform — harness-less creates are refused
+	// until the operator applies the CRD). 503: retry-after-the-
+	// condition, never a client fault and never an unexpected 500.
+	ErrorTypeServiceUnavailable ErrorType = "service_unavailable"
 )
 
 // APIError represents an API error
@@ -111,6 +118,8 @@ func (e *APIError) StatusCode() int {
 		return http.StatusTooManyRequests
 	case ErrorTypeBadRequest:
 		return http.StatusBadRequest
+	case ErrorTypeServiceUnavailable:
+		return http.StatusServiceUnavailable
 	default:
 		return http.StatusInternalServerError
 	}
@@ -204,6 +213,20 @@ func NewBadRequestError(message string, err error) *APIError {
 	return &APIError{
 		Type:    ErrorTypeBadRequest,
 		Code:    "bad_request",
+		Message: message,
+		Err:     err,
+	}
+}
+
+// NewServiceUnavailableError creates a new service-unavailable error
+// (#2092): a temporary server-side condition (e.g. the cluster's
+// Workspace CRD predates the platform) that clears without client
+// change. The message must name the condition AND the two exits
+// (explicit harness / operator applies the CRD).
+func NewServiceUnavailableError(code string, message string, err error) *APIError {
+	return &APIError{
+		Type:    ErrorTypeServiceUnavailable,
+		Code:    code,
 		Message: message,
 		Err:     err,
 	}

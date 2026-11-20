@@ -119,6 +119,10 @@ func (r *WorkspaceReconciler) reconcileHarnessBinding(ctx context.Context, ws *v
 			}
 			if landed {
 				r.clearHarnessBackfillAttempt(key)
+				// CRD-skew gauge (#2092): a stamp that LANDS is heal
+				// evidence — the cluster CRD has the field. Idempotent
+				// Set, so the healthy path pays nothing after the first.
+				recordCRDSkewHealed()
 				return true, ctrl.Result{Requeue: true}, nil
 			}
 			// Accepted-but-pruned: the cluster's Workspace CRD predates
@@ -126,6 +130,13 @@ func (r *WorkspaceReconciler) reconcileHarnessBinding(ctx context.Context, ws *v
 			// action; the phase machine proceeds THIS pass.
 			logger.Error(nil, "spec.harness backfill write did not persist — the cluster's Workspace CRD predates 0.44.15 (helm does not upgrade crds/; apply `kubectl apply -f helm/crds/workspace.yaml`); the workspace stays on its legacy effective harness (opencode) and the phase machine is NOT blocked",
 				"workspace", key)
+			// #2092: promote the recurring verdict to the gauge (the
+			// LLMSafeSpacesCRDSkew alert rides it) and re-probe the
+			// capability at the heal-window cadence so the series flips
+			// back to 0 within minutes of the CRD landing (resolution
+			// on heal — the alert self-clears, no manual step).
+			recordCRDSkewSet()
+			r.maybeReprobeHarnessCRD(ctx, ws)
 		}
 		// Within the retry window of an unlandable stamp (or just
 		// pruned above): proceed — the legacy workspace is effectively
@@ -270,8 +281,16 @@ func (r *WorkspaceReconciler) gateUnboundCreating(ctx context.Context, ws *v1.Wo
 	// Idempotence probe (setCondition returns no changed signal): a
 	// pending condition already True with the parked message means
 	// this pass writes nothing and never hot-requeues — the bind's
-	// spec write is the wakeup event.
-	if harnessBindingPendingIsParked(ws) && ws.Status.Message == "waiting for harness selection" {
+	// spec write is the wakeup event. The DEGRADED verdict
+	// (#2092, reason BindNotPersisted — set by the API tier when a
+	// bind verified un-persisted against a skewed CRD) is parked the
+	// same way: it is authoritative until a bind LANDS (the bound
+	// short-circuit's clearHarnessBindingPending flips any True
+	// binding-pending condition to False regardless of reason), so
+	// this pass must not rewrite it back to HarnessUnbound — the
+	// picker/sidebar's "blocked on cluster CRD" hint would flap on
+	// every reconcile otherwise.
+	if harnessBindingPendingIsParked(ws) {
 		return true, nil
 	}
 	r.setCondition(ws, v1.WorkspaceConditionHarnessBindingPending, "True", "HarnessUnbound",
@@ -287,13 +306,16 @@ func (r *WorkspaceReconciler) gateUnboundCreating(ctx context.Context, ws *v1.Wo
 }
 
 // harnessBindingPendingIsParked reports whether the
-// HarnessBindingPending condition is already True with the parked
-// reason (the steady unbound state).
+// HarnessBindingPending condition is already True with a steady-state
+// reason: HarnessUnbound (waiting for the choice) or BindNotPersisted
+// (#2092 — the API tier's degraded verdict while binds fail to persist
+// against a skewed CRD; authoritative until a bind lands).
 func harnessBindingPendingIsParked(ws *v1.Workspace) bool {
 	for i := range ws.Status.Conditions {
 		c := &ws.Status.Conditions[i]
 		if c.Type == v1.WorkspaceConditionHarnessBindingPending {
-			return c.Status == "True" && c.Reason == "HarnessUnbound"
+			return c.Status == "True" &&
+				(c.Reason == "HarnessUnbound" || c.Reason == v1.WorkspaceReasonBindNotPersisted)
 		}
 	}
 	return false

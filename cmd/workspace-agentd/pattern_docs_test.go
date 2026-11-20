@@ -243,8 +243,18 @@ func TestPatternDocs_ContentPins_BoardCatalog(t *testing.T) {
 		"AI reviewer until APPROVED", // review is verdict-gated
 		"Never self-merge",           // the orchestrator merges
 		"make fmt-check",             // format gate before every push
-		"No sleep-polling",           // push, verify, END the turn
+		"No sleep-polling",           // sleep-then-check loops banned
 		"evidenceUrl",                // the evidence contract on handoff
+		// Wait lifecycle (taught at claim time too — tsk-petite-seasoning-
+		// wiggles): turn budget, wait-type table, nudge contract, and the
+		// report-then-stop anti-pattern survive any doc rewrite. The table
+		// teaches the typed-wait verb (2104 union).
+		"unit of WORK, not progress", // the turn-budget rule
+		"with the question stated",   // pending_input = user decisions, never events
+		"board_wait",                 // the typed-wait entry verb (waitOn user/event)
+		"bounded watch",              // event waits: capped in-turn watch
+		"stopping after the report",  // the report-then-stop anti-pattern, named
+		"answer nudges only",         // heartbeats answer nudges, never speculated
 		// Lifecycles (§B): happy, fail-bounce, salvage.
 		"board_record_verdict", // the reviewer's structured verdict
 		"SAME pull request",    // fail-bounce iterates on the same artifact

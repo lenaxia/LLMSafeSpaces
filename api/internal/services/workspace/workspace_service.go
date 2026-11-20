@@ -100,6 +100,13 @@ type Service struct {
 	// pre-binding shape).
 	agentAdapter agent.Adapter
 	config       *Config
+	// harnessCapability is the create-time CRD capability probe cache
+	// (#2092 ruling 4): on a skewed cluster (Workspace CRD without
+	// spec.harness) a create WITHOUT an explicit harness fails loud
+	// instead of birthing a workspace that can never bind. Nil-safe
+	// (nil = probe unavailable = fail-open; the bind-verify remains
+	// the runtime authority).
+	harnessCapability *capabilityCache
 }
 
 // DevPreviewStatePusher delivers the absolute dev-preview state to a
@@ -270,6 +277,11 @@ func New(
 		cacheService:   cacheService,
 		metricsService: metricsService,
 		config:         config,
+		// harnessCapability (#2092 ruling 4) stays nil here — the
+		// create-time CRD capability probe is an OPTIONAL seam in the
+		// SetAgentAdapter house pattern: nil = inert (unwired tests
+		// never probe, never gate); the production wiring arms it via
+		// ArmCRDCapabilityProbe (services.go).
 	}, nil
 }
 
@@ -354,6 +366,35 @@ func (s *Service) CreateWorkspace(ctx context.Context, userID string, req types.
 	if req.Harness != "" {
 		if err := s.validateHarnessForBind(ctx, req.Harness); err != nil {
 			return nil, err
+		}
+	} else {
+		// #2092 ruling 4 — create-time capability probe: on a cluster
+		// whose Workspace CRD predates spec.harness, an omitted harness
+		// births a workspace that can NEVER bind (every bind write is
+		// pruned; it parks in Creating forever). FAIL LOUD HERE (the
+		// #2051 lesson: refuse over silent degradation) while the
+		// explicit-harness path above stays open (bound-at-create never
+		// writes spec.harness post-create... it writes it AT create,
+		// which the pruning CRD also drops — but then the workspace is
+		// LEGACY-shaped: marker-less, effective opencode, and the
+		// controller's backfill degrade keeps it running once the CRD
+		// lands; the .15 ruling's compat path). Inconclusive probe =
+		// never gate (#1685 posture); the bind-verify remains the
+		// runtime authority.
+		if cap := s.harnessCapability.get(ctx); cap == crdCapabilitySkewed {
+			countBindNotPersisted(bindNotPersistedSurfaceCreateProbe)
+			s.logger.Error("refusing harness-less create: the cluster's Workspace CRD predates bind-once (spec.harness)",
+				fmt.Errorf("cluster CRD predates bind-once; pass an explicit harness or upgrade the CRD"),
+				"operator_action", "kubectl apply -f helm/crds/workspace.yaml or bump the Flux crds path")
+			// 503, not 500 (review r1): the refusal is a NAMED, temporary
+			// server-side condition that clears without client change —
+			// the operator applies the CRD — with an immediate client-side
+			// exit (an explicit harness). An unexpected-error 500 would
+			// misclassify a deterministic verdict AND invite blind client
+			// retries that can never succeed while the condition stands.
+			return nil, apierrors.NewServiceUnavailableError("crd_missing_harness_capability",
+				"the cluster's Workspace CRD predates bind-once: pass an explicit harness or upgrade the CRD",
+				errCRDMissingHarnessCapability())
 		}
 	}
 
@@ -669,6 +710,14 @@ func (s *Service) ListWorkspaces(ctx context.Context, userID string, opts types.
 
 	items := make([]types.WorkspaceListItem, 0, len(metas))
 	states := s.fetchUserWorkspaceStates(ctx, userID)
+	// HarnessOptions is instance-wide (the picker's offer list), so one
+	// read serves every item. MUST ride the list: the sidebar evaluates
+	// the list it already holds at "new session" click time — an absent
+	// field degrades the frontend to the opencode-only fallback and the
+	// first-session picker can never render (2026-11-18 prod incident;
+	// same defect class as OrgID #477 / PhraseID #1757 r2). Mirrors
+	// GetWorkspace's HarnessOptions.
+	enabledHarnesses := s.EnabledHarnesses(ctx)
 	for _, m := range metas {
 		st := states[m.ID]
 		item := types.WorkspaceListItem{
@@ -698,6 +747,11 @@ func (s *Service) ListWorkspaces(ctx context.Context, userID string, opts types.
 		if st.HarnessBound {
 			item.Harness = harnessPtr(st.Harness)
 		}
+		// The picker's offer list — see the comment at enabledHarnesses.
+		item.HarnessOptions = enabledHarnesses
+		// #2092: the degraded-bind verdict rides the list — the
+		// picker/sidebar's "blocked on cluster CRD" hint.
+		item.BindBlocked = st.BindBlocked
 		items = append(items, item)
 	}
 
@@ -732,6 +786,12 @@ type workspaceState struct {
 	// bound opencode (effectiveBoundHarness).
 	Harness      string
 	HarnessBound bool
+	// BindBlocked (#2092): the HarnessBindingPending condition stands
+	// True at reason BindNotPersisted — binds are failing to persist
+	// against a skewed CRD. The list item surfaces it so the
+	// picker/sidebar can replace the unbounded Creating state with the
+	// operator-actionable degraded hint.
+	BindBlocked bool
 }
 
 // fetchUserWorkspaceStates lists CRDs for a user and returns id -> state
@@ -766,9 +826,24 @@ func (s *Service) fetchUserWorkspaceStates(ctx context.Context, userID string) m
 			st.LastActivityAt = t.Time
 		}
 		st.Harness, st.HarnessBound = effectiveBoundHarness(w)
+		st.BindBlocked = harnessBindBlocked(w)
 		out[w.Name] = st
 	}
 	return out
+}
+
+// harnessBindBlocked reports whether the workspace's
+// HarnessBindingPending condition stands True at reason
+// BindNotPersisted (#2092) — the API's degraded verdict while binds
+// fail to persist against a skewed cluster CRD.
+func harnessBindBlocked(w *v1.Workspace) bool {
+	for i := range w.Status.Conditions {
+		c := &w.Status.Conditions[i]
+		if c.Type == v1.WorkspaceConditionHarnessBindingPending {
+			return c.Status == "True" && c.Reason == v1.WorkspaceReasonBindNotPersisted
+		}
+	}
+	return false
 }
 
 // DeleteWorkspace marks a workspace as terminating and deletes the CRD.

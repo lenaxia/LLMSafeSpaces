@@ -16,6 +16,8 @@
 //	repolint                       # run all checks against the repo root
 //	repolint -repo /path           # run checks against an alternate root
 //	repolint -fix-drift            # also: copy api/migrations/ → helm/migrations/
+//	repolint -fix-flux-crds        # also: sync helm/crds/ → deploy/flux/crds/ (the
+//	                               # release-train CRD guard's fix side, #2092)
 //	repolint -fix-worklogs         # also: auto-renumber duplicate worklog files, then run all checks
 //	repolint -fix-worklogs-only    # ONLY auto-renumber; skip checks. For .githooks/post-rewrite
 //	                               # where the tree may be mid-rebase and checks would be noisy.
@@ -53,6 +55,7 @@ const (
 func main() {
 	repoFlag := flag.String("repo", "", "repository root to lint (default: auto-detect from CWD)")
 	fixDrift := flag.Bool("fix-drift", false, "copy api/migrations/*.sql into helm/migrations/ to resolve drift")
+	fixFluxCRDs := flag.Bool("fix-flux-crds", false, "sync helm/crds/*.yaml into deploy/flux/crds/ (byte-identical mirror + kustomization), the release-train CRD guard's fix side (#2092)")
 	fixWorklogs := flag.Bool("fix-worklogs", false, "auto-renumber duplicate worklog files to the next available number, then run all checks")
 	fixWorklogsOnly := flag.Bool("fix-worklogs-only", false, "auto-renumber duplicate worklog files and exit (no checks). Used by .githooks/post-rewrite.")
 	numberingOnly := flag.Bool("numbering-only", false, "run ONLY the numbering gates (migrations sequence + worklog uniqueness) and exit. Used by the numbering-gate workflow against merge trees (#1838).")
@@ -72,6 +75,14 @@ func main() {
 			os.Exit(exitInternal)
 		}
 		fmt.Println("ok: synced helm/migrations/ from api/migrations/")
+	}
+
+	if *fixFluxCRDs {
+		if err := repolint.SyncFluxCRDs(root); err != nil {
+			fmt.Fprintf(os.Stderr, "fix-flux-crds failed: %v\n", err)
+			os.Exit(exitInternal)
+		}
+		fmt.Println("ok: synced deploy/flux/crds/ from helm/crds/")
 	}
 
 	// -fix-worklogs-only is the hook mode: do the rename pass and exit
@@ -127,6 +138,7 @@ func main() {
 	failures += runWorklogUniqueness(root)
 	failures += runChartDrift(root)
 	failures += runCRDDrift(root)
+	failures += runFluxCRDDrift(root)
 	failures += runGinSetMode(root)
 	failures += runAgentImport(root)
 	failures += runEventLiteral(root)
@@ -404,6 +416,33 @@ func runClusterDrift(root string) int {
 		return 1
 	}
 	fmt.Printf("ok    cluster-drift (%d bindings checked against current kubeconfig context)\n", len(bindings))
+	return 0
+}
+
+// runFluxCRDDrift enforces the release-train CRD guard (issue #2092,
+// ruling 1): every chart CRD under helm/crds/ must have a byte-identical
+// copy in the tracked Flux path mirror deploy/flux/crds/, and the
+// kustomization must list exactly that set. A schema change without the
+// mirror bump fails here — in pre-commit and CI, in the SAME PR.
+//
+// Originating incident: 2026-11-17 (#2092) — the chart train shipped the
+// spec.harness schema change (0.44.15) while the production Flux
+// kustomization still served the pre-.15 CRD; helm never upgrades crds/,
+// every bind write was silently pruned, and born-unbound workspaces
+// wedged in Creating forever with no alert. The mirror is what the
+// release checklist carries into the ops repo: schema change = train
+// gate on CRD apply.
+func runFluxCRDDrift(root string) int {
+	rep, err := repolint.FluxCRDDriftCheck(root)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "FAIL  flux-crd drift: %v\n", err)
+		return 1
+	}
+	if !rep.OK() {
+		fmt.Fprintf(os.Stderr, "FAIL  flux-crd drift between\n        chart:  %s\n        mirror: %s\n%s", repolint.FluxCRDChartDir, repolint.FluxCRDMirrorDir, rep.String())
+		return 1
+	}
+	fmt.Printf("ok    flux-crd mirror (%d CRDs byte-identical in %s)\n", len(rep.ChartCRDs), repolint.FluxCRDMirrorDir)
 	return 0
 }
 

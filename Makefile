@@ -275,6 +275,17 @@ chart-sync-migrations:
 	$(GOBUILD) -o bin/repolint ./cmd/repolint
 	./bin/repolint -fix-drift
 
+# flux-sync-crds: sync helm/crds/*.yaml into deploy/flux/crds/ (the
+# tracked Flux path mirror + its kustomization) — the release-train CRD
+# guard's fix side (issue #2092). Run this in the SAME PR as any CRD
+# schema change under helm/crds/; the pre-commit hook and CI fail on
+# drift. The release checklist then carries the mirror into the ops
+# repo's cluster-llmsafespaces-crds kustomization: schema change =
+# train gate on CRD apply (helm upgrade never touches crds/).
+flux-sync-crds:
+	$(GOBUILD) -o bin/repolint ./cmd/repolint
+	./bin/repolint -fix-flux-crds
+
 # install-hooks: wire .githooks/ into git's hook path. Run once per fresh
 # clone. After this, every `git commit` runs `make repolint` and rejects the
 # commit on failure, and every `git rebase` / `git commit --amend` runs

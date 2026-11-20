@@ -35,6 +35,7 @@
 | relay-proxy binaries (VM fleet) | release assets + sha256 | `controller.inferenceRelay.artifact.{urls,sha256Arm64,sha256Amd64}`; built by `make relay-bin`, published on the release (`publish-relay-binaries.yml` for ad-hoc builds) | recompute `sha256sum` per arch from the assets this release attached |
 | image-factory catalog seeds (extensions) | content pins (mise/apt versions) | `api/internal/imagefactory/catalog.seed.yaml` `extensions:` | ride the base's cadence, not the platform train |
 | third-party images (`migrations`, `dbInit`) | upstream tags (Renovate domain) | `helm/values.yaml` (`migrations.image`, `dbInit.image`) | Renovate PRs; not part of a coordinated bump. `mcp.image` is likewise optional and skipped by the pre-flight when unset (no workflow builds that image) |
+| platform CRDs (`workspaces`, `runtimeenvironments`, `inferencerelays`) | chart `crds/` (schema source of truth) | `helm/crds/*.yaml`, mirrored byte-identical in `deploy/flux/crds/` (the tracked Flux path) | **schema change = train gate on CRD apply** (§6): the PR must bump `deploy/flux/crds/` in the SAME change (`make flux-sync-crds`), and the release step carries the mirror into the ops repo's `cluster-llmsafespaces-crds` kustomization — `helm upgrade` NEVER upgrades `crds/`, so the Flux path is the only thing that moves a schema on the cluster (#2092) |
 
 > *Forward reference:* design 0058 / epic-72 (relay-only key delivery) adds
 > a BYO-resolve router Deployment in the `llm-relay` namespace built from the
@@ -53,6 +54,12 @@
    - `controller.opencodeDelivery.image`: same, from **merge-opencode**.
    - `runtimeEnvironments.base.image.tag`: **leave alone** unless the seed row moved (§1) — it is CalVer, off the train.
    - GitRepository/ HelmRelease `ref.tag`: `vX.Y.Z` with `reconcileStrategy: Revision`.
+   - **CRD apply (when the release carries a CRD schema change)**: copy
+     `deploy/flux/crds/` (this repo's tracked mirror, which repolint keeps
+     byte-identical to `helm/crds/`) into the ops repo's
+     `cluster-llmsafespaces-crds` kustomization path
+     (`./kubernetes/apps/llmsafespaces/llmsafespaces/crds`) in the SAME
+     config PR — see §6. `helm upgrade` never applies it for you.
 4. **Pre-flight the config PR** — run the script against the candidate values file; it encodes the four checks from #1237:
 
    ```bash
@@ -142,9 +149,39 @@ wrong-CalVer tag — the ghcr pre-flight in §2 catches that.
 | repolint `release_artifacts` check | every release image is signed/scanned/SBOM'd/tabled; merge jobs gate the release | `make repolint` |
 | delivery-pin render gates (design 0053 §4.5) | empty `agentdDelivery.image` / `opencodeDelivery.image` fail the render; one-sided `binarySHA256*` pairs fail | `helm/delivery_pins_gate_test.go`, controller startup |
 | pre-flight script (`local/release-preflight.sh`) | against a candidate config file: P1 registry resolution, P2 index membership + no platform-digest reuse + tag/digest coherence + `binarySHA256*` agreement with the CI-stamped index annotations, P3 base CalVer + seed equality, P4 opencode pin alignment (+ behavioral contract via `--opencode-bin`) | operator-run on every config bump PR; pinned by `local/release_preflight_script_test.go` |
+| repolint `flux-crd` drift check (`pkg/repolint/flux_crd_drift.go`) | every `helm/crds/*.yaml` is byte-identical to its mirror in `deploy/flux/crds/`, and the mirror's `kustomization.yaml` lists exactly that set — a CRD schema change without the Flux-path bump fails the PR (born-red; #2092) | `make repolint` — pre-commit hook + CI Lint job |
 
 **Known limit:** the repolint guard reads this repo's committed files; it
 cannot see the ops config repo's values — that is what the pre-flight script
 covers (run against the candidate config PR). The two layers are complementary
 by design: repolint gates this repo at commit time, the pre-flight gates the
-config repo at its PR time.
+config repo at its PR time. The CRD guard has the same shape: repolint pins
+the tracked mirror (`deploy/flux/crds/`) to the chart at commit time; §6's
+release step is what actually lands the mirror in the ops repo.
+
+## 6. The CRD apply train gate (issue #2092)
+
+`helm upgrade` NEVER upgrades the `crds/` directory (helm/README.md "CRD
+upgrades") — on a Flux-managed cluster the ops repo's
+`cluster-llmsafespaces-crds` kustomization is the only thing that moves a
+CRD schema. On 2026-11-17 the chart train shipped 0.44.15/.16/.17 carrying
+the `spec.harness` schema change while that path still served the pre-.15
+CRD: the apiserver silently pruned every bind write, and every workspace
+created through the frontend picker wedged in `Creating` forever — no pod,
+no convergence, no alert (issue #2092). The rule born from it:
+
+**A release that requires a CRD schema change gates the train on the CRD
+apply.** Concretely:
+
+1. **Same PR** — the schema change under `helm/crds/` and the
+   `deploy/flux/crds/` mirror bump land together (`make flux-sync-crds`;
+   repolint fails the PR otherwise — §5's guard row).
+2. **Same release step** — the config PR (§2 step 3) carries the mirror
+   into the ops repo's kustomization path. A release note line
+   "requires CRD apply" without the config-PR copy is incomplete.
+3. **Post-apply convergence is designed in** — the controller retries the
+   legacy backfill once per 10m window, the bind API verifies persistence,
+   `LLMSafeSpacesCRDSkew` alerts while the skew persists, and
+   `local/crd-skew-rebind.sh` enumerates + re-binds wedged born-unbound
+   workspaces once the CRD lands (docs/operator/upgrading.md — "CRD skew
+   recovery").

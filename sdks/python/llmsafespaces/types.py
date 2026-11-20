@@ -62,6 +62,15 @@ class WorkspaceListItem:
     # #1757 r2: the phrase rides list responses so display surfaces
     # (#1792) can address workspaces without the UUID.
     phraseId: str | None = None
+    # The picker's offer list (#2110): the instance's enabled harness
+    # set — opencode always present (the union invariant). Populated
+    # on every list item so the first-session picker renders from the
+    # held list (the 2026-11-18 starved-picker incident).
+    harnessOptions: list[str] | None = None
+    # #2092: true while this unbound workspace's binds FAIL to persist
+    # (the cluster's Workspace CRD predates spec.harness, so bind
+    # writes are pruned) — the degraded-bind hint; absent = false.
+    bindBlocked: bool = False
 
 
 @dataclass
