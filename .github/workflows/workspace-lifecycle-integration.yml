@@ -1,0 +1,78 @@
+# Workspace lifecycle integration on a CRD-SKEWED kind cluster — the
+# PR #2088 bug class at the kubelet tier (owner direction 2026-11-17:
+# integration/e2e coverage for the recently-shipped features and the bug
+# classes they exposed).
+#
+# What this adds over the existing tiers:
+#   - envtest lifecycle (envtest.yml, TestEnvtestLifecycle): real
+#     apiserver + the pinned pre-.15 CRD, PR-gated — the pruning/
+#     resourceVersion/status-subresource semantics.
+#   - THIS workflow: the full stack (real kubelet, real pods, the real
+#     chart) on a skewed cluster, driving the owner-visible user path:
+#     start → Active, refresh → recycle → Active, suspend/resume with
+#     the PVC retained, and convergence once the operator applies the
+#     current CRD. The e2e-nightly covers the lifecycle only on HEALTHY
+#     CRDs; the skew is exactly what .15 shipped broken.
+#
+# Modelled on us2-kind-integration.yml (controller-lean chart, local
+# registry, digest-pinned agentd) — NOT required for merge, runs
+# alongside like us2. PR-path-gated on the phase-machine surface so the
+# 2088 class is caught before landing, plus weekly + dispatch.
+name: Workspace lifecycle integration (kind, CRD-skew)
+
+on:
+  workflow_dispatch:
+  schedule:
+    # Wednesdays 06:10 UTC — after us2's Monday slot, before the nightly.
+    - cron: "10 6 * * 3"
+  pull_request:
+    branches: [main]
+    paths:
+      - 'controller/internal/workspace/**'
+      - 'controller/internal/controller/**'
+      - 'pkg/apis/llmsafespaces/**'
+      - 'helm/**'
+      - 'scripts/workspace-lifecycle-skew-e2e.sh'
+      - '.github/workflows/workspace-lifecycle-integration.yml'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+jobs:
+  ws-lifecycle-kind:
+    name: Workspace lifecycle (skewed CRD, K1–K4)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version: "1.26.11"
+          cache: true
+
+      - name: Install kind
+        run: |
+          curl -Lo ./kind https://kind.sigs.k8s.io/dl/v0.32.0/kind-linux-amd64
+          chmod +x ./kind
+          sudo mv ./kind /usr/local/bin
+
+      - name: Install helm
+        run: |
+          curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
+
+      - name: Run workspace lifecycle skew e2e (K1–K4)
+        run: scripts/workspace-lifecycle-skew-e2e.sh
+
+      - name: Dump diagnostics on failure
+        if: failure()
+        run: |
+          export KUBECONFIG="${KUBECONFIG:-$HOME/.kube/config}"
+          kubectl -n llmsafespaces get pods -o wide || true
+          kubectl -n llmsafespaces describe workspace ws-lifecycle-int || true
+          kubectl -n llmsafespaces logs deployment/lss-llmsafespaces-controller --tail=100 || true
+          kubectl -n llmsafespaces get events --sort-by=.lastTimestamp | tail -25 || true

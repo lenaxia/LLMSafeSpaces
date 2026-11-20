@@ -121,3 +121,20 @@ jobs:
       # (a second SetupControllers in the same binary collides).
       - name: Run envtest eventbus armed-posture tests
         run: go test -timeout 300s -race -tags envtest ./controller/internal/controller/eventbuswiring/ -run TestEnvtestSetupWiring_EventbusArmsPodEnv -v
+
+      # The .15 refresh/start starvation class (owner reports
+      # 2026-11-16/17, PR #2088) at the REAL-apiserver tier: the
+      # lifecycle suite drives start/refresh/suspend/resume through the
+      # production reconciler against a real apiserver serving the
+      # PINNED PRE-.15 Workspace CRD (controller/internal/workspace/
+      # testdata/legacycrd/ — the structural-pruning shape helm upgrade
+      # leaves behind). The fake-client skew pins
+      # (harness_binding_skew_test.go) simulate the pruning; only this
+      # execution proves it against actual apiserver semantics
+      # (structural pruning, resourceVersion conflicts, status
+      # subresources). Born-red verified: on pre-#2088 main LC-2/3/4
+      # starve (no pod ever built, no transition fires). Explicit step,
+      # not a path trigger — the #820 drift class this workflow's own
+      # comments teach.
+      - name: Run envtest workspace lifecycle (CRD-skew) tests
+        run: go test -timeout 600s -race -tags envtest ./controller/internal/workspace/ -run TestEnvtestLifecycle -v

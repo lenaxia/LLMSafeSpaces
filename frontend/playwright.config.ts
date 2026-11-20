@@ -25,6 +25,10 @@ export default defineConfig({
     command: `npm run dev -- --port ${E2E_PORT} --strictPort`,
     port: E2E_PORT,
     reuseExistingServer: true,
-    timeout: 10_000,
+    // Generous cold-start budget: a cold vite (first-run dependency
+    // optimization) can exceed 10s on slow runners — the flake
+    // discipline says the server readiness wait gets the wide window,
+    // never the tests.
+    timeout: 60_000,
   },
 });
