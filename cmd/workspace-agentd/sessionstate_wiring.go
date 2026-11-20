@@ -298,8 +298,8 @@ func newStateAuthority(client *OpenCodeClient, password, controlPlanePassword st
 		// leg's probe backend (board_turn_ledger.go).
 		BoardTurnEndProbe: boardTurnEmitterInst().facts,
 		// #2100 transport v2: ungated emission (the flag's kill-switch
-		// is LLMSAFESPACES_BOARD_TRANSPORT_V2; default ON — the
-		// class-kill is the fix).
+		// is LLMSAFESPACES_BOARD_PRESENCEV2, the same env the engine
+		// half reads; default ON — the class-kill is the fix).
 		BoardTurnEndUngated: boardTransportV2Enabled(),
 	}
 	a, err := sessionstate.New(cfg)

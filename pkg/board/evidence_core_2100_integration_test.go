@@ -263,9 +263,10 @@ func (s *BoardSuite) TestPin_P3_LateResponderInsideWindowRenews() {
 	s.leaseFuture(c.TaskID)
 }
 
-func (s *BoardSuite) TestPin_P2_HeartbeatArrivalOnlyRenewsAndStampsServerClock() {
+func (s *BoardSuite) TestPin_P2_HeartbeatArrivalOnly_RenewsPresenceOnlyNoClock() {
 	_, c := s.seedClaimedTask("arrival-only-heartbeat")
 	assignee := s.reloadTask(c.TaskID).AssigneeSession
+	mint := s.orbitMint(c.TaskID)
 
 	cfg := s.cfg
 	cfg.NudgeMeasureWindow = 2 * time.Second
@@ -280,8 +281,10 @@ func (s *BoardSuite) TestPin_P2_HeartbeatArrivalOnlyRenewsAndStampsServerClock()
 	require.NotEmpty(s.T(), slotID, "the sentinel is positioned")
 
 	// RESPONSE-OBSERVED PRESENCE: no declared watermark at all (the
-	// zero time) — the arrival itself is the response; the STORE's
-	// clock is the only one written.
+	// zero time) — the arrival itself is the response. It RENEWS and
+	// clears the slot, but it is PRESENCE-ONLY: no progress clock is
+	// written (the #2044 budget's motion credit belongs to DECLARED
+	// stamps; the reviewer's finding 2 shape).
 	res, err := s.svc.Heartbeat(context.Background(), s.agent(assignee, c.ClaimToken), c.TaskID, "", time.Time{})
 	require.NoError(s.T(), err)
 	require.True(s.T(), res.Extended, "a watermark-less heartbeat response renews the nudged row")
@@ -290,14 +293,62 @@ func (s *BoardSuite) TestPin_P2_HeartbeatArrivalOnlyRenewsAndStampsServerClock()
 	require.Empty(s.T(), slotAfter, "the slot cleared")
 	s.leaseFuture(c.TaskID)
 
-	var progress time.Time
+	var hb, progress *time.Time
 	require.NoError(s.T(), s.pool.QueryRow(context.Background(),
-		`SELECT last_progress_at FROM tasks WHERE id=$1`, c.TaskID).Scan(&progress))
-	mint := s.orbitMint(c.TaskID)
-	require.True(s.T(), progress.After(mint),
-		"the arrival stamps the SERVER clock (post-mint) — pre-fix a zero stamp stores year-1, the client-hoped clock")
-	require.WithinDuration(s.T(), time.Now().UTC(), progress, 2*time.Minute,
-		"the stamp is the server's observation, not a declared watermark")
+		`SELECT last_heartbeat_at, last_progress_at FROM tasks WHERE id=$1`, c.TaskID).Scan(&hb, &progress))
+	require.NotNil(s.T(), hb, "the arrival is recorded (last_heartbeat_at, server clock)")
+	require.WithinDuration(s.T(), time.Now().UTC(), *hb, 2*time.Minute)
+	require.NotNil(s.T(), progress)
+	require.False(s.T(), progress.After(mint),
+		"presence writes NO progress clock — last_progress_at stays at/below the mint (pre-fix: the zero time stored year-1; the rejected middle shape: the server clock read as motion and voided the #2044 cap)")
+}
+
+// TestPin_P2_ArrivalOnlyResponsesHitOrbitCap — the reviewer's demanded
+// pin (review round 1, finding 2): K+1 ARRIVAL-ONLY responses decline —
+// a responding-but-motionless worker never orbit-renews forever. The
+// bare-heartbeat orbit is bounded exactly like the declared-stale one
+// (2044-A's shape, watermark-less).
+func (s *BoardSuite) TestPin_P2_ArrivalOnlyResponsesHitOrbitCap() {
+	_, c := s.seedClaimedTask("arrival-only-orbit-cap")
+	assignee := s.reloadTask(c.TaskID).AssigneeSession
+
+	cfg := s.cfg
+	cfg.NudgeMeasureWindow = 2 * time.Second
+	lives := &fakeLiveness{}
+	lives.set(assignee, liveQuiet())
+	nudger := &fakeNudger{}
+	recon := s.pin2100Recon(cfg, lives, nudger.Send)
+
+	capK := s.svc.Config().NoAdvanceHeartbeatCap
+	require.GreaterOrEqual(s.T(), capK, 1)
+
+	// Cycles 1..K: bare arrivals RENEW (presence is alive; the budget
+	// counts) and the counter climbs.
+	for i := 1; i <= capK; i++ {
+		s.expireLease(c.TaskID)
+		s.rc1Sweep(recon)
+		res, err := s.svc.Heartbeat(context.Background(), s.agent(assignee, c.ClaimToken), c.TaskID, "", time.Time{})
+		require.NoError(s.T(), err)
+		require.True(s.T(), res.Extended, "cycle %d below cap: the bare arrival renews (presence counts, it does not choke)", i)
+		require.Equal(s.T(), i, s.noAdvanceCount(c.TaskID), "the arrival-only cycle is COUNTED (presence-only, not motion)")
+	}
+	// Cycle K+1: the DECLINE — arrival recorded, cycle counted, sentinel
+	// KEPT armed, lease not extended. Then the wedge verdict owns it.
+	s.expireLease(c.TaskID)
+	s.rc1Sweep(recon)
+	declined, err := s.svc.Heartbeat(context.Background(), s.agent(assignee, c.ClaimToken), c.TaskID, "", time.Time{})
+	require.NoError(s.T(), err)
+	require.False(s.T(), declined.Extended, "the K+1th bare heartbeat declines — the arrival-only orbit is bounded")
+	require.NotEmpty(s.T(), declined.Reason, "the decline names the budget")
+	require.Equal(s.T(), capK+1, s.noAdvanceCount(c.TaskID))
+	slotID, _ := s.nudgeState(c.TaskID)
+	require.NotEmpty(s.T(), slotID, "the decline keeps the sentinel armed")
+
+	lives.set(assignee, wedgeQuiet())
+	s.expireLease(c.TaskID)
+	s.rc1Sweep(recon)
+	row := s.rawTask(c.TaskID)
+	require.Equal(s.T(), board.StageFailed, row.Stage, "the arrival-only orbit lands the wedge verdict (2044-A's terminus, watermark-less)")
 }
 
 func (s *BoardSuite) TestPin_2100_HealthEventChannelLine() {

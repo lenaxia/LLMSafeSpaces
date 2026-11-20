@@ -1997,10 +1997,15 @@ board:
   # follow-up phase; do not couple them). Loader floor 300. Default
   # 600 = 10m, >=3x the worst observed legitimate response latency.
   nudgeMeasureWindowSeconds: 600
-  # #2100 store-native evidence transport (BOTH halves; the agentd
-  # sidecar reads the same env from its pod spec): true = ungated
-  # turn-end emission + store-side advance derivation; false restores
-  # the v1 path verbatim. Default true — the class-kill IS the fix.
+  # #2100 store-native evidence transport — the ENGINE half's switch:
+  # false makes the API derive no advance store-side (the emitter's
+  # declared flag is trusted verbatim). The AGENTD half (ungated
+  # emission) reads the same LLMSAFESPACES_BOARD_PRESENCEV2 env
+  # directly; its pod-spec injection from this chart is a sequenced
+  # follow-up — until it lands, flipping this value flips the engine
+  # half only (a mixed state that nudges every turn: safe-direction,
+  # loud, not a recommended steady state). Default true — the
+  # class-kill IS the fix.
   presenceV2: true
   # 429 cooldown in seconds, applied to BOTH the task and the project's
   # worker slots (new claims into a throttled project pause).

@@ -34,7 +34,7 @@ import (
 // the value cannot be set directly; restored after).
 func resetBoardTransportV2(t *testing.T, on bool) {
 	t.Helper()
-	t.Setenv("LLMSAFESPACES_BOARD_TRANSPORT_V2", strconv.FormatBool(on))
+	t.Setenv("LLMSAFESPACES_BOARD_PRESENCEV2", strconv.FormatBool(on))
 	boardTransportV2Once = sync.Once{}
 	t.Cleanup(func() { boardTransportV2Once = sync.Once{} })
 }
