@@ -146,13 +146,13 @@ test.describe("phone-viewport smoke — .15 board UI surfaces (375px)", () => {
     const tasks = [...smokeTasks().filter((t) => t.stage !== "done"), ...doneRows];
     await openMobileBoard(page, tasks);
 
-    // Reach the done page by scrolling the rail (thin-smoke scope: the
-    // rail wall — board-rail-touch.spec.ts + board.spec.ts — owns
-    // navigation parity: touch, snap, keyboard. This row pins the
-    // drawer's own surface at the phone class, so it navigates the
-    // deterministic way instead of synthesizing input sequences).
+    // Reach the done page by deep-scrolling the rail and letting
+    // snap-mandatory settle — the exact idiom board.spec.ts's snap test
+    // trusts in CI (navigation parity itself is the rail wall's job:
+    // board-rail-touch.spec.ts + board.spec.ts; this row pins the
+    // drawer's own surface at the phone class).
     const rail = page.getByTestId(`stage-grid-${PROJECT_A}`);
-    await rail.locator("[data-stage-col='done']").scrollIntoViewIfNeeded();
+    await rail.evaluate((el) => el.scrollTo({ left: el.scrollWidth }));
 
     const affordance = page.getByTestId(`done-show-all-${PROJECT_A}`);
     await expect(affordance).toBeVisible();
@@ -202,8 +202,19 @@ test.describe("phone-viewport smoke — settings surfaces (375px)", () => {
       r.fulfill(j({ id: "u1", username: "tester", email: "t@t.com", role: "user", active: true })));
     await page.route(`${API}/auth/config`, (r: Route) =>
       r.fulfill(j({ registrationEnabled: false, oidcEnabled: false })));
-    await page.route(`${API}/users/me/settings`, (r: Route) => r.fulfill(j({})));
-    await page.route(`${API}/users/me/settings/schema`, (r: Route) => r.fulfill(j({ properties: {} })));
+    // The canonical settings mock set (settings.spec.ts shapes): the
+    // schema endpoint serves an ARRAY of setting descriptors — a
+    // hand-rolled {properties:{}} shape renders a malformed form that
+    // overflows the phone viewport (the r2 CI finding: mock bug, not a
+    // main bug).
+    await page.route(`${API}/users/me/settings`, (r: Route) =>
+      r.fulfill(j({ settings: {}, schemaVersion: 1 })));
+    await page.route(`${API}/users/me/settings/schema`, (r: Route) =>
+      r.fulfill(j({ settings: [], schemaVersion: 1 })));
+    await page.route(`${API}/provider-credentials`, (r: Route) => r.fulfill(j([])));
+    await page.route(`${API}/orgs`, (r: Route) => r.fulfill(j([])));
+    await page.route(`${API}/secrets`, (r: Route) => r.fulfill(j([])));
+    await page.route(`${API}/auth/api-keys`, (r: Route) => r.fulfill(j([])));
   });
 
   /** No horizontal overflow: the page's content fits the phone width
