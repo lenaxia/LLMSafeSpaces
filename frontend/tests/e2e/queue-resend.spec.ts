@@ -63,7 +63,11 @@ async function stubWorkspace(page: Page, opts: { eventsStub?: boolean } = {}) {
         status: 200,
         contentType: "application/json",
         body: JSON.stringify({
-          items: [{ id: WS, name: "queue-e2e", phase: "Active", userId: "u1" }],
+          // harness bound: these tests ride the auto-create on /chat/WS
+          // (no session in the URL) — an unbound Active workspace is an
+          // invalid state the D4 guard refuses to auto-create on, so the
+          // fixture must serve a bound workspace.
+          items: [{ id: WS, name: "queue-e2e", phase: "Active", userId: "u1", harness: "opencode", harnessOptions: ["opencode"] }],
           pagination: { limit: 20, offset: 0, total: 1 },
         }),
       });

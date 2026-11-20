@@ -51,6 +51,12 @@ Close the audit's five frontend findings on the harness first-session flow: the 
 - **r1 F5:** the transitioning panel is a polite live region (`aria-live="polite"`, no `role="status"` — the role collided with existing tests' `getByRole("status")` sync points). **r1 F6:** picker state resets on param change.
 - **r2 F2:** the source audit is committed at `reports/audits/harness-selection-flow.md` (matching the repo's committed-audit precedent) so the worklog's citations resolve.
 
+### Review r3 hardening (the re-filed lane's close-out)
+
+- **r3 F1 (merge-gating):** the cancel-after-failure pin now locks BOTH halves of the consume wiring — after Cancel, the test reopens the picker and asserts the failure text does NOT render inline. Mutation-verified: deleting `if (!open) onConsumeCreateError?.()` (Sidebar.tsx onOpenChange) turns the extended test red; with the wiring restored it is green. The r2 run's mutation (18/18 green with the wiring deleted) is no longer reproducible — the reopen assertion is what pins it.
+- **CI e2e repair:** the Frontend check failed at the r2 head because `queue-resend.spec.ts` rides ChatPage's auto-create on `/chat/WS` (no session in the URL) against a fixture workspace with no `harness` field — an unbound Active workspace the D4 guard now (correctly) refuses to auto-create on, so the composer never enabled. The fixture now serves `harness: "opencode"` (a bound workspace), with a comment naming the invariant. No other e2e spec rides the auto-create path (all other no-session gotos assert shell chrome only; the rest navigate with an explicit session id).
+- **Re-file note:** the original story row (tsk-hazel-lagoon-hums) vanished mid-flight (platform 404, loss instance #9); this lane re-filed as tsk-marshy-cipher-hauls and closed the two residuals above on the same branch/PR (2111).
+
 ---
 
 ## Key Decisions

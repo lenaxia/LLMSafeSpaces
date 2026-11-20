@@ -323,8 +323,9 @@ describe("Sidebar — bind-failure error-class fidelity (D3)", () => {
 
   // Review r1 F2 pin: a failure the open dialog rendered inline is
   // consumed with the dialog — canceling after reading it must not
-  // re-alert the same message.
-  it("cancel after an inline picker failure does not re-alert on dialog close", async () => {
+  // re-alert the same message, and (review r3) a later reopen must
+  // start clean: the consumed failure cannot render inline again.
+  it("cancel after an inline picker failure does not re-alert on close, and a later reopen starts clean", async () => {
     const alertSpy = vi.spyOn(window, "alert").mockImplementation(() => {});
     const user = userEvent.setup();
     (workspacesApi.list as ListMock).mockResolvedValue({
@@ -349,6 +350,18 @@ describe("Sidebar — bind-failure error-class fidelity (D3)", () => {
       expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
     });
     await new Promise((r) => setTimeout(r, 50));
+    expect(alertSpy).not.toHaveBeenCalled();
+
+    // Review r3: the consume wiring's second half — reopening the
+    // picker must NOT inherit the canceled attempt's inline error.
+    // This assertion is what pins onConsumeCreateError: with the
+    // consume wiring deleted, the ws-keyed failure survives the
+    // close and renders inline again on the reopened dialog.
+    await user.click(screen.getByRole("button", { name: "New chat" }));
+    await waitFor(() => {
+      expect(screen.getByRole("dialog")).toBeInTheDocument();
+    });
+    expect(screen.queryByText(/harness_immutable/)).not.toBeInTheDocument();
     expect(alertSpy).not.toHaveBeenCalled();
     alertSpy.mockRestore();
   });
