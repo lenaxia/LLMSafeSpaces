@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.44.18] - 2026-11-20
+
 ### Fixed — board: #2100 due-marking dead in prod — P1 rebaseline-at-observation + loud /exchange artifacts; P2 store-native worker presence transport behind `LLMSAFESPACES_BOARD_PRESENCEV2` (default on)
 
 The parking-forever incident class (evidence: park 16:56:20.80Z → nudge 18:26:55.08Z = 90m35s, exactly two 45m windows): due-marking was dead in production while every surface read green. Design of record: the lease-evidence-core designs (PR #2105).
