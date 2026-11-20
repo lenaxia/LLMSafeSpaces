@@ -111,6 +111,23 @@ setup_diagnostics() {
   kubectl -n "$NS" get events --sort-by=.lastTimestamp 2>&1 | tail -25 || true
 }
 
+# Pod teardown is ASYNC on a real cluster: the phase flips to Suspended
+# the moment the controller issues the delete, but the pod stays listed
+# (Terminating) until the kubelet finishes the graceful stop — an
+# instant existence check is a timing pin (the r2 CI finding: phase
+# flipped in ~0s, pod still listed, the check burned the run). Bounded,
+# generous: poll until the label selector returns nothing.
+wait_pod_gone() { # $1: budget in seconds; $2: pod label selector
+  local budget="$1" label="$2" pods="" i
+  for ((i = 0; i < budget / 3; i++)); do
+    pods=$(kubectl -n "$NS" get pods -l "$label" -o jsonpath='{.items[*].metadata.name}' 2>/dev/null || true)
+    [ -z "$pods" ] && { log "  pod gone after ~$((i * 3))s"; return 0; }
+    sleep 3
+  done
+  log "  pod(s) still listed after ${budget}s: $pods"
+  return 1
+}
+
 kc_ws_field() { # $1: jsonpath expression against the workspace object
   kubectl -n "$NS" get workspace "$WORKSPACE_NAME" -o jsonpath="$1" 2>/dev/null || true
 }
@@ -126,6 +143,23 @@ wait_phase() { # $1: expected phase; $2: budget in seconds; $3: check label
     sleep 3
   done
   log "  phase never reached $expected (last: ${phase:-<empty>}) within ${budget}s ($label)"
+  return 1
+}
+
+# Pod teardown is ASYNC on a real cluster: the phase flips to Suspended
+# the moment the controller issues the delete, but the pod stays listed
+# (Terminating) until the kubelet finishes the graceful stop — an
+# instant existence check is a timing pin (the r2 CI finding: phase
+# flipped in ~0s, pod still listed, the check burned the run). Bounded,
+# generous: poll until the label selector returns nothing.
+wait_pod_gone() { # $1: budget in seconds; $2: pod label selector
+  local budget="$1" label="$2" pods="" i
+  for ((i = 0; i < budget / 3; i++)); do
+    pods=$(kubectl -n "$NS" get pods -l "$label" -o jsonpath='{.items[*].metadata.name}' 2>/dev/null || true)
+    [ -z "$pods" ] && { log "  pod gone after ~$((i * 3))s"; return 0; }
+    sleep 3
+  done
+  log "  pod(s) still listed after ${budget}s: $pods"
   return 1
 }
 
@@ -399,9 +433,12 @@ K3_OK=1
 kubectl -n "$NS" patch workspace "$WORKSPACE_NAME" --type=merge \
   -p '{"spec":{"suspend":true}}' >/dev/null
 if wait_phase Suspended 120 "LC-K3 suspend"; then
-  POD_GONE=$(kubectl -n "$NS" get pods -l "llmsafespaces.dev/workspace=$WORKSPACE_NAME" \
-    -o jsonpath='{.items[*].metadata.name}' 2>/dev/null || true)
-  [ -z "$POD_GONE" ] && log "  pod deleted on suspend" || { K3_OK=0; fail LC-K3 "pod survived suspend: $POD_GONE"; }
+  if wait_pod_gone 180 "llmsafespaces.dev/workspace=$WORKSPACE_NAME"; then
+    log "  pod deleted on suspend"
+  else
+    K3_OK=0
+    fail LC-K3 "pod survived suspend: $(kubectl -n "$NS" get pods -l "llmsafespaces.dev/workspace=$WORKSPACE_NAME" -o jsonpath='{.items[*].metadata.name}' 2>/dev/null)"
+  fi
   if kubectl -n "$NS" get pvc "workspace-$WORKSPACE_NAME" >/dev/null 2>&1; then
     log "  PVC retained on suspend"
   else

@@ -112,3 +112,61 @@ phase machine) passed every unit pin.
   authoring sandbox suspends between turns, killing long-lived
   browser runs, so the authoritative gate is CI.
 - `make fmt-check` clean; `go vet -tags envtest` clean.
+
+## Review rounds on #2113 (the record)
+
+**r1 blockers (stage-in_review reviewer), both fixed:**
+
+1. TS2532 `board-rail-drain.spec.ts` — indexed reads off
+   `columnFractions()` under `noUncheckedIndexedAccess` reddened the CI
+   typecheck, so the rail wall never executed anywhere (`--list` skips
+   typecheck; CI fails before e2e starts). Fix: the fractions record is
+   now a finite-key type (`Record<(typeof COLUMN_KEYS)[number],
+   number>`), the drift loop iterates the shared `COLUMN_KEYS` const —
+   total reads; `npm run typecheck` (the failed gate) clean.
+2. The kind script's helm install set only `agentdDelivery` — the chart
+   mandates the design-0053 §4.5/§5.4 trio (opencode, pi; no baked
+   fallback), so the job died in SETUP at the render gate. Fix: opencode
+   + pi built/pushed to the local registry, digest-spliced, both binary
+   SHAs each (posture-gate/bootstrap pattern), all six --set flags,
+   timeout 45→60m; pinned forever by
+   `TestWorkspaceLifecycleScript_AllDeliveryPinsMandatory`.
+
+**r1-run CI findings, fixed in r2:**
+
+- The AllDeliveryPinsMandatory edit had been applied twice (a replayed
+  tool call — the transcript echoes edits as user turns; deduped. Every
+  echoed edit is now verified against the tree before it is trusted).
+- Helm could not build the release: the chart ships a
+  RuntimeEnvironment "base" resource and the cluster had no such kind.
+  The incident shape is "Workspace CRD stale, the rest healthy" — the
+  current non-Workspace CRDs (runtimeenvironment, inferencerelay) are
+  pre-applied beside the legacy Workspace CRD; workspace.yaml applies
+  only inside LC-K4 (pinned: exactly one apply, inside the convergence
+  leg — `TestWorkspaceLifecycleScript_NonWorkspaceCRDsPreApplied`).
+
+**r2-run CI truth (the headline evidence):**
+
+- Lint, Test -short, Test -race, envtest (LC-1..5), Build Frontend ×2:
+  all green.
+- Kind job: **LC-K1 PASS** (start completes under skew, ~60s to Active
+  on the skewed cluster), **LC-K2 PASS** (refresh recycle observed,
+  generation caught up, back to Active) — the two .15 owner symptoms,
+  proven on a real skewed cluster in CI.
+- LC-K3 failed on a TEST-side race: the pod-gone check ran the instant
+  the phase flipped — real pod teardown is async (the pod stays listed
+  while Terminating). LC-K4's "phase disrupted" was just the
+  never-resumed Suspended state. r4 fix: `wait_pod_gone` (bounded 180s
+  poll), pinned in the script test.
+
+**r2/r3 frontend findings (both mock-side, not main bugs):**
+
+- The drawer row's reach attempts (synthesized ArrowRight sequence,
+  then scrollIntoViewIfNeeded) left the done page off-viewport (snap
+  re-settles non-snap targets). Now board.spec.ts's proven idiom:
+  `el.scrollTo({left: el.scrollWidth})` + mandatory snap settle.
+- The settings smoke mocked the schema endpoint with a hand-rolled
+  `{properties:{}}` object where the API serves an ARRAY of descriptors
+  (settings.spec.ts shape) — a malformed form rendered past the 375px
+  viewport. Now the canonical mock set (settings/schema/
+  provider-credentials/orgs/secrets/api-keys).

@@ -193,4 +193,10 @@ func TestWorkspaceLifecycleScript_LegsPresent(t *testing.T) {
 	// The refresh write shape: generation bump + the #1505 force marker.
 	assert.Contains(t, body, `llmsafespaces.dev/force-recycle=`)
 	assert.Contains(t, body, `"{\"spec\":{\"restartGeneration\":$RUNTIME_GEN_NEXT}}"`)
+	// The suspend pod-gone check must be a BOUNDED WAIT, not an instant
+	// existence check — pod teardown is async on a real cluster (the r2
+	// CI finding: the phase flips the moment the delete is issued, the
+	// pod stays listed while Terminating).
+	assert.Contains(t, body, `wait_pod_gone 180 "llmsafespaces.dev/workspace=$WORKSPACE_NAME"`,
+		"the suspend leg must poll for pod teardown, never check instantly")
 }
