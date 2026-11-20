@@ -153,8 +153,14 @@ test.describe("phone-viewport smoke — .15 board UI surfaces (375px)", () => {
     // drawer's own surface at the phone class).
     const rail = page.getByTestId(`stage-grid-${PROJECT_A}`);
     await rail.evaluate((el) => el.scrollTo({ left: el.scrollWidth }));
-
+    // The affordance lives at the BOTTOM of the done page's capped
+    // list — below the 667px fold. Horizontal reach (the rail scroll
+    // above) is necessary but not sufficient; a phone user scrolls the
+    // page down to it, which is exactly what this models (vertical
+    // adjustment only — the rail is already settled on the done snap
+    // point).
     const affordance = page.getByTestId(`done-show-all-${PROJECT_A}`);
+    await affordance.scrollIntoViewIfNeeded();
     await expect(affordance).toBeVisible();
     await expect(affordance).toContainText("Show all 13 done");
     await expect(affordance).toBeInViewport();
