@@ -87,6 +87,31 @@ func TestWorkspaceLifecycleScript_SkewWiring(t *testing.T) {
 		"helm must install with --skip-crds — a fresh install would install the current CRDs and destroy the skew")
 }
 
+// The r2 fix, pinned: the chart ships a RuntimeEnvironment "base"
+// resource, and helm builds the release manifest against the cluster's
+// discovery — so the CURRENT non-Workspace platform CRDs must be
+// pre-applied beside the legacy Workspace one (the incident shape:
+// Workspace CRD stale, the rest of the cluster healthy). The current
+// workspace.yaml must NEVER be in that apply set.
+func TestWorkspaceLifecycleScript_NonWorkspaceCRDsPreApplied(t *testing.T) {
+	body := lifecycleScriptBody(t)
+	assert.Contains(t, body, `for crd in runtimeenvironment.yaml inferencerelay.yaml; do`,
+		"the current non-Workspace platform CRDs must be pre-applied (helm's manifest build needs the kinds)")
+	assert.Contains(t, body, `kubectl apply -f "helm/crds/$crd"`,
+		"the pre-apply loop must apply from helm/crds/")
+	// The current Workspace CRD applies ONLY in the LC-K4 convergence
+	// leg (after the checks) — never in setup, which would destroy the
+	// skew under test.
+	k4Idx := strings.Index(body, `log "LC-K4: operator applies the current CRD`)
+	require.GreaterOrEqual(t, k4Idx, 0, "the LC-K4 convergence leg must exist")
+	curIdx := strings.Index(body, `kubectl apply -f "$CURRENT_CRD"`)
+	require.GreaterOrEqual(t, curIdx, 0, "the current CRD apply must exist (LC-K4)")
+	assert.Greater(t, curIdx, k4Idx,
+		"the current Workspace CRD applies only inside LC-K4 — an apply before the legs would destroy the skew")
+	assert.Equal(t, strings.Count(body, `kubectl apply -f "$CURRENT_CRD"`), 1,
+		"exactly ONE apply of the current Workspace CRD (the LC-K4 convergence leg)")
+}
+
 // Fixture drift guard: the pinned CRD the script (and the envtest
 // lifecycle suite) serves must stay the PRE-.15 harness-less shape —
 // regenerating it from a later tag silently un-skews every execution.
@@ -104,39 +129,6 @@ func TestWorkspaceLifecycleScript_AgentdReferenceAndPins(t *testing.T) {
 		"the digest splice must keep the @ separator")
 	assert.Contains(t, body, `--set "controller.agentdDelivery.binarySHA256Amd64=${BINARY_SHA}"`)
 	assert.Contains(t, body, `--set "controller.agentdDelivery.binarySHA256Arm64=${BINARY_SHA}"`)
-}
-
-// The r1 review finding, pinned forever: the chart REFUSES to render
-// without all three design-0053 delivery artifacts (§4.5 agentd +
-// opencode "no baked fallback"; §5.4 pi) — a helm install that omits
-// any of the nine --set flags dies in SETUP before a single check
-// runs (controller-deployment.yaml's mandatory gates). The mirrored
-// us2 script never installs the controller, which is why the pattern
-// didn't carry them.
-func TestWorkspaceLifecycleScript_AllDeliveryPinsMandatory(t *testing.T) {
-	body := lifecycleScriptBody(t)
-	for _, art := range []struct{ name, ref string }{
-		{"opencode", `OPENCODE_REF="$REG/llmsafespaces/opencode:ci@${OPENCODE_REF##*@}"`},
-		{"pi", `PI_REF="$REG/llmsafespaces/pi:ci@${PI_REF##*@}"`},
-	} {
-		assert.Contains(t, body, art.ref,
-			"the %s digest splice must exist and keep the @ separator", art.name)
-	}
-	for _, flag := range []string{
-		`--set "controller.opencodeDelivery.image=${OPENCODE_REF}"`,
-		`--set "controller.opencodeDelivery.binarySHA256Amd64=${OPENCODE_BINARY_SHA}"`,
-		`--set "controller.opencodeDelivery.binarySHA256Arm64=${OPENCODE_BINARY_SHA}"`,
-		`--set "controller.piDelivery.image=${PI_REF}"`,
-		`--set "controller.piDelivery.binarySHA256Amd64=${PI_BINARY_SHA}"`,
-		`--set "controller.piDelivery.binarySHA256Arm64=${PI_BINARY_SHA}"`,
-	} {
-		assert.Contains(t, body, flag,
-			"the chart-mandatory delivery pin is missing — helm dies in SETUP at the render gate")
-	}
-	// The artifacts must actually be BUILT and pushed (a pin without a
-	// registry image fails the digest extraction).
-	assert.Contains(t, body, `-f runtimes/opencode/Dockerfile -t "$REG/llmsafespaces/opencode:ci"`)
-	assert.Contains(t, body, `-f runtimes/pi/Dockerfile -t "$REG/llmsafespaces/pi:ci" runtimes/pi`)
 }
 
 // The r1 review finding, pinned forever: the chart REFUSES to render

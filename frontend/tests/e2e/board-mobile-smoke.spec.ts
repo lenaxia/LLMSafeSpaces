@@ -146,13 +146,13 @@ test.describe("phone-viewport smoke — .15 board UI surfaces (375px)", () => {
     const tasks = [...smokeTasks().filter((t) => t.stage !== "done"), ...doneRows];
     await openMobileBoard(page, tasks);
 
-    // Arrow-key parity reaches done (the #2021 discipline — cheaper and
-    // more deterministic than a swipe here; the touch wall owns swipes).
+    // Reach the done page by scrolling the rail (thin-smoke scope: the
+    // rail wall — board-rail-touch.spec.ts + board.spec.ts — owns
+    // navigation parity: touch, snap, keyboard. This row pins the
+    // drawer's own surface at the phone class, so it navigates the
+    // deterministic way instead of synthesizing input sequences).
     const rail = page.getByTestId(`stage-grid-${PROJECT_A}`);
-    await rail.locator("[data-stage-col='backlog']").focus();
-    await page.keyboard.press("ArrowRight");
-    await page.keyboard.press("ArrowRight");
-    await page.keyboard.press("ArrowRight");
+    await rail.locator("[data-stage-col='done']").scrollIntoViewIfNeeded();
 
     const affordance = page.getByTestId(`done-show-all-${PROJECT_A}`);
     await expect(affordance).toBeVisible();

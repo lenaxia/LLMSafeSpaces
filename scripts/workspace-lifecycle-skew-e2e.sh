@@ -258,10 +258,24 @@ PI_BINARY_SHA=$(sha256sum "$TMPDIR/pi-bin" 2>/dev/null | cut -d' ' -f1) \
 [ -n "$PI_BINARY_SHA" ] || { log "could not hash extracted pi binary"; exit 1; }
 log "pi binary sha256: $PI_BINARY_SHA"
 
-# --- THE SKEW: pre-.15 CRD, then controller-lean chart over it ----------------
+# --- THE SKEW: pre-.15 Workspace CRD, then controller-lean chart over it --------
+#
+# The incident shape is "the Workspace CRD is stale, the rest of the
+# cluster is healthy": the pre-.15 Workspace CRD (no spec.harness —
+# the field the backfill cannot land) is applied FIRST, then the
+# CURRENT non-Workspace platform CRDs (runtimeenvironment,
+# inferencerelay) — the chart ships a RuntimeEnvironment "base"
+# resource and helm builds the release manifest against the cluster's
+# discovery, so those kinds must exist. The current workspace.yaml is
+# NEVER applied here (that would destroy the skew under test) — pinned
+# by TestWorkspaceLifecycleScript_SkewWiring.
 
 log "applying the PRE-.15 Workspace CRD (the skew: no spec.harness served)"
 kubectl apply -f "$LEGACY_CRD"
+log "applying the CURRENT non-Workspace platform CRDs (the healthy-cluster half)"
+for crd in runtimeenvironment.yaml inferencerelay.yaml; do
+  kubectl apply -f "helm/crds/$crd"
+done
 
 # cert-manager first: the controller binary ALWAYS registers its admission
 # webhooks (same manifest/version as e2e-nightly / us2).
