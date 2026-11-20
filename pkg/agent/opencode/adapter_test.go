@@ -1289,6 +1289,8 @@ func TestAdapterContextUsageFromEvent(t *testing.T) {
 			"testdata/event_store_1_18_15.jsonl",
 			"testdata/sse_events_1_19_5_live.jsonl",
 			"testdata/event_store_1_19_5.jsonl",
+			"testdata/sse_events_1_18_35_live.jsonl",
+			"testdata/event_store_1_18_35.jsonl",
 		} {
 			data, err := os.ReadFile(fixture)
 			require.NoError(t, err)

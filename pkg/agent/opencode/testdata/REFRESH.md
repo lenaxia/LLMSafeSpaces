@@ -41,9 +41,9 @@ Opencode's schema has three `$ref` targets pointing at `https://models.dev/model
 
 # SSE event fixtures — refresh procedure
 
-Three fixture PAIRS pin the opencode event surfaces (1.18.10 + 1.18.15 +
-1.19.5). They exist because wire-shape drift was the root cause of issue
-#739 (context usage silently NULL for weeks):
+Four fixture PAIRS pin the opencode event surfaces (1.18.10 + 1.18.15 +
+1.19.5 + 1.18.35, the current pin). They exist because wire-shape drift was
+the root cause of issue #739 (context usage silently NULL for weeks):
 
 | Fixture | Surface | Type names | How captured |
 |---|---|---|---|
@@ -53,6 +53,8 @@ Three fixture PAIRS pin the opencode event surfaces (1.18.10 + 1.18.15 +
 | `event_store_1_18_15.jsonl` | same store surface, opencode 1.18.15 | **version-suffixed** | rows read from the local serve's `opencode.db` `event` table for the captured session |
 | `sse_events_1_19_5_live.jsonl` | same `/event` surface, opencode 1.19.5 | **unsuffixed** | local `opencode serve` (1.19.5, worklog 1295) + OpenAI-compatible mock provider driving ONE turn: bash tool-call round (echo) → text round with terminal usage chunk; same redaction (IDs → shared synthetic map across the pair, >120-char strings → 60 chars + `…[trimmed]`), single delta kept |
 | `event_store_1_19_5.jsonl` | same store surface, opencode 1.19.5 | **version-suffixed** | rows read from the same serve's `opencode.db` `event` table, ordered by insertion |
+| `sse_events_1_18_35_live.jsonl` | same `/event` surface, opencode 1.18.35 (the current pin, 2026-11-20 re-pin off the broken 1.19.5 line) | **unsuffixed** | local `opencode serve` (1.18.35) + OpenAI-compatible mock provider; same turn design and redaction as the 1.19.5 pair (bash tool round → text round; `server.heartbeat` keepalives dropped — never in fixtures); event-type multiset identical to the 1.19.5 capture |
+| `event_store_1_18_35.jsonl` | same store surface, opencode 1.18.35 | **version-suffixed** | rows read from the same serve's `opencode.db` `event` table, ordered by insertion |
 | `events-text-turn.txt` | `/event` SSE stream, the `session.next.*` V2 family (what the authority consumes under steer admission) | text turn: `session.next.{prompt.admitted,prompted,step.started,reasoning.started/ended,text.started/delta/ended,step.ended}` | verbatim `curl -N /event` capture on a production pod during a live steer-admitted turn (#1291); SSE `data:` lines kept verbatim; IDs mapped to synthetic sequences (consistent within a fixture), >120-char strings trimmed, non-frame lines dropped |
 | `events-tool-turn.txt` | same surface, same family | tool turn: adds `session.next.tool.{called,input.started/delta/ended,success}` | same capture method, a second turn that calls the bash tool; same redaction |
 

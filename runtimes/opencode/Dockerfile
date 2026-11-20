@@ -34,24 +34,27 @@
 # by the pinned binary itself.
 
 # Override to use a different release: --build-arg OPENCODE_VERSION=<version>
-# Pinned to 1.18.15 (Aug 2026) — validated against the proxy code in
-# api/internal/handlers/proxy.go and session_tracker.go. The 1.18.10→1.18.15
-# upgrade preserves every legacy/v1 HTTP route, auth scheme, SSE envelope, and
-# config-schema shape LLMSafeSpaces depends on (verified by upstream source
-# diff at both tags: packages/schema and packages/opencode/src/config have
-# ZERO commits in the range; V1 routes untouched).
-# Why 1.18.15: it is the first release containing the upstream V2 queue-drain
-# fixes (#40990 order legacy message loop by time / #40991 chronological
-# message boundaries) — the root cause of our #755 (V2 queue admits but never
-# drains correctly; on 1.18.10 the loop re-answers a stale prior message).
-# Empirically re-verified 2026-08-27 against both binaries with a local mock
-# provider: 1.18.10 mis-binds queued turns, 1.18.15 drains FIFO with correct
-# texts. V1-only wiring is byte-identical in behavior.
+# Pinned to 1.18.35 (Nov 2026) — the 1.18.x line's latest release, past the
+# v1.18.16–.18 bad window. DO NOT cross into 1.19+: v1.19.5 (shipped in
+# v0.44.17/.18, PR #2083) broke the legacy GET /provider + GET /config/providers
+# routes (instant HTTP 499, empty body — merged upstream into /api/provider +
+# /api/model), blanking the frontend model picker and zeroing agentd's
+# ProviderReady/catalog consumers; production was emergency-reverted to the
+# 1.18.15 overlay on 2026-11-20. Re-pin to 1.19+ ONLY after the pkg/agent/
+# opencode + agentd consumers migrate to the /api/* routes and the bump
+# checklist covers the model-catalog endpoints.
+# 1.18-line lineage: 1.18.15 (Aug 2026) was validated against the proxy code
+# in api/internal/handlers/proxy.go and session_tracker.go; 1.18.35 preserves
+# every legacy/v1 HTTP route, auth scheme, SSE envelope, and config-schema
+# shape LLMSafeSpaces depends on (verified empirically on the release binary:
+# local/opencode-binary-contract.sh green, origin-plugin freeze legs green —
+# the 2026-11-20 v0.44.19 bump validation). Contains the upstream V2
+# queue-drain fixes (#40990/#40991, first landed .15) that fix our #755.
 # DO NOT bump into v1.18.16–v1.18.18: that window contains a projector/DB
 # change that breaks v1-format session databases (fixed only in v1.18.19 by
 # upstream #42444) — existing pod session volumes would traverse the broken
-# migration. Jump .15 → .19+ in one hop if a later bump is ever needed.
-ARG OPENCODE_VERSION=1.19.5
+# migration.
+ARG OPENCODE_VERSION=1.18.35
 
 FROM --platform=$BUILDPLATFORM debian:bookworm-slim@sha256:88200866dfff7ea7f5cbcb6ec7c8a701889efe6fe859fe64d6990e4b07ea4171 AS fetch
 
