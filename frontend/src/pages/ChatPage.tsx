@@ -34,9 +34,11 @@ import { AgentReloadBanner } from "../components/workspace/AgentReloadBanner";
 import { DiskUsageBar } from "../components/workspace/DiskUsageBar";
 import { DiskRecoveryStrip } from "../components/workspace/DiskRecoveryStrip";
 import { Spinner } from "../components/ui/Spinner";
+import { Button } from "../components/ui/Button";
+import { HarnessPickerDialog } from "../components/workspace/HarnessPickerDialog";
+import { FALLBACK_HARNESS_OPTIONS } from "../components/workspace/harnessMeta";
 import { KebabMenu } from "../components/ui/KebabMenu";
 import type { KebabMenuItem } from "../components/ui/KebabMenu";
-import { sessionsApi } from "../api/sessions";
 import type { Message, SessionListItem, WorkspaceStreamEvent, WorkspaceAlertEvent } from "../api/types";
 import { QuestionPrompt } from "../components/chat/QuestionPrompt";
 import { PermissionPrompt } from "../components/chat/PermissionPrompt";
@@ -195,6 +197,12 @@ export function ChatPage() {
     setLocalMessages([]);
     setSessionErrors([]);
     setSseStreamParts([]);
+    // Review r1 F6: the picker is a modal over whatever workspace the
+    // route lands on — browser-back mid-picker must not carry it (or a
+    // stale failure) onto the newly-viewed workspace; a submit binds
+    // the CURRENT workspace with a choice made in another's dialog.
+    setShowHarnessPicker(false);
+    setHarnessPickError(null);
     // Pending prompt content is NOT cleared here — it lives in the global
     // SessionActivityProvider (keyed by requestId) so it survives within-tab
     // navigation between a parent session and its subtasks (issue #346).
@@ -223,7 +231,12 @@ export function ChatPage() {
     },
   });
 
-  const { data: activeWorkspaceData } = useQuery({
+  const {
+    data: activeWorkspaceData,
+    isSuccess: listLoaded,
+    isError: listLoadError,
+    refetch: refetchWorkspaceList,
+  } = useQuery({
     queryKey: ["workspaces"],
     queryFn: () => workspacesApi.list(),
     select: (data) => data.items?.find((w) => w.id === workspaceId),
@@ -232,6 +245,21 @@ export function ChatPage() {
   const activateMutation = useActivateWorkspace();
 
   const isReady = status?.phase === "Active";
+
+  // D1/D4 (harness-selection audit): the workspace listing is the
+  // unbound flag's source (harness absent = unbound). listLoaded is the
+  // query's isSuccess — NOT `data !== undefined` (review r1 F4): `select`
+  // yields undefined both while loading and when the workspace is absent
+  // from the list (deleted mid-view), and absence must read as bound,
+  // never as a parked-unbound flash. The offer list degrades to
+  // opencode-only when the listing predates harnessOptions.
+  const harnessUnbound = listLoaded && activeWorkspaceData !== undefined && !activeWorkspaceData.harness;
+  const harnessOptions =
+    activeWorkspaceData?.harnessOptions && activeWorkspaceData.harnessOptions.length > 0
+      ? activeWorkspaceData.harnessOptions
+      : FALLBACK_HARNESS_OPTIONS;
+  const [showHarnessPicker, setShowHarnessPicker] = useState(false);
+  const [harnessPickError, setHarnessPickError] = useState<{ message: string } | null>(null);
   const clearPendingUnread = useClearPendingUnread();
   const addPendingQuestion = useAddPendingQuestion();
   const addPendingPermission = useAddPendingPermission();
@@ -346,8 +374,13 @@ export function ChatPage() {
     }
   }, [status?.phase, workspaceId]);
 
+  // D4: ChatPage's session creates ride the bind-aware sessions/new
+  // endpoint — the same wire as the sidebar picker (atomic bind +
+  // create). The previous title-only body sent no harness: equivalent
+  // on a bound workspace, but this path can never mint a session that
+  // bypasses the bind contract.
   const createSessionMutation = useMutation({
-    mutationFn: (wsId: string) => sessionsApi.create(wsId, "New chat"),
+    mutationFn: (wsId: string) => workspacesApi.ensureSession(wsId),
     onSuccess: (data) => {
       queryClient.invalidateQueries({ queryKey: ["sessions", workspaceId] });
       if (workspaceId && data.sessionId) {
@@ -358,9 +391,80 @@ export function ChatPage() {
 
   useEffect(() => {
     if (isReady && workspaceId && !sessionId && !createSessionMutation.isPending) {
+      // D4 invariant: never auto-create on an UNBOUND workspace. The
+      // controller parks unbound workspaces in Creating (they never
+      // reach Active), so today this is latent defense — but any future
+      // path yielding an unbound Active workspace (restore, import,
+      // suspend/resume variants) must surface the picker's one-time
+      // decision, not silently bind the default. Gated on listLoaded so
+      // the invariant holds under every query ordering (a status read
+      // that flips isReady before the listing lands cannot slip a
+      // harness-less create through the unknown-unbound window; the
+      // effect re-fires when the listing resolves). Pinned by
+      // ChatPage.harness.test.tsx (both orderings).
+      if (!listLoaded) return;
+      if (harnessUnbound) return;
       createSessionMutation.mutate(workspaceId);
     }
-  }, [isReady, workspaceId, sessionId]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [isReady, workspaceId, sessionId, listLoaded, harnessUnbound]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // D1: the first-session flow for a parked-unbound workspace — the
+  // same ensureSession path as the sidebar's picker (a single enabled
+  // harness binds silently; multiple open the dialog). This panel-level
+  // entrance is the flow's only mobile-visible one (the sidebar's +
+  // button lives in the drawer-hidden sidebar). On failure the dialog
+  // STAYS OPEN and renders the server's error class inline (D3); only
+  // the dialog-less silent path falls back to an alert, carrying the
+  // same honest text.
+  const firstSessionMutation = useMutation({
+    mutationFn: ({ wsId, harness }: { wsId: string; harness?: string }) =>
+      workspacesApi.ensureSession(wsId, { harness }),
+    // Reset on every attempt (review r1 F1): a stale failure left set
+    // across a retry that SUCCEEDS would otherwise fall out of the
+    // dialog-closed state and alert after the successful bind.
+    onMutate: () => setHarnessPickError(null),
+    onSuccess: (data, vars) => {
+      queryClient.invalidateQueries({ queryKey: ["workspaces"] });
+      queryClient.invalidateQueries({ queryKey: ["sessions", vars.wsId] });
+      setHarnessPickError(null);
+      setShowHarnessPicker(false);
+      navigate(`/chat/${vars.wsId}/${data.sessionId}`);
+    },
+    onError: (err: unknown) => {
+      queryClient.invalidateQueries({ queryKey: ["workspaces"] });
+      setHarnessPickError({
+        message:
+          err instanceof ApiClientError && err.body?.error
+            ? err.body.error
+            : "Failed to create session.",
+      });
+    },
+  });
+
+  const handleFirstSession = () => {
+    if (firstSessionMutation.isPending) return;
+    setHarnessPickError(null);
+    // One enabled harness: no decision to make — bind silently, no
+    // modal (mirrors the sidebar's handleNewSession).
+    if (harnessOptions.length <= 1) {
+      if (workspaceId) firstSessionMutation.mutate({ wsId: workspaceId, harness: harnessOptions[0] });
+      return;
+    }
+    setShowHarnessPicker(true);
+  };
+
+  // D3 alert fallback: a failure on the dialog-less silent-bind path
+  // (single enabled harness) has no inline surface — alert it with the
+  // honest class text. Keyed by error-object identity so a re-render,
+  // or the user later closing a dialog that carried the same failure,
+  // never re-alerts; each new failure gets a fresh object.
+  const alertedPickErrorRef = useRef<{ message: string } | null>(null);
+  useEffect(() => {
+    if (!harnessPickError || showHarnessPicker) return;
+    if (alertedPickErrorRef.current === harnessPickError) return;
+    alertedPickErrorRef.current = harnessPickError;
+    try { window.alert(harnessPickError.message); } catch { /* blocked */ }
+  }, [harnessPickError, showHarnessPicker]);
 
   // activeWorkspaceId gates history fetching, chat, and session hooks on the
   // workspace being Active — these all require a reachable pod.
@@ -1114,6 +1218,13 @@ export function ChatPage() {
 
   const isSuspended = status?.phase === "Suspended";
   const isTransitioning = !status?.phase || status?.phase === "Pending" || status?.phase === "Creating" || status?.phase === "Resuming" || status?.phase === "Suspending";
+  // D1: parked-unbound = transitioning while the listing says no
+  // harness is bound. An unbound workspace parks in Creating (the
+  // controller builds no pod before the bind), so any transitioning
+  // state on an unbound workspace IS the park — it never becomes
+  // Active without a session bind, and "a few seconds" would be a
+  // lie.
+  const parkedUnbound = isTransitioning && harnessUnbound;
   const phaseLabel = status?.phase ? status.phase.toLowerCase() : "loading";
 
   const handleSend = (text: string, files: string[]) => {
@@ -1249,12 +1360,48 @@ export function ChatPage() {
       )}
 
       {isTransitioning && (
-        <div className="flex flex-1 flex-col items-center justify-center gap-4 text-muted-foreground">
-          <Spinner size="lg" />
-          <div className="text-center">
-            <p className="text-base font-medium">Workspace is {phaseLabel}...</p>
-            <p className="mt-1 text-sm">This usually takes a few seconds</p>
-          </div>
+        <div
+          className="flex flex-1 flex-col items-center justify-center gap-4 text-muted-foreground"
+          aria-live="polite"
+        >
+          {parkedUnbound ? (
+            /* D1: a parked-unbound workspace is not "creating" — no pod
+             * is built until the harness bind. The honest panel names
+             * the wait and carries the flow's mobile-visible entrance
+             * (the sidebar's + button is drawer-hidden on mobile). */
+            <div className="text-center" data-testid="harness-first-session-panel">
+              <p className="text-base font-medium">Waiting for harness selection</p>
+              <p className="mt-1 text-sm">
+                This workspace won&apos;t start building until you choose a coding agent for it.
+              </p>
+              {status?.message && (
+                <p className="mt-1 text-xs text-muted-foreground/80" data-testid="transitioning-status-message">
+                  {status.message}
+                </p>
+              )}
+              <Button
+                className="mt-4"
+                onClick={handleFirstSession}
+                disabled={firstSessionMutation.isPending}
+                data-testid="first-session-cta"
+              >
+                {firstSessionMutation.isPending ? "Creating…" : "Start first session"}
+              </Button>
+            </div>
+          ) : (
+            <>
+              <Spinner size="lg" />
+              <div className="text-center">
+                <p className="text-base font-medium">Workspace is {phaseLabel}...</p>
+                {/* D2: the controller's own state text when it sets one
+                 * (parks and progress states read honestly); the
+                 * generic time estimate is only the fallback. */}
+                <p className="mt-1 text-sm" data-testid="transitioning-status-message">
+                  {status?.message ?? "This usually takes a few seconds"}
+                </p>
+              </div>
+            </>
+          )}
         </div>
       )}
 
@@ -1378,6 +1525,24 @@ export function ChatPage() {
         <div className="flex flex-1 items-center justify-center">
           <Spinner />
         </div>
+      ) : (isReady && !sessionId && !listLoaded) ? (
+        /* Review r2 F1: the D4 auto-create gate waits for the workspace
+         * listing (the unbound flag's source) — that window must read as
+         * loading, and a FAILED listing must offer a retry instead of a
+         * silent dead composer (nothing else re-fetches it until a
+         * focus change). */
+        listLoadError ? (
+          <div className="flex flex-1 flex-col items-center justify-center gap-3 text-muted-foreground">
+            <p className="text-sm">Couldn&apos;t load the workspace list — retry to start your session.</p>
+            <Button variant="outline" size="sm" onClick={() => void refetchWorkspaceList()}>
+              Retry
+            </Button>
+          </div>
+        ) : (
+          <div className="flex flex-1 items-center justify-center">
+            <Spinner />
+          </div>
+        )
       ) : (
         <div className="flex-1 min-h-0">
           <ChatView
@@ -1389,7 +1554,15 @@ export function ChatPage() {
             onNewSession={() => {
               // Pending guard mirrors the auto-create path: a rapid
               // double-invoke must not mint duplicate "New chat"s.
-              if (workspaceId && !createSessionMutation.isPending) createSessionMutation.mutate(workspaceId);
+              // D4: an unbound workspace (latent — see the auto-create
+              // guard) routes to the first-session flow instead of a
+              // harness-less create.
+              if (!workspaceId || createSessionMutation.isPending) return;
+              if (harnessUnbound) {
+                handleFirstSession();
+                return;
+              }
+              createSessionMutation.mutate(workspaceId);
             }}
             onSend={handleSend}
             onAbort={() => {
@@ -1461,6 +1634,25 @@ export function ChatPage() {
           />
         </div>
       )}
+      {/* D1/D3: the first-session picker's ChatPage entrance — the
+       * flow's only mobile-visible route to it (the sidebar's + button
+       * lives in the drawer-hidden sidebar). Stays open through
+       * submit; failure renders the server's error class inline,
+       * success navigates to the session. */}
+      <HarnessPickerDialog
+        open={showHarnessPicker}
+        onOpenChange={(open) => {
+          setShowHarnessPicker(open);
+          if (!open) setHarnessPickError(null);
+        }}
+        workspaceName={workspaceName || "this workspace"}
+        options={harnessOptions}
+        submitting={firstSessionMutation.isPending}
+        error={harnessPickError?.message ?? null}
+        onSubmit={(harness) => {
+          if (workspaceId) firstSessionMutation.mutate({ wsId: workspaceId, harness });
+        }}
+      />
       {confirmDialog}
     </div>
   );

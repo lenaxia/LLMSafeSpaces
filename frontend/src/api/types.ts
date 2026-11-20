@@ -165,6 +165,12 @@ export interface DiskRecoveryReport {
 
 export interface WorkspaceStatus {
   phase: string;
+  /** Controller-set state text (WorkspaceStatusResult.Message): the
+   * parked-unbound park writes "waiting for harness selection" (no pod
+   * is built until the bind — bind-once story D2); pod-building and
+   * other transitions carry their own message or none. Rendered in the
+   * transitioning panel so parked-unbound never reads as pod-building. */
+  message?: string;
   podName?: string;
   endpoint?: string;
   credentialState?: CredentialState;
