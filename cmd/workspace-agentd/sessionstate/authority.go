@@ -177,6 +177,17 @@ type Config struct {
 	// publication discipline); a panic is contained and counted, never
 	// thrown into the harness turn (R4).
 	BoardTurnEndProbe func(sessionID string, turnStart time.Time) BoardTurnEndFacts
+	// BoardTurnEndUngated (#2100 transport v2, lease-evidence-core
+	// design §2.1): emit EVENT_TYPE_BOARD_TURN_END for EVERY
+	// harness-attested busy→idle transition — the claim-holder consult
+	// above is DELETED under this flag (the registry gate the #2100-A
+	// incident proved EROFS-dead), `advanced` is emitted false always
+	// (the verdict derives store-side at the consumer), and the payload
+	// carries the turn window's absolute start. The API consumer's
+	// assignee-match is the claim filter: a user chat's turn-end
+	// matches no claim and is inert. Default false = the v1 path
+	// verbatim.
+	BoardTurnEndUngated bool
 }
 
 // BoardTurnEndFacts is the board seam's verdict for one observed turn

@@ -277,7 +277,8 @@ type Event struct {
 }
 
 type BoardTurnEnd struct {
-	Advanced       bool   `json:"advanced,omitempty"`
-	Epoch          uint64 `json:"epoch,omitempty"`
-	TurnDurationMs int64  `json:"turnDurationMs,omitempty"`
+	Advanced            bool   `json:"advanced,omitempty"`
+	Epoch               uint64 `json:"epoch,omitempty"`
+	TurnDurationMs      int64  `json:"turnDurationMs,omitempty"`
+	TurnStartedAtUnixMs int64  `json:"turnStartedAtUnixMs,omitempty"`
 }

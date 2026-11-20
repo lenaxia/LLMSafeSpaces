@@ -338,15 +338,29 @@ type Config struct {
 		// mint before presence-only renewal declines and the wedge
 		// verdict owns the row (NoAdvanceHeartbeatCap on the board
 		// engine config). <=0 falls back to the engine default (3).
-		NoAdvanceHeartbeatCap  int `mapstructure:"noAdvanceHeartbeatCap"`
-		ThrottleBackoffSeconds int `mapstructure:"throttleBackoffSeconds"`
-		FailureBackoffSeconds  int `mapstructure:"failureBackoffSeconds"`
-		DRRQuantum             int `mapstructure:"drrQuantum"`
-		SweepSeconds           int `mapstructure:"sweepSeconds"`
-		UserClaimCap           int `mapstructure:"userClaimCap"`
-		GlobalClaimCap         int `mapstructure:"globalClaimCap"`
-		MaxEdgesPerNode        int `mapstructure:"maxEdgesPerNode"`
-		MaxNodesPerEpic        int `mapstructure:"maxNodesPerEpic"`
+		NoAdvanceHeartbeatCap int `mapstructure:"noAdvanceHeartbeatCap"`
+		// #2100: the nudge rung's measurement window (seconds) — the
+		// challenge's cost, DECOUPLED from leaseSeconds (the 45→20m
+		// lease retune stays a separately-gated phase, never coupled
+		// here). Default 600; the loader floors the knob at 300 (the
+		// engine honors any positive value so integration pins can run
+		// sub-floor windows — the 200ms LeaseDuration precedent).
+		NudgeMeasureWindowSeconds int `mapstructure:"nudgeMeasureWindowSeconds"`
+		// PresenceV2 arms the store-native evidence transport (#2100,
+		// design Phase 2): ungated turn-end emission + store-side
+		// advance derivation — the file-artifact class stops being
+		// authoritative. Default TRUE (the class-kill IS the fix);
+		// false is the kill-switch restoring the v1 path verbatim on
+		// BOTH halves (the agentd side reads the same env).
+		PresenceV2             bool `mapstructure:"presenceV2"`
+		ThrottleBackoffSeconds int  `mapstructure:"throttleBackoffSeconds"`
+		FailureBackoffSeconds  int  `mapstructure:"failureBackoffSeconds"`
+		DRRQuantum             int  `mapstructure:"drrQuantum"`
+		SweepSeconds           int  `mapstructure:"sweepSeconds"`
+		UserClaimCap           int  `mapstructure:"userClaimCap"`
+		GlobalClaimCap         int  `mapstructure:"globalClaimCap"`
+		MaxEdgesPerNode        int  `mapstructure:"maxEdgesPerNode"`
+		MaxNodesPerEpic        int  `mapstructure:"maxNodesPerEpic"`
 		// #1966 worker retention: hard cap on worker sessions per
 		// workspace (oldest hard-deleted past it) and the grace floor
 		// (never delete a worker session updated more recently than
@@ -512,6 +526,9 @@ func Load(path string) (*Config, error) {
 	// (one nudge-measurement window + one response-grace window).
 	v.SetDefault("board.heartbeatLapseSeconds", 5400)
 	v.SetDefault("board.noAdvanceHeartbeatCap", 3)
+	// #2100: the nudge measurement window — default 10m.
+	v.SetDefault("board.nudgeMeasureWindowSeconds", 600)
+	v.SetDefault("board.presenceV2", true)
 	v.SetDefault("board.throttleBackoffSeconds", 300)
 	// #1813: failed-attempt auto-return-to-ready BASE backoff (doubling
 	// per consecutive failure, capped at 1h engine-side).
@@ -964,6 +981,12 @@ func applyBoardEnvOverrides(config *Config) {
 	if n, ok := envInt("LLMSAFESPACES_BOARD_NOADVANCEHEARTBEATCAP"); ok {
 		config.Board.NoAdvanceHeartbeatCap = n
 	}
+	if n, ok := envInt("LLMSAFESPACES_BOARD_NUDGEMEASUREWINDOW"); ok {
+		config.Board.NudgeMeasureWindowSeconds = n
+	}
+	if v, ok := envBool("LLMSAFESPACES_BOARD_PRESENCEV2"); ok {
+		config.Board.PresenceV2 = v
+	}
 	if n, ok := envInt("LLMSAFESPACES_BOARD_THROTTLEBACKOFFSECONDS"); ok {
 		config.Board.ThrottleBackoffSeconds = n
 	}
@@ -1030,6 +1053,19 @@ func applyBoardEnvOverrides(config *Config) {
 	if strings.TrimSpace(config.Board.LeaseEventbus.Password) == "" {
 		config.Board.LeaseEventbus.Password = config.Board.Eventbus.Password
 	}
+}
+
+// envBool parses a boolean env var (ok=false when unset/invalid).
+func envBool(key string) (bool, bool) {
+	v := strings.TrimSpace(os.Getenv(key))
+	if v == "" {
+		return false, false
+	}
+	b, err := strconv.ParseBool(v)
+	if err != nil {
+		return false, false
+	}
+	return b, true
 }
 
 // envInt parses a positive integer env var (ok=false when unset/invalid).

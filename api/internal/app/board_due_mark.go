@@ -60,7 +60,18 @@ import (
 // boardLivenessDegraded: process-visible on /debug/vars.
 var boardDueMarksDropped expvar.Int
 
-func init() { expvar.Publish("board_due_marks_dropped", &boardDueMarksDropped) }
+// boardTurnEndsFolded counts turn-end events the consumer ACCEPTED
+// (past the epoch watermark) — the event channel's own heartbeat
+// (#2100 design §1.3/§2.3): the numerator of the adoption spine
+// (board_due_marks_total{trigger=event} share) and the input of the
+// board_health event_channel line. A folding-dead process reads ZERO
+// here while claims exist — the #2100 invisibility, closed.
+var boardTurnEndsFolded expvar.Int
+
+func init() {
+	expvar.Publish("board_due_marks_dropped", &boardDueMarksDropped)
+	expvar.Publish("board_turn_end_events_folded_total", &boardTurnEndsFolded)
+}
 
 const (
 	// boardTurnEndQueueDepth bounds the dispatch queue: turn-ends are
@@ -78,11 +89,19 @@ const (
 // (*board.Service).ConsumeTurnEnd; tests fake it).
 type boardTurnEndSink func(ctx context.Context, e board.TurnEndDueMark) (bool, error)
 
-// boardTurnEndConsumer is the fold observer + drain pair.
+// boardTurnEndConsumer is the fold observer + drain pair. The hub
+// (optional; nil in unit tests) receives the #2100-B rebaseline after
+// every due-mark the sink lands — the masking fix: the observation
+// cursors re-base at the mark so the parking turn's own frames cannot
+// read as first-observation movement one sweep later.
 type boardTurnEndConsumer struct {
 	sink   boardTurnEndSink
 	logger *logger.Logger
+	hub    *boardLivenessHub
 	ch     chan board.TurnEndDueMark
+	// lastFoldNano is the last accepted fold's stamp (unix nanos; 0 =
+	// never) — the health assembly's event_channel input.
+	lastFoldNano atomic.Int64
 
 	mu      sync.Mutex
 	epochs  map[string]uint64 // canonical session key → last dispatched epoch
@@ -90,17 +109,30 @@ type boardTurnEndConsumer struct {
 	dropped atomic.Bool       // overflow latched for one warn (loud-once posture); atomic — written by the fold goroutine, reset by the drain (review r1: the plain bool was a data race)
 }
 
-func newBoardTurnEndConsumer(sink boardTurnEndSink, logger *logger.Logger) *boardTurnEndConsumer {
+func newBoardTurnEndConsumer(sink boardTurnEndSink, logger *logger.Logger, hub *boardLivenessHub) *boardTurnEndConsumer {
 	// logger may be nil only in tests that never exercise the warn
 	// paths; production always passes the app logger. A nil logger is
 	// tolerated by never being dereferenced outside the failure paths
-	// (the drop counters carry the signal regardless).
+	// (the drop counters carry the signal regardless). hub may be nil
+	// (unit tests) — the rebaseline is a no-op then.
 	return &boardTurnEndConsumer{
 		sink:   sink,
 		logger: logger,
+		hub:    hub,
 		ch:     make(chan board.TurnEndDueMark, boardTurnEndQueueDepth),
 		epochs: map[string]uint64{},
 	}
+}
+
+// lastFoldAt renders the last accepted fold's time (zero = never
+// folded) — wired into the board service's health source at app
+// assembly (SetTurnEndFoldSource).
+func (c *boardTurnEndConsumer) lastFoldAt() time.Time {
+	ns := c.lastFoldNano.Load()
+	if ns == 0 {
+		return time.Time{}
+	}
+	return time.Unix(0, ns).UTC()
 }
 
 // ObserveFrame is the usagestream OnFrame observer (the composite's
@@ -144,13 +176,25 @@ func (c *boardTurnEndConsumer) ObserveFrame(workspaceID string, evt *abiv1.Event
 	}
 	c.mu.Unlock()
 
-	e := board.TurnEndDueMark{
-		WorkspaceID: workspaceID,
-		SessionRefs: refs,
-		Epoch:       payload.GetEpoch(),
-		Advanced:    payload.GetAdvanced(),
-		ObservedAt:  time.Now().UTC(),
+	// The channel's heartbeat ticks at ACCEPTANCE (post-watermark):
+	// dropped-at-the-queue events still count as folded (the channel
+	// is alive; the queue is the pressure point), watermark-dropped
+	// redeliveries do not (the channel saw them — the emitter is the
+	// one replaying).
+	boardTurnEndsFolded.Add(1)
+	turnStart := time.Time{}
+	if ms := payload.GetTurnStartedAtUnixMs(); ms > 0 {
+		turnStart = time.UnixMilli(ms).UTC()
 	}
+	e := board.TurnEndDueMark{
+		WorkspaceID:   workspaceID,
+		SessionRefs:   refs,
+		Epoch:         payload.GetEpoch(),
+		Advanced:      payload.GetAdvanced(),
+		TurnStartedAt: turnStart,
+		ObservedAt:    time.Now().UTC(),
+	}
+	c.lastFoldNano.Store(e.ObservedAt.UnixNano())
 	select {
 	case c.ch <- e:
 	default:
@@ -186,13 +230,23 @@ func (c *boardTurnEndConsumer) Run(ctx context.Context) {
 						}
 					}
 				}()
-				if _, err := c.sink(ctx, e); err != nil {
+				marked, sinkErr := c.sink(ctx, e)
+				if sinkErr != nil {
 					// A failed write is a missed acceleration only —
 					// the sweep converges the row. Log at debug-adjacent
 					// volume: transient pool pressure is routine.
 					if c.logger != nil {
-						c.logger.Warn("board turn-end consumer: due-mark write failed (sweep backstop owns the row)", "workspace", e.WorkspaceID, "error", err)
+						c.logger.Warn("board turn-end consumer: due-mark write failed (sweep backstop owns the row)", "workspace", e.WorkspaceID, "error", sinkErr)
 					}
+				}
+				// #2100-B: a LANDED due-mark rebaselines the hub's
+				// observation cursors NOW — the next sweep measures from
+				// the mark (pre-fix: the parking turn's trailing frames
+				// read as first-observation movement and ladderRenew
+				// erased the acceleration). Failure is loud and retried by
+				// nothing (the next due-mark re-runs it; one-window cost).
+				if marked {
+					c.hub.Rebaseline(ctx, e.SessionRefs)
 				}
 			}()
 		}

@@ -154,6 +154,10 @@ type Service struct {
 	// semantics (the nudge ladder + heartbeat response floor still run
 	// when a nudger is wired), every existing guarantee intact.
 	lives AssigneeLivenessSource
+	// turnEndFold answers the last BOARD_TURN_END fold time for the
+	// health assembly's event_channel line (#2100 design §1.3). Nil =
+	// the line is absent. Wired by the app beside the consumer.
+	turnEndFold func() time.Time
 	// salvage is the salvage-prefer terminal's probe seam (the claim
 	// wait lifecycle, §5): the two worker-claim exhaustion sites
 	// (claimOnce + TaskStart escalate arms) consult it before writing
@@ -289,6 +293,17 @@ func NewService(pool *pgxpool.Pool, cfg EngineConfig, opts ...Option) *Service {
 
 // Config returns the effective engine config.
 func (s *Service) Config() EngineConfig { return s.cfg }
+
+// SetTurnEndFoldSource wires the turn-end event channel's heartbeat
+// (#2100 design §1.3): fn answers the last time THIS process folded a
+// BOARD_TURN_END event (zero = never). The board_health assembly
+// compares that age against claims-active — the surface that makes a
+// dead fold leg read DEGRADED instead of invisible (the #2100
+// observability gap: claims existed, events folded 0, nothing compared
+// them). Nil/unset keeps the event_channel line absent (back-compat).
+// The source is read per health call; the app wires the consumer's
+// atomic stamp.
+func (s *Service) SetTurnEndFoldSource(fn func() time.Time) { s.turnEndFold = fn }
 
 // --- Inputs ------------------------------------------------------------------
 

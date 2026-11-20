@@ -90,6 +90,7 @@ func writeAdvanceStamp(t *testing.T, path, sid string, at time.Time) {
 // TestPiBoardTurnEnd_UserSessionNeverJournals: R1 — a session absent
 // from the worker registry (a user chat) never journals.
 func TestPiBoardTurnEnd_UserSessionNeverJournals(t *testing.T) {
+	resetBoardTransportV2(t, false) // the v1 transport's world (the flag selects; these pins own the off-half)
 	journal, _, _ := piTurnEndEnv(t)
 
 	piBoardTurnEndObserver("ses_user", time.Now().Add(-time.Second), time.Now())
@@ -100,6 +101,7 @@ func TestPiBoardTurnEnd_UserSessionNeverJournals(t *testing.T) {
 // TestPiBoardTurnEnd_WorkerNoAdvance: the no-advance arm —
 // advanced=false, epoch=1, positive duration, raw session id.
 func TestPiBoardTurnEnd_WorkerNoAdvance(t *testing.T) {
+	resetBoardTransportV2(t, false) // the v1 transport's world (the flag selects; these pins own the off-half)
 	journal, _, _ := piTurnEndEnv(t)
 	busySince := time.Now().Add(-50 * time.Millisecond)
 
@@ -119,6 +121,7 @@ func TestPiBoardTurnEnd_WorkerNoAdvance(t *testing.T) {
 // TestPiBoardTurnEnd_AdvanceWindow: the advanced flag honors the turn
 // window — a stamp inside the window advances; one before it does not.
 func TestPiBoardTurnEnd_AdvanceWindow(t *testing.T) {
+	resetBoardTransportV2(t, false) // the v1 transport's world (the flag selects; these pins own the off-half)
 	journal, advances, _ := piTurnEndEnv(t)
 	busySince := time.Now().Add(-2 * time.Second)
 
@@ -139,6 +142,7 @@ func TestPiBoardTurnEnd_AdvanceWindow(t *testing.T) {
 // TestPiBoardTurnEnd_AdvanceBeforeWindowOnly: only a stale stamp
 // exists — advanced=false (window discipline, tail side).
 func TestPiBoardTurnEnd_AdvanceBeforeWindowOnly(t *testing.T) {
+	resetBoardTransportV2(t, false) // the v1 transport's world (the flag selects; these pins own the off-half)
 	journal, advances, _ := piTurnEndEnv(t)
 	busySince := time.Now()
 	writeAdvanceStamp(t, advances, "ses_pw", busySince.Add(-time.Minute))
@@ -153,6 +157,7 @@ func TestPiBoardTurnEnd_AdvanceBeforeWindowOnly(t *testing.T) {
 // TestPiBoardTurnEnd_EpochFromJournalCount: the epoch is the journal's
 // per-session line count + 1 — restart-stable, monotone.
 func TestPiBoardTurnEnd_EpochFromJournalCount(t *testing.T) {
+	resetBoardTransportV2(t, false) // the v1 transport's world (the flag selects; these pins own the off-half)
 	journal, _, _ := piTurnEndEnv(t)
 
 	now := time.Now()
@@ -168,6 +173,7 @@ func TestPiBoardTurnEnd_EpochFromJournalCount(t *testing.T) {
 // TestPiBoardTurnEnd_ZeroBusySince: a settle without a busy anchor (a
 // restart gap) journals duration=0 — never negative, never invented.
 func TestPiBoardTurnEnd_ZeroBusySince(t *testing.T) {
+	resetBoardTransportV2(t, false) // the v1 transport's world (the flag selects; these pins own the off-half)
 	journal, _, _ := piTurnEndEnv(t)
 
 	piBoardTurnEndObserver("ses_pw", time.Time{}, time.Now())
@@ -180,6 +186,7 @@ func TestPiBoardTurnEnd_ZeroBusySince(t *testing.T) {
 // TestPiBoardTurnEnd_AppendFailureCounted: an unwritable journal (a
 // directory in the way) is contained — no panic, the failure counted.
 func TestPiBoardTurnEnd_AppendFailureCounted(t *testing.T) {
+	resetBoardTransportV2(t, false) // the v1 transport's world (the flag selects; these pins own the off-half)
 	journal, _, _ := piTurnEndEnv(t)
 	require.NoError(t, os.Mkdir(journal, 0o750)) // the journal path is a directory
 	before := boardTurnEndPiFails.Load()
@@ -193,6 +200,7 @@ func TestPiBoardTurnEnd_AppendFailureCounted(t *testing.T) {
 // TestPiBoardTurnEnd_CompactionKeepsTail: past the bound, the journal
 // rewrites keeping the newest 1000 lines (temp + rename).
 func TestPiBoardTurnEnd_CompactionKeepsTail(t *testing.T) {
+	resetBoardTransportV2(t, false) // the v1 transport's world (the flag selects; these pins own the off-half)
 	journal, _, _ := piTurnEndEnv(t)
 	var lines []byte
 	for i := 0; i < 1005; i++ {
@@ -214,6 +222,7 @@ func TestPiBoardTurnEnd_CompactionKeepsTail(t *testing.T) {
 // observer exactly once per transition; the corroboration poll settles
 // the cell identically and NEVER fires it.
 func TestPiBoardTurnEnd_EmissionSiteIsTheAttestedFold(t *testing.T) {
+	resetBoardTransportV2(t, false) // the v1 transport's world (the flag selects; these pins own the off-half)
 	agg := newPiStateAggregator()
 	var fired []string
 	var busySinceSeen []time.Time

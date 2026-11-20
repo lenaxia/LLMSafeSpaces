@@ -64,7 +64,7 @@ func turnEndFrame(ws, internal, phrase string, epoch uint64, advanced bool) (str
 
 func TestBoardTurnEndConsumer_FiltersForwardsAndExtracts(t *testing.T) {
 	sink := newRecordingSink()
-	c := newBoardTurnEndConsumer(sink.deliver, nil)
+	c := newBoardTurnEndConsumer(sink.deliver, nil, nil)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	go c.Run(ctx)
@@ -98,7 +98,7 @@ func TestBoardTurnEndConsumer_FiltersForwardsAndExtracts(t *testing.T) {
 
 func TestBoardTurnEndConsumer_EpochWatermarkDropsStaleAndDuplicate(t *testing.T) {
 	sink := newRecordingSink()
-	c := newBoardTurnEndConsumer(sink.deliver, nil)
+	c := newBoardTurnEndConsumer(sink.deliver, nil, nil)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	go c.Run(ctx)
@@ -127,7 +127,7 @@ func TestBoardTurnEndConsumer_EpochWatermarkDropsStaleAndDuplicate(t *testing.T)
 
 func TestBoardTurnEndConsumer_QueueOverflowDropsNeverBlocks(t *testing.T) {
 	sink := newRecordingSink() // NO Run(): the queue fills untouched
-	c := newBoardTurnEndConsumer(sink.deliver, nil)
+	c := newBoardTurnEndConsumer(sink.deliver, nil, nil)
 
 	before := boardDueMarksDropped.Value()
 	// Fill the queue (boardTurnEndQueueDepth distinct epochs — the
@@ -159,7 +159,7 @@ func TestBoardTurnEndConsumer_OverflowWhileDraining(t *testing.T) {
 		dispatched <- e
 		return true, nil
 	}
-	c := newBoardTurnEndConsumer(sink, nil)
+	c := newBoardTurnEndConsumer(sink, nil, nil)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	go c.Run(ctx)
@@ -218,7 +218,7 @@ func TestBoardTurnEndConsumer_RunContainsSinkPanic(t *testing.T) {
 	sink := func(context.Context, board.TurnEndDueMark) (bool, error) {
 		panic("sink exploded")
 	}
-	c := newBoardTurnEndConsumer(sink, nil)
+	c := newBoardTurnEndConsumer(sink, nil, nil)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	go c.Run(ctx)
@@ -249,7 +249,7 @@ func TestBoardTurnEndConsumer_RunContainsSinkPanic(t *testing.T) {
 func TestBoardTurnEndConsumption_NeverStampsWorkerIndex(t *testing.T) {
 	hub := newBoardLivenessHub(nil)
 	sink := newRecordingSink()
-	c := newBoardTurnEndConsumer(sink.deliver, nil)
+	c := newBoardTurnEndConsumer(sink.deliver, nil, nil)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	go c.Run(ctx)

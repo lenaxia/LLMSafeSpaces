@@ -1939,13 +1939,22 @@ func (x *Event) GetBoardTurnEnd() *BoardTurnEnd {
 // the turn window's length (busy-mark to settle). #2042 contract: the
 // event is management-class — zero liveness/renewal authority; never
 // stamped into worker-activity evidence.
+//
+// #2100 transport v2 (lease-evidence-core design §2.1): emission is
+// UNGATED (every harness turn-end publishes; the API consumer's
+// assignee-match is the claim filter), `advanced` is emitted false
+// always and DEPRECATED at emission (the verdict derives store-side
+// from board_transitions/board_events inside `turn_started_at_unix_ms`'s
+// window — turn_started_at is the authority's busy-mark anchor, unix
+// milliseconds, 0 = absent for pre-v2 emitters).
 type BoardTurnEnd struct {
-	state          protoimpl.MessageState `protogen:"open.v1"`
-	Advanced       bool                   `protobuf:"varint,1,opt,name=advanced,proto3" json:"advanced,omitempty"`
-	Epoch          uint64                 `protobuf:"varint,2,opt,name=epoch,proto3" json:"epoch,omitempty"`
-	TurnDurationMs int64                  `protobuf:"varint,3,opt,name=turn_duration_ms,json=turnDurationMs,proto3" json:"turn_duration_ms,omitempty"`
-	unknownFields  protoimpl.UnknownFields
-	sizeCache      protoimpl.SizeCache
+	state               protoimpl.MessageState `protogen:"open.v1"`
+	Advanced            bool                   `protobuf:"varint,1,opt,name=advanced,proto3" json:"advanced,omitempty"`
+	Epoch               uint64                 `protobuf:"varint,2,opt,name=epoch,proto3" json:"epoch,omitempty"`
+	TurnDurationMs      int64                  `protobuf:"varint,3,opt,name=turn_duration_ms,json=turnDurationMs,proto3" json:"turn_duration_ms,omitempty"`
+	TurnStartedAtUnixMs int64                  `protobuf:"varint,4,opt,name=turn_started_at_unix_ms,json=turnStartedAtUnixMs,proto3" json:"turn_started_at_unix_ms,omitempty"`
+	unknownFields       protoimpl.UnknownFields
+	sizeCache           protoimpl.SizeCache
 }
 
 func (x *BoardTurnEnd) Reset() {
@@ -1995,6 +2004,13 @@ func (x *BoardTurnEnd) GetEpoch() uint64 {
 func (x *BoardTurnEnd) GetTurnDurationMs() int64 {
 	if x != nil {
 		return x.TurnDurationMs
+	}
+	return 0
+}
+
+func (x *BoardTurnEnd) GetTurnStartedAtUnixMs() int64 {
+	if x != nil {
+		return x.TurnStartedAtUnixMs
 	}
 	return 0
 }
@@ -2150,11 +2166,12 @@ const file_llmsafespaces_abi_v1_contract_proto_rawDesc = "" +
 	"\x05input\x18\v \x01(\v2\".llmsafespaces.abi.v1.InputRequestR\x05input\x121\n" +
 	"\x05error\x18\f \x01(\v2\x1b.llmsafespaces.abi.v1.ErrorR\x05error\x12.\n" +
 	"\x13internal_session_id\x18\r \x01(\tR\x11internalSessionId\x12H\n" +
-	"\x0eboard_turn_end\x18\x0e \x01(\v2\".llmsafespaces.abi.v1.BoardTurnEndR\fboardTurnEnd\"j\n" +
+	"\x0eboard_turn_end\x18\x0e \x01(\v2\".llmsafespaces.abi.v1.BoardTurnEndR\fboardTurnEnd\"\xa0\x01\n" +
 	"\fBoardTurnEnd\x12\x1a\n" +
 	"\badvanced\x18\x01 \x01(\bR\badvanced\x12\x14\n" +
 	"\x05epoch\x18\x02 \x01(\x04R\x05epoch\x12(\n" +
-	"\x10turn_duration_ms\x18\x03 \x01(\x03R\x0eturnDurationMs*\xd3\x01\n" +
+	"\x10turn_duration_ms\x18\x03 \x01(\x03R\x0eturnDurationMs\x124\n" +
+	"\x17turn_started_at_unix_ms\x18\x04 \x01(\x03R\x13turnStartedAtUnixMs*\xd3\x01\n" +
 	"\rSessionStatus\x12\x1e\n" +
 	"\x1aSESSION_STATUS_UNSPECIFIED\x10\x00\x12\x1a\n" +
 	"\x16SESSION_STATUS_UNKNOWN\x10\x01\x12\x17\n" +

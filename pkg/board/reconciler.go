@@ -781,10 +781,10 @@ func (s *Service) rc1Reclaims(ctx context.Context) (int, error) {
 			// one clock domain, no wall-clock comparison. Pinned:
 			// TestPin_LeaseLadder_HeartbeatInSendWindowIsNotLost.
 			if _, err := tx.Exec(ctx, `
-				UPDATE tasks SET nudge_id=$2, nudged_at=now(),
-					lease_expires_at=now()+make_interval(secs=>$3::float8), updated_at=now()
-				WHERE id=$1 AND stage='in_progress'`,
-				v.id, nudgeIDs[v.id], s.cfg.LeaseDuration.Seconds()); err != nil {
+			UPDATE tasks SET nudge_id=$2, nudged_at=now(),
+				lease_expires_at=now()+make_interval(secs=>$3::float8), updated_at=now()
+			WHERE id=$1 AND stage='in_progress'`,
+				v.id, nudgeIDs[v.id], s.cfg.nudgeMeasureWindowOrDefault().Seconds()); err != nil {
 				return 0, err
 			}
 			// Sentinel-keyed (episode-unique AND re-sweep-idempotent):

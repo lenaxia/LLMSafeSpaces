@@ -297,6 +297,10 @@ func newStateAuthority(client *OpenCodeClient, password, controlPlanePassword st
 		// feature is unwired (degraded); this wiring IS the opencode
 		// leg's probe backend (board_turn_ledger.go).
 		BoardTurnEndProbe: boardTurnEmitterInst().facts,
+		// #2100 transport v2: ungated emission (the flag's kill-switch
+		// is LLMSAFESPACES_BOARD_PRESENCEV2, the same env the engine
+		// half reads; default ON — the class-kill is the fix).
+		BoardTurnEndUngated: boardTransportV2Enabled(),
 	}
 	a, err := sessionstate.New(cfg)
 	if err != nil {

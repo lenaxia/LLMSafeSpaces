@@ -54,6 +54,33 @@ type EngineConfig struct {
 	// gone assignee's row can stay pinned; 15m burned live workers
 	// mid-verification on long tool calls the watermark never stamped).
 	LeaseDuration time.Duration
+	// NudgeMeasureWindow is the nudge rung's measurement window (#2100,
+	// lease-evidence-core design §3): the sentinel-armed row re-enters
+	// the victims scan at +window, so the challenge's cost — the
+	// park→nudge→verdict latency — is DECOUPLED from LeaseDuration
+	// (which keeps its events-dead backstop and mid-turn coverage
+	// duties; the 45→20m lease retune stays a separately-gated phase
+	// and is NOT coupled here). Default 10m (≥3× the worst observed
+	// legitimate response latency); <=0 clamps to the default at
+	// validation. The deploy surface (config loader) floors the knob
+	// at 5m; the engine honors any positive value so the integration
+	// pins can run sub-floor windows exactly like the 200ms
+	// LeaseDuration precedent.
+	NudgeMeasureWindow time.Duration
+	// PresenceTransportV2 arms the store-native evidence transport
+	// (#2100, lease-evidence-core design Phase 2 — the class-kill):
+	// turn-end emission is ungated agentd-side (every harness busy→idle
+	// publishes; the consumer's assignee-match is the claim filter) and
+	// this engine derives the advance verdict from the platform's own
+	// store (board_transitions/board_events inside the turn window),
+	// never from the agentd-side file artifacts — with v2 armed the
+	// frozen-file class carries no authority (frozen-file hydration
+	// never wins over store truth). false = the v1 path verbatim (the
+	// emitter's declared flag is trusted; no store derivation) — the
+	// kill-switch both halves honor (env
+	// LLMSAFESPACES_BOARD_PRESENCEV2, default TRUE — the class-kill IS
+	// the fix).
+	PresenceTransportV2 bool
 	// HeartbeatLapseThreshold is how stale the worker-anchored progress
 	// clock (tasks.last_progress_at) may get on a lease-due row before
 	// the heartbeat-lapse arm fires (#2043, the 2026-11-15 incident's
@@ -130,6 +157,7 @@ func DefaultEngineConfig() EngineConfig {
 		AttemptsCap:             3,
 		FailureBackoff:          time.Minute,
 		LeaseDuration:           45 * time.Minute,
+		NudgeMeasureWindow:      10 * time.Minute,
 		HeartbeatLapseThreshold: 90 * time.Minute,
 		NoAdvanceHeartbeatCap:   3,
 		ThrottleBackoff:         5 * time.Minute,
@@ -141,6 +169,7 @@ func DefaultEngineConfig() EngineConfig {
 		MaxNodesPerEpic:         64,
 		WrapUpConsecutiveCap:    3,
 		PressureSampleTTL:       2 * time.Minute,
+		PresenceTransportV2:     true,
 	}
 }
 
@@ -188,6 +217,16 @@ const (
 	SurfaceAgentManager = "agent_manager" // (c-manager) the pod seam's manager projection (#1832 WS2; open to any in-workspace session — the manager-grant gate is repealed, ruling 2026-10-27 / tsk-copper-refectory-generates)
 	SurfaceReconciler   = "reconciler"    // system actor, engine-internal
 )
+
+// nudgeMeasureWindowOrDefault renders the validated measurement window
+// (the reconciler may be constructed with a hand-built config; the
+// rung must never extend by zero).
+func (c EngineConfig) nudgeMeasureWindowOrDefault() time.Duration {
+	if c.NudgeMeasureWindow <= 0 {
+		return 10 * time.Minute
+	}
+	return c.NudgeMeasureWindow
+}
 
 // failureBackoff is the #1813 auto-return-to-ready delay for the nth
 // consecutive failure: base << (n-1), capped at one hour (a crash-looping

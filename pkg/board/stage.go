@@ -776,6 +776,22 @@ func (s *Service) Heartbeat(ctx context.Context, actor Actor, taskID, shortIDOrI
 	// design: the back-fill's failure never fails the heartbeat.
 	s.backfillAssigneeStamp(ctx, t, actor)
 	serverNow := time.Now().UTC()
+	// #2100 response-observed presence: a heartbeat carrying NO
+	// declared watermark is a valid response — the arrival IS the
+	// evidence (the pre-fix shape stored the zero time as year-1: a
+	// client-hoped clock the store must never trust). But presence is
+	// NOT progress: an ARRIVAL-ONLY response counts as presence-only
+	// against the #2044 orbit budget — motion credit belongs to a
+	// DECLARED watermark past the mint (the budget's own contract), so
+	// K+1 bare heartbeats still decline and a responding-but-motionless
+	// worker never orbit-renews forever. The arrival writes NO progress
+	// clock (last_heartbeat_at, server clock, is its whole record) —
+	// which also keeps the ladder's no-epoch-motion detector honest
+	// for the cap's final verdict.
+	arrivalOnly := observedProgressAt.IsZero()
+	if arrivalOnly {
+		observedProgressAt = serverNow
+	}
 	switch {
 	case observedProgressAt.After(serverNow.Add(heartbeatFutureTolerance)):
 		return HeartbeatResult{}, &GuardError{Code: GuardInput, Detail: fmt.Sprintf(
@@ -795,36 +811,48 @@ func (s *Service) Heartbeat(ctx context.Context, actor Actor, taskID, shortIDOrI
 	// the #1959c bounce re-dispatch).
 	//
 	// #2044 (the heartbeat-orbit budget): a motionless response — its
-	// declared watermark did not cross the claim mint — counts against
-	// NoAdvanceHeartbeatCap. Below cap (or with motion) the response
-	// renews and clears the slot; at cap it DECLINES: the arrival is
-	// recorded (last_heartbeat_at), the cycle is counted, the sentinel
-	// stays ARMED, and the lease is NOT extended — so the next lapse
-	// proceeds to the wedge verdict instead of renewing forever. All
-	// CASE arms read the PRE-update row (SQL assignment semantics):
-	// "no_advance_renews < cap" is the count BEFORE this cycle.
+	// declared watermark did not cross the claim mint, OR it carried no
+	// watermark at all (#2100 arrival-only: presence is not progress) —
+	// counts against NoAdvanceHeartbeatCap. Below cap (or with declared
+	// motion) the response renews and clears the slot; at cap it
+	// DECLINES: the arrival is recorded (last_heartbeat_at), the cycle
+	// is counted, the sentinel stays ARMED, and the lease is NOT
+	// extended — so the next lapse proceeds to the wedge verdict
+	// instead of renewing forever. All CASE arms read the PRE-update
+	// row (SQL assignment semantics): "no_advance_renews < cap" is the
+	// count BEFORE this cycle. $6 carries arrival-only: the motion
+	// predicate requires a DECLARED stamp ($2 with NOT $6) — the
+	// arrival-only stamp (the server clock) never reads as motion, and
+	// last_progress_at is left UNTOUCHED for it (the response clock is
+	// last_heartbeat_at alone).
 	var lease, progress time.Time
 	var postNoAdvance int
 	var renewedSlot bool
 	responded := false
 	err = s.q().QueryRow(ctx, `
 		UPDATE tasks SET last_heartbeat_at=now(),
-			last_progress_at=$2, updated_at=now(),
-			no_advance_renews=CASE WHEN $2::timestamptz > stage_entered_at THEN 0 ELSE no_advance_renews+1 END,
-			lease_expires_at=CASE WHEN $2::timestamptz > stage_entered_at OR no_advance_renews < $5
+			last_progress_at=CASE WHEN $6::bool THEN last_progress_at ELSE $2 END, updated_at=now(),
+			no_advance_renews=CASE WHEN (NOT $6::bool) AND $2::timestamptz > stage_entered_at THEN 0 ELSE no_advance_renews+1 END,
+			lease_expires_at=CASE WHEN ((NOT $6::bool) AND $2::timestamptz > stage_entered_at) OR no_advance_renews < $5
 				THEN now()+make_interval(secs=>$3::float8) ELSE lease_expires_at END,
-			nudge_id=CASE WHEN $2::timestamptz > stage_entered_at OR no_advance_renews < $5 THEN NULL ELSE nudge_id END,
-			nudged_at=CASE WHEN $2::timestamptz > stage_entered_at OR no_advance_renews < $5 THEN NULL ELSE nudged_at END,
-			busy_renews=CASE WHEN $2::timestamptz > stage_entered_at OR no_advance_renews < $5 THEN 0 ELSE busy_renews END
+			nudge_id=CASE WHEN ((NOT $6::bool) AND $2::timestamptz > stage_entered_at) OR no_advance_renews < $5 THEN NULL ELSE nudge_id END,
+			nudged_at=CASE WHEN ((NOT $6::bool) AND $2::timestamptz > stage_entered_at) OR no_advance_renews < $5 THEN NULL ELSE nudged_at END,
+			busy_renews=CASE WHEN ((NOT $6::bool) AND $2::timestamptz > stage_entered_at) OR no_advance_renews < $5 THEN 0 ELSE busy_renews END
 		WHERE id=$1 AND stage IN ('in_progress','in_review') AND claim_token=$4
 		  AND NOT pending_input AND nudge_id IS NOT NULL
 		RETURNING lease_expires_at, no_advance_renews, (nudge_id IS NULL)`,
 		t.ID, observedProgressAt, s.cfg.LeaseDuration.Seconds(), actor.ClaimToken,
-		s.cfg.NoAdvanceHeartbeatCap).Scan(&lease, &postNoAdvance, &renewedSlot)
+		s.cfg.NoAdvanceHeartbeatCap, arrivalOnly).Scan(&lease, &postNoAdvance, &renewedSlot)
 	switch {
 	case err == nil:
 		responded = true
-		progress = observedProgressAt
+		if arrivalOnly {
+			// Presence-only: the row's standing progress clock IS the
+			// answer (nothing was written); never the arrival echo.
+			progress = derefTime(t.LastProgressAt)
+		} else {
+			progress = observedProgressAt
+		}
 		if !renewedSlot {
 			// The declined response leaves the lease untouched —
 			// surface the row's standing expiry, not the RETURNING

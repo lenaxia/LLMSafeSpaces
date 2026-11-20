@@ -39,7 +39,10 @@ import (
 	"go.uber.org/zap"
 )
 
-const boardTurnEndsDefaultPath = "/workspace/.opencode-board-turnends"
+// boardTurnEndsDefaultPath is the #2100-A remediated location: the
+// dual-RW /exchange subtree (FLAT name, 0070 — the pre-fix /workspace
+// default was read-only to this writer).
+const boardTurnEndsDefaultPath = "/exchange/.opencode-board-turnends"
 
 // boardTurnEndsPath resolves the turn-end journal's location (the
 // markerPathFromEnv pattern).
@@ -73,10 +76,19 @@ func piBoardTurnEndObserver(sessionID string, busySince, settledAt time.Time) {
 	if sid == "" {
 		return
 	}
-	if !sessionIsBoardWorkerViaFile(sid) {
-		return // claim-holders only — user chats never emit (R1)
+	advanced := false
+	if !boardTransportV2Enabled() {
+		// v1: the claim-holder file consult + the agentd-side advance
+		// derivation (the EROFS-dead path #2100 verified — kept as the
+		// flag-off world verbatim).
+		if !sessionIsBoardWorkerViaFile(sid) {
+			return // claim-holders only — user chats never emit (R1)
+		}
+		advanced = sessionHoldsBoardAdvance(nil, sid, busySince)
 	}
-	advanced := sessionHoldsBoardAdvance(nil, sid, busySince)
+	// v2: emit UNGATED with advanced=false — the API consumer's
+	// assignee-match is the claim filter and the STORE derives the
+	// advance verdict (design §2.1/§2.2).
 	epoch := countBoardTurnEnds(sid) + 1
 	duration := int64(0) //nolint:gosec // G115: turn durations are pod-lifetime bounded
 	if !busySince.IsZero() && settledAt.After(busySince) {

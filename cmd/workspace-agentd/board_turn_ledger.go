@@ -39,6 +39,7 @@ package main
 import (
 	"bufio"
 	"encoding/json"
+	"expvar"
 	"os"
 	"path/filepath"
 	"strings"
@@ -48,6 +49,13 @@ import (
 	"github.com/lenaxia/llmsafespaces/cmd/workspace-agentd/sessionstate"
 	"go.uber.org/zap"
 )
+
+// boardAdvanceTailWriteFailures counts the shared tail's open/append
+// failures (#2100 loud degradation — the design §1.2 gauge; the WARN
+// existed, the expvar did not).
+var boardAdvanceTailWriteFailures expvar.Int
+
+func init() { expvar.Publish("board_advance_tail_write_failures", &boardAdvanceTailWriteFailures) }
 
 // boardAdvanceTools is the advance set — the single definition of "this
 // board tool call advanced the worker's claim", pinned per source in
@@ -60,7 +68,10 @@ var boardAdvanceTools = map[string]bool{
 	"board_record_verdict":  true,
 }
 
-const boardAdvancesDefaultPath = "/workspace/.opencode-board-advances"
+// boardAdvancesDefaultPath is the #2100-A remediated location: the
+// dual-RW /exchange subtree (FLAT name, 0070; the pre-fix /workspace
+// default was read-only to the sidecar writer — the EROFS-dead tail).
+const boardAdvancesDefaultPath = "/exchange/.opencode-board-advances"
 
 // The tail's compaction bound (the pi journal's
 // boardTurnEndJournalCompactLines posture): past boardAdvancesCompactLines
@@ -114,11 +125,13 @@ func newBoardAdvanceLedger(path string, logger *zap.Logger) *boardAdvanceLedger 
 	l := &boardAdvanceLedger{last: map[string]time.Time{}, path: path, logger: logger}
 	if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
 		l.fails++
+		boardAdvanceTailWriteFailures.Add(1)
 		return l
 	}
 	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
 	if err != nil {
 		l.fails++
+		boardAdvanceTailWriteFailures.Add(1)
 		logger.Warn("board advance ledger: tail unavailable — memory-only (pi-leg derivation degrades)", zap.Error(err))
 		return l
 	}

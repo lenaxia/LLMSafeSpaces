@@ -667,7 +667,37 @@ func (s *Service) BoardHealth(ctx context.Context, userID string) (*Health, erro
 	if err := s.healthWaiting(ctx, &userID, nil, h); err != nil {
 		return nil, err
 	}
+	s.healthEventChannel(ctx, h, `SELECT count(*) FROM tasks t JOIN projects p ON p.id=t.project_id
+		WHERE p.user_id=$1 AND t.stage='in_progress' AND t.claim_token IS NOT NULL`, userID)
 	return h, s.healthProjectSlots(ctx, userID, h)
+}
+
+// boardEventChannelStaleAfter bounds the turn-end fold channel's age
+// past which the event_channel line renders degraded while claims are
+// active (#2100 design §1.3): 10m — a full measure window of folding
+// silence with live claims is a dead channel, not quiet workers.
+const boardEventChannelStaleAfter = 10 * time.Minute
+
+// healthEventChannel assembles the event_channel line when a fold
+// source is wired (nil source ⇒ absent — back-compat for every
+// existing health consumer). Best-effort by the health pass's own
+// posture: a failed claims count omits the line this pass rather than
+// failing the snapshot.
+func (s *Service) healthEventChannel(ctx context.Context, h *Health, claimsSQL string, args ...any) {
+	if s.turnEndFold == nil {
+		return
+	}
+	last := s.turnEndFold().UTC()
+	var claims int
+	if err := s.q().QueryRow(ctx, claimsSQL, args...).Scan(&claims); err != nil {
+		return
+	}
+	age := time.Since(last)
+	h.EventChannel = &HealthEventChannel{
+		LastFoldAgeSeconds: age.Seconds(),
+		ClaimsActive:       claims,
+		Degraded:           claims > 0 && age > boardEventChannelStaleAfter,
+	}
 }
 
 // healthWaiting renders the typed-wait section (claim-wait lifecycle
@@ -1086,5 +1116,7 @@ func (s *Service) BoardHealthInWorkspace(ctx context.Context, workspaceID string
 	if err := s.healthWaiting(ctx, nil, &workspaceID, h); err != nil {
 		return nil, err
 	}
+	s.healthEventChannel(ctx, h, `SELECT count(*) FROM tasks t JOIN projects p ON p.id=t.project_id
+		WHERE p.target_workspace_id=$1::uuid AND t.stage='in_progress' AND t.claim_token IS NOT NULL`, workspaceID)
 	return h, nil
 }

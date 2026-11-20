@@ -77,11 +77,59 @@ type TurnEndDueMark struct {
 	// rides for observability and future budget seams.
 	Epoch uint64
 	// Advanced is the turn's advance flag. true ⇒ telemetry only.
+	// Under transport v2 the emitter carries false always and the
+	// verdict derives STORE-SIDE (TurnStartedAt's window) below.
 	Advanced bool
+	// TurnStartedAt is the event's turn window start (the emitter's
+	// busy-mark anchor; #2100 transport v2). Zero = absent (a pre-v2
+	// emitter): the store-side advance derivation is SKIPPED and the
+	// payload's flag is trusted (wire-compat one release train).
+	TurnStartedAt time.Time
 	// ObservedAt is the fold's observation stamp (the API clock — the
 	// mint-guard anchor; zero means "resolve at write time").
 	ObservedAt time.Time
 }
+
+// advanceObservedByStore answers, advisorially, whether an
+// advance-class write by one of the refs landed inside the turn window
+// (#2100 transport v2, design §2.2): a board_transitions row by the
+// assignee, or a verdict board_event by the assignee — the facts the
+// platform already owns end-to-end (timestamped, actor-attributed).
+// ADVISORY ONLY: the guarded due-mark UPDATE below re-checks the same
+// EXISTS at write time, so a race between check and write can miss a
+// COUNT, never a due-mark (the house discipline — no
+// lookup-then-write authority).
+func (s *Service) advanceObservedByStore(ctx context.Context, workspaceID string, refs []string, windowStart time.Time) (bool, error) {
+	var found bool
+	err := s.q().QueryRow(ctx, `
+		SELECT EXISTS (
+			SELECT 1 FROM tasks t
+			JOIN projects p ON p.id = t.project_id
+			WHERE p.target_workspace_id = $1
+			  AND t.stage = 'in_progress' AND NOT t.pending_input AND NOT t.paused
+			  AND t.claim_token IS NOT NULL AND t.assignee_session = ANY($2)
+			  AND (EXISTS (SELECT 1 FROM board_transitions bt
+			        WHERE bt.task_id = t.id AND bt.at > $3
+			          AND bt.actor->>'session_id' = ANY($2))
+			    OR EXISTS (SELECT 1 FROM board_events be
+			        WHERE be.item_id = t.id AND be.action = 'verdict' AND be.created_at > $3
+			          AND be.actor->>'session_id' = ANY($2)))
+		)`, workspaceID, refs, windowStart).Scan(&found)
+	return found, err
+}
+
+// storeAdvanceNotExistsSQL is the guarded due-mark's advance arm — the
+// SAME derivation as advanceObservedByStore, inlined into the UPDATE's
+// WHERE so the DECISION is the guarded statement's own predicate
+// (re-checked at write time under the row lock; manager/reconciler
+// moves carry no actor session_id and never match).
+const storeAdvanceNotExistsSQL = `
+		  AND NOT EXISTS (SELECT 1 FROM board_transitions bt
+			WHERE bt.task_id = t.id AND bt.at > $4
+			  AND bt.actor->>'session_id' = ANY($2))
+		  AND NOT EXISTS (SELECT 1 FROM board_events be
+			WHERE be.item_id = t.id AND be.action = 'verdict' AND be.created_at > $4
+			  AND be.actor->>'session_id' = ANY($2))`
 
 // ConsumeTurnEnd is the board engine's single due-marking entry point
 // for turn-end events. It is the ONLY new write in the event path;
@@ -100,7 +148,17 @@ func (s *Service) ConsumeTurnEnd(ctx context.Context, e TurnEndDueMark) (bool, e
 	if observed.IsZero() {
 		observed = time.Now().UTC()
 	}
-	tag, err := s.q().Exec(ctx, `
+	// Transport v2's store-side advance derivation (#2100): armed AND
+	// the turn window present ⇒ the STORE answers "did this turn
+	// advance" from the writes the platform already owns — a worker-
+	// side or file-artifact-declared advance carries no authority once
+	// v2 is armed (the frozen-file class never wins over store truth).
+	// An observed advance is telemetry-only (same R2 posture as a v1
+	// emitter's flag); the guarded UPDATE below re-checks the same
+	// predicate at write time. Kill-switch off (or a pre-v2 emitter
+	// carrying no window): the payload's declared flag is trusted —
+	// today's path verbatim.
+	sql := `
 		UPDATE tasks t SET lease_expires_at=now(), updated_at=now()
 		FROM projects p
 		WHERE p.id = t.project_id
@@ -112,15 +170,24 @@ func (s *Service) ConsumeTurnEnd(ctx context.Context, e TurnEndDueMark) (bool, e
 		  AND t.assignee_session = ANY($2)
 		  AND t.nudge_id IS NULL
 		  AND t.lease_expires_at > now()
-		  AND t.stage_entered_at <= $3`,
-		e.WorkspaceID, e.SessionRefs, observed)
+		  AND t.stage_entered_at <= $3`
+	args := []any{e.WorkspaceID, e.SessionRefs, observed}
+	if s.cfg.PresenceTransportV2 && !e.TurnStartedAt.IsZero() {
+		if advanced, err := s.advanceObservedByStore(ctx, e.WorkspaceID, e.SessionRefs, e.TurnStartedAt); err == nil && advanced {
+			turnAdvances.Inc()
+			return false, nil // the store observed the advance — the row is not due (advisory short-circuit)
+		}
+		sql += storeAdvanceNotExistsSQL
+		args = append(args, e.TurnStartedAt)
+	}
+	tag, err := s.q().Exec(ctx, sql, args...)
 	if err != nil {
 		return false, err
 	}
 	if tag.RowsAffected() == 0 {
 		// No live claim matched (user chat / other workspace / stale
-		// epoch / guarded row / already due): converged, silently —
-		// the sweep owns the row either way.
+		// epoch / guarded row / already due / store-observed advance):
+		// converged, silently — the sweep owns the row either way.
 		return false, nil
 	}
 	dueMarksByTrigger.WithLabelValues(DueMarkTriggerEvent).Inc()

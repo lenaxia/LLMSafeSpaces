@@ -236,12 +236,18 @@ func TestBoardSuite(t *testing.T) {
 func newBoardSuite(pool *pgxpool.Pool) *BoardSuite {
 	s := &BoardSuite{pool: pool}
 	s.cfg = board.EngineConfig{
-		AttemptsCap:     3,
-		LeaseDuration:   200 * time.Millisecond, // short for expiry tests; lease arithmetic is still cfg-driven
-		ThrottleBackoff: time.Hour,              // "long" so cooldowns gate until explicitly cleared
-		FailureBackoff:  500 * time.Millisecond, // #1813: small so the doubling windows are observable; tests that need redispatch NOW clear cooldowns explicitly
-		DRRQuantum:      1,
-		SweepInterval:   time.Second,
+		AttemptsCap:         3,
+		PresenceTransportV2: true,                   // the engine default — the suite exercises v2 semantics
+		LeaseDuration:       200 * time.Millisecond, // short for expiry tests; lease arithmetic is still cfg-driven
+		// #2100: the measure window joins the suite's short-lease
+		// universe (the engine's 10m default would leave nudged rows
+		// live for minutes in every subsequent-lapse pin — the
+		// send-window race pin rides exactly that expiry).
+		NudgeMeasureWindow: 200 * time.Millisecond,
+		ThrottleBackoff:    time.Hour,              // "long" so cooldowns gate until explicitly cleared
+		FailureBackoff:     500 * time.Millisecond, // #1813: small so the doubling windows are observable; tests that need redispatch NOW clear cooldowns explicitly
+		DRRQuantum:         1,
+		SweepInterval:      time.Second,
 	}
 	return s
 }
