@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed — runtime: opencode freeze-pin 1.18.15 → 1.18.35
+
+- runtime: opencode freeze-pin 1.18.15 → 1.18.35 (workspace-roll wedge: freeze-pinned binary gave the delivery roll no content signal; #2100 fix could not reach workspace pods). The repo pin returns from the broken 1.19.5 coordinate to the 1.18.x line's latest (past the v1.18.16–.18 v1-DB-bad window; 1.19.x broke the legacy `/provider` + `/config/providers` routes — production emergency-reverted 2026-11-20). Golden fixtures re-captured on the 1.18.35 binary per the bump runbook (`sse_events_1_18_35_live.jsonl` + `event_store_1_18_35.jsonl` + ABI golden; config schema restored to the pre-1.19 shape); no new event types — taxonomy unchanged.
+
 ## [0.44.18] - 2026-11-20
 
 ### Fixed — board: #2100 due-marking dead in prod — P1 rebaseline-at-observation + loud /exchange artifacts; P2 store-native worker presence transport behind `LLMSAFESPACES_BOARD_PRESENCEV2` (default on)
