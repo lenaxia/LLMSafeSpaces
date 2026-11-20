@@ -1,15 +1,19 @@
 === go build ./... ===
-build exit: 1
-=== fmt-check ===
-=== goimports (writable GOBIN) ===
-imports clean: 0
-=== go vet (touched pkgs incl test compile) ===
+build exit: 0
+=== make fmt-check ===
+fmt exit: 0
+=== goimports (GOBIN) ===
+imports exit: 0
+=== go vet (touched pkgs) ===
 vet exit: 0
-=== unit: app (full) ===
-ok  	github.com/lenaxia/llmsafespaces/api/internal/app	51.178s
-=== unit: board/workflows/agent-opencode ===
-ok  	github.com/lenaxia/llmsafespaces/pkg/board	0.115s
-ok  	github.com/lenaxia/llmsafespaces/pkg/workflows	0.026s
-ok  	github.com/lenaxia/llmsafespaces/pkg/agent/opencode	12.578s
+=== go vet -tags integration ./pkg/board/ ===
+vet-integration exit: 0
+=== unit: app ===
+ok  	github.com/lenaxia/llmsafespaces/api/internal/app	51.388s
+=== unit: board/workflows ===
+ok  	github.com/lenaxia/llmsafespaces/pkg/board	0.100s
+ok  	github.com/lenaxia/llmsafespaces/pkg/workflows	0.025s
 === unit: handlers ===
-ok  	github.com/lenaxia/llmsafespaces/api/internal/handlers	91.472s
+ok  	github.com/lenaxia/llmsafespaces/api/internal/handlers	88.477s
+=== integration-tagged run (compiles; skips without PG — CI's pkg/secrets job executes it with PG+Redis) ===
+ok  	github.com/lenaxia/llmsafespaces/pkg/board	0.096s

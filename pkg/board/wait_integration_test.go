@@ -80,7 +80,7 @@ func (s *BoardSuite) TestDeclareWait_User_ByteIdenticalFlagOp() {
 	s.Require().Equal(t1.ID, c1.TaskID)
 	// The VERB.
 	verbOut, err := s.svc.DeclareWait(context.Background(), s.agent(c1.Assignee, c1.ClaimToken),
-		"", c1.ShortID, board.WaitOnUser, "owner decision: runtime bump scope", "", "")
+		"", c1.ShortID, board.WaitOnUser, "owner decision: runtime bump scope", "", "", "")
 	s.Require().NoError(err)
 	require.Equal(s.T(), board.StageInProgress, verbOut.Stage, "000050: the flag rides the real stage")
 
@@ -237,7 +237,7 @@ func (s *BoardSuite) TestDeclareWait_WorkspaceHealth_WaitingSection() {
 	c2 := s.claimOrFail(ws)
 	s.Require().Equal(t2.ID, c2.TaskID)
 	_, err = s.svc.DeclareWait(ctx, s.agent(c2.Assignee, c2.ClaimToken), "", c2.ShortID,
-		board.WaitOnUser, "owner decision: runtime bump scope", "", "")
+		board.WaitOnUser, "owner decision: runtime bump scope", "", "", "")
 	s.Require().NoError(err)
 
 	h, err := s.svc.BoardHealthInWorkspace(ctx, ws)
@@ -304,7 +304,7 @@ func (s *BoardSuite) TestDeclareWait_RefusalMatrix() {
 
 	// Bad grammar (the closed vocabulary, refused loudly).
 	g = guard(func() error {
-		_, err := s.svc.DeclareWait(context.Background(), act, "", c.ShortID, board.WaitOnEvent, "waiting", "deploy_finished(9)", "")
+		_, err := s.svc.DeclareWait(context.Background(), act, "", c.ShortID, board.WaitOnEvent, "waiting", "deploy_finished(9)", "", "")
 		return err
 	})
 	s.Equal(board.GuardInput, g.Code)
@@ -312,7 +312,7 @@ func (s *BoardSuite) TestDeclareWait_RefusalMatrix() {
 
 	// User-with-condition: nothing executable crosses the surface.
 	g = guard(func() error {
-		_, err := s.svc.DeclareWait(context.Background(), act, "", c.ShortID, board.WaitOnUser, "owner call", "pr_merged(2083)", "")
+		_, err := s.svc.DeclareWait(context.Background(), act, "", c.ShortID, board.WaitOnUser, "owner call", "pr_merged(2083)", "", "")
 		return err
 	})
 	s.Equal(board.GuardInput, g.Code)
@@ -341,7 +341,7 @@ func (s *BoardSuite) TestDeclareWait_RefusalMatrix() {
 
 	// Unknown waitOn vocabulary.
 	g = guard(func() error {
-		_, err := s.svc.DeclareWait(context.Background(), act, "", c.ShortID, "divine_intervention", "reason", "", "")
+		_, err := s.svc.DeclareWait(context.Background(), act, "", c.ShortID, "divine_intervention", "reason", "", "", "")
 		return err
 	})
 	s.Equal(board.GuardInput, g.Code)
@@ -357,7 +357,7 @@ func (s *BoardSuite) TestDeclareWait_RefusalMatrix() {
 	// machine: only in_progress").
 	t2 := s.seedTask(e, "parked", nil, false)
 	g = guard(func() error {
-		_, err := s.svc.DeclareWait(context.Background(), s.owner(), "", t2.ShortID, board.WaitOnUser, "why", "", "")
+		_, err := s.svc.DeclareWait(context.Background(), s.owner(), "", t2.ShortID, board.WaitOnUser, "why", "", "", "")
 		return err
 	})
 	s.Equal(board.GuardStage, g.Code)
@@ -395,7 +395,7 @@ func (s *BoardSuite) TestDeclareWait_Conversions() {
 	c1 := s.claimOrFail(ws)
 	s.Require().Equal(t1.ID, c1.TaskID)
 	_, err := s.svc.DeclareWait(context.Background(), s.agent(c1.Assignee, c1.ClaimToken),
-		"", c1.ShortID, board.WaitOnUser, "owner call", "", "")
+		"", c1.ShortID, board.WaitOnUser, "owner call", "", "", "")
 	s.Require().NoError(err)
 	s.True(s.rawTask(t1.ID).PendingInput)
 	// Clear the harness's pending-source answer so the coupling pass
@@ -415,7 +415,7 @@ func (s *BoardSuite) TestDeclareWait_Conversions() {
 	s.Require().Equal(t2.ID, c2.TaskID)
 	s.declareEvent(s.T(), c2, "PR 2083 merge", "pr_merged(2083)")
 	_, err = s.svc.DeclareWait(context.Background(), s.agent(c2.Assignee, c2.ClaimToken),
-		"", c2.ShortID, board.WaitOnUser, "owner decision after all", "", "")
+		"", c2.ShortID, board.WaitOnUser, "owner decision after all", "", "", "")
 	s.Require().NoError(err)
 	row2 := s.rawTask(t2.ID)
 	s.True(row2.PendingInput)
@@ -547,7 +547,7 @@ func (s *BoardSuite) TestPin_UserWait_FreezesLadder_Unchanged() {
 	assignee := s.reloadTask(t1.ID).AssigneeSession
 	s.Require().NotEmpty(assignee)
 	_, err := s.svc.DeclareWait(context.Background(), s.agent(assignee, c.ClaimToken),
-		"", c.ShortID, board.WaitOnUser, "owner decision: cut scope", "", "")
+		"", c.ShortID, board.WaitOnUser, "owner decision: cut scope", "", "", "")
 	s.Require().NoError(err)
 
 	lives := &fakeLiveness{}
@@ -583,7 +583,7 @@ func (s *BoardSuite) TestPendingExits_ClearTheUserWait() {
 	c := s.claimOrFail(ws)
 	s.Require().Equal(t1.ID, c.TaskID)
 	_, err := s.svc.DeclareWait(context.Background(), s.agent(c.Assignee, c.ClaimToken),
-		"", c.ShortID, board.WaitOnUser, "owner decision", "", "")
+		"", c.ShortID, board.WaitOnUser, "owner decision", "", "", "")
 	s.Require().NoError(err)
 	s.True(s.rawTask(t1.ID).PendingInput)
 

@@ -136,7 +136,7 @@ const waitGateTemplateGitHubAuth = `def _gh(url):
 
 // waitGateTemplatePRMerged — pr_merged(N): proceed iff the PR is
 // merged with a merge_commit_sha; vars carry the SHA.
-const waitGateTemplatePRMerged = `import json, os, urllib.request
+const waitGateTemplatePRMerged = `import json, os, urllib.error, urllib.request
 
 # wait-broker sensor pr_merged(__PR__) on __REPO__ — compiled by the platform's wait-broker (template ` + waitGateTemplateVersion + `) from a declarative condition; never worker-authored.
 # Pattern 3 state dedupe: the marker file is the ONLY cross-fire state; signature = seed|merge_commit_sha; write-on-observation, skip-on-match, PERSISTS past proceed.
@@ -159,15 +159,23 @@ def handler(input):
         if bool(pr.get("merged")) and sha:
             return {"proceed": True, "vars": {"pr": PR, "repo": REPO, "merge_commit_sha": sha}}
         return {"proceed": False, "vars": {}}
+    except urllib.error.HTTPError as e:
+        if 400 <= e.code < 500:
+            # permanent (401 bad token, 404 wrong/nonexistent repo): FAIL CLOSED into the
+            # fire's failure accounting — consecutive_failures grows and the re-materialize-
+            # then-degrade ladder sees it; a wrong-repo wait must never poll forever, quietly.
+            raise
+        # transient 5xx: quiet poller — the schedule is the retry
+        return {"proceed": False, "vars": {"skipped_error": str(e)}}
     except Exception as e:
-        # quiet poller: transient fetch errors skip this fire; the schedule is the retry
+        # quiet poller: transient network errors skip this fire; the schedule is the retry
         return {"proceed": False, "vars": {"skipped_error": str(e)}}
 `
 
 // waitGateTemplateCIGreen — ci_green(N): fetch the PR's head SHA, then
 // its check-runs; proceed iff total>0 and every conclusion is
 // success|skipped|neutral; vars carry the SHA + counts.
-const waitGateTemplateCIGreen = `import json, os, urllib.request
+const waitGateTemplateCIGreen = `import json, os, urllib.error, urllib.request
 
 # wait-broker sensor ci_green(__PR__) on __REPO__ — compiled by the platform's wait-broker (template ` + waitGateTemplateVersion + `) from a declarative condition; never worker-authored.
 # Pattern 3 state dedupe: signature = seed|head_sha|total|conclusions — every check-state change re-arms (a failing→passing transition fires); write-on-observation, PERSISTS past proceed.
@@ -198,8 +206,16 @@ def handler(input):
         if total > 0 and all(c in OK for c in concls):
             return {"proceed": True, "vars": {"pr": PR, "repo": REPO, "head_sha": sha, "checks_total": str(total)}}
         return {"proceed": False, "vars": {}}
+    except urllib.error.HTTPError as e:
+        if 400 <= e.code < 500:
+            # permanent (401 bad token, 404 wrong/nonexistent repo): FAIL CLOSED into the
+            # fire's failure accounting — consecutive_failures grows and the re-materialize-
+            # then-degrade ladder sees it; a wrong-repo wait must never poll forever, quietly.
+            raise
+        # transient 5xx: quiet poller — the schedule is the retry
+        return {"proceed": False, "vars": {"skipped_error": str(e)}}
     except Exception as e:
-        # quiet poller: transient fetch errors skip this fire; the schedule is the retry
+        # quiet poller: transient network errors skip this fire; the schedule is the retry
         return {"proceed": False, "vars": {"skipped_error": str(e)}}
 `
 
@@ -208,7 +224,7 @@ def handler(input):
 // the pod's agentd MCP tools ride); proceed iff stage == done. The
 // read is workspace-bound (GetTaskInWorkspace): a cross-workspace
 // short_id reads as not-found and skips quietly — the ladder governs.
-const waitGateTemplateStoryDone = `import json, os, urllib.request
+const waitGateTemplateStoryDone = `import json, os, urllib.error, urllib.request
 
 # wait-broker sensor story_done(__SHORT_ID__) — compiled by the platform's wait-broker (template ` + waitGateTemplateVersion + `) from a declarative condition; never worker-authored.
 # Reads the platform's own board over the pod identity (LLMSAFESPACE_API_URL — controller-set per pod; the rendered default is the broker's in-cluster URL belt).
@@ -244,8 +260,16 @@ def handler(input):
         if stage == "done":
             return {"proceed": True, "vars": {"story": SHORT_ID, "stage": stage}}
         return {"proceed": False, "vars": {}}
+    except urllib.error.HTTPError as e:
+        if 400 <= e.code < 500:
+            # permanent (401 bad token, 404 wrong/nonexistent repo): FAIL CLOSED into the
+            # fire's failure accounting — consecutive_failures grows and the re-materialize-
+            # then-degrade ladder sees it; a wrong-repo wait must never poll forever, quietly.
+            raise
+        # transient 5xx: quiet poller — the schedule is the retry
+        return {"proceed": False, "vars": {"skipped_error": str(e)}}
     except Exception as e:
-        # quiet poller: transient fetch errors skip this fire; the schedule is the retry
+        # quiet poller: transient network errors skip this fire; the schedule is the retry
         return {"proceed": False, "vars": {"skipped_error": str(e)}}
 `
 

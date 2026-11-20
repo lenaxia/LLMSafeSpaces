@@ -71,14 +71,52 @@ referenced per charter, counters untouched, fixes file separately.
    build/vet/imports clean, all affected suites green (below); the
    review rides this evidence at stage in_review.
 
-## Verification logs (this sandbox)
+## Review round r0 (CHANGES_REQUESTED) — findings addressed
 
-- `checks.log` — build (exit 0), fmt-check (exit 0), goimports (clean),
-  go vet incl. test compile (clean), full `api/internal/app` suite ok,
-  `pkg/board` + `pkg/workflows` + `pkg/agent/opencode` ok,
-  `api/internal/handlers` ok.
-- `pins.log` — the 16 Wait-named broker pins, verbose, all PASS.
-- `gate-pins.log` — the 8 gate-template/byte pins, verbose, all PASS.
+- **F1 integration compile** — the PR-2104-merged `wait_integration_test.go`
+  carried 10 old-arity `DeclareWait` calls; fixed (`repo` arg per intent:
+  `testRepo` for pr-anchored, `""` for user arms/refusals).
+  `go vet -tags integration ./pkg/board/` exit 0 (in checks.log).
+- **F2 synthetic id** — `createTrigger` RETURNS the built row; the
+  materializing pass carries the STORE-ISSUED uuid into its phases
+  (`trigger_fires.trigger_id` is uuid NOT NULL). The fake no longer
+  rewrites ids and records every `ListFires` key; new pin
+  `TestWaitBroker_MaterializedRow_KeepsStoreIssuedID`.
+- **F3 evidence truth** — checks.log re-stamped with TRUE exit codes
+  (PIPESTATUS-captured build, fmt, imports, vet, vet -tags integration,
+  suites). Honest note: the integration suite COMPILES under the tag and
+  SKIPS at pool.Ping in this no-PG sandbox; CI executes it (the
+  pkg/secrets-integration job's "Run -tags=integration kill-tests for
+  pkg/board" step).
+- **F4 tautology** — the event-action vocabulary is SHARED CONSTANTS
+  (`EventActionWait*` at the recordEvent call sites;
+  `board.HealthWaitBrokerDegradedAction` spliced INTO the hoisted
+  `healthWaitingQuery`). Pins: app-side cross-package equality +
+  board-side `TestHealthWaitingQuery_Vocabulary` — renames redden.
+- **F5 permanent 4xx** — the templates catch `urllib.error.HTTPError`
+  first: 4xx RE-RAISES (fail-closed into `consecutive_failures` → the
+  remat/degrade ladder); 5xx/network stay the quiet poller. Executable
+  pin `TestGateTemplate_PermanentHTTPError_Fails` (401/403/404 →
+  non-zero exit, no marker).
+
+## The parked-PR CI reds (diagnosed, 2026-11-19)
+
+The Lint (44398375265) and pkg/secrets-integration (44398375216) reds
+both ran on the PRE-r0 head `0b02524153d6` — the same F1 compile break
+(the secrets job's failing step is "Run -tags=integration kill-tests
+for pkg/board", which could not compile the arity-broken suite). The
+r0 fixes sat unpushed through the parking window; this head carries
+them and re-triggers both jobs.
+
+## Verification logs (this sandbox, post-r0 + origin/main merge at 38eb2fa75)
+
+- `checks.log` — every gate with its TRUE exit code: build 0, fmt-check 0,
+  goimports 0, vet 0, **vet -tags integration 0**, unit suites ok (app,
+  board, workflows, handlers), and the integration-tagged run (compiles;
+  skips without PG — CI executes it).
+- `pins.log` — the Wait-named broker pins, verbose, all PASS.
+- `gate-pins.log` — the 9 gate-template/byte pins (incl.
+  `TestGateTemplate_PermanentHTTPError_Fails`), verbose, all PASS.
 
 ## Honest environment notes
 

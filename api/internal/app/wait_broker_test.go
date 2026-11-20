@@ -20,7 +20,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"
 
 	"github.com/lenaxia/llmsafespaces/pkg/board"
@@ -145,6 +144,7 @@ type fakeTriggerPlane struct {
 	mu      sync.Mutex
 	rows    map[string]*workflows.TriggerRow // by name
 	fires   map[string][]*workflows.TriggerFireRow
+	scanned []string // the trigger ids ListFires was called with (the uuid-honesty pin)
 	created int
 	updated int
 	deleted int
@@ -173,10 +173,11 @@ func (f *fakeTriggerPlane) Create(_ context.Context, row *workflows.TriggerRow) 
 	if _, exists := f.rows[row.Name]; exists {
 		return nil // the (owner, name) unique-race convergence arm
 	}
+	// NO id rewriting (review r0 finding 2): the row lands with the id
+	// the caller generated — the production store keeps the row's own
+	// uuid, and the fires scan keys on it; a rewriting fake masked the
+	// name-as-id bug this suite now pins against.
 	cp := *row
-	if cp.ID == "" || strings.HasPrefix(cp.ID, waitBrokerTriggerPrefix) {
-		cp.ID = uuid.NewString()
-	}
 	f.rows[row.Name] = &cp
 	f.created++
 	return nil
@@ -227,6 +228,7 @@ func (f *fakeTriggerPlane) Delete(_ context.Context, _, _, id string) error {
 func (f *fakeTriggerPlane) ListFires(_ context.Context, triggerID string, limit int) ([]*workflows.TriggerFireRow, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.scanned = append(f.scanned, triggerID) // the uuid-honesty pin's evidence
 	fires := f.fires[triggerID]
 	var out []*workflows.TriggerFireRow
 	for i := len(fires) - 1; i >= 0 && len(out) < limit; i-- { // DESC by fired_at (insertion order)
@@ -635,16 +637,46 @@ func TestWaitBroker_DeclaredThenCleared_NeverMaterializes(t *testing.T) {
 	require.Equal(t, 0, h.triggers.created)
 }
 
-// TestWaitBroker_HealthDegradedLineSQL — the degraded posture's health
-// surface: the BrokerDegraded render is events-driven (reads.go's
-// EXISTS on wait_broker_degraded newer than the declaration); the SQL
-// itself is integration-gated, so the unit pin here is the WIRE field
-// + the event action vocabulary the SQL keys on.
+// TestWaitBroker_HealthDegradedVocabulary — the SHARED vocabulary pin
+// (review r0 F4 replaced the tautology): the broker's degrade event and
+// pkg/board's health read edge must spell the action IDENTICALLY (both
+// sides reference constants; either rename reddens this pin or the
+// board-side TestHealthWaitingQuery_Vocabulary).
 func TestWaitBroker_HealthDegradedVocabulary(t *testing.T) {
-	require.Equal(t, "wait_broker_degraded", "wait_broker_degraded")
-	require.Equal(t, "wait_resolved", "wait_resolved")
-	require.Equal(t, "wait_orphan_cleaned", "wait_orphan_cleaned")
-	require.Equal(t, "wait_broker_rematerialized", "wait_broker_rematerialized")
+	require.Equal(t, EventActionWaitBrokerDegraded, board.HealthWaitBrokerDegradedAction,
+		"the broker's degrade event and the health surface's SQL must share ONE spelling")
+	require.Equal(t, "wait_resolved", EventActionWaitResolved)
+	require.Equal(t, "wait_orphan_cleaned", EventActionWaitOrphanCleaned)
+	require.Equal(t, "wait_broker_rematerialized", EventActionWaitBrokerRemat)
+}
+
+// TestWaitBroker_MaterializedRow_KeepsStoreIssuedID — review r0 F2: the
+// row a materializing pass carries into its phases keeps the
+// STORE-ISSUED uuid id (trigger_fires.trigger_id is uuid NOT NULL) —
+// the fires scan must never key on the trigger NAME (the fake does not
+// rewrite ids; it records what ListFires was called with).
+func TestWaitBroker_MaterializedRow_KeepsStoreIssuedID(t *testing.T) {
+	h := newBrokerHarness(t)
+	at := time.Now().Add(-time.Minute)
+	h.seedLiveEventWait(t, "t1", "tsk-henna-one", "11111111-1111-1111-1111-111111111111", "florid-teapot-verifies", "pr_merged(2101)", "lenaxia/llmsafespaces", at)
+
+	res, err := h.broker.Pass(context.Background())
+	require.NoError(t, err)
+	require.Equal(t, 1, res.Materialized)
+
+	name := waitBrokerTriggerName("tsk-henna-one", "11111111-1111-1111-1111-111111111111")
+	trig := h.triggers.get(name)
+	require.NotNil(t, trig)
+	require.NotEqual(t, name, trig.ID, "the id is the store-issued uuid — NEVER the trigger name")
+	require.NotEqual(t, "", trig.ID)
+	// Every fires scan keyed on the uuid, never the name.
+	h.triggers.mu.Lock()
+	scanned := append([]string(nil), h.triggers.scanned...)
+	h.triggers.mu.Unlock()
+	require.NotEmpty(t, scanned, "phase 4 scanned the materialized trigger's fires")
+	for _, id := range scanned {
+		require.Equal(t, trig.ID, id, "no fires scan ever keys on the trigger name")
+	}
 }
 
 // TestWaitFireGateOpen — the action-result shape filter.

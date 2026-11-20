@@ -158,3 +158,17 @@ func TestValidateWaitReason(t *testing.T) {
 		t.Errorf("prose mentioning a token refused: %v", err)
 	}
 }
+
+// TestHealthWaitingQuery_Vocabulary pins the waiting section's SQL to
+// the shared event-action vocabulary (review r0 F4, the tautology
+// class): the degraded line EXISTS-keys on HealthWaitBrokerDegradedAction
+// and the since-subquery keys on 'wait_declared' — a rename redden THIS,
+// never silent SQL drift.
+func TestHealthWaitingQuery_Vocabulary(t *testing.T) {
+	if !strings.Contains(healthWaitingQuery, "AND be2.action = '"+HealthWaitBrokerDegradedAction+"'") {
+		t.Fatalf("healthWaitingQuery does not reference the shared degraded action %q", HealthWaitBrokerDegradedAction)
+	}
+	if !strings.Contains(healthWaitingQuery, "be.action = 'wait_declared'") {
+		t.Fatal("healthWaitingQuery's since-subquery no longer keys on wait_declared")
+	}
+}

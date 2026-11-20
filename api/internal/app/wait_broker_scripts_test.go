@@ -307,9 +307,9 @@ func TestGateTemplate_ReDeclaredSeed_Refires(t *testing.T) {
 	require.False(t, proceedOf(t, runGateHandler(t, redeclared, marker)))
 }
 
-// TestGateTemplate_QuietPoller — transport failures skip the fire
-// (proceed=false with the skipped_error var) and write NO marker: the
-// schedule is the retry.
+// TestGateTemplate_QuietPoller — TRANSIENT failures (5xx, network)
+// skip the fire (proceed=false with the skipped_error var) and write NO
+// marker: the schedule is the retry.
 func TestGateTemplate_QuietPoller(t *testing.T) {
 	if !python3Available() {
 		t.Skip("python3 absent — the executable gate pins need the interpreter")
@@ -329,4 +329,48 @@ func TestGateTemplate_QuietPoller(t *testing.T) {
 	require.Contains(t, res["vars"], "skipped_error")
 	_, err := os.Stat(marker)
 	require.True(t, os.IsNotExist(err), "no observation landed — no marker written")
+}
+
+// TestGateTemplate_PermanentHTTPError_Fails — the 4xx class (404 wrong
+// repo, 401 bad token) FAILS CLOSED: the handler re-raises so the fire
+// lands failed in the engine's accounting (consecutive_failures → the
+// re-materialize-then-degrade ladder) — a wrong-repo wait must never
+// poll forever, quietly (review r0 F5).
+func TestGateTemplate_PermanentHTTPError_Fails(t *testing.T) {
+	if !python3Available() {
+		t.Skip("python3 absent — the executable gate pins need the interpreter")
+	}
+	for _, code := range []int{401, 403, 404} {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(code)
+		}))
+		old := waitBrokerGitHubAPI
+		waitBrokerGitHubAPI = srv.URL
+		marker := filepath.Join(t.TempDir(), "m.marker")
+		script := renderForTest(t, "pr_merged", "2101", "lenaxia/llmsafespaces", "wait:E1:tok:8", marker, "")
+
+		dir := t.TempDir()
+		handler := filepath.Join(dir, "handler.py")
+		wrapper := filepath.Join(dir, "wrapper.py")
+		require.NoError(t, os.WriteFile(handler, []byte(script), 0o600))
+		require.NoError(t, os.WriteFile(wrapper, []byte(`import json, sys, os
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from handler import handler
+_input = json.loads(sys.stdin.read())
+_result = handler(_input)
+sys.stdout.write(json.dumps(_result))
+`), 0o600))
+		envelope, _ := json.Marshal(map[string]any{"source": "cron"})
+		cmd := exec.Command("python3", wrapper) //nolint:gosec // G204: fixed interpreter on a test-written temp wrapper
+		cmd.Stdin = strings.NewReader(string(envelope))
+		cmd.Env = append(os.Environ(), "GITHUB_TOKEN=", "GH_TOKEN=")
+		_, err := cmd.Output()
+		require.Error(t, err, "HTTP %d: the handler must RE-RAISE (a failed fire in production's accounting)", code)
+		var exitErr *exec.ExitError
+		require.ErrorAs(t, err, &exitErr)
+		_, statErr := os.Stat(marker)
+		require.True(t, os.IsNotExist(statErr), "no observation landed — no marker written")
+		srv.Close()
+		waitBrokerGitHubAPI = old
+	}
 }

@@ -159,3 +159,43 @@ before compiling (`board.ParseWaitCondition` — exported this story).
 - The remat/degrade ONCE ledger is per (trigger name) deterministic event
   id — a NEW claim (new token ⇒ new name) starts a fresh ledger, which is
   the correct episode semantics.
+
+## Review round r0 (PR #2109, CHANGES_REQUESTED) — all five findings addressed
+
+1. **integration compile break** (the PR-2104 merge reintroduced 10
+   old-arity `DeclareWait` calls): fixed per intent; `go vet -tags
+   integration ./pkg/board/` exit 0; the tagged suite compiles and skips
+   cleanly without PG (CI runs it).
+2. **synthetic id = name**: `createTrigger` returns the built row — the
+   pass carries the store-issued uuid (uuid NOT NULL column); the test
+   fake stopped rewriting ids and records ListFires keys; new pin
+   `TestWaitBroker_MaterializedRow_KeepsStoreIssuedID`.
+3. **evidence truth**: checks.log re-stamped with true exit codes
+   (PIPESTATUS for the piped build); the earlier `build exit: 1` was the
+   grep-pipe artifact and the "skips here" claim was wrong while the
+   tagged file did not compile — artifacts and claims now agree.
+4. **tautological vocab pin**: shared constants end-to-end
+   (`EventActionWait*` at the recordEvent sites; board's
+   `HealthWaitBrokerDegradedAction` spliced into the hoisted
+   `healthWaitingQuery`); app cross-package equality pin + board-side
+   SQL vocabulary pin.
+5. **permanent 4xx quietly skipped**: templates re-raise
+   `urllib.error.HTTPError` 4xx (fail-closed into failure accounting →
+   the remat/degrade ladder); 5xx/network stay quiet; executable pin
+   `TestGateTemplate_PermanentHTTPError_Fails` (401/403/404).
+
+## The parking window (2026-11-19 wake) — what actually happened
+
+The r0 fix work from the prior session never landed on the branch: the
+commit/push chain was interrupted mid-flight and the reported success
+was tool-display corruption (verified by plumbing: branch head stayed
+at the pre-r0 commit `0b02524153d6`, the working tree carried the
+fixes). The PR parked ~28h with BOTH CI reds pointing at that stale
+head — Lint (typecheck: the same 10 arity errors) and
+pkg/secrets-integration (its "Run -tags=integration kill-tests for
+pkg/board" step — the same compile class). This session: re-verified
+every r0 finding on disk (two — the F5 template posture and its pins,
+plus the docs sections — had NOT survived and were redone), merged
+origin/main at `38eb2fa75` (PRs 2110/2112; worklogs renumbered on main,
+1303 collision-free), and landed the full r0 set with plumbing-verified
+push (full-hash head/origin/PR agreement).

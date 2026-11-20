@@ -85,6 +85,18 @@ const (
 	waitBrokerDegradedPrefix = "wait-broker-degraded:"
 )
 
+// The broker's board-event action vocabulary — SHARED constants, not
+// scattered literals: the recordEvent call sites use them, and the
+// health-surface pins assert pkg/board's read edge references the same
+// spelling (a rename anywhere reddens a test, review r0 F4 — the
+// tautology class stays closed).
+const (
+	EventActionWaitResolved       = "wait_resolved"
+	EventActionWaitOrphanCleaned  = "wait_orphan_cleaned"
+	EventActionWaitBrokerRemat    = "wait_broker_rematerialized"
+	EventActionWaitBrokerDegraded = "wait_broker_degraded"
+)
+
 // waitDeclaration is one wait_declared board event the broker
 // consumed (the payload's condition is DATA; nothing executable ever
 // crossed the worker surface).
@@ -560,16 +572,14 @@ func (b *WaitBroker) Pass(ctx context.Context) (WaitBrokerResult, error) {
 			}
 			continue
 		}
-		if err := b.createTrigger(ctx, decl, row, shortID, name, script); err != nil {
+		created, err := b.createTrigger(ctx, decl, row, shortID, name, script)
+		if err != nil {
 			return res, fmt.Errorf("wait broker: materialize %s: %w", name, err)
 		}
 		res.Materialized++
-		// Re-scan lazily: the created row joins the owned set for the
-		// phases below (a synthetic row is enough — the store owns truth).
-		created := &workflows.TriggerRow{
-			ID: name, OwnerType: types.WorkflowOwnerUser, OwnerID: row.UserID, Name: name,
-			ScriptHandler: script, Enabled: true,
-		}
+		// The created row joins the owned set for the phases below WITH
+		// its store-issued uuid id (the fires scan keys on it — a name
+		// is not a uuid; trigger_fires.trigger_id is uuid NOT NULL).
 		byName[name] = created
 		owned = append(owned, created)
 	}
@@ -603,7 +613,7 @@ func (b *WaitBroker) Pass(ctx context.Context) (WaitBrokerResult, error) {
 			reason = "claim_ended"
 		}
 		if row != nil {
-			if err := b.facts.recordEvent(ctx, row.ProjectID, waitOrphanCleanedPrefix+trig.Name, "wait_orphan_cleaned", row.TaskID,
+			if err := b.facts.recordEvent(ctx, row.ProjectID, waitOrphanCleanedPrefix+trig.Name, EventActionWaitOrphanCleaned, row.TaskID,
 				map[string]any{"task_id": row.TaskID, "trigger": trig.Name, "reason": reason}); err != nil {
 				return res, err
 			}
@@ -663,7 +673,7 @@ func (b *WaitBroker) Pass(ctx context.Context) (WaitBrokerResult, error) {
 					"trigger", trig.Name, "fire", fire.ID, "error", err.Error())
 				continue
 			}
-			if err := b.facts.recordEvent(ctx, row.ProjectID, resolvedID, "wait_resolved", row.TaskID,
+			if err := b.facts.recordEvent(ctx, row.ProjectID, resolvedID, EventActionWaitResolved, row.TaskID,
 				map[string]any{
 					"task_id": row.TaskID, "fire_id": fire.ID, "trigger": trig.Name,
 					"condition": decl.Condition.String(), "repo": decl.Repo, "delivered_to": row.Assignee,
@@ -712,7 +722,7 @@ func (b *WaitBroker) Pass(ctx context.Context) (WaitBrokerResult, error) {
 			if err := b.rematerializeTrigger(ctx, row, shortID, name); err != nil {
 				return res, fmt.Errorf("wait broker: remat create %s: %w", name, err)
 			}
-			if err := b.facts.recordEvent(ctx, row.ProjectID, rematID, "wait_broker_rematerialized", row.TaskID,
+			if err := b.facts.recordEvent(ctx, row.ProjectID, rematID, EventActionWaitBrokerRemat, row.TaskID,
 				map[string]any{"task_id": row.TaskID, "trigger": name, "cause": cause}); err != nil {
 				return res, err
 			}
@@ -734,7 +744,7 @@ func (b *WaitBroker) Pass(ctx context.Context) (WaitBrokerResult, error) {
 		if err := b.triggers.Delete(ctx, trig.OwnerType, trig.OwnerID, trig.ID); err != nil && !errors.Is(err, workflows.ErrNotFound) {
 			return res, fmt.Errorf("wait broker: degrade delete %s: %w", name, err)
 		}
-		if err := b.facts.recordEvent(ctx, row.ProjectID, degradedID, "wait_broker_degraded", row.TaskID,
+		if err := b.facts.recordEvent(ctx, row.ProjectID, degradedID, EventActionWaitBrokerDegraded, row.TaskID,
 			map[string]any{
 				"task_id": row.TaskID, "trigger": name, "cause": cause,
 				"hint": "the event-wait's sensor failed twice; the wait stays on the row and the lease ladder governs it",
@@ -753,12 +763,14 @@ func (b *WaitBroker) Pass(ctx context.Context) (WaitBrokerResult, error) {
 }
 
 // createTrigger materializes the sensor (label select happened above;
-// the create is idempotent by the deterministic name).
-func (b *WaitBroker) createTrigger(ctx context.Context, decl waitDeclaration, row *waitRowState, shortID, name, script string) error {
+// the create is idempotent by the deterministic name) and RETURNS the
+// built row — its store-issued uuid id is the fires-scan key (a name
+// is NOT a uuid: trigger_fires.trigger_id is uuid NOT NULL, 000016).
+func (b *WaitBroker) createTrigger(ctx context.Context, decl waitDeclaration, row *waitRowState, shortID, name, script string) (*workflows.TriggerRow, error) {
 	src, _ := json.Marshal(map[string]string{"expr": waitBrokerCronExpr})
 	_, next, err := workflows.NextCronFireFromConfig(src, b.clock())
 	if err != nil {
-		return fmt.Errorf("cron %s: %w", waitBrokerCronExpr, err)
+		return nil, fmt.Errorf("cron %s: %w", waitBrokerCronExpr, err)
 	}
 	ws := row.WorkspaceID
 	trig := &workflows.TriggerRow{
@@ -782,7 +794,10 @@ func (b *WaitBroker) createTrigger(ctx context.Context, decl waitDeclaration, ro
 		CreatedAt:           b.clock(),
 		UpdatedAt:           b.clock(),
 	}
-	return b.triggers.Create(ctx, trig)
+	if err := b.triggers.Create(ctx, trig); err != nil {
+		return nil, err
+	}
+	return trig, nil
 }
 
 // rematerializeTrigger recreates the sensor for an ALREADY-declared
@@ -805,7 +820,10 @@ func (b *WaitBroker) rematerializeTrigger(ctx context.Context, row *waitRowState
 	if err != nil {
 		return err
 	}
-	return b.createTrigger(ctx, decl, row, shortID, name, script)
+	// The rebuilt row's uuid id is the store's truth again; the next
+	// pass's ListByPrefix re-reads it (the remat arm needs no local row).
+	_, err = b.createTrigger(ctx, decl, row, shortID, name, script)
+	return err
 }
 
 // waitBrokerTriggerDescription renders the ownership prose (the
