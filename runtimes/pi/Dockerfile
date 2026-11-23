@@ -63,11 +63,11 @@
 
 # Override to use a different release: --build-arg PI_VERSION=<version>
 # (and the matching PI_SOURCE_SHA256 from that release's SHA256SUMS).
-# Pinned to 1.5.2 (2026-11-10) — the version the scoping report
+# Pinned to 1.6.0 (2026-11-23) — the version the scoping report
 # validated (RPC surface, session format, offline-build path). Bump only
 # with the S6 drift-gate fixture refresh (REFRESH.md regime).
-ARG PI_VERSION=1.5.2
-ARG PI_SOURCE_SHA256=da14b72e5d674959b64fc541e4a9241ac9fcdfa243431479119d3edb598b2231
+ARG PI_VERSION=1.6.0
+ARG PI_SOURCE_SHA256=14519e288e84e713629b220bb6ade6818e32d4ff23f205fd80a7cc49dedc413e
 
 FROM node:22-bookworm-slim@sha256:e9f565d32859f0cbfb52125eafe8be39390f24dac302dc3cdf566e8ba3ab21ee AS build
 
