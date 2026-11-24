@@ -1014,7 +1014,7 @@ func TestPinLeaseLiveness_ProductionWiring_ParkedClaimIsNudgedAtFirstExpiry(t *t
 	assert.Zero(t, renewEvents, "no gratuitous renewal reached the trail (and post-#2100-R4 a real one would)")
 
 	// Sweep 2 — the measure window closes with the claim still silent:
-	// the ladder PROCEEDES to the verdict. Pre-fix this sweep never
+	// the ladder PROCEEDS to the verdict. Pre-fix this sweep never
 	// happened on schedule: the renewal deferred it by a full lease
 	// window, and the next one deferred it again — the 2.5-day zombie.
 	time.Sleep(300 * time.Millisecond)
