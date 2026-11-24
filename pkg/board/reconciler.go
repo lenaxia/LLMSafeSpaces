@@ -784,12 +784,15 @@ func (s *Service) rc1Reclaims(ctx context.Context) (int, error) {
 				return 0, rerr
 			}
 			if !landed {
-				// The stage guard lost the race, or this decision was
-				// already on the trail: nothing minted, nothing counted
-				// — the freeze arm's converged-by-them discipline.
+				// The stage guard lost the race: nothing written, no
+				// event, no counter — converged by the superseding
+				// writer (the freeze arm's discipline).
 				continue
 			}
 			if evt.ID != "" {
+				// Landed but already on the trail (a re-swept decision):
+				// the write and the counter stand, only the publish is
+				// skipped.
 				pending = append(pending, evt)
 			}
 			leaseRenewalsBySource.WithLabelValues(renewSource[v.id]).Inc()
@@ -1855,12 +1858,18 @@ func ladderLapseReason(v victim) string {
 
 // applyRenewTx writes one ladder renewal and mints its #2100-R4 audit
 // row (the ladder used to renew silently — see the renew arm's note).
-// landed=false is the arm declining to touch the row at all: the stage
-// guard lost the race to a superseding writer, or this exact decision
-// is already on the trail (the deterministic id + ON CONFLICT DO
-// NOTHING). The returned Event is empty in both cases, and the
-// renewal counter is NOT incremented — the count stays "renewals this
-// process performed", never "renewals this process re-decided".
+// The two quiet outcomes are DIFFERENT and must not be conflated:
+//
+//   - landed=false — the arm never touched the row: the UPDATE's stage
+//     guard lost the race to a superseding writer. Nothing written, no
+//     event, no counter tick (the freeze arm's converged-by-them
+//     discipline).
+//   - landed=true with an empty Event — the renewal LANDED (write and
+//     counter are real) but this exact decision was already on the
+//     trail: the deterministic id + ON CONFLICT DO NOTHING
+//     (recordEventTx). The caller publishes nothing — a re-swept
+//     decision never double-posts — while the durable trail keeps its
+//     single row.
 func (s *Service) applyRenewTx(ctx context.Context, tx pgx.Tx, sys Actor, v victim,
 	source string, busyOnly, hbNoMotion bool) (Event, bool, error) {
 	var (
