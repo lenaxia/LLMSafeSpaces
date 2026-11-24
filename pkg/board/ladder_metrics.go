@@ -83,7 +83,7 @@ var (
 
 	heartbeatNoAdvanceCycles = promauto.NewCounter(prometheus.CounterOpts{
 		Name: HeartbeatNoAdvanceCyclesMetricName,
-		Help: "Motionless heartbeat responses counted against the no-advance budget (#2044): heartbeat answers whose declared watermark (observedProgressAt, stored into last_progress_at) never crossed the claim mint (stage_entered_at) — presence without advancement, renewing below NoAdvanceHeartbeatCap and declining at it. The heartbeat-orbit signature: climbing count + zero stage advance = a worker satisfying the nudge contract's letter with none of its substance.",
+		Help: "Motionless heartbeat responses counted against the no-advance budget (#2044): EVERY nudge-response (declared OR arrival-only) counts one no-advance cycle — the heartbeat handler COUNTS, it never CREDITS, and stores the declared stamp nowhere (the v0.44.19 defect let a now()-stamping responder credit motion and reset the budget at every write, so the cap never tripped for a declarer). Below NoAdvanceHeartbeatCap the response renews and clears the sentinel slot; at the cap it DECLINES (arrival recorded, cycle counted, lease frozen, sentinel kept armed). Motion resets are observer-side only: a movement/busy reconciler renewal, or a claim/persona/stage mint. The heartbeat-orbit signature: climbing count + zero stage advance = a worker satisfying the nudge contract's letter with none of its substance.",
 	})
 
 	dueMarksByTrigger = promauto.NewCounterVec(prometheus.CounterOpts{
