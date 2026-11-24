@@ -68,6 +68,12 @@ const (
 	// — the salvage-handoff reclaim; the pointer rides the row, the
 	// event tells the lease plane WHICH claim went away and why.
 	ReclaimReasonDeposed = "deposed"
+	// #2100-R3: the PAUSED-row lapse (pause.go's documented LAPSE-not-
+	// freeze accounting) — a paused row is exempt from the ladder's
+	// arms, so its expiry lapses it straight to backlog where the
+	// paused flag parks it. Distinct from lease_lapse: the row was
+	// never asked whether it was alive (PAUSE MUST PAUSE).
+	ReclaimReasonPausedLapse = "paused_lapse"
 )
 
 // LeaseEvent is one ladder decision, projected post-commit. The bus

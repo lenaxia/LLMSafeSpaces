@@ -177,11 +177,23 @@ func TestIntegrationQuietSource_ComposedTruthAndPurity(t *testing.T) {
 	assert.Nil(t, dead.BusySeconds)
 
 	// PURITY (the engine contract): the quiet query consumed no
-	// observation state — the next ObserveAssignees for ses_framed is
-	// still a FIRST observation with the frame leg as movement.
+	// observation state — it minted no cursor under either ref form,
+	// so the sweep that follows still measures from its OWN baseline
+	// (#2100-R2 re-pin: "not blinded" is cursor-absence plus the
+	// sweep's own delta — first observation baselines every leg now,
+	// so a pre-claim frame is never a free first-sight renewal).
+	require.NotContains(t, hub.cursors, "ses_framed", "the quiet query minted no cursor (raw-ref form)")
+	require.NotContains(t, hub.cursors, "framed-teapot-quiet", "…nor under the phrase form the read edge hands it")
 	res := hub.ObserveAssignees(ctx, board.SessionObservations{Refs: []board.AssigneeRef{{SessionID: "ses_framed"}}})
 	o := res["ses_framed"]
 	require.True(t, o.Observed)
-	assert.True(t, o.MovedSinceLastSweep,
-		"the quiet query must not consume the sweep's movement delta (purity)")
+	assert.False(t, o.MovedSinceLastSweep, "first observation baselines the frame leg (#2100-R2)")
+
+	hub.ObserveFrame(ws, &abiv1.Event{
+		Type:              abiv1.EventType_EVENT_TYPE_PART_DELTA,
+		InternalSessionId: "ses_framed",
+	})
+	res = hub.ObserveAssignees(ctx, board.SessionObservations{Refs: []board.AssigneeRef{{SessionID: "ses_framed"}}})
+	assert.True(t, res["ses_framed"].MovedSinceLastSweep,
+		"the quiet query consumed no state: the sweep's OWN delta still renews (the ladder is not blinded)")
 }

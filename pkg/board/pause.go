@@ -12,9 +12,12 @@ package board
 // MINTS, and FORWARD stage-writes; it never revokes a lease or token.
 //
 // Lease accounting during pause is LAPSE, not freeze (worker proposal,
-// adopted): the lease clock runs (the seamless lease's
-// movement observation + nudge ladder need no paused special-case). A
-// long pause lapses naturally — the reconciler
+// adopted): the lease clock runs, but the ladder is PAUSE-EXEMPT
+// (#2100-R3: a paused row takes NO nudge and NO renewal — the HALT
+// directive already stopped the worker, so asking it whether it is
+// alive is moot and the prod shape was a paused probe renewed every
+// ~45m for 2.5 days). A long pause lapses naturally at its next expiry
+// sweep — the reconciler
 // requeues the row to backlog where the paused flag parks it. Resume
 // clears the flag AND delivers a RESUME directive: the held session
 // continues if its lease survived; otherwise the row re-enters the FIFO

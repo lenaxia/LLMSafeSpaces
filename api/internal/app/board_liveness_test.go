@@ -605,10 +605,11 @@ func TestIntegrationLeaseLiveness_ProductionWiring_ToolStartFrameRenews(t *testi
 	require.NoError(t, err)
 	seedLivenessSession(t, pool, ws, assignee, "", 1, false)
 
+	var frameNudges atomicInt
 	recon := board.NewReconciler(pool, cfg,
 		board.WithLivenessSource(hub),
 		board.WithNudgeSender(func(context.Context, string, board.NudgePayload) error {
-			t.Fatal("a moving worker must never be nudged")
+			frameNudges.add(1) // #2100-R2: the claim's FIRST expiry sweep challenges it
 			return nil
 		}),
 	)
@@ -616,6 +617,14 @@ func TestIntegrationLeaseLiveness_ProductionWiring_ToolStartFrameRenews(t *testi
 	// The mid-command shape, three lease windows long: each window the
 	// worker's tool produces SOMETHING (a part start, a delta), and
 	// each expiry the sweep must renew on that evidence.
+	//
+	// #2100-R2 re-pin: the FIRST sweep is this ref's first observation,
+	// which now baselines every leg at its current stamp — a frame this
+	// process saw before the claim existed is not this episode's
+	// movement — so round 0 pays a challenge (a nudge: answered or not,
+	// never a lapse) and rounds 1-2 renew on the deltas the CLAIM
+	// produced. The pin's promise is unchanged: a mid-command worker
+	// never lapses and is never wedged.
 	for round := 0; round < 3; round++ {
 		_, err = pool.Exec(ctx,
 			`UPDATE tasks SET lease_expires_at = now() - interval '1 millisecond' WHERE id=$1`, task.ID)
@@ -634,6 +643,15 @@ func TestIntegrationLeaseLiveness_ProductionWiring_ToolStartFrameRenews(t *testi
 			`SELECT stage, claim_token::text FROM tasks WHERE id=$1`, task.ID).Scan(&stage, &token))
 		assert.Equal(t, board.StageInProgress, stage, "round %d: the mid-command worker does not lapse", round)
 		require.NotNil(t, token)
+		var nudgeID string
+		require.NoError(t, pool.QueryRow(ctx, `SELECT coalesce(nudge_id,'') FROM tasks WHERE id=$1`, task.ID).Scan(&nudgeID))
+		if round == 0 {
+			assert.Equal(t, 1, frameNudges.get(), "round 0: the first-observed claim is CHALLENGED, not renewed on pre-claim frames")
+			assert.NotEmpty(t, nudgeID, "round 0: the sentinel is positioned — a challenge is never a lapse")
+		} else {
+			assert.Equal(t, 1, frameNudges.get(), "round %d: the claim's own frames RENEW — no further challenge", round)
+			assert.Empty(t, nudgeID, "round %d: the renewal cleared the sentinel slot", round)
+		}
 	}
 }
 
@@ -793,4 +811,217 @@ func TestIntegrationLeaseLiveness_OrdinalLegIsWorkerActivityOnly(t *testing.T) {
 		{SessionID: "ses_ord", NudgeID: "nudge-allowlist-1"},
 	}})
 	assert.True(t, res["ses_ord"].EventsAfterNudge, "post-sentinel worker activity is the reaction")
+}
+
+// TestPinLeaseLiveness_FirstObservationBaselinesEveryLeg — #2100 R2's
+// born-red pin (the parked-probe signature, red against v0.44.19): a
+// ref this hub has NEVER observed, for a session this process already
+// holds frame stamps and a message_count for (the claim's own spawn
+// turn, a replica handoff, a restart that pruned the cursor map), is
+// the claim's FIRST expiry sweep. Pre-fix the frame legs baselined at
+// ZERO there, so those pre-claim stamps read as MovedSinceLastSweep and
+// bought a gratuitous renewal: the probe's park+45m nudge window was
+// eaten (last_progress_at 22:44:02; renewal 23:29:33 with zero evidence
+// behind it) and the nudge only landed at park+90.87m — the original
+// #2100 signature. The fix baselines EVERY leg at its current stamp on
+// first observation (the dbCount leg already did), so the quiet arms
+// own the row and the claim's own activity asserts itself one sweep
+// later.
+func TestPinLeaseLiveness_FirstObservationBaselinesEveryLeg(t *testing.T) {
+	pool := livenessPool(t)
+	ctx := context.Background()
+	const ws = "ws-lease-firstobs-baseline"
+	_, err := pool.Exec(ctx, `DELETE FROM session_index WHERE workspace_id = $1`, ws)
+	require.NoError(t, err)
+
+	hub := newBoardLivenessHub(pool)
+	seedLivenessSession(t, pool, ws, "ses_parked", "parked-teapot-verifies", 3, false)
+	// The pre-claim evidence this process holds: the claim's spawn turn
+	// emitted worker frames, and a settle landed after it (opaque leg).
+	hub.ObserveFrame(ws, &abiv1.Event{
+		Type:              abiv1.EventType_EVENT_TYPE_PART_START,
+		InternalSessionId: "ses_parked",
+	})
+	hub.ObserveFrame(ws, &abiv1.Event{
+		Type:              abiv1.EventType_EVENT_TYPE_SESSION_STATUS,
+		Status:            abiv1.SessionStatus_SESSION_STATUS_IDLE,
+		InternalSessionId: "ses_parked",
+	})
+	require.Positive(t, hub.framesWorker["ses_parked"], "the fixture: a worker stamp exists pre-observation")
+	require.Positive(t, hub.framesOpaque["ses_parked"], "the fixture: an opaque stamp exists pre-observation")
+
+	// FIRST observation of the ref — the claim's first expiry sweep.
+	res := hub.ObserveAssignees(ctx, board.SessionObservations{Refs: []board.AssigneeRef{{SessionID: "ses_parked"}}})
+	obs := res["ses_parked"]
+	require.True(t, obs.Observed && obs.Exists, "the row is observed (the evidence plane is answering)")
+	assert.False(t, obs.MovedSinceLastSweep,
+		"BORN-RED: pre-claim frames are not this episode's movement — first observation baselines EVERY leg, so a parked claim reaches its first expiry un-renewed (nudged, not renewed)")
+	assert.False(t, obs.MovedOpaque, "the opaque leg baselines too (zero renewal authority either way, but never a phantom delta)")
+
+	// The contrast arms (the fix must not blind the ladder): the claim's
+	// OWN activity asserts itself from the next sweep on, per leg.
+	hub.ObserveFrame(ws, &abiv1.Event{
+		Type:              abiv1.EventType_EVENT_TYPE_PART_DELTA,
+		InternalSessionId: "ses_parked",
+	})
+	res = hub.ObserveAssignees(ctx, board.SessionObservations{Refs: []board.AssigneeRef{{SessionID: "ses_parked"}}})
+	assert.True(t, res["ses_parked"].MovedSinceLastSweep, "a frame after the baseline is renewal evidence (the busy worker is never blinded)")
+
+	seedLivenessSession(t, pool, ws, "ses_parked", "parked-teapot-verifies", 4, false)
+	res = hub.ObserveAssignees(ctx, board.SessionObservations{Refs: []board.AssigneeRef{{SessionID: "ses_parked"}}})
+	assert.True(t, res["ses_parked"].MovedSinceLastSweep, "the DB leg's delta still renews (the leg that already baselined correctly)")
+
+	hub.ObserveFrame(ws, &abiv1.Event{
+		Type:              abiv1.EventType_EVENT_TYPE_SESSION_STATUS,
+		Status:            abiv1.SessionStatus_SESSION_STATUS_IDLE,
+		InternalSessionId: "ses_parked",
+	})
+	res = hub.ObserveAssignees(ctx, board.SessionObservations{Refs: []board.AssigneeRef{{SessionID: "ses_parked"}}})
+	assert.False(t, res["ses_parked"].MovedSinceLastSweep, "a settle after the baseline is still not renewal evidence")
+	assert.True(t, res["ses_parked"].MovedOpaque, "the opaque leg measures from the baselined stamp")
+}
+
+// laneSeed seeds one claimable lane (workspace→project→epic→task)
+// through the real engine service and claims it, returning the claim,
+// the task id and the assignee ref the hub will be asked about.
+func laneSeed(t *testing.T, pool *pgxpool.Pool, svc *board.Service, tag string) (ws, taskID, assignee, token string) {
+	t.Helper()
+	userID := "lease-" + tag + "-user"
+	owner := board.Actor{Kind: board.ActorUser, UserID: userID, Surface: board.SurfaceREST}
+	ctx := context.Background()
+	_, err := pool.Exec(ctx, `
+		TRUNCATE TABLE board_events, board_transitions, board_dependencies, board_sweeps, tasks, epics, projects
+		CASCADE`)
+	require.NoError(t, err)
+	_, err = pool.Exec(ctx, `
+		INSERT INTO users (id, username, email, password_hash, active, role)
+		VALUES ($1, $1, $2, 'hash', true, 'user')
+		ON CONFLICT (id) DO NOTHING`, userID, tag+"@example.com")
+	require.NoError(t, err)
+	_, err = pool.Exec(ctx, `
+		INSERT INTO board_config_defaults (user_id, key, value)
+		VALUES ($1, 'stagePersonas', '{}'::jsonb)
+		ON CONFLICT (user_id, key) DO NOTHING`, userID)
+	require.NoError(t, err)
+
+	ws = uuid.New().String()
+	_, err = pool.Exec(ctx, `
+		INSERT INTO workspaces (id, user_id, name, namespace, created_at, updated_at)
+		VALUES ($1::uuid, $2, $3, 'default', now(), now())`, ws, userID, "ws-"+ws[:8])
+	require.NoError(t, err)
+	p, err := svc.CreateProject(ctx, owner, board.ProjectInput{
+		Name: "proj-" + tag, TargetWorkspaceID: ws, WorkerSlots: 2, Tags: []string{},
+	}, "")
+	require.NoError(t, err)
+	e, err := svc.CreateEpic(ctx, owner, p.ID, "", board.EpicInput{Title: "ep", Outcome: "ship"}, "")
+	require.NoError(t, err)
+	_, err = pool.Exec(ctx, `UPDATE epics SET status='active' WHERE id=$1`, e.ID)
+	require.NoError(t, err)
+	task, err := svc.CreateTask(ctx, owner, e.ID, "", board.TaskInput{
+		Title: tag, Description: "charter", Tags: []string{},
+		AcceptanceCriteria: []board.AcceptanceCriterion{{Text: "c1"}},
+	}, "")
+	require.NoError(t, err)
+
+	c, err := svc.ClaimNext(ctx, "worker-"+tag, ws)
+	require.NoError(t, err)
+	require.Equal(t, task.ID, c.TaskID)
+	assignee = "ses_" + strings.ReplaceAll(tag, "-", "_")
+	_, err = pool.Exec(ctx, `UPDATE tasks SET assignee_session=$2 WHERE id=$1`, task.ID, assignee)
+	require.NoError(t, err)
+	token = c.ClaimToken
+	return ws, task.ID, assignee, token
+}
+
+// TestPinLeaseLiveness_ProductionWiring_ParkedClaimIsNudgedAtFirstExpiry
+// — the lane's END-TO-END born-red pin (v0.44.19's probe signature,
+// through the production composition: the real hub + the real
+// reconciler + the real nudger over a real schema).
+//
+// The worker claims, does its spawn-turn work (the hub sees that
+// frame), and PARKS. At the claim's FIRST expiry sweep the hub is
+// asked about this ref for the first time — pre-fix the frame legs
+// baselined at ZERO there, so the spawn turn's own stamp read as
+// movement and the ladder renewed the parked claim with zero evidence
+// behind it, forever (probe row 615a8cf1: last_progress_at 22:44:02,
+// silent renewal 23:29:33, first nudge only at park+90.87m). Post-fix
+// the parked claim is NUDGED at its first expiry and the wedge verdict
+// lands at the measure window's close — and the trail shows zero
+// renewals for the row.
+func TestPinLeaseLiveness_ProductionWiring_ParkedClaimIsNudgedAtFirstExpiry(t *testing.T) {
+	pool := livenessPool(t)
+	ctx := context.Background()
+	hub := newBoardLivenessHub(pool)
+
+	cfg := board.EngineConfig{
+		AttemptsCap:        3,
+		LeaseDuration:      45 * time.Minute, // the prod window (the clock seam rewinds the expiry instead)
+		NudgeMeasureWindow: 200 * time.Millisecond,
+		ThrottleBackoff:    time.Hour,
+		FailureBackoff:     500 * time.Millisecond,
+		DRRQuantum:         1,
+		SweepInterval:      time.Second,
+	}
+	svc := board.NewService(pool, cfg, board.WithLivenessSource(hub))
+
+	ws, taskID, assignee, token := laneSeed(t, pool, svc, "parked-claim")
+	seedLivenessSession(t, pool, ws, assignee, "", 3, false)
+
+	// The parking turn's own activity — the ONLY evidence the hub
+	// holds when the claim's first expiry sweep asks about it.
+	hub.ObserveFrame(ws, &abiv1.Event{
+		Type:              abiv1.EventType_EVENT_TYPE_PART_START,
+		InternalSessionId: assignee,
+	})
+	require.Positive(t, hub.framesWorker[assignee], "the fixture: the spawn turn stamped a worker frame pre-observation")
+
+	// The PRODUCTION nudger composition (scope resolver + V1 sender +
+	// the hub's send-mark), wrapped only to count.
+	prodNudger := newBoardNudger(boardScopeFor(pool), &recordingV1Sender{}, hub, nil)
+	var nudges atomicInt
+	recon := board.NewReconciler(pool, cfg,
+		board.WithLivenessSource(hub),
+		board.WithNudgeSender(func(ctx context.Context, sessionID string, p board.NudgePayload) error {
+			nudges.add(1)
+			return prodNudger(ctx, sessionID, p)
+		}),
+	)
+
+	expire := func() {
+		_, err := pool.Exec(ctx,
+			`UPDATE tasks SET lease_expires_at = now() - interval '1 millisecond' WHERE id=$1`, taskID)
+		require.NoError(t, err)
+	}
+
+	// Sweep 1 — the claim's FIRST expiry sweep.
+	expire()
+	_, err := recon.Sweep(ctx)
+	require.NoError(t, err)
+
+	assert.Equal(t, 1, nudges.get(),
+		"BORN-RED: the parked claim is NUDGED at its first expiry (pre-fix the zero-baselined frame legs read the spawn turn as movement and bought a silent renewal — the nudge window was eaten, park+45m → park+90.87m)")
+	var stage string
+	var nudgeID string
+	require.NoError(t, pool.QueryRow(ctx,
+		`SELECT stage, coalesce(nudge_id,'') FROM tasks WHERE id=$1`, taskID).Scan(&stage, &nudgeID))
+	assert.Equal(t, board.StageInProgress, stage, "the claim is challenged, not renewed-away and not lapsed")
+	assert.NotEmpty(t, nudgeID, "the sentinel is positioned (the wedge verdict measures against it next sweep)")
+	require.NotEmpty(t, token)
+
+	var renewEvents int
+	require.NoError(t, pool.QueryRow(ctx,
+		`SELECT count(*) FROM board_events WHERE action='renew' AND item_id=$1`, taskID).Scan(&renewEvents))
+	assert.Zero(t, renewEvents, "no gratuitous renewal reached the trail (and post-#2100-R4 a real one would)")
+
+	// Sweep 2 — the measure window closes with the claim still silent:
+	// the ladder PROCEEDES to the verdict. Pre-fix this sweep never
+	// happened on schedule: the renewal deferred it by a full lease
+	// window, and the next one deferred it again — the 2.5-day zombie.
+	time.Sleep(300 * time.Millisecond)
+	expire()
+	_, err = recon.Sweep(ctx)
+	require.NoError(t, err)
+	require.NoError(t, pool.QueryRow(ctx, `SELECT stage FROM tasks WHERE id=$1`, taskID).Scan(&stage))
+	assert.Equal(t, board.StageFailed, stage,
+		"the parked claim dies on schedule (park → nudge → verdict): the ladder's own cadence, not a renewal orbit")
 }

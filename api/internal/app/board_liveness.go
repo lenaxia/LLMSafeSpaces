@@ -322,11 +322,15 @@ func (h *boardLivenessHub) markNudge(ctx context.Context, nudgeID, ref string) {
 // Rebaseline re-bases the observation cursors for the given refs at
 // the CURRENT evidence stamps (#2100-B, lease-evidence-core design
 // §1.1): the due-mark's masking fix. The parking turn's own frames are
-// pre-mark movement; the hub's first-observation posture baselines the
-// frame legs at zero (any stamp this process ever saw reads as
-// movement on first sight — the busy-worker protection), so a due-mark
-// landing before the first observation is erased one sweep later by
-// ladderRenew. Calling this AT the due-mark moves the baseline to
+// pre-mark movement, so a due-mark landing before the first sweep is
+// erased one sweep later by ladderRenew — the frames it already
+// stamped read as movement against a baseline that predates them.
+// (#2100-R2 note: the first-observation posture used to baseline the
+// frame legs at ZERO — the "busy-worker protection" — and that WAS the
+// gratuitous renewal, not a protection; it now baselines every leg at
+// its current stamp, so a ref never observed before is already based
+// here. What stays uniquely needed is the move of an EXISTING cursor
+// to "now".) Calling this AT the due-mark moves the baseline to
 // "now": the next observation measures from the mark, and the quiet
 // arms — not a gratuitous renewal — own the row.
 //
@@ -529,17 +533,31 @@ func (h *boardLivenessHub) ObserveAssignees(sweepCtx context.Context, sess board
 		}
 		cur := h.cursors[ref]
 		if _, hadCursor := h.cursors[ref]; !hadCursor {
-			// First observation of this ref: the DB leg establishes its
-			// baseline NOW (a message_count days old is not this
-			// episode's movement — it asserts itself from the next
-			// sweep on), while the frame legs deliberately baseline at
-			// zero: any stamp this process ever saw for the session is
-			// post-spawn activity, and one possibly-gratuitous renewal
-			// for a long-quiet session is the safe direction (the busy
-			// worker — the live incident — renews on first sight
-			// instead of eating a nudge; a corpse loses one window to
-			// detection, never the reverse).
-			cur.dbCount = row.messageCount
+			// First observation of this ref: EVERY leg baselines at its
+			// current stamp NOW — a frame stamp or message_count this
+			// process picked up before this claim existed is not THIS
+			// episode's movement; it asserts itself from the next sweep
+			// on. (#2100 R2, the parked-probe proof: the frame legs
+			// baselined at ZERO, so any stamp this process ever saw for
+			// the session read as MovedSinceLastSweep and bought a
+			// gratuitous renewal at the claim's FIRST expiry — the
+			// park+45m nudge window was eaten and the nudge landed at
+			// park+90.87m. The cursors are process-local, so a restart
+			// or a replica handoff re-arms the free renewal for a
+			// motionless claimant, forever.)
+			//
+			// The old rationale — "one possibly-gratuitous renewal for a
+			// long-quiet session is the safe direction, a busy worker
+			// renews on first sight instead of eating a nudge" — was
+			// exactly the wrong bet: the gratuitous renewal is not
+			// free. It costs a full lease window of wedge detection per
+			// sweep, unbounded, and it is invisible on every external
+			// surface (no audit event, no counter exposure) — the
+			// 2.5-day zombie. A genuinely busy first-observed claimant
+			// pays one nudge (a live session answers it, and its own
+			// heartbeat response renews), and the very next sweep's
+			// delta renews it on real evidence.
+			cur = boardLiveCursor{frameStamp: stamp, opaqueStamp: opaque, dbCount: row.messageCount}
 		}
 		if !row.deleted &&
 			(stamp > cur.frameStamp || row.messageCount > cur.dbCount) {
