@@ -505,21 +505,24 @@ func (s *Service) rc1Reclaims(ctx context.Context) (int, error) {
 		}
 		// The heartbeat-orbit budget at cap (#2044, the third #2040
 		// orbit channel): K consecutive motionless heartbeat responses
-		// (the handler's response arm counts them; motion — a declared
-		// watermark past the claim mint — resets the count at every
-		// write site) exhaust presence-only renewal. At cap EVERY
-		// renewal arm is demoted for this lapse: the worker's
-		// board_heartbeat is itself a tool call, so it emits
+		// (the handler's response arm only COUNTS them — re-declaring a
+		// stamp credits nothing) exhaust presence-only renewal. The ONLY
+		// motion reset is OBSERVER-side: a movement/busy/reaction renewal
+		// in this very sweep zeroes the counter (the renew write's CASE
+		// below), so a mover is bounded by evidence, never by a stamp.
+		// At cap EVERY renewal arm is demoted for this lapse: the
+		// worker's board_heartbeat is itself a tool call, so it emits
 		// worker-activity PART frames (#2042's allowlist) that set
 		// MovedSinceLastSweep and EventsAfterNudge alike — presence,
 		// not reaction. hbAfterNudge skips (folded into its predicate
 		// below) and the row proceeds to the ordinary quiet arms; a
 		// live sentinel with no credited activity lands the wedge
-		// verdict through the existing path. The belt on the demotion:
-		// a row whose progress clock HAS crossed the mint never demotes
-		// (unreachable through the write discipline — motion resets
-		// the counter — it guards drifted or hand-edited states; a
-		// mover is never wedged by the budget).
+		// verdict through the existing path. The belt on the demotion: a
+		// row whose progress clock HAS crossed the mint never demotes —
+		// unreachable through the write discipline (the heartbeat no
+		// longer writes last_progress_at; only a claim/persona mint
+		// does) it guards drifted or hand-edited states; a mover is
+		// never wedged by the budget.
 		noAdvAtCap, noAdvEvidence := noAdvanceAtCap(s.cfg.NoAdvanceHeartbeatCap, v.noAdvance, v.noEpochMotion)
 		if noAdvAtCap {
 			wedgeEvidence[v.id] = noAdvEvidence
@@ -538,21 +541,22 @@ func (s *Service) rc1Reclaims(ctx context.Context) (int, error) {
 		observed := ok && o.Observed
 		// The heartbeat-lapse arm (#2043, the 2026-11-15 incident's
 		// remediation): the progress clock is the WORKER-anchored truth
-		// (claim mints and heartbeat responses write it — the renewal
-		// write stopped touching it in the same fix), so a progress
-		// stamp stale past HeartbeatLapseThreshold (nil = lapsed by
-		// default) means NO worker progress has been evidenced for the
-		// whole threshold window — and observation evidence (movement
-		// frames, busy, post-nudge reactions) CANNOT renew the row:
-		// frames without progress were exactly the incident's
-		// renewal-forever orbit. The evidence is zeroed HERE, before
-		// the renewal rungs consult it, so the ladder falls through to
-		// its ordinary quiet arms (nudge → heartbeat-or-wedge) with
-		// dead-evidence reclaim and the no-evidence floor preserved.
-		// The response channel still wins: hbAfterNudge was checked
-		// ABOVE this override, and a genuine heartbeat response also
-		// refreshes last_progress_at — the arm is stateless, reset for
-		// free by any worker-anchored write.
+		// (the claim mint is its only writer in an epoch — the renewal
+		// write and, since the #2044 no-advance fix, the heartbeat
+		// response both stay off it), so a progress stamp stale past
+		// HeartbeatLapseThreshold (nil = lapsed by default) means NO
+		// worker progress has been evidenced for the whole threshold
+		// window — and observation evidence (movement frames, busy,
+		// post-nudge reactions) CANNOT renew the row: frames without
+		// progress were exactly the incident's renewal-forever orbit.
+		// The evidence is zeroed HERE, before the renewal rungs consult
+		// it, so the ladder falls through to its ordinary quiet arms
+		// (nudge → heartbeat-or-wedge) with dead-evidence reclaim and the
+		// no-evidence floor preserved. The response channel keeps its own
+		// (counted, capped) budget above this override via hbAfterNudge:
+		// presence renews below the cap, but it no longer refreshes
+		// last_progress_at, so a presence-only epoch eventually lapses
+		// this arm — the #2044 fix's honest direction.
 		if v.progressLapsed && (o.MovedSinceLastSweep || o.EventsAfterNudge || o.Busy) {
 			// The suppression is the arm's always-on signature
 			// (board_ladder_heartbeat_lapse_total): would-be renewal
@@ -742,8 +746,11 @@ func (s *Service) rc1Reclaims(ctx context.Context) (int, error) {
 			// platform extension of the lease is not worker progress,
 			// and conflating them was the 2026-11-15 incident (each
 			// renewal deferred wedge detection by a full lease window,
-			// indefinitely). last_progress_at stays worker-anchored:
-			// claim mints and heartbeat responses are its only writers.
+			// indefinitely). last_progress_at is WORKER-anchored and the
+			// CLAIM MINT is its only writer in an epoch: the heartbeat
+			// response no longer writes it (it wrote the client stamp,
+			// which posed as epoch motion and voided the #2044 budget —
+			// the v0.44.19 no-advance defect).
 			if _, err := tx.Exec(ctx, `
 				UPDATE tasks SET lease_expires_at=now()+make_interval(secs=>$2::float8),
 					last_renewed_at=now(), nudge_id=NULL, nudged_at=NULL, updated_at=now(),

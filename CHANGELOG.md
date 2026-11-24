@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed — board: heartbeat responses never credit progress — the #2044 orbit cap now trips for a declarer
+
+The lease-ladder's heartbeat-orbit budget (#2044, `NoAdvanceHeartbeatCap`, default 3) was inert for any claimant that answered each sentinel with a `board_heartbeat` stamping wall-clock `now()`: the response arm's motion predicate (`observedProgressAt > stage_entered_at`) was vacuously true for such a responder, so `no_advance_renews` reset to 0 on every response, the lease re-extended forever, and the orbit cap could never trip. Prod proof: probe task `615a8cf1` ran ~40 renewal cycles over 2.5 days with `no_advance_renews` pinned at 0, wedging only once the responder went silent.
+
+- **The heartbeat handler COUNTS, it never CREDITS** (`pkg/board/stage.go`): the response arm drops the client-clock motion-reset from the `no_advance_renews` CASE (every response — declared or arrival-only — increments the strike), and no longer writes `last_progress_at` from the declared stamp (that write poisoned the ladder's `no_epoch_motion` detector, which also re-credited the orbit observer-side). Lease renewal / sentinel slot-clearing / `busy_renews` reset are now gated on **below-cap only**; `last_heartbeat_at`, the heartbeat audit event, the sentinel slot-clearing, and the declined-at-cap behavior are unchanged. The ONLY motion resets are observer-side: a movement/busy/reaction renewal in the reconciler zeroes the budget, and the claim/persona mints (and a stage move) reset it — where real evidence lives.
+- **Pins** (`pkg/board/heartbeat_orbit_2044_integration_test.go`, `…_2043_…`, `…_1847_…`): born-red 2044-C (a `now()`-stamping responder is now bounded — K responses climb the cap, K+1 declines, the next lapse wedges; red against pre-fix main), rewritten 2044-D (a now-declared response at cap counts+declines; the mover's escape is a stage move that zeroes the budget), 2044-E (the committed-sentinel response still counts its cycle), and 2043-C (the heartbeat never resets the lapse arm). The stale-declaring orbit (2044-A/B) and the arrival-only cap (`TestPin_P2_ArrivalOnlyResponsesHitOrbitCap`) are unchanged — green both sides.
+
 ## [0.44.19] - 2026-11-20
 
 ### Changed — runtime: opencode freeze-pin 1.18.15 → 1.18.35

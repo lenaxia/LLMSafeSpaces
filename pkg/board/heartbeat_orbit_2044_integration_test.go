@@ -15,9 +15,18 @@
 // since 23:21, attempts still 1).
 //
 // The budget (NoAdvanceHeartbeatCap, default 3): K consecutive
-// heartbeat responses whose declared watermark never crosses the claim
-// mint (last_progress_at > stage_entered_at — one Postgres clock
-// domain, server-side) exhaust presence-only renewal. The K+1th
+// heartbeat RESPONSES — declared or arrival-only, motionless or not —
+// exhaust presence-only renewal. The handler COUNTS, it never CREDITS:
+// every response increments no_advance_renews and the ONLY motion
+// reset is the observer's (a movement/busy renewal in the reconciler
+// zeroes the budget; the claim/persona mints reset it). The v0.44.19
+// defect let a responder that stamped wall-clock now() credit motion
+// at every write (the `observedProgressAt > stage_entered_at` predicate
+// was vacuously true), pinning the counter at 0 so the cap never
+// tripped — the live proof: probe task 615a8cf1 ran ~40 renewal cycles
+// over 2.5 days, wedged only once the responder went silent (compare
+// tsk-polished-keystone-waits, 2026-11-15, the declared-stale shape:
+// nudged 02:14:29, heartbeat 19s later, attempts still 1). The K+1th
 // response DECLINES (arrival recorded, cycle counted, sentinel kept
 // armed, lease not extended), and the next lapse demotes EVERY renewal
 // arm for that lapse — hbAfterNudge, MovedSinceLastSweep, Busy, and
@@ -26,28 +35,32 @@
 // PRESENCE, not reaction. The row proceeds to the existing wedge
 // verdict (StageFailed via the reconciler path).
 //
-// Pins (born-red against pre-fix main: the orbit renewed forever):
+// Pins (born-red where the fix changes behavior — the orbit renewed
+// forever for a declarer pre-fix):
 //
-//   - 2044-A: the full orbit cycle sequence — K no-advance responses
-//     renew (counter 1..K), the K+1th declines (slot kept, lease
-//     frozen), the next sweep lands the wedge verdict; the wedge
-//     event's payload + evidence prose carry the budget facts.
-//   - 2044-B: at cap, the heartbeat's own PART frames cannot rescue
-//     the row through ANY renewal arm — MovedSinceLastSweep,
-//     EventsAfterNudge, and Busy are all demoted for the lapse.
-//   - 2044-C: a worker that declares FRESH progress (past the mint)
-//     is never bounded — every response renews, the counter stays 0,
-//     the row lives indefinitely.
-//   - 2044-D: a movement renewal resets the budget (activity between
-//     heartbeat cycles keeps a worker alive); the ladder's own
-//     heartbeat arm counts no-advance renewals the same way and skips
-//     at cap.
-//   - 2044-E (R5): a committed nudge answered 4s later takes the
-//     guarded RESPONSE arm — slot cleared, lease extended, budget
-//     reset — and the early-side race (heartbeat before the sentinel's
-//     row write) is documented honestly: the advisory path there is
-//     the predicate doing its job (no armed nudge to answer), and the
-//     next response converges.
+//   - 2044-A: the full orbit cycle sequence with a STALE-DECLARING
+//     responder — K responses renew (counter 1..K), the K+1th declines
+//     (slot kept, lease frozen), the next sweep lands the wedge
+//     verdict; the wedge event's payload + evidence carry the budget
+//     facts. (Green both sides — the stale stamp never crossed the mint.)
+//   - 2044-B: at cap, the heartbeat's own PART frames cannot rescue the
+//     row through ANY renewal arm — MovedSinceLastSweep,
+//     EventsAfterNudge, and Busy all read false for the lapse.
+//   - 2044-C (BORN-RED, the headline): a responder that DECLARES now()
+//     every cycle — the exact v0.44.19 shape — is now bounded: K
+//     cycles renew (counter climbs 1..K), the K+1th declines, the next
+//     lapse wedges. Pre-fix this renewed forever (the motion-credit
+//     bug), so this pin is red against pre-fix main.
+//   - 2044-D (BORN-RED half a2): motionless heartbeats COUNT the budget
+//     (the handler never resets it), but the OBSERVER legs still renew
+//     a genuinely active worker — a movement/busy renewal in the
+//     reconciler resets the budget (the mid-turn/streaming shape, no
+//     regression), and the ladder's own heartbeat belt arm counts
+//     motionless belt renewals the same way and skips at cap.
+//   - 2044-E (BORN-RED): a committed nudge answered 4s later takes the
+//     guarded RESPONSE arm — slot cleared, lease extended — but its
+//     fresh-declared stamp credits NOTHING: the cycle still COUNTS
+//     (counter 1), pre-fix it reset to 0.
 //   - 2044-F: reviewer persona in_review heartbeats never trip the
 //     budget (no nudge ever arms on an in_review row — structural).
 package board_test
@@ -235,52 +248,95 @@ func (s *BoardSuite) TestPin_2044B_AtCapPresenceFramesCannotRescue() {
 	}
 }
 
-// PIN 2044-C (AC2): a worker that heartbeats AND declares fresh
-// progress is never bounded — the healthy review-loop shape (respond,
-// work, respond) resets the budget on every response and keeps the
-// row alive indefinitely.
-func (s *BoardSuite) TestPin_2044C_FreshDeclarationsNeverBounded() {
+// PIN 2044-C (BORN-RED, the headline — AC1): the exact v0.44.19 defect.
+// A responding-but-motionless claimant that DECLARES wall-clock now()
+// on every heartbeat is now bounded. Pre-fix the handler's
+// `observedProgressAt > stage_entered_at` motion predicate was
+// vacuously true for such a responder, so no_advance_renews reset to 0
+// at every response, the lease re-extended forever, and the orbit cap
+// could NEVER trip (prod proof: probe task 615a8cf1 ran ~40 renewal
+// cycles over 2.5 days, no_advance_renews pinned at 0, wedged only when
+// the responder went silent). Post-fix the handler COUNTS: K responses
+// climb the counter to the cap, the K+1th declines, and the next lapse
+// lands the wedge verdict — the 3-strike orbit end-to-end.
+func (s *BoardSuite) TestPin_2044C_DeclarerStampsNowIsBounded() {
 	ws := s.seedWorkspace()
 	p := s.seedProject(ws, 4)
 	e := s.seedEpic(p, board.EpicActive)
-	task := s.seedTask(e, "healthy-hb", nil, false)
+	task := s.seedTask(e, "declarer-orbit", nil, false)
 
 	c := s.claimOrFail(ws)
 	assignee := s.reloadTask(task.ID).AssigneeSession
+	s.Require().NotEmpty(assignee)
 	lives := &fakeLiveness{}
 	lives.set(assignee, liveQuiet())
 	nudger := &fakeNudger{}
 	recon := s.pinRecon(lives, nudger.Send)
-	capK := s.svc.Config().NoAdvanceHeartbeatCap
 
-	// Well past the cap: a healthy worker's declared watermark is its
-	// LAST OBSERVED PROGRESS — fresh every time it actually works.
-	for i := 1; i <= capK+3; i++ {
+	cyclesBefore := testutil.ToFloat64(board.HeartbeatNoAdvanceCyclesCounter())
+	capK := s.svc.Config().NoAdvanceHeartbeatCap
+	s.Require().GreaterOrEqual(capK, 1, "the budget knob is armed in the test config")
+
+	// Cycles 1..K: a now()-stamping responder still RENEWS (presence is
+	// alive) but the budget COUNTS — the motion credit is gone.
+	for i := 1; i <= capK; i++ {
 		res := s.orbitCycle(recon, task.ID, c.ClaimToken, time.Now().UTC())
-		s.True(res.Extended, "cycle %d: fresh progress renews — motion resets the budget every time", i)
-		s.Equal(0, s.noAdvanceCount(task.ID), "the declared watermark crossed the mint: the counter resets")
+		s.True(res.Extended, "cycle %d below cap: presence renews even for a now-declarer", i)
+		s.Equal(i, s.noAdvanceCount(task.ID), "the now()-declared cycle is COUNTED, not credited")
 		s.leaseFuture(task.ID)
 	}
-	s.Equal(board.StageInProgress, s.rawTask(task.ID).Stage, "the healthy worker is never bounded")
-	s.Equal(0, s.noAdvanceCount(task.ID))
+	s.Equal(cyclesBefore+float64(capK), testutil.ToFloat64(board.HeartbeatNoAdvanceCyclesCounter()),
+		"every motionless response is a countable cycle — the always-on signature")
+
+	// Cycle K+1: the DECLINE — arrival recorded, cycle counted, sentinel
+	// kept armed, lease not extended. The declared stamp credits nothing.
+	declined := s.orbitCycle(recon, task.ID, c.ClaimToken, time.Now().UTC())
+	s.False(declined.Extended, "the K+1th now()-declared response declines — the motion credit is gone")
+	s.Contains(declined.Reason, "heartbeats without advancement", "the reason carries the budget prose")
+	s.Equal(capK+1, s.noAdvanceCount(task.ID), "the declined response still counts its cycle")
+	slotID, _ := s.nudgeState(task.ID)
+	s.NotEmpty(slotID, "the decline keeps the sentinel armed — the wedge clock is live")
+
+	// The final sweep: the heartbeat's own PART frames are the row's
+	// only post-sentinel activity — presence, not reaction. Every
+	// renewal arm is demoted at cap; the wedge lands.
+	lives.set(assignee, presenceLiveness())
+	s.expireLease(task.ID)
+	s.rc1Sweep(recon)
+
+	row := s.rawTask(task.ID)
+	s.Equal(board.StageFailed, row.Stage, "K+1 now()-declared cycles wedge — the orbit cap finally trips for a declarer")
+	s.Equal(1, s.countEventsFor("wedge", task.ID), "the machine verdict audits once, for this row")
+	s.Equal(cyclesBefore+float64(capK+1), testutil.ToFloat64(board.HeartbeatNoAdvanceCyclesCounter()))
+
+	// The progress clock was NEVER touched by the response — the
+	// ladder's no-epoch-motion detector stayed honest (still at/below
+	// the mint), which is what let the cap's demotion fire.
+	wm := s.rawTaskWatermark(task.ID)
+	s.Require().NotNil(wm, "the claim mint anchored last_progress_at")
+	s.False(wm.After(s.orbitMint(task.ID)),
+		"the now()-declared heartbeats never moved the progress clock (the poison is gone)")
 }
 
-// PIN 2044-D (AC2, both halves): real activity between heartbeat
-// cycles keeps a worker alive — through the mechanisms the design
-// actually grants it. (a) A movement renewal below cap RESETS the
-// budget (the frames-vs-presence seam cannot distinguish a mover's
-// tool frames from the heartbeat's own, which is exactly WHY at cap
-// frames alone renew nothing — 2044B); a cap-exhausted mover's
-// recovery is the respond-first contract: its next FRESH-declared
-// response resets the budget and renews, at cap, through the handler.
-// (b) The ladder's OWN heartbeat arm (the ordinal belt for raced row
-// states) counts no-advance renewals identically and skips at cap.
-func (s *BoardSuite) TestPin_2044D_MovementResetsAndLadderArmCounts() {
+// PIN 2044-D (AC2): the handler COUNTS, but a genuinely active worker is
+// never bounded — and its only real escape from a cap-exhausted epoch is
+// ADVANCEMENT, not a stamp. (a1) A movement renewal in the reconciler
+// ZEROES the budget below cap (the mid-turn streaming shape — fresh
+// PART frames / message-count delta are the real motion evidence; the
+// heartbeat never credits it). (a2, BORN-RED) At cap a FRESH-DECLARED
+// heartbeat is NOT motion: it counts and DECLINES (pre-fix it reset +
+// renewed through the handler — the defect); the mover's recovery is a
+// STAGE MOVE (which zeroes the budget and re-mints the epoch), never a
+// stamp and never frames-only (2044-B pins that at cap the worker's own
+// frames are presence, demoted). (b) The ladder's OWN heartbeat belt
+// arm counts no-advance belt renewals the same way and skips at cap.
+func (s *BoardSuite) TestPin_2044D_MotionlessHeartbeatsCountButAdvancementResets() {
 	ws := s.seedWorkspace()
 	p := s.seedProject(ws, 4)
 	e := s.seedEpic(p, board.EpicActive)
-	task := s.seedTask(e, "moving-worker", nil, false)
 
+	// --- task A: the streaming-mover shape (a1 + a2) -----------------
+	task := s.seedTask(e, "moving-worker", nil, false)
 	c := s.claimOrFail(ws)
 	assignee := s.reloadTask(task.ID).AssigneeSession
 	s.Require().NotEmpty(assignee)
@@ -290,8 +346,8 @@ func (s *BoardSuite) TestPin_2044D_MovementResetsAndLadderArmCounts() {
 	capK := s.svc.Config().NoAdvanceHeartbeatCap
 
 	// (a1) Below cap, MOVEMENT renews and resets: the row a quiet
-	// stretch had climbed to cap-1 on, answered by real activity —
-	// the movement renewal zeroes the budget (consecutive semantics).
+	// stretch had climbed to cap-1 on, rescued by REAL activity — the
+	// observer-side movement renewal zeroes the budget.
 	_, err := s.pool.Exec(context.Background(),
 		`UPDATE tasks SET no_advance_renews=$2 WHERE id=$1`, task.ID, capK-1)
 	s.Require().NoError(err)
@@ -300,75 +356,75 @@ func (s *BoardSuite) TestPin_2044D_MovementResetsAndLadderArmCounts() {
 	s.rc1Sweep(recon)
 	s.Equal(board.StageInProgress, s.rawTask(task.ID).Stage, "the below-cap mover renews on movement evidence")
 	s.leaseFuture(task.ID)
-	s.Equal(0, s.noAdvanceCount(task.ID), "a movement renewal resets the budget — activity between cycles is the healthy shape")
+	s.Equal(0, s.noAdvanceCount(task.ID), "a movement renewal resets the budget — real activity is the healthy shape")
 
-	// (a2) At cap, the mover's recovery is the RESPONSE channel (the
-	// respond-first contract): a fresh-declared watermark past the
-	// mint resets the budget and renews — even at cap, through the
-	// handler, in the same guarded write.
+	// (a2, BORN-RED) At cap, a fresh-declared heartbeat is NOT motion:
+	// the response arm COUNTS and the guarded write DECLINES (slot kept,
+	// lease frozen). Pre-fix this re-credited and renewed at cap through
+	// the handler — the defect.
 	_, err = s.pool.Exec(context.Background(), `
 		UPDATE tasks SET no_advance_renews=$2, nudge_id='nudge-mover', nudged_at=now()-interval '5 seconds'
 		WHERE id=$1`, task.ID, capK)
 	s.Require().NoError(err)
 	res, err := s.svc.Heartbeat(context.Background(), s.agent("sess", c.ClaimToken), task.ID, "", time.Now().UTC())
 	s.Require().NoError(err)
-	s.True(res.Extended, "at cap, a fresh-declared response is MOTION: reset and renewal in the same write")
-	s.Equal(0, s.noAdvanceCount(task.ID), "the mover's declared watermark crossed the mint — the budget resets at cap")
+	s.False(res.Extended, "at cap, a fresh-declared response is PRESENCE, not motion — it declines")
+	s.Equal(capK+1, s.noAdvanceCount(task.ID), "the now()-declared response counted, never reset, even at cap")
+	slotID, _ := s.nudgeState(task.ID)
+	s.NotEmpty(slotID, "the at-cap decline keeps the sentinel armed")
 
-	// (b) The ladder's heartbeat arm: shape the ordinal row state the
-	// belt exists for (nudge armed, last_heartbeat_at after it — e.g.
-	// a restored snapshot or an exotic multi-replica interleaving).
-	// Below cap it renews AND counts; at cap it skips and the row
-	// falls through to the quiet arms (measured silence lands the
-	// wedge verdict).
+	// The only real escape is ADVANCEMENT: a stage move zeroes the
+	// budget and re-mints the epoch (the sole worker-anchored reset
+	// post-fix). A heartbeat stamp and frames-only never do (2044-B).
+	_, err = s.svc.MoveStage(context.Background(), s.agent(c.Assignee, c.ClaimToken), "", task.ShortID,
+		board.StageInReview, "", "")
+	s.Require().NoError(err, "a stage move is the legitimate advancement that clears the orbit budget")
+	s.Equal(board.StageInReview, s.rawTask(task.ID).Stage, "the move advanced the row out of the in_progress orbit")
+	s.Equal(0, s.noAdvanceCount(task.ID), "the stage move zeroed the budget (the only worker-anchored reset post-fix)")
+
+	// --- task B: the ladder's own heartbeat belt arm (b) --------------
+	belt := s.seedTask(e, "belt-worker", nil, false)
+	s.claimOrFail(ws) // claim the belt row (A already advanced out of in_progress)
+	bAssignee := s.reloadTask(belt.ID).AssigneeSession
+	bLives := &fakeLiveness{}
+	bNudger := &fakeNudger{}
+	bRecon := s.pinRecon(bLives, bNudger.Send)
+
 	armHB := func(renews int) {
-		// The motionless epoch: the declared watermark sits below the
-		// claim mint (the honest orbiting row — part (a2)'s fresh
-		// declaration is rewound; a row whose watermark DID cross the
-		// mint renews with a reset, by design).
+		// The motionless epoch: last_progress_at stays at/below the
+		// claim mint (the honest orbiting row — a heartbeat never
+		// moves it now; only a claim/persona mint does).
 		_, err := s.pool.Exec(context.Background(), `
 			UPDATE tasks SET no_advance_renews=$2, nudge_id='nudge-belt', nudged_at=now()-interval '5 seconds',
 				last_heartbeat_at=now()-interval '1 second', lease_expires_at=now()-interval '1 millisecond',
 				last_progress_at=stage_entered_at - interval '1 minute'
-			WHERE id=$1`, task.ID, renews)
+			WHERE id=$1`, belt.ID, renews)
 		s.Require().NoError(err)
 	}
 	armHB(0)
-	s.rc1Sweep(recon)
-	s.Equal(board.StageInProgress, s.rawTask(task.ID).Stage, "the ladder heartbeat arm renews below cap")
-	s.Equal(1, s.noAdvanceCount(task.ID), "the ladder heartbeat arm counts its no-advance renewal the same way")
-	s.leaseFuture(task.ID)
+	bLives.set(bAssignee, board.AssigneeObservation{Observed: true, Exists: true, NudgeMarkKnown: true})
+	s.rc1Sweep(bRecon)
+	s.Equal(board.StageInProgress, s.rawTask(belt.ID).Stage, "the ladder heartbeat belt arm renews below cap")
+	s.Equal(1, s.noAdvanceCount(belt.ID), "the ladder belt arm counts its no-advance renewal the same way")
+	s.leaseFuture(belt.ID)
 
 	armHB(capK)
 	// Measured silence: the mark is known, nothing after it — the
 	// honest wedge input for a sentinel the observation seam anchored.
-	lives.set(assignee, board.AssigneeObservation{Observed: true, Exists: true, NudgeMarkKnown: true})
-	s.rc1Sweep(recon)
-	s.Equal(board.StageFailed, s.rawTask(task.ID).Stage,
-		"at cap the ladder heartbeat arm skips — the row proceeds to the wedge verdict")
+	bLives.set(bAssignee, board.AssigneeObservation{Observed: true, Exists: true, NudgeMarkKnown: true})
+	s.rc1Sweep(bRecon)
+	s.Equal(board.StageFailed, s.rawTask(belt.ID).Stage,
+		"at cap the ladder belt arm skips — the row proceeds to the wedge verdict")
 }
 
-// PIN 2044-E (AC3, R5): the response-arm guard. The incident's 03:00:03
-// heartbeat (4.4s after the 02:59:59 sentinel) took the ADVISORY path
-// — slot kept, no extension. This pin drives the exact committed
-// sequence deterministically: a committed sentinel (row-state spelled,
-// nudged_at backdated the observed 4s wall gap), then the live-token
-// heartbeat — and asserts the guarded RESPONSE arm wins.
-//
-// The verdict on the anomaly (documented honestly, per the issue's
-// "born-red pin either way"): by code trace the response and advisory
-// predicates differ ONLY in `nudge_id IS NOT NULL` (same stage set,
-// same token, same pending_input leg), so no token-identity mismatch
-// exists; and the guarded UPDATE evaluates its predicate on the
-// live locked row, so a raced READ of nudge_id cannot influence it.
-// The reachable advisory outcome for an ANSWERED sentinel is the
-// EARLY-side race — the worker responds to a sentinel whose row write
-// has not landed yet (bus redelivery of an old sentinel, or delivery
-// preceding the sweep's commit): the row genuinely carries no armed
-// nudge, the advisory path is the predicate doing its job, and the
-// FOLLOW-UP response converges (the second half below pins that).
-// The during-sweep race lands RESPONSE by lock ordering — pinned by
-// TestPin_LeaseLadder_HeartbeatInSendWindowIsNotLost.
+// PIN 2044-E (AC3, R5, BORN-RED half): the response-arm guard. A
+// committed sentinel answered 4s later takes the guarded RESPONSE arm —
+// slot cleared, lease extended (below cap) — but the fresh-declared
+// stamp credits NOTHING: the cycle still COUNTS (counter climbs), where
+// pre-fix it reset to 0 (the motion-credit defect). The early-side race
+// (heartbeat before the sentinel's row write) is documented honestly:
+// the advisory path there is the predicate doing its job (no armed
+// nudge to answer), and it counts nothing.
 func (s *BoardSuite) TestPin_2044E_ResponseGuard_CommittedNudgeSequence() {
 	ws := s.seedWorkspace()
 	p := s.seedProject(ws, 4)
@@ -395,27 +451,28 @@ func (s *BoardSuite) TestPin_2044E_ResponseGuard_CommittedNudgeSequence() {
 		`UPDATE tasks SET nudged_at=now()-interval '4 seconds' WHERE id=$1 AND nudge_id IS NOT NULL`, task.ID)
 	s.Require().NoError(err)
 
-	// The live token answers: the guarded RESPONSE arm.
+	// The live token answers: the guarded RESPONSE arm — but the
+	// now()-declared stamp is presence, not motion: slot cleared +
+	// lease extended (below cap), counter COUNTED.
 	res, err := s.svc.Heartbeat(context.Background(), s.agent("sess", c.ClaimToken), task.ID, "", time.Now().UTC())
 	s.Require().NoError(err)
 	s.True(res.Extended, "a committed sentinel answered 4s later takes the guarded RESPONSE arm")
 	clearedID, _ := s.nudgeState(task.ID)
 	s.Empty(clearedID, "the response clears the nudge slot")
 	s.leaseFuture(task.ID)
-	s.Equal(0, s.noAdvanceCount(task.ID), "a fresh-declared response resets the budget (motion)")
+	s.Equal(1, s.noAdvanceCount(task.ID), "a now()-declared response COUNTS its cycle (no motion credit)")
 
 	// The early-side race, pinned as the anomaly's reachable shape:
-	// the worker answers a sentinel whose row write has NOT landed
-	// (no armed nudge on the row) — the advisory path records the
-	// arrival and extends nothing, exactly as designed; the row then
-	// arms its own sentinel and the worker's NEXT response is the
-	// credited convergence.
+	// the worker answers a sentinel whose row write has NOT landed (no
+	// armed nudge on the row) — the advisory path records the arrival
+	// and extends nothing, exactly as designed; the row then arms its
+	// own sentinel and the worker's NEXT response is the convergence.
 	s.expireLease(task.ID)
 	res, err = s.svc.Heartbeat(context.Background(), s.agent("sess", c.ClaimToken), task.ID, "", time.Now().UTC())
 	s.Require().NoError(err)
 	s.False(res.Extended, "no armed sentinel on the row: the advisory path is honest (not a guard misfire)")
 	s.NotEmpty(res.Reason)
-	s.Equal(0, s.noAdvanceCount(task.ID), "an advisory arrival counts no cycle — no nudge was answered")
+	s.Equal(1, s.noAdvanceCount(task.ID), "an advisory arrival counts no cycle — no nudge was answered")
 	s.Equal(board.StageInProgress, s.rawTask(task.ID).Stage)
 }
 
