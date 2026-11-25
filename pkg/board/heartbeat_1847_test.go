@@ -7,19 +7,23 @@ package board_test
 
 // heartbeat_1847_test.go — the #1847 PR1 pins, re-pinned to the item-6
 // amendment (board_heartbeat = the nudge-RESPONSE channel; the periodic
-// self-report semantics died 2026-10-28). The C1 dogfood incident
-// class survives the repurposing: a worker emitted a heartbeat whose
+// self-report semantics died 2026-10-28). The C1 dogfood incident class
+// survives the repurposing: a worker emitted a heartbeat whose
 // observedProgressAt was HALLUCINATED into the future (09:05Z when the
-// server clock read 01:36Z); the server accepted it and stored it as
-// the progress watermark, locking the worker out of its own lease by
-// its own honesty. Worker stamps are RESPONSE events now, not the
-// liveness input — but a response stamp is still stored on the row, so
-// the server clock stays authoritative over the FUTURE direction:
+// server clock read 01:36Z); the server accepted it and stored it as the
+// progress watermark, locking the worker out of its own lease by its own
+// honesty. Worker stamps are RESPONSE events now, not the liveness
+// input — and after the #2044 no-advance fix they are NO LONGER stored
+// at all (the heartbeat handler COUNTS, it never CREDITS), so the
+// watermark poison is unreachable by construction. The guard still
+// rejects a far-future stamp as an input error (an estimate, not
+// evidence):
 //
 //   - a stamp beyond a small skew tolerance ahead of the server clock
 //     is REJECTED (invalid_input) — it is an estimate, not evidence;
-//   - a stamp within the tolerance is CLAMPED to the server clock (a
-//     FUTURE stamp is never stored);
+//   - a stamp within the tolerance is ACCEPTED and simply ignored
+//     (nothing stores it) — honest client-clock drift never fails the
+//     response;
 //   - extension itself requires a live NUDGE on the row (the response);
 //     the old evidence-gate/watermark-heal pins died WITH the gate —
 //     extension no longer consults the watermark, so the C1 lockout
@@ -76,8 +80,9 @@ func (s *BoardSuite) TestKill_HeartbeatFutureStampRejected() {
 
 // TestKill_HeartbeatMildSkewClampedToServerClock: a stamp within the
 // skew tolerance on a NUDGED row still responds (honest client clock
-// drift), but the STORED watermark is the server clock — never the
-// client's future.
+// drift), but the response no longer stores ANY watermark — the
+// heartbeat handler is COUNT-only, so last_progress_at stays at the
+// claim mint and can never carry the client's future.
 func (s *BoardSuite) TestKill_HeartbeatMildSkewClampedToServerClock() {
 	ws := s.seedWorkspace()
 	p := s.seedProject(ws, 2)
@@ -91,14 +96,15 @@ func (s *BoardSuite) TestKill_HeartbeatMildSkewClampedToServerClock() {
 	mild := serverNow.Add(90 * time.Second) // within the 2m tolerance
 	res, err := s.svc.Heartbeat(context.Background(), s.agent("sess", c.ClaimToken), task.ID, "", mild)
 	s.Require().NoError(err)
-	s.True(res.Extended, "mild clock skew is clamped, not rejected — the response still renews")
+	s.True(res.Extended, "mild clock skew is tolerated, not rejected — the response still renews (below cap)")
 
-	// The stored watermark must not carry the client's future: it reads
-	// back at-or-behind the server clock at observe time.
+	// The response stores NO progress clock: the watermark reads back at
+	// the claim mint (well behind the server clock) — never the client's
+	// future, and never the arrival echo either.
 	row := s.rawTaskWatermark(task.ID)
 	s.Require().NotNil(row)
 	s.False(row.After(serverNow.Add(5*time.Second)),
-		"stored watermark must be server-clock (clamped), got %v (server %v)", row, serverNow)
+		"the heartbeat never stores a progress clock, got %v (server %v)", row, serverNow)
 	cleared, _ := s.nudgeState(task.ID)
 	s.Empty(cleared, "the response clears the nudge")
 }

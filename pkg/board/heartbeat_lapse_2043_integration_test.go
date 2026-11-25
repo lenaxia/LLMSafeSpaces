@@ -170,16 +170,23 @@ func (s *BoardSuite) TestPin_2043B_LapseOverridesAllRenewalEvidence() {
 	}
 }
 
-// PIN 2043-C (AC3): worker progress resets the arm. The heartbeat
-// RESPONSE writes the worker-declared observedProgressAt into
-// last_progress_at (the worker-anchored clock — R1 keeps that write;
-// the no-advance budget for it is #2044's boundary) and the next
-// expiry's movement evidence renews WITHOUT a fresh nudge.
-func (s *BoardSuite) TestPin_2043C_WorkerProgressResetsArm() {
+// PIN 2043-C (AC3): the heartbeat RESPONSE renews below the #2044 cap
+// and clears the sentinel this pass — but it NO LONGER refreshes the
+// worker-anchored progress clock (the #2044 no-advance fix made the
+// response COUNT-only; pre-fix it wrote the client stamp into
+// last_progress_at, which posed as epoch motion and voided both the
+// orbit budget and this lapse arm's reset). So a STALE progress epoch
+// stays lapse-armed across heartbeats: the response clears the
+// sentinel, yet the next lapse's movement/busy evidence is STILL
+// suppressed by the lapse arm (frames without progress), so the row
+// arms a FRESH sentinel instead of renewing. The only writer that
+// resets this arm is a real claim/persona mint (worker progress), never
+// a heartbeat.
+func (s *BoardSuite) TestPin_2043C_HeartbeatNeverResetsLapseArm() {
 	ws := s.seedWorkspace()
 	p := s.seedProject(ws, 4)
 	e := s.seedEpic(p, board.EpicActive)
-	task := s.seedTask(e, "lapse-reset", nil, false)
+	task := s.seedTask(e, "lapse-count-only", nil, false)
 
 	c := s.claimOrFail(ws)
 	assignee := s.reloadTask(task.ID).AssigneeSession
@@ -188,31 +195,32 @@ func (s *BoardSuite) TestPin_2043C_WorkerProgressResetsArm() {
 	nudger := &fakeNudger{}
 	recon := s.pinRecon(lives, nudger.Send)
 
-	s.ageProgress(task.ID, 2*time.Hour)
+	s.ageProgress(task.ID, 2*time.Hour) // > the 90m HeartbeatLapseThreshold
 	s.expireLease(task.ID)
 	s.rc1Sweep(recon)
 	s.Require().Equal(1, nudger.count(), "the lapsed row took the sentinel")
+	wmBefore := s.rawTaskWatermark(task.ID)
+	s.Require().NotNil(wmBefore, "the aged claim stamp is the progress clock")
 
-	// The worker answers: response renews, and the DECLARED stamp
-	// anchors the progress clock (worker-anchored, clamped server-side).
+	// The worker answers: the response renews (below cap) and clears the
+	// sentinel, but writes NO progress clock — last_progress_at stays at
+	// the aged claim stamp.
 	res, err := s.svc.Heartbeat(context.Background(), s.agent("sess", c.ClaimToken), task.ID, "",
 		time.Now().UTC())
 	s.Require().NoError(err)
-	s.True(res.Extended, "the response channel renews at the lapse rung too — it IS the reset")
-	responded := s.rawTaskWatermark(task.ID)
-	s.Require().NotNil(responded, "the heartbeat response anchors last_progress_at (worker-declared)")
+	s.True(res.Extended, "the response channel renews at the lapse rung (below cap)")
+	wmAfter := s.rawTaskWatermark(task.ID)
+	s.Require().NotNil(wmAfter)
+	s.True(wmBefore.Equal(*wmAfter), "the heartbeat never moved the progress clock (COUNT-only)")
 
-	// Un-lapsed: movement evidence renews again — no fresh nudge, and
-	// the renewal does not advance the worker-anchored clock.
+	// Still lapsed: the movement evidence is suppressed again by the
+	// lapse arm, so the row takes a FRESH sentinel — the heartbeat did
+	// not reset the arm.
 	lives.set(assignee, liveMoving())
 	s.expireLease(task.ID)
 	s.rc1Sweep(recon)
-	s.Equal(board.StageInProgress, s.rawTask(task.ID).Stage, "worker progress reset the arm — movement renews")
-	s.leaseFuture(task.ID)
-	s.Equal(1, nudger.count(), "no fresh sentinel for an un-lapsed row")
-	after := s.rawTaskWatermark(task.ID)
-	s.Require().NotNil(after)
-	s.Equal(*responded, *after, "the post-reset renewal still never advances the progress clock")
+	s.Equal(2, nudger.count(), "a stale progress epoch stays lapse-armed across a heartbeat — fresh sentinel, not renewal")
+	s.Equal(board.StageInProgress, s.rawTask(task.ID).Stage, "still alive: a sentinel arms before any verdict")
 }
 
 // PIN 2043-D (AC4): nil last_progress_at is lapse-armed BY DEFAULT —
