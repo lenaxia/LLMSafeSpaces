@@ -716,14 +716,17 @@ func (s *Service) exitPendingReclaim(ctx context.Context, tx pgx.Tx, actor Actor
 // --- Heartbeat (nudge response) + throttle -------------------------------------------
 
 // heartbeatFutureTolerance bounds honest client-clock drift: an
-// observedProgressAt up to this far ahead of the SERVER clock is clamped
-// to the server clock (a FUTURE stamp is never stored — the C1 poison
-// direction); a stamp beyond it is a hallucinated estimate, not
-// evidence, and rejects outright (#1847 PR1: the C1 incident class).
-// PAST-skewed client stamps remain client-trusted. The tolerance
-// SURVIVES the repurposing (item 6 amendment): worker stamps are
-// RESPONSE events now, not the liveness input — but a response stamp
-// is still stored on the row, so the future direction stays clamped.
+// observedProgressAt up to this far ahead of the SERVER clock is
+// accepted (and simply ignored — the response stamp is NEVER stored
+// now), while a stamp beyond it is a hallucinated estimate, not
+// evidence, and rejects outright (#1847 PR1: the C1 incident class — a
+// stored future watermark locked a worker out of its own lease). The
+// response stamp is no longer a progress writer at all (the heartbeat
+// handler COUNTS, it never CREDITS — the v0.44.19 no-advance fix), so
+// the guard survives purely as input hygiene: a far-future stamp is
+// rejected, a near-future one tolerated. PAST-skewed client stamps were
+// always client-trusted (the comparison is server-clock vs the arrival
+// record, last_heartbeat_at).
 const heartbeatFutureTolerance = 2 * time.Minute
 
 // Heartbeat is the NUDGE-RESPONSE channel (item 6 amendment,
@@ -744,10 +747,13 @@ const heartbeatFutureTolerance = 2 * time.Minute
 //
 // A heartbeat on a NUDGED row (nudge_id set) is the response the nudge
 // prose demands ("First RESPOND (call board_heartbeat once) to confirm
-// you are active"): the lease renews, the nudge slot clears, and the
-// wedge clock is dead — the worker may then run long commands safely.
-// Requires the matching claim token; #1847 future-clamping applies to
-// the carried stamp in every shape.
+// you are active"): below the #2044 orbit cap the lease renews and the
+// nudge slot clears — the worker may then run long commands safely —
+// while the response itself never credits progress: it always counts a
+// no-advance cycle (motion evidence belongs to the observer, in the
+// reconciler). At the cap the response DECLINES (slot armed, lease
+// frozen) and the next lapse lands the wedge verdict. Requires the
+// matching claim token; #1847 rejects a far-future declared stamp.
 func (s *Service) Heartbeat(ctx context.Context, actor Actor, taskID, shortIDOrID string, observedProgressAt time.Time) (HeartbeatResult, error) {
 	t, err := s.resolveTaskForActor(ctx, actor, pick(taskID, shortIDOrID))
 	if err != nil {
@@ -776,29 +782,32 @@ func (s *Service) Heartbeat(ctx context.Context, actor Actor, taskID, shortIDOrI
 	// design: the back-fill's failure never fails the heartbeat.
 	s.backfillAssigneeStamp(ctx, t, actor)
 	serverNow := time.Now().UTC()
-	// #2100 response-observed presence: a heartbeat carrying NO
-	// declared watermark is a valid response — the arrival IS the
-	// evidence (the pre-fix shape stored the zero time as year-1: a
-	// client-hoped clock the store must never trust). But presence is
-	// NOT progress: an ARRIVAL-ONLY response counts as presence-only
-	// against the #2044 orbit budget — motion credit belongs to a
-	// DECLARED watermark past the mint (the budget's own contract), so
-	// K+1 bare heartbeats still decline and a responding-but-motionless
-	// worker never orbit-renews forever. The arrival writes NO progress
-	// clock (last_heartbeat_at, server clock, is its whole record) —
-	// which also keeps the ladder's no-epoch-motion detector honest
-	// for the cap's final verdict.
-	arrivalOnly := observedProgressAt.IsZero()
-	if arrivalOnly {
-		observedProgressAt = serverNow
-	}
-	switch {
-	case observedProgressAt.After(serverNow.Add(heartbeatFutureTolerance)):
+	// The heartbeat handler COUNTS, it never CREDITS (#2044 follow-up,
+	// the v0.44.19 prod defect: probe task 615a8cf1 ran ~40 renewal
+	// cycles over 2.5 days, no_advance_renews pinned at 0, wedged only
+	// once the responder went silent). The declared watermark is NEVER
+	// stored as progress and NEVER credited as motion: a responder that
+	// stamps wall-clock now() makes the old `$2 > stage_entered_at`
+	// predicate vacuously true, so the orbit cap could never trip for a
+	// declarer. Every response (declared OR arrival-only) is now a
+	// no-advance cycle that COUNTS against NoAdvanceHeartbeatCap; the
+	// ONLY motion resets are the observer-side ones (the reconciler
+	// renewal write zeroes the budget for movement/busy-backed
+	// renewals; the claim/persona mints reset it) — that is where real
+	// evidence lives. The response clock is last_heartbeat_at (server
+	// clock) alone; last_progress_at stays worker-anchored to the claim
+	// mint, which keeps BOTH the ladder's no-epoch-motion detector and
+	// the heartbeat-lapse arm honest for the cap's final verdict.
+	//
+	// #1847 still guards the carried stamp's SHAPE: a stamp beyond the
+	// skew tolerance ahead of the server clock is an estimate, not
+	// evidence — reject it (the stamp is no longer stored, but a
+	// hallucinated future stamp is still an input error). A stamp within
+	// the tolerance is accepted and simply ignored (nothing stores it).
+	if observedProgressAt.After(serverNow.Add(heartbeatFutureTolerance)) {
 		return HeartbeatResult{}, &GuardError{Code: GuardInput, Detail: fmt.Sprintf(
 			"observedProgressAt %s is stamped in the future (server clock %s) — future stamps are not progress evidence; send the timestamp of your LAST observed progress, never an estimate",
 			observedProgressAt.Format(time.RFC3339), serverNow.Format(time.RFC3339))}
-	case observedProgressAt.After(serverNow):
-		observedProgressAt = serverNow // clamp: a future stamp never stores — the server clock is the authority over the poison direction
 	}
 	// The response arm: ONE guarded write decides atomically whether a
 	// live nudge was answered. The nudge_id predicate makes the race
@@ -810,49 +819,46 @@ func (s *Service) Heartbeat(ctx context.Context, actor Actor, taskID, shortIDOrI
 	// wedge verdict owns corpses (the turnEvidence seam survives for
 	// the #1959c bounce re-dispatch).
 	//
-	// #2044 (the heartbeat-orbit budget): a motionless response — its
-	// declared watermark did not cross the claim mint, OR it carried no
-	// watermark at all (#2100 arrival-only: presence is not progress) —
-	// counts against NoAdvanceHeartbeatCap. Below cap (or with declared
-	// motion) the response renews and clears the slot; at cap it
-	// DECLINES: the arrival is recorded (last_heartbeat_at), the cycle
-	// is counted, the sentinel stays ARMED, and the lease is NOT
-	// extended — so the next lapse proceeds to the wedge verdict
-	// instead of renewing forever. All CASE arms read the PRE-update
-	// row (SQL assignment semantics): "no_advance_renews < cap" is the
-	// count BEFORE this cycle. $6 carries arrival-only: the motion
-	// predicate requires a DECLARED stamp ($2 with NOT $6) — the
-	// arrival-only stamp (the server clock) never reads as motion, and
-	// last_progress_at is left UNTOUCHED for it (the response clock is
-	// last_heartbeat_at alone).
+	// #2044 (the heartbeat-orbit budget), COUNT-only: EVERY response —
+	// declared or arrival-only — is a motionless cycle that increments
+	// no_advance_renews. The client-clock motion-reset is GONE (the
+	// v0.44.19 defect: it was vacuously true for a responder stamping
+	// now, so the cap never tripped for a declarer). Below cap the
+	// response still renews the lease and clears the sentinel slot
+	// (presence is alive, the budget only counts); at cap it DECLINES:
+	// the arrival is recorded (last_heartbeat_at), the cycle is
+	// counted, the sentinel stays ARMED, and the lease is NOT extended
+	// — so the next lapse proceeds to the wedge verdict instead of
+	// renewing forever. All CASE arms read the PRE-update row (SQL
+	// assignment semantics): "no_advance_renews < cap" is the count
+	// BEFORE this cycle. The write touches NO progress clock —
+	// last_progress_at stays anchored to the claim mint, so the
+	// ladder's no-epoch-motion detector still reads the epoch as
+	// motionless at the cap and the demotion lands the wedge.
 	var lease, progress time.Time
 	var postNoAdvance int
 	var renewedSlot bool
 	responded := false
 	err = s.q().QueryRow(ctx, `
-		UPDATE tasks SET last_heartbeat_at=now(),
-			last_progress_at=CASE WHEN $6::bool THEN last_progress_at ELSE $2 END, updated_at=now(),
-			no_advance_renews=CASE WHEN (NOT $6::bool) AND $2::timestamptz > stage_entered_at THEN 0 ELSE no_advance_renews+1 END,
-			lease_expires_at=CASE WHEN ((NOT $6::bool) AND $2::timestamptz > stage_entered_at) OR no_advance_renews < $5
-				THEN now()+make_interval(secs=>$3::float8) ELSE lease_expires_at END,
-			nudge_id=CASE WHEN ((NOT $6::bool) AND $2::timestamptz > stage_entered_at) OR no_advance_renews < $5 THEN NULL ELSE nudge_id END,
-			nudged_at=CASE WHEN ((NOT $6::bool) AND $2::timestamptz > stage_entered_at) OR no_advance_renews < $5 THEN NULL ELSE nudged_at END,
-			busy_renews=CASE WHEN ((NOT $6::bool) AND $2::timestamptz > stage_entered_at) OR no_advance_renews < $5 THEN 0 ELSE busy_renews END
-		WHERE id=$1 AND stage IN ('in_progress','in_review') AND claim_token=$4
+		UPDATE tasks SET last_heartbeat_at=now(), updated_at=now(),
+			no_advance_renews=no_advance_renews+1,
+			lease_expires_at=CASE WHEN no_advance_renews < $4
+				THEN now()+make_interval(secs=>$2::float8) ELSE lease_expires_at END,
+			nudge_id=CASE WHEN no_advance_renews < $4 THEN NULL ELSE nudge_id END,
+			nudged_at=CASE WHEN no_advance_renews < $4 THEN NULL ELSE nudged_at END,
+			busy_renews=CASE WHEN no_advance_renews < $4 THEN 0 ELSE busy_renews END
+		WHERE id=$1 AND stage IN ('in_progress','in_review') AND claim_token=$3
 		  AND NOT pending_input AND nudge_id IS NOT NULL
 		RETURNING lease_expires_at, no_advance_renews, (nudge_id IS NULL)`,
-		t.ID, observedProgressAt, s.cfg.LeaseDuration.Seconds(), actor.ClaimToken,
-		s.cfg.NoAdvanceHeartbeatCap, arrivalOnly).Scan(&lease, &postNoAdvance, &renewedSlot)
+		t.ID, s.cfg.LeaseDuration.Seconds(), actor.ClaimToken,
+		s.cfg.NoAdvanceHeartbeatCap).Scan(&lease, &postNoAdvance, &renewedSlot)
 	switch {
 	case err == nil:
 		responded = true
-		if arrivalOnly {
-			// Presence-only: the row's standing progress clock IS the
-			// answer (nothing was written); never the arrival echo.
-			progress = derefTime(t.LastProgressAt)
-		} else {
-			progress = observedProgressAt
-		}
+		// The response moved no progress clock: the row's standing
+		// last_progress_at IS the answer (the claim mint), never an
+		// echo of the (now-ignored) declared stamp.
+		progress = derefTime(t.LastProgressAt)
 		if !renewedSlot {
 			// The declined response leaves the lease untouched —
 			// surface the row's standing expiry, not the RETURNING
@@ -907,7 +913,7 @@ func (s *Service) Heartbeat(ctx context.Context, actor Actor, taskID, shortIDOrI
 		// The budget decline names itself (#2044 R3 prose): the worker
 		// answered, but presence alone stopped counting.
 		res.Reason = fmt.Sprintf(
-			"%d heartbeats without advancement (cap %d) — presence-only renewal is exhausted, the lease was not extended: advance the work (fresh declared progress or a stage move) or declare failure",
+			"%d heartbeats without advancement (cap %d) — presence-only renewal is exhausted, the lease was not extended: advance the work for real (a stage move, or progress the platform can observe — re-declaring a heartbeat stamp credits nothing) or declare failure",
 			postNoAdvance, s.cfg.NoAdvanceHeartbeatCap)
 	}
 	return res, nil
