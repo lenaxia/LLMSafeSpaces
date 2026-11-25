@@ -48,11 +48,21 @@ func (s *BoardSuite) waitState(taskID string) (waitOn, waitReason string) {
 	return waitOn, waitReason
 }
 
+// testRepo is the declaration-time repo identity the suite's
+// pr-anchored conditions carry (the broker compiles its sensor from
+// the payload's repo — never guessing).
+const testRepo = "lenaxia/llmsafespaces"
+
 // declareEvent is the verb's happy path: a well-formed event-wait
-// declaration on the claimant's own row.
+// declaration on the claimant's own row (GitHub-anchored conditions
+// carry the test repo identity).
 func (s *BoardSuite) declareEvent(t *testing.T, c *board.Claim, reason, condition string) *board.Task {
+	repo := ""
+	if cond, err := board.ParseWaitCondition(condition); err == nil && board.ConditionNeedsRepo(cond.Primitive) {
+		repo = testRepo
+	}
 	out, err := s.svc.DeclareWait(context.Background(), s.agent(c.Assignee, c.ClaimToken),
-		"", c.ShortID, board.WaitOnEvent, reason, condition, "")
+		"", c.ShortID, board.WaitOnEvent, reason, condition, repo, "")
 	require.NoError(t, err)
 	return out
 }
@@ -70,7 +80,7 @@ func (s *BoardSuite) TestDeclareWait_User_ByteIdenticalFlagOp() {
 	s.Require().Equal(t1.ID, c1.TaskID)
 	// The VERB.
 	verbOut, err := s.svc.DeclareWait(context.Background(), s.agent(c1.Assignee, c1.ClaimToken),
-		"", c1.ShortID, board.WaitOnUser, "owner decision: runtime bump scope", "", "")
+		"", c1.ShortID, board.WaitOnUser, "owner decision: runtime bump scope", "", "", "")
 	s.Require().NoError(err)
 	require.Equal(s.T(), board.StageInProgress, verbOut.Stage, "000050: the flag rides the real stage")
 
@@ -227,7 +237,7 @@ func (s *BoardSuite) TestDeclareWait_WorkspaceHealth_WaitingSection() {
 	c2 := s.claimOrFail(ws)
 	s.Require().Equal(t2.ID, c2.TaskID)
 	_, err = s.svc.DeclareWait(ctx, s.agent(c2.Assignee, c2.ClaimToken), "", c2.ShortID,
-		board.WaitOnUser, "owner decision: runtime bump scope", "", "")
+		board.WaitOnUser, "owner decision: runtime bump scope", "", "", "")
 	s.Require().NoError(err)
 
 	h, err := s.svc.BoardHealthInWorkspace(ctx, ws)
@@ -279,7 +289,7 @@ func (s *BoardSuite) TestDeclareWait_RefusalMatrix() {
 	// No token.
 	g := guard(func() error {
 		_, err := s.svc.DeclareWait(context.Background(), s.agent(c.Assignee, ""),
-			"", c.ShortID, board.WaitOnEvent, "PR 2083 merge", "pr_merged(2083)", "")
+			"", c.ShortID, board.WaitOnEvent, "PR 2083 merge", "pr_merged(2083)", testRepo, "")
 		return err
 	})
 	s.Equal(board.GuardClaimToken, g.Code)
@@ -287,14 +297,14 @@ func (s *BoardSuite) TestDeclareWait_RefusalMatrix() {
 	// Wrong token.
 	g = guard(func() error {
 		_, err := s.svc.DeclareWait(context.Background(), s.agent(c.Assignee, "00000000-0000-0000-0000-000000000000"),
-			"", c.ShortID, board.WaitOnEvent, "PR 2083 merge", "pr_merged(2083)", "")
+			"", c.ShortID, board.WaitOnEvent, "PR 2083 merge", "pr_merged(2083)", testRepo, "")
 		return err
 	})
 	s.Equal(board.GuardClaimToken, g.Code)
 
 	// Bad grammar (the closed vocabulary, refused loudly).
 	g = guard(func() error {
-		_, err := s.svc.DeclareWait(context.Background(), act, "", c.ShortID, board.WaitOnEvent, "waiting", "deploy_finished(9)", "")
+		_, err := s.svc.DeclareWait(context.Background(), act, "", c.ShortID, board.WaitOnEvent, "waiting", "deploy_finished(9)", "", "")
 		return err
 	})
 	s.Equal(board.GuardInput, g.Code)
@@ -302,21 +312,21 @@ func (s *BoardSuite) TestDeclareWait_RefusalMatrix() {
 
 	// User-with-condition: nothing executable crosses the surface.
 	g = guard(func() error {
-		_, err := s.svc.DeclareWait(context.Background(), act, "", c.ShortID, board.WaitOnUser, "owner call", "pr_merged(2083)", "")
+		_, err := s.svc.DeclareWait(context.Background(), act, "", c.ShortID, board.WaitOnUser, "owner call", "pr_merged(2083)", "", "")
 		return err
 	})
 	s.Equal(board.GuardInput, g.Code)
 
 	// Event-without-reason.
 	g = guard(func() error {
-		_, err := s.svc.DeclareWait(context.Background(), act, "", c.ShortID, board.WaitOnEvent, "", "pr_merged(2083)", "")
+		_, err := s.svc.DeclareWait(context.Background(), act, "", c.ShortID, board.WaitOnEvent, "", "pr_merged(2083)", testRepo, "")
 		return err
 	})
 	s.Equal(board.GuardInput, g.Code)
 
 	// Placeholder reason (the #1820 emission-corruption class).
 	g = guard(func() error {
-		_, err := s.svc.DeclareWait(context.Background(), act, "", c.ShortID, board.WaitOnEvent, "TODO", "pr_merged(2083)", "")
+		_, err := s.svc.DeclareWait(context.Background(), act, "", c.ShortID, board.WaitOnEvent, "TODO", "pr_merged(2083)", testRepo, "")
 		return err
 	})
 	s.Equal(board.GuardTextRejected, g.Code)
@@ -324,14 +334,14 @@ func (s *BoardSuite) TestDeclareWait_RefusalMatrix() {
 	// Over-cap reason.
 	g = guard(func() error {
 		_, err := s.svc.DeclareWait(context.Background(), act, "", c.ShortID, board.WaitOnEvent,
-			string(make([]byte, board.MaxWaitReasonBytes+1)), "pr_merged(2083)", "")
+			string(make([]byte, board.MaxWaitReasonBytes+1)), "pr_merged(2083)", testRepo, "")
 		return err
 	})
 	s.Equal(board.GuardInput, g.Code)
 
 	// Unknown waitOn vocabulary.
 	g = guard(func() error {
-		_, err := s.svc.DeclareWait(context.Background(), act, "", c.ShortID, "divine_intervention", "reason", "", "")
+		_, err := s.svc.DeclareWait(context.Background(), act, "", c.ShortID, "divine_intervention", "reason", "", "", "")
 		return err
 	})
 	s.Equal(board.GuardInput, g.Code)
@@ -347,7 +357,7 @@ func (s *BoardSuite) TestDeclareWait_RefusalMatrix() {
 	// machine: only in_progress").
 	t2 := s.seedTask(e, "parked", nil, false)
 	g = guard(func() error {
-		_, err := s.svc.DeclareWait(context.Background(), s.owner(), "", t2.ShortID, board.WaitOnUser, "why", "", "")
+		_, err := s.svc.DeclareWait(context.Background(), s.owner(), "", t2.ShortID, board.WaitOnUser, "why", "", "", "")
 		return err
 	})
 	s.Equal(board.GuardStage, g.Code)
@@ -364,7 +374,7 @@ func (s *BoardSuite) TestDeclareWait_SecondEventWaitRefuses() {
 	s.declareEvent(s.T(), c, "PR 2083 merge", "pr_merged(2083)")
 
 	_, err := s.svc.DeclareWait(context.Background(), s.agent(c.Assignee, c.ClaimToken),
-		"", c.ShortID, board.WaitOnEvent, "CI on the same PR", "ci_green(2083)", "")
+		"", c.ShortID, board.WaitOnEvent, "CI on the same PR", "ci_green(2083)", testRepo, "")
 	require.Error(s.T(), err)
 	var g *board.GuardError
 	require.ErrorAs(s.T(), err, &g)
@@ -385,7 +395,7 @@ func (s *BoardSuite) TestDeclareWait_Conversions() {
 	c1 := s.claimOrFail(ws)
 	s.Require().Equal(t1.ID, c1.TaskID)
 	_, err := s.svc.DeclareWait(context.Background(), s.agent(c1.Assignee, c1.ClaimToken),
-		"", c1.ShortID, board.WaitOnUser, "owner call", "", "")
+		"", c1.ShortID, board.WaitOnUser, "owner call", "", "", "")
 	s.Require().NoError(err)
 	s.True(s.rawTask(t1.ID).PendingInput)
 	// Clear the harness's pending-source answer so the coupling pass
@@ -405,7 +415,7 @@ func (s *BoardSuite) TestDeclareWait_Conversions() {
 	s.Require().Equal(t2.ID, c2.TaskID)
 	s.declareEvent(s.T(), c2, "PR 2083 merge", "pr_merged(2083)")
 	_, err = s.svc.DeclareWait(context.Background(), s.agent(c2.Assignee, c2.ClaimToken),
-		"", c2.ShortID, board.WaitOnUser, "owner decision after all", "", "")
+		"", c2.ShortID, board.WaitOnUser, "owner decision after all", "", "", "")
 	s.Require().NoError(err)
 	row2 := s.rawTask(t2.ID)
 	s.True(row2.PendingInput)
@@ -537,7 +547,7 @@ func (s *BoardSuite) TestPin_UserWait_FreezesLadder_Unchanged() {
 	assignee := s.reloadTask(t1.ID).AssigneeSession
 	s.Require().NotEmpty(assignee)
 	_, err := s.svc.DeclareWait(context.Background(), s.agent(assignee, c.ClaimToken),
-		"", c.ShortID, board.WaitOnUser, "owner decision: cut scope", "", "")
+		"", c.ShortID, board.WaitOnUser, "owner decision: cut scope", "", "", "")
 	s.Require().NoError(err)
 
 	lives := &fakeLiveness{}
@@ -573,7 +583,7 @@ func (s *BoardSuite) TestPendingExits_ClearTheUserWait() {
 	c := s.claimOrFail(ws)
 	s.Require().Equal(t1.ID, c.TaskID)
 	_, err := s.svc.DeclareWait(context.Background(), s.agent(c.Assignee, c.ClaimToken),
-		"", c.ShortID, board.WaitOnUser, "owner decision", "", "")
+		"", c.ShortID, board.WaitOnUser, "owner decision", "", "", "")
 	s.Require().NoError(err)
 	s.True(s.rawTask(t1.ID).PendingInput)
 
@@ -624,13 +634,86 @@ func (s *BoardSuite) TestDeclareWait_RequestIdReplayIsOriginal() {
 	s.Require().Equal(t1.ID, c.TaskID)
 	act := s.agent(c.Assignee, c.ClaimToken)
 	first, err := s.svc.DeclareWait(context.Background(), act, "", c.ShortID,
-		board.WaitOnEvent, "PR 2083 merge", "pr_merged(2083)", "req-wait-1")
+		board.WaitOnEvent, "PR 2083 merge", "pr_merged(2083)", testRepo, "req-wait-1")
 	s.Require().NoError(err)
 	second, err := s.svc.DeclareWait(context.Background(), act, "", c.ShortID,
-		board.WaitOnEvent, "PR 2083 merge", "pr_merged(2083)", "req-wait-1")
+		board.WaitOnEvent, "PR 2083 merge", "pr_merged(2083)", testRepo, "req-wait-1")
 	s.Require().NoError(err, "a replayed requestId is 200-with-original, never an error")
 	s.Equal(first.ID, second.ID)
 	s.Equal(1, s.countEvents("wait_declared"), "the replay wrote no second declaration")
+}
+
+// --- The declaration-time repo identity (the patched charter) --------------
+
+func (s *BoardSuite) TestDeclareWait_RepoGrammar() {
+	ws := s.seedWorkspace()
+	p := s.seedProject(ws, 2)
+	e := s.seedEpic(p, board.EpicActive)
+	t1 := s.seedTask(e, "repo-grammar", nil, false)
+
+	c := s.claimOrFail(ws)
+	s.Require().Equal(t1.ID, c.TaskID)
+	act := s.agent(c.Assignee, c.ClaimToken)
+
+	guard := func(fn func() error) *board.GuardError {
+		err := fn()
+		require.Error(s.T(), err)
+		var g *board.GuardError
+		require.ErrorAs(s.T(), err, &g)
+		return g
+	}
+
+	// pr-anchored without repo: the broker never guesses — refuse.
+	g := guard(func() error {
+		_, err := s.svc.DeclareWait(context.Background(), act, "", c.ShortID,
+			board.WaitOnEvent, "PR 2083 merge", "pr_merged(2083)", "", "")
+		return err
+	})
+	s.Equal(board.GuardInput, g.Code)
+	require.Contains(s.T(), g.Detail, "owner/repo")
+
+	// Malformed repo shapes.
+	for _, bad := range []string{"no-slash", "a/b/c", "/repo", "owner/", "owner/repo extra"} {
+		g = guard(func() error {
+			_, err := s.svc.DeclareWait(context.Background(), act, "", c.ShortID,
+				board.WaitOnEvent, "PR 2083 merge", "pr_merged(2083)", bad, "")
+			return err
+		})
+		s.Equal(board.GuardInput, g.Code)
+	}
+
+	// story_done carries no repo (it reads the platform's own board).
+	g = guard(func() error {
+		_, err := s.svc.DeclareWait(context.Background(), act, "", c.ShortID,
+			board.WaitOnEvent, "story done", "story_done(tsk-ebony-javelin-tramps)", testRepo, "")
+		return err
+	})
+	s.Equal(board.GuardInput, g.Code)
+
+	// The user arm takes no repo either.
+	g = guard(func() error {
+		_, err := s.svc.DeclareWait(context.Background(), act, "", c.ShortID,
+			board.WaitOnUser, "owner call", "", testRepo, "")
+		return err
+	})
+	s.Equal(board.GuardInput, g.Code)
+	s.Equal(0, s.countEvents("wait_declared"), "no declaration landed through the refusals")
+
+	// The happy path's payload carries the repo (plus the facts the
+	// broker's materialize pass keys on).
+	s.declareEvent(s.T(), c, "PR 2083 merge", "pr_merged(2083)")
+	var repo string
+	s.Require().NoError(s.pool.QueryRow(context.Background(), `
+		SELECT payload->>'repo' FROM board_events
+		WHERE action='wait_declared' AND item_id=$1`, t1.ID).Scan(&repo))
+	s.Equal(testRepo, repo)
+	var assignee, shortID, claimTok string
+	s.Require().NoError(s.pool.QueryRow(context.Background(), `
+		SELECT payload->>'assignee', payload->>'short_id', payload->>'claim_token' FROM board_events
+		WHERE action='wait_declared' AND item_id=$1`, t1.ID).Scan(&assignee, &shortID, &claimTok))
+	s.Equal(c.Assignee, assignee)
+	s.Equal(t1.ShortID, shortID)
+	s.Equal(c.ClaimToken, claimTok)
 }
 
 // Compile-time: the suite's time import stays used (Since assertions

@@ -1,0 +1,52 @@
+=== RUN   TestCharterPrompt_RendersWaitLifecycle
+--- PASS: TestCharterPrompt_RendersWaitLifecycle (0.00s)
+=== RUN   TestWaitGateScriptRender_BytePins
+--- PASS: TestWaitGateScriptRender_BytePins (0.00s)
+=== RUN   TestWaitGateScriptRender_Reproducible
+--- PASS: TestWaitGateScriptRender_Reproducible (0.00s)
+=== RUN   TestRenderWaitGateScript_RefusesUnknownPrimitive
+--- PASS: TestRenderWaitGateScript_RefusesUnknownPrimitive (0.00s)
+=== RUN   TestWaitBroker_Materializes_NoPromptLeg_Caps
+--- PASS: TestWaitBroker_Materializes_NoPromptLeg_Caps (0.00s)
+=== RUN   TestWaitBroker_DoublePassConverges
+--- PASS: TestWaitBroker_DoublePassConverges (0.00s)
+=== RUN   TestWaitBroker_ReDeclaration_UpdatesScript
+--- PASS: TestWaitBroker_ReDeclaration_UpdatesScript (0.00s)
+=== RUN   TestWaitBroker_OrphanClean_WaitCleared
+2026/11/20 05:19:20 INFO board: wait-broker orphan trigger cleaned trigger=wait-broker-tsk-henna-one-bafde89c reason=wait_cleared
+--- PASS: TestWaitBroker_OrphanClean_WaitCleared (0.00s)
+=== RUN   TestWaitBroker_OrphanClean_ClaimEndAndTerminal
+=== RUN   TestWaitBroker_OrphanClean_ClaimEndAndTerminal/claim_ended
+2026/11/20 05:19:20 INFO board: wait-broker orphan trigger cleaned trigger=wait-broker-tsk-henna-one-bafde89c reason=claim_ended
+=== RUN   TestWaitBroker_OrphanClean_ClaimEndAndTerminal/terminal
+2026/11/20 05:19:20 INFO board: wait-broker orphan trigger cleaned trigger=wait-broker-tsk-henna-one-bafde89c reason=terminal_or_moved
+=== RUN   TestWaitBroker_OrphanClean_ClaimEndAndTerminal/wedge_reset_cleared
+2026/11/20 05:19:20 INFO board: wait-broker orphan trigger cleaned trigger=wait-broker-tsk-henna-one-bafde89c reason=terminal_or_moved
+--- PASS: TestWaitBroker_OrphanClean_ClaimEndAndTerminal (0.00s)
+    --- PASS: TestWaitBroker_OrphanClean_ClaimEndAndTerminal/claim_ended (0.00s)
+    --- PASS: TestWaitBroker_OrphanClean_ClaimEndAndTerminal/terminal (0.00s)
+    --- PASS: TestWaitBroker_OrphanClean_ClaimEndAndTerminal/wedge_reset_cleared (0.00s)
+=== RUN   TestWaitBroker_FireConsumed_ResumeAndEvent
+--- PASS: TestWaitBroker_FireConsumed_ResumeAndEvent (0.00s)
+=== RUN   TestWaitBroker_FireBounced_Retries
+2026/11/20 05:19:20 WARN board: detached V1 delivery failed what="wait-resolved resume" task_scope=ws-1 session=florid-teapot-verifies resolved=florid-teapot-verifies err="dead session florid-teapot-verifies"
+2026/11/20 05:19:20 WARN board: wait-broker resume delivery bounced (retrying next pass) trigger=wait-broker-tsk-henna-one-bafde89c fire=fire-1 error="dead session florid-teapot-verifies"
+--- PASS: TestWaitBroker_FireBounced_Retries (0.00s)
+=== RUN   TestWaitBroker_SkippedAndStaleFires_NotConsumed
+--- PASS: TestWaitBroker_SkippedAndStaleFires_NotConsumed (0.00s)
+=== RUN   TestWaitBroker_Degraded_RematerializeOnceThenLoud
+2026/11/20 05:19:20 WARN board: wait-broker sensor re-materialized (round one) trigger=wait-broker-tsk-henna-one-bafde89c cause=auto_disabled
+2026/11/20 05:19:20 ERROR board: wait-broker DEGRADED — sensor failed after re-materialization; the wait falls to the ladder trigger=wait-broker-tsk-henna-one-bafde89c cause=auto_disabled task=tsk-henna-one
+--- PASS: TestWaitBroker_Degraded_RematerializeOnceThenLoud (0.00s)
+=== RUN   TestWaitBroker_DeclaredThenCleared_NeverMaterializes
+--- PASS: TestWaitBroker_DeclaredThenCleared_NeverMaterializes (0.00s)
+=== RUN   TestWaitBroker_HealthDegradedVocabulary
+--- PASS: TestWaitBroker_HealthDegradedVocabulary (0.00s)
+=== RUN   TestWaitBroker_MaterializedRow_KeepsStoreIssuedID
+--- PASS: TestWaitBroker_MaterializedRow_KeepsStoreIssuedID (0.00s)
+=== RUN   TestWaitFireGateOpen
+--- PASS: TestWaitFireGateOpen (0.00s)
+=== RUN   TestWaitResolvedText
+--- PASS: TestWaitResolvedText (0.00s)
+PASS
+ok  	github.com/lenaxia/llmsafespaces/api/internal/app	0.029s

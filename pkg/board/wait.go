@@ -66,6 +66,62 @@ func (c WaitCondition) String() string {
 // what IS accepted).
 const waitConditionGrammar = `condition must be primitive "(" arg ")" with primitive ∈ {pr_merged, ci_green, story_done}; arg is a 1-9 digit PR number (pr_merged/ci_green) or a tsk-… story short id (story_done) — e.g. pr_merged(2101), ci_green(2101), story_done(tsk-ebony-javelin-tramps)`
 
+// WaitRepoGrammar is the accepted-vocabulary error suffix every repo
+// refusal carries: the declarative repo identity rides the wait_declared
+// payload (the patched charter — the broker compiles GitHub-anchored
+// templates from it and never guesses), so it validates at the verb
+// edge with the same closed-grammar discipline as the condition.
+const WaitRepoGrammar = `repo must be "<owner>/<repo>" — a GitHub owner (alphanumeric with single inner hyphens) and repository (alphanumeric with . _ -), e.g. "lenaxia/llmsafespaces"`
+
+// ConditionNeedsRepo reports whether the primitive's sensor is
+// GitHub-anchored and therefore requires the declaration-time repo
+// identity (pr_merged/ci_green true; story_done reads the platform's
+// own board and carries none).
+func ConditionNeedsRepo(primitive string) bool {
+	return primitive == "pr_merged" || primitive == "ci_green"
+}
+
+// ParseWaitCondition is parseWaitCondition exported for the app seam
+// (low-level design §4.1: the grammar is SHARED by the verb edge and
+// the broker — the broker re-parses the event payload's condition so
+// nothing unparseable can ever reach a trigger even via a hand-edited
+// event row).
+func ParseWaitCondition(s string) (WaitCondition, error) { return parseWaitCondition(s) }
+
+// validateWaitRepo runs the closed repo grammar ("owner/repo", the
+// GitHub shape) over the declaration-time repo identity. The grammar
+// pins shape, not existence — resolution of the PR against it is the
+// sensor's job at poll time.
+func validateWaitRepo(repo string) error {
+	slash := strings.Count(repo, "/")
+	if slash != 1 || len(repo) > 128 || len(repo) < 3 {
+		return &GuardError{Code: GuardInput, Detail: "wait repo " + strconv.Quote(repo) + " does not parse: " + WaitRepoGrammar}
+	}
+	owner, name, _ := strings.Cut(repo, "/")
+	if !isGitHubName(owner) || !isGitHubName(name) || strings.ContainsAny(owner, "._") {
+		return &GuardError{Code: GuardInput, Detail: "wait repo " + strconv.Quote(repo) + " does not parse: " + WaitRepoGrammar}
+	}
+	return nil
+}
+
+// isGitHubName: the [-.\w]+ class (repo names additionally allow dots;
+// owners do not — the asymmetry is pinned above by the caller).
+func isGitHubName(s string) bool {
+	if s == "" || len(s) > 64 {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		switch {
+		case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c >= '0' && c <= '9':
+		case c == '-' || c == '_' || c == '.':
+		default:
+			return false
+		}
+	}
+	return true
+}
+
 // parseWaitCondition parses the closed v1 grammar (low-level design
 // §4.1 — shared by the verb edge and the broker):
 //
@@ -180,7 +236,13 @@ func validateWaitReason(reason string) error {
 // worker-anchored advance clears the wait — the exits are the stage
 // machine's, never this verb's (a wait has no self-exit; the worker
 // either advances, or the enumerated exits move the row).
-func (s *Service) DeclareWait(ctx context.Context, actor Actor, taskID, shortIDOrID, waitOn, waitReason, condition, requestID string) (*Task, error) {
+//
+// repo is the declaration-time repo identity ("owner/repo", closed
+// grammar): REQUIRED for pr-anchored conditions (pr_merged/ci_green),
+// refused for story_done and user waits. It is DATA — it rides the
+// wait_declared payload and the broker compiles the sensor from it;
+// the broker never guesses (the patched charter's change).
+func (s *Service) DeclareWait(ctx context.Context, actor Actor, taskID, shortIDOrID, waitOn, waitReason, condition, repo, requestID string) (*Task, error) {
 	// Argument validation at the verb edge, loudly, before any row is
 	// touched (the grammar is closed HERE — nothing unparseable ever
 	// reaches the event the broker consumes).
@@ -189,9 +251,23 @@ func (s *Service) DeclareWait(ctx context.Context, actor Actor, taskID, shortIDO
 		if condition != "" {
 			return nil, &GuardError{Code: GuardInput, Detail: "waitOn='user' takes no condition — a user-wait's exit is the human's decision, not a declarative event (drop the condition, or declare waitOn='event')"}
 		}
+		if repo != "" {
+			return nil, &GuardError{Code: GuardInput, Detail: "waitOn='user' takes no repo — the repo identity rides event-wait declarations only (the GitHub-anchored conditions)"}
+		}
 	case WaitOnEvent:
-		if _, err := parseWaitCondition(condition); err != nil {
+		cond, err := parseWaitCondition(condition)
+		if err != nil {
 			return nil, err
+		}
+		if ConditionNeedsRepo(cond.Primitive) {
+			if repo == "" {
+				return nil, &GuardError{Code: GuardInput, Detail: cond.Primitive + " requires the repo identity (repo: \"<owner>/<repo>\") — the sensor polls that repository; the broker never guesses it"}
+			}
+			if err := validateWaitRepo(repo); err != nil {
+				return nil, err
+			}
+		} else if repo != "" {
+			return nil, &GuardError{Code: GuardInput, Detail: "story_done carries no repo — the condition reads the platform's own board"}
 		}
 	default:
 		return nil, &GuardError{Code: GuardInput, Detail: "waitOn must be 'user' or 'event' (the typed-wait vocabulary, migration 000060), got " + strconv.Quote(waitOn)}
@@ -217,7 +293,7 @@ func (s *Service) DeclareWait(ctx context.Context, actor Actor, taskID, shortIDO
 
 	ew := &eventWriter{svc: s, projectID: p.ID, requestID: requestID, action: "wait", itemKind: "task", itemID: t.ID, actor: actor}
 	_, dup, err := ew.run(ctx, func(tx pgx.Tx) (map[string]any, error) {
-		return s.declareWaitTx(ctx, tx, actor, t.ID, waitOn, waitReason, condition)
+		return s.declareWaitTx(ctx, tx, actor, t.ID, waitOn, waitReason, condition, repo)
 	})
 	if err != nil {
 		return nil, err
@@ -237,7 +313,7 @@ func (s *Service) DeclareWait(ctx context.Context, actor Actor, taskID, shortIDO
 // posture): stage, token, and the wait-state guards re-run against the
 // fresh row, then the typed write + the deterministic wait events land
 // in the same transaction.
-func (s *Service) declareWaitTx(ctx context.Context, tx pgx.Tx, actor Actor, taskID, waitOn, waitReason, condition string) (map[string]any, error) {
+func (s *Service) declareWaitTx(ctx context.Context, tx pgx.Tx, actor Actor, taskID, waitOn, waitReason, condition, repo string) (map[string]any, error) {
 	cur, err := s.store.taskForUpdate(ctx, tx, taskID)
 	if err != nil {
 		return nil, err
@@ -322,18 +398,26 @@ func (s *Service) declareWaitTx(ctx context.Context, tx pgx.Tx, actor Actor, tas
 			}
 			outcome["converted_from"] = WaitOnUser
 		}
-		// The declaration the broker consumes: condition DATA in the
-		// payload, prose on the row — nothing executable crosses the
-		// worker surface.
+		// The declaration the broker consumes: condition DATA + the
+		// declaration-time repo identity in the payload, prose on the
+		// row — nothing executable crosses the worker surface, and the
+		// broker never guesses the repository (the patched charter).
 		if _, err := recordEventTx(ctx, tx, cur.ProjectID, waitEventID(taskID, cur.ClaimToken, nanos, 1), "wait_declared",
 			"task", taskID, actor, map[string]any{
 				"task_id": taskID, "wait_on": WaitOnEvent, "wait_reason": waitReason,
-				"condition": map[string]any{"primitive": cond.Primitive, "arg": cond.Arg, "text": cond.String()},
+				"condition":   map[string]any{"primitive": cond.Primitive, "arg": cond.Arg, "text": cond.String()},
+				"repo":        repo,
+				"short_id":    cur.ShortID,
+				"assignee":    cur.AssigneeSession,
+				"claim_token": cur.ClaimToken,
 			}); err != nil {
 			return nil, err
 		}
 		outcome["wait_reason"] = waitReason
 		outcome["condition"] = cond.String()
+		if repo != "" {
+			outcome["repo"] = repo
+		}
 	default:
 		return nil, &GuardError{Code: GuardInput, Detail: "waitOn must be 'user' or 'event'"}
 	}

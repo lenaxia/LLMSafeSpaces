@@ -382,6 +382,28 @@ const triggerSelectColumns = `id, owner_type, owner_id, name, description, enabl
 	memory_mode, memory_max_runs, capture_mode, preserve_session,
 	consecutive_failures, auto_disable_after, last_fired_at, next_fire_at, created_at, updated_at`
 
+// ListTriggersByPrefix lists triggers ACROSS OWNERS whose name carries
+// the prefix — the wait-broker's namespace scan (it owns every
+// wait-broker-* trigger and must find them per-project-owner). The
+// REST surface never queries by prefix; this is the internal-only
+// ownership seam (deterministic names make the scan auditable).
+func (s *Store) ListTriggersByPrefix(ctx context.Context, prefix string, limit int) ([]*TriggerRow, error) {
+	if limit <= 0 {
+		limit = 500
+	}
+	rows, err := s.pool.Query(ctx, `
+		SELECT `+triggerSelectColumns+`
+		FROM triggers WHERE name LIKE $1
+		ORDER BY name ASC
+		LIMIT $2
+	`, prefix+"%", limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return scanTriggerRows(rows)
+}
+
 func (s *Store) CreateTrigger(ctx context.Context, row *TriggerRow) error {
 	_, err := s.pool.Exec(ctx, `
 		INSERT INTO triggers (id, owner_type, owner_id, name, description, enabled, source_type, source_config,

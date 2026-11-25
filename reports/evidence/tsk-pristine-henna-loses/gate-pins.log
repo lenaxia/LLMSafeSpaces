@@ -1,0 +1,20 @@
+=== RUN   TestRenderWaitGateScript_RefusesUnknownPrimitive
+--- PASS: TestRenderWaitGateScript_RefusesUnknownPrimitive (0.00s)
+=== RUN   TestClaimTokenHash8_NameShapes
+--- PASS: TestClaimTokenHash8_NameShapes (0.00s)
+=== RUN   TestGateTemplate_StoryDone_SatisfiedState_FiresOnce
+--- PASS: TestGateTemplate_StoryDone_SatisfiedState_FiresOnce (0.58s)
+=== RUN   TestGateTemplate_StoryDone_UnsatisfiedThenSatisfied
+--- PASS: TestGateTemplate_StoryDone_UnsatisfiedThenSatisfied (0.74s)
+=== RUN   TestGateTemplate_PRMerged_MergedFiresOnce
+--- PASS: TestGateTemplate_PRMerged_MergedFiresOnce (0.75s)
+=== RUN   TestGateTemplate_CIGreen_AllGreenFiresOnce
+--- PASS: TestGateTemplate_CIGreen_AllGreenFiresOnce (0.76s)
+=== RUN   TestGateTemplate_ReDeclaredSeed_Refires
+--- PASS: TestGateTemplate_ReDeclaredSeed_Refires (0.75s)
+=== RUN   TestGateTemplate_QuietPoller
+--- PASS: TestGateTemplate_QuietPoller (0.19s)
+=== RUN   TestGateTemplate_PermanentHTTPError_Fails
+--- PASS: TestGateTemplate_PermanentHTTPError_Fails (0.57s)
+PASS
+ok  	github.com/lenaxia/llmsafespaces/api/internal/app	4.371s

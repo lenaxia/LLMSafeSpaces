@@ -38,7 +38,8 @@ type fakeBoardService struct {
 	lastWaitOn     string // claim-wait lifecycle: the wait verb's args
 	lastWaitReason string
 	lastCondition  string
-	waitErr        error // the wait verb's guard-class arm
+	lastRepo       string // the declaration-time repo identity (the broker's compile input)
+	waitErr        error  // the wait verb's guard-class arm
 
 	heartbeatErr  error
 	moveErr       error // board_parity_test.go: the shared-action guard-class arms
@@ -82,10 +83,10 @@ func (f *fakeBoardService) MoveStage(_ context.Context, actor board.Actor, taskI
 	return &board.Task{ID: taskID, Stage: toStage}, nil
 }
 
-func (f *fakeBoardService) DeclareWait(_ context.Context, actor board.Actor, taskID, shortIDOrID, waitOn, waitReason, condition, _ string) (*board.Task, error) {
+func (f *fakeBoardService) DeclareWait(_ context.Context, actor board.Actor, taskID, shortIDOrID, waitOn, waitReason, condition, repo, _ string) (*board.Task, error) {
 	f.calls["wait"]++
 	f.lastActor, f.lastTaskRef, f.lastShortID = actor, taskID, shortIDOrID
-	f.lastWaitOn, f.lastWaitReason, f.lastCondition = waitOn, waitReason, condition
+	f.lastWaitOn, f.lastWaitReason, f.lastCondition, f.lastRepo = waitOn, waitReason, condition, repo
 	if f.waitErr != nil {
 		return nil, f.waitErr
 	}
