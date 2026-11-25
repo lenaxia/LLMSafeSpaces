@@ -92,15 +92,30 @@ func TestIntegrationBusySource_ComposedTruthAndPurity(t *testing.T) {
 	assert.Len(t, tape.asked, 2, "the deleted and unframed refs never reach the busy leg")
 
 	// PURITY (the engine contract): the badge query consumed no
-	// observation state — the next ObserveAssignees for the framed,
-	// busy session is still a FIRST observation (the frame leg
-	// baselines at zero, so the already-delivered PART_START frame is
-	// movement evidence; had BusyAssignees advanced the cursor, the
-	// delta would be silently eaten and the lease ladder blinded).
+	// observation state — it minted no cursor under either ref form,
+	// so the sweep that follows still measures from its OWN baseline
+	// (had BusyAssignees advanced the cursor, the next sweep's delta
+	// would be silently eaten and the lease ladder blinded).
+	//
+	// #2100-R2 re-pin: first observation now baselines EVERY leg at
+	// its current stamp — a frame this process saw before the claim
+	// existed is not this episode's movement — so "not blinded" is
+	// pinned as cursor-absence plus the sweep's own delta, never as a
+	// free first-sight renewal.
+	require.NotContains(t, hub.cursors, "ses_busy", "the badge query minted no cursor (raw-ref form)")
+	require.NotContains(t, hub.cursors, "busy-teapot-verifies", "…nor under the phrase form the read edge hands it")
 	res := hub.ObserveAssignees(ctx, board.SessionObservations{Refs: []board.AssigneeRef{{SessionID: "ses_busy"}}})
 	o := res["ses_busy"]
 	require.True(t, o.Observed)
-	assert.True(t, o.MovedSinceLastSweep,
-		"the badge query must not consume the sweep's movement delta (purity)")
+	assert.False(t, o.MovedSinceLastSweep,
+		"first observation baselines the frame leg too (the pre-claim PART_START is not this episode's movement — #2100-R2)")
 	assert.True(t, o.Busy, "the sweep's own busy answer still composes (unchanged semantics)")
+
+	hub.ObserveFrame(ws, &abiv1.Event{
+		Type:              abiv1.EventType_EVENT_TYPE_PART_DELTA,
+		InternalSessionId: "ses_busy",
+	})
+	res = hub.ObserveAssignees(ctx, board.SessionObservations{Refs: []board.AssigneeRef{{SessionID: "ses_busy"}}})
+	assert.True(t, res["ses_busy"].MovedSinceLastSweep,
+		"the badge query consumed no state: the sweep's OWN delta still renews (the ladder is not blinded)")
 }

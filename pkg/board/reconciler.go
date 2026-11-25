@@ -294,6 +294,45 @@ func setWedgeEvidence(m map[string]string, id, prose string) {
 	}
 }
 
+// victim is one lease-due row the sweep locked this pass — the
+// ask-half's input and the write-half's instruction (package scope since
+// #2100-R4: the ladder's arms are separately testable helpers).
+type victim struct {
+	id, project, episode string
+	failures             int32
+	assignee, nudgeID    string
+	shortID              string
+	nudgedAt             *time.Time
+	lastHeartbeat        *time.Time
+	busyRenews           int32
+	ws                   string
+	// lastProgress is the worker-anchored progress clock
+	// (last_progress_at) at scan time; progressLapsed is the
+	// heartbeat-lapse arm's input, computed SERVER-SIDE in the
+	// same now() clock domain as every other ladder comparison —
+	// nil progress is lapsed-by-default (#2043: no evidence of
+	// worker progress is no movement veto).
+	lastProgress   *time.Time
+	progressLapsed bool
+	// #2044 (the heartbeat-orbit budget): noAdvance is the row's
+	// consecutive motionless-heartbeat-response count; noEpochMotion
+	// is the server-side forward-motion detector in ONE clock
+	// domain — the progress clock has NOT crossed the claim mint
+	// (stage_entered_at, written by every claim-path mint in the
+	// same statement as the mint's last_progress_at=now(), so the
+	// claim itself never reads as motion). Nil progress is
+	// motionless by default. (The raw mint timestamp stays in SQL —
+	// the sweep never needs it in Go.)
+	noAdvance     int
+	noEpochMotion bool
+	// paused is the EFFECTIVE #1747 pause state at scan time, the
+	// same one-predicate rule effectivePausedTx applies to writes:
+	// the row itself paused, its PROJECT paused, or its EPIC paused.
+	// #2100-R3: the ladder must honor it (a paused row is exempt
+	// from the ladder's arms — see the decision loop).
+	paused bool
+}
+
 // rc1Reclaims reclaims every lapsed in_progress row: guarded UPDATE
 // (stage predicate re-checked at write time; SKIP LOCKED lets concurrent
 // sweeps divide the work), attempts untouched (the increment belongs to
@@ -320,9 +359,11 @@ func (s *Service) rc1Reclaims(ctx context.Context) (int, error) {
 				OR t.last_progress_at < now() - make_interval(secs=>$1::float8)),
 			t.no_advance_renews,
 			(t.last_progress_at IS NULL OR t.last_progress_at <= t.stage_entered_at),
-			COALESCE(p.target_workspace_id::text, '')
+			COALESCE(p.target_workspace_id::text, ''),
+			(t.paused OR COALESCE(p.paused, false) OR e.status = 'paused')
 		FROM tasks t
 		LEFT JOIN projects p ON p.id = t.project_id
+		JOIN epics e ON e.id = t.epic_id
 		WHERE t.stage='in_progress' AND NOT t.pending_input
 		  AND (t.lease_expires_at IS NULL OR t.lease_expires_at < now())
 		FOR UPDATE OF t SKIP LOCKED`,
@@ -330,41 +371,12 @@ func (s *Service) rc1Reclaims(ctx context.Context) (int, error) {
 	if err != nil {
 		return 0, err
 	}
-	type victim struct {
-		id, project, episode string
-		failures             int32
-		assignee, nudgeID    string
-		shortID              string
-		nudgedAt             *time.Time
-		lastHeartbeat        *time.Time
-		busyRenews           int32
-		ws                   string
-		// lastProgress is the worker-anchored progress clock
-		// (last_progress_at) at scan time; progressLapsed is the
-		// heartbeat-lapse arm's input, computed SERVER-SIDE in the
-		// same now() clock domain as every other ladder comparison —
-		// nil progress is lapsed-by-default (#2043: no evidence of
-		// worker progress is no movement veto).
-		lastProgress   *time.Time
-		progressLapsed bool
-		// #2044 (the heartbeat-orbit budget): noAdvance is the row's
-		// consecutive motionless-heartbeat-response count; noEpochMotion
-		// is the server-side forward-motion detector in ONE clock
-		// domain — the progress clock has NOT crossed the claim mint
-		// (stage_entered_at, written by every claim-path mint in the
-		// same statement as the mint's last_progress_at=now(), so the
-		// claim itself never reads as motion). Nil progress is
-		// motionless by default. (The raw mint timestamp stays in SQL —
-		// the sweep never needs it in Go.)
-		noAdvance     int
-		noEpochMotion bool
-	}
 	var victims []victim
 	for rows.Next() {
 		var v victim
 		if err := rows.Scan(&v.id, &v.project, &v.episode, &v.failures, &v.assignee, &v.nudgeID, &v.shortID,
 			&v.nudgedAt, &v.lastHeartbeat, &v.busyRenews, &v.lastProgress, &v.progressLapsed,
-			&v.noAdvance, &v.noEpochMotion, &v.ws); err != nil {
+			&v.noAdvance, &v.noEpochMotion, &v.ws, &v.paused); err != nil {
 			rows.Close()
 			return 0, err
 		}
@@ -439,13 +451,7 @@ func (s *Service) rc1Reclaims(ctx context.Context) (int, error) {
 	if lives == nil {
 		lives = NilLiveness{}
 	}
-	refs := make([]AssigneeRef, 0, len(victims))
-	for _, v := range victims {
-		if v.assignee != "" {
-			refs = append(refs, AssigneeRef{SessionID: v.assignee, NudgeID: v.nudgeID})
-		}
-	}
-	observations := lives.ObserveAssignees(ctx, SessionObservations{Refs: refs})
+	observations := lives.ObserveAssignees(ctx, SessionObservations{Refs: ladderRefs(victims)})
 	// boardBusyRenewCap bounds the busy-gate's deferral (review round
 	// 1's blocking finding): a source latched busy-true forever (dead
 	// pod + stalled recreation keeps the gate's truth stale) must not
@@ -499,9 +505,20 @@ func (s *Service) rc1Reclaims(ctx context.Context) (int, error) {
 	}
 	for _, v := range victims {
 		decisions[v.id] = ladderReclaim
-		if v.assignee == "" {
-			reclaimReason[v.id] = ReclaimReasonNoAssignee
-			continue // no identity to observe or nudge: the honest wall-clock path
+		if reason := ladderLapseReason(v); reason != "" {
+			// A row no arm may touch this sweep. PAUSED (#2100-R3): the
+			// scan has always carried paused rows — pause.go's
+			// documented LAPSE-not-freeze accounting makes the requeue
+			// to backlog where the paused flag parks the row — but the
+			// ladder itself carried no pause predicate, so paused rows
+			// kept taking their nudge/renew arms (the prod shape: a
+			// paused probe renewed every ~45m for 2.5 days, every
+			// renewal invisible). The HALT directive already stopped
+			// the worker, so asking it whether it is alive is moot:
+			// skip every arm and lapse at expiry. Or IDENTITY-LESS: no
+			// one to observe or nudge — the honest wall-clock path.
+			reclaimReason[v.id] = reason
+			continue
 		}
 		// The heartbeat-orbit budget at cap (#2044, the third #2040
 		// orbit channel): K consecutive motionless heartbeat responses
@@ -732,8 +749,7 @@ func (s *Service) rc1Reclaims(ctx context.Context) (int, error) {
 		switch decisions[v.id] {
 		case ladderRenew:
 			// Renewal: extend the lease, clear the nudge slot. NO
-			// transition, NO audit event (design: renewals never flood
-			// the trail), NO overlay. busy_renews carries the
+			// transition, NO overlay. busy_renews carries the
 			// consecutive busy-ONLY count (the cap's input): +1 when
 			// Busy alone renewed, 0 when stronger evidence did.
 			// no_advance_renews carries the heartbeat-orbit budget the
@@ -751,14 +767,40 @@ func (s *Service) rc1Reclaims(ctx context.Context) (int, error) {
 			// response no longer writes it (it wrote the client stamp,
 			// which posed as epoch motion and voided the #2044 budget —
 			// the v0.44.19 no-advance defect).
-			if _, err := tx.Exec(ctx, `
-				UPDATE tasks SET lease_expires_at=now()+make_interval(secs=>$2::float8),
-					last_renewed_at=now(), nudge_id=NULL, nudged_at=NULL, updated_at=now(),
-					busy_renews=CASE WHEN $3::bool THEN busy_renews+1 ELSE 0 END,
-					no_advance_renews=CASE WHEN $4::bool THEN no_advance_renews+1 ELSE 0 END
-				WHERE id=$1 AND stage='in_progress'`,
-				v.id, s.cfg.LeaseDuration.Seconds(), busyOnlyRenew[v.id], hbNoMotionRenew[v.id]); err != nil {
-				return 0, err
+			//
+			// #2100-R4 AUDITABILITY (this arm's blind spot, closed): the
+			// ladder used to renew SILENTLY — no audit row, and the
+			// per-source renewal counters were engine-process-local
+			// with no external surface — so the 2.5-day zombie (probe
+			// task 615a8cf1: ~40 renewals, zero nudges, zero events) was
+			// invisible on every surface an operator reads. One
+			// board_events row per renewal is the cheap, attributable
+			// fix: renewals are rate-bounded by the lease itself (one
+			// per expiry sweep, ~2/day/row at the 45m default — the same
+			// order as the nudge/reclaim rows the trail already carries
+			// per lapse cycle), so the "renewals never flood the trail"
+			// premise behind the silence does not survive contact with
+			// the ladder's own cadence. Id-based on the expiry the
+			// renewal REPLACED (v.episode): deterministic, unique per
+			// renewal cycle (the write moves lease_expires_at, so the
+			// next lapse keys differently), and re-sweep-idempotent via
+			// ON CONFLICT DO NOTHING.
+			evt, landed, rerr := s.applyRenewTx(ctx, tx, sys, v, renewSource[v.id],
+				busyOnlyRenew[v.id], hbNoMotionRenew[v.id])
+			if rerr != nil {
+				return 0, rerr
+			}
+			if !landed {
+				// The stage guard lost the race: nothing written, no
+				// event, no counter — converged by the superseding
+				// writer (the freeze arm's discipline).
+				continue
+			}
+			if evt.ID != "" {
+				// Landed but already on the trail (a re-swept decision):
+				// the write and the counter stand, only the publish is
+				// skipped.
+				pending = append(pending, evt)
 			}
 			leaseRenewalsBySource.WithLabelValues(renewSource[v.id]).Inc()
 			ev := leaseEvt(v, LeaseEventRenewed)
@@ -1791,4 +1833,85 @@ func (r *Reconciler) Start(ctx context.Context) error {
 			}
 		}
 	}
+}
+
+// ladderRefs is the ladder's ask-half input: the assignees worth
+// consulting THIS sweep. A paused row is exempt from every arm
+// (#2100-R3), so it gets no observation consult either — the arms it
+// skips are exactly the arms that consume the read.
+func ladderRefs(victims []victim) []AssigneeRef {
+	refs := make([]AssigneeRef, 0, len(victims))
+	for _, v := range victims {
+		if v.assignee != "" && !v.paused {
+			refs = append(refs, AssigneeRef{SessionID: v.assignee, NudgeID: v.nudgeID})
+		}
+	}
+	return refs
+}
+
+// ladderLapseReason names the victims that skip EVERY ladder arm and
+// lapse straight to the reclaim write ("" = the ladder decides).
+// PAUSED wins over IDENTITY-LESS: a halted worker was never asked
+// whether it was alive, whatever its assignee column holds.
+func ladderLapseReason(v victim) string {
+	if v.paused {
+		return ReclaimReasonPausedLapse
+	}
+	if v.assignee == "" {
+		return ReclaimReasonNoAssignee
+	}
+	return ""
+}
+
+// applyRenewTx writes one ladder renewal and mints its #2100-R4 audit
+// row (the ladder used to renew silently — see the renew arm's note).
+// The two quiet outcomes are DIFFERENT and must not be conflated:
+//
+//   - landed=false — the arm never touched the row: the UPDATE's stage
+//     guard lost the race to a superseding writer. Nothing written, no
+//     event, no counter tick (the freeze arm's converged-by-them
+//     discipline).
+//   - landed=true with an empty Event — the renewal LANDED (write and
+//     counter are real) but this exact decision was already on the
+//     trail: the deterministic id + ON CONFLICT DO NOTHING
+//     (recordEventTx). The caller publishes nothing — a re-swept
+//     decision never double-posts — while the durable trail keeps its
+//     single row.
+func (s *Service) applyRenewTx(ctx context.Context, tx pgx.Tx, sys Actor, v victim,
+	source string, busyOnly, hbNoMotion bool) (Event, bool, error) {
+	var (
+		renewedUntil              time.Time
+		busyAfter, noAdvanceAfter int32
+	)
+	err := tx.QueryRow(ctx, `
+		UPDATE tasks SET lease_expires_at=now()+make_interval(secs=>$2::float8),
+			last_renewed_at=now(), nudge_id=NULL, nudged_at=NULL, updated_at=now(),
+			busy_renews=CASE WHEN $3::bool THEN busy_renews+1 ELSE 0 END,
+			no_advance_renews=CASE WHEN $4::bool THEN no_advance_renews+1 ELSE 0 END
+		WHERE id=$1 AND stage='in_progress'
+		RETURNING lease_expires_at, busy_renews, no_advance_renews`,
+		v.id, s.cfg.LeaseDuration.Seconds(), busyOnly, hbNoMotion).
+		Scan(&renewedUntil, &busyAfter, &noAdvanceAfter)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return Event{}, false, nil
+		}
+		return Event{}, false, err
+	}
+	// The two-clock facts the trail needs to answer "why is this claim
+	// still alive": the expiry this renewal replaced and the one it
+	// minted (one clock domain — the engine's own), plus the two budget
+	// counters AS THIS RENEWAL LEFT THEM (an orbit reads as those
+	// counters climbing to their caps).
+	evt, err := recordEventTx(ctx, tx, v.project, "reconciler:renew:"+v.id+":"+v.episode, "renew",
+		"task", v.id, sys,
+		map[string]any{"task_id": v.id, "source": source,
+			"lapsed_lease_expires_at": v.episode,
+			"lease_expires_at":        renewedUntil.UTC().Format(time.RFC3339),
+			"busy_renews":             int(busyAfter),
+			"no_advance_renews":       int(noAdvanceAfter)})
+	if err != nil {
+		return Event{}, false, err
+	}
+	return evt, true, nil
 }
